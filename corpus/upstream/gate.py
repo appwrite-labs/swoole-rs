@@ -388,12 +388,12 @@ def main():
     print(markdown(results, rechecked, stubbed))
     if stubbed:
         annotate('warning', 'PHPT libraries', f'{LIBRARIES}: {", ".join(stubbed)}')
-    resources = resource_regressions(results)
-    for regression in resources:
-        annotate('error', 'PHPT regression', regression)
     lost = lost_messages(results)
     for message in lost:
         annotate('error', LOST_SHARD, message)
+    resources = resource_regressions(results)
+    for regression in resources:
+        annotate('error', 'PHPT regression', regression)
     if rechecked is not None:
         confirmed, flaky, recovered, inconclusive = recheck(flagged(results), rechecked)
         annotate_regressions(results, confirmed + inconclusive)
