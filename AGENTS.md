@@ -36,11 +36,12 @@ others fail only when their workspace total rises, so moving code between crates
 
 The PR tier runs `deslop-please --allow .deslop-please.allow` (`cargo install deslop-please`,
 `rustup component add rust-analyzer`). It fails a PR that adds a module cycle, a tangle, a
-field read outside its struct's module or a shallow module, or that adds a member to a circle
-the file records. Fix the structure, not the report: decide which module sits at which layer,
-and put a struct's fields behind the operations that use them. Lines only leave
-`.deslop-please.allow`; adding one needs `needs:decision`. The file is the union of what macOS
-and Linux report, so never rewrite it with `--update-allow`.
+shallow module or a field no other module read before, or that adds a member to a circle the
+file records. It does not count: a field, shallow module, long file or wide directory already
+in the file passes however much worse it gets. Fix the structure, not the report: decide which
+module sits at which layer, and put a struct's fields behind the operations that use them.
+Lines only leave `.deslop-please.allow`; adding one needs `needs:decision`. The file is the
+union of what macOS and Linux report, so never rewrite it with `--update-allow`.
 
 Benchmarks use optimized builds and run without concurrent build or test load.
 Build, profile and benchmark output goes under the worktree's `target/` (a second
