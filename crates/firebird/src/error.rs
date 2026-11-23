@@ -141,7 +141,12 @@ pub(crate) fn status_error(dbh: &Dbh, stmt: Option<&Stmt>) {
 /// `php_firebird_error_stmt_with_info(stmt, "HY000", ...)`: the status
 /// vector's failure recorded if it holds one, else `message` with `HY000`.
 pub(crate) fn stmt_message(dbh: &Dbh, stmt: &Stmt, message: &[u8]) {
-    swoole_rs_corebase::lent::lend_in(b"HY000", |state, state_len| {
+    stmt_state_message(dbh, stmt, b"HY000", message);
+}
+
+/// [`stmt_message`] with the SQLSTATE `state`.
+pub(crate) fn stmt_state_message(dbh: &Dbh, stmt: &Stmt, state: &[u8], message: &[u8]) {
+    swoole_rs_corebase::lent::lend_in(state, |state, state_len| {
         swoole_rs_corebase::lent::lend_in(message, |message, message_len| {
             php_firebird_set_error(dbh, Some(stmt), state, state_len, message, message_len);
         });

@@ -50,7 +50,7 @@ unsafe extern "C" {
     /// The connection's status vector.
     safe fn swr_firebird_status(dbh: &Dbh) -> Status;
     /// The statement's connection (`stmt->dbh`) and `&S->stmt`.
-    safe fn swr_firebird_stmt_dbh(stmt: &Stmt) -> &Dbh;
+    pub(crate) safe fn swr_firebird_stmt_dbh(stmt: &Stmt) -> &Dbh;
     safe fn swr_firebird_stmt_handle(stmt: &Stmt) -> Handle<'_>;
     /// The cursor's name (`S->name`), empty when it has none, live until the
     /// cursor is renamed or closed; whether its cursor is open
@@ -140,7 +140,7 @@ unsafe extern "C" {
 }
 
 /// An SQL type code without its nullable bit.
-fn base_type(sqltype: i16) -> u32 {
+pub(crate) fn base_type(sqltype: i16) -> u32 {
     u32::from(sqltype.cast_unsigned() & !1)
 }
 
@@ -425,11 +425,11 @@ pub extern "C" fn swr_firebird_value<'a>(
 /// Firebird 4's type codes (`SQL_INT128`, `SQL_TIMESTAMP_TZ`, `SQL_TIME_TZ`,
 /// `SQL_DEC16`, `SQL_DEC34`), which a Firebird 3 ibase.h lacks: the driver
 /// coerces them only when built against a Firebird 4 one.
-const SQL_INT128: u32 = 32752;
-const SQL_TIMESTAMP_TZ: u32 = 32754;
-const SQL_TIME_TZ: u32 = 32756;
-const SQL_DEC16: u32 = 32760;
-const SQL_DEC34: u32 = 32762;
+pub(crate) const SQL_INT128: u32 = 32752;
+pub(crate) const SQL_TIMESTAMP_TZ: u32 = 32754;
+pub(crate) const SQL_TIME_TZ: u32 = 32756;
+pub(crate) const SQL_DEC16: u32 = 32760;
+pub(crate) const SQL_DEC34: u32 = 32762;
 
 /// `set_coercing_output_data_types` for one output variable: Firebird 4's
 /// `INT128` (with its scale dropped), `DECFLOAT(16)` and `DECFLOAT(34)`, and
