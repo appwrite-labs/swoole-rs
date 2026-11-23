@@ -12,11 +12,12 @@ use swoole_rs_firebird_sys::ibase::{
     SQL_TIMESTAMP, SQL_TYPE_DATE, SQL_TYPE_TIME, SQL_VARYING, XSQLVAR,
 };
 use swoole_rs_firebird_sys::{
-    Bytes, Handle, Sqlda, Status,
+    Bytes, Handle, ISC_STATUS, Quad, Sqlda, Status,
     ibase::{
-        DSQL_close, DSQL_drop, isc_info_end, isc_info_req_select_count, isc_info_sql_records,
-        isc_info_sql_stmt_delete, isc_info_sql_stmt_exec_procedure, isc_info_sql_stmt_insert,
-        isc_info_sql_stmt_update,
+        DSQL_close, DSQL_drop, isc_info_blob_total_length, isc_info_end, isc_info_error,
+        isc_info_req_select_count, isc_info_sql_records, isc_info_sql_stmt_delete,
+        isc_info_sql_stmt_exec_procedure, isc_info_sql_stmt_insert, isc_info_sql_stmt_update,
+        isc_info_truncated, isc_segment, isc_segstr_eof,
     },
 };
 use swoole_rs_zend::pdo::{Attribute, Dbh, Slot, Stmt};
@@ -26,14 +27,15 @@ use swoole_rs_zend::sys::{
 
 use crate::transaction::php_firebird_commit_transaction;
 use crate::{
-    swoole_isc_dsql_execute, swoole_isc_dsql_execute2, swoole_isc_dsql_fetch,
-    swoole_isc_dsql_free_statement, swoole_isc_dsql_set_cursor_name, swoole_isc_dsql_sql_info,
+    swoole_isc_blob_info, swoole_isc_close_blob, swoole_isc_dsql_execute, swoole_isc_dsql_execute2,
+    swoole_isc_dsql_fetch, swoole_isc_dsql_free_statement, swoole_isc_dsql_set_cursor_name,
+    swoole_isc_dsql_sql_info, swoole_isc_get_segment, swoole_isc_open_blob,
 };
 use swoole_rs_zend::sys::{
     pdo_column_data, pdo_param_type_PDO_PARAM_BOOL as PARAM_BOOL,
     pdo_param_type_PDO_PARAM_INT as PARAM_INT, pdo_param_type_PDO_PARAM_STR as PARAM_STR,
 };
-use swoole_rs_zend::{Owned, OwnedArray, Value, ZString, value_error};
+use swoole_rs_zend::{Owned, OwnedArray, Value, ZString, string::ZBuf, value_error};
 
 unsafe extern "C" {
     /// The connection's date (0), time (1) or timestamp (2) format, or its
@@ -43,7 +45,7 @@ unsafe extern "C" {
     safe fn swr_firebird_status(dbh: &Dbh) -> Status;
     /// The statement's connection (`stmt->dbh`) and `&S->stmt`.
     safe fn swr_firebird_stmt_dbh(stmt: &Stmt) -> &Dbh;
-    safe fn swr_firebird_stmt_handle(stmt: &Stmt) -> Handle;
+    safe fn swr_firebird_stmt_handle(stmt: &Stmt) -> Handle<'_>;
     /// The cursor's name (`S->name`), empty when it has none, live until the
     /// cursor is renamed or closed; whether its cursor is open
     /// (`S->cursor_open`); and both cleared.
@@ -62,7 +64,9 @@ unsafe extern "C" {
     /// transaction (`&H->tr`) and manual-transaction flag.
     safe fn swr_firebird_in_sqlda(stmt: &Stmt) -> Sqlda;
     safe fn swr_firebird_statement_type(stmt: &Stmt) -> c_char;
-    safe fn swr_firebird_tr(dbh: &Dbh) -> Handle;
+    safe fn swr_firebird_tr(dbh: &Dbh) -> Handle<'_>;
+    /// The connection's database (`&H->db`).
+    safe fn swr_firebird_db(dbh: &Dbh) -> Handle<'_>;
     safe fn swr_firebird_in_manual_txn(dbh: &Dbh) -> bool;
     /// `S->cursor_open = 0`.
     safe fn swr_firebird_cursor_reset(stmt: &Stmt);
@@ -435,6 +439,159 @@ fn records(reply: &[u8], rows: &mut zend_ulong) -> bool {
         at += length + 3;
     }
     true
+}
+
+/// The size of `php_firebird_fetch_blob`'s info reply (`bl_info`).
+const BLOB_INFO: usize = 20;
+
+/// The length the blob info `reply` gives as its total: None, C's "Couldn't
+/// determine BLOB size", when an end, truncation or error item comes first or
+/// the reply runs out; zero when the search runs past the reply's items, as
+/// C's loop fell through.
+fn blob_length(reply: &[u8; BLOB_INFO]) -> Option<u64> {
+    let ends = [isc_info_end, isc_info_truncated, isc_info_error];
+    // An `unsigned short`, as C's index was.
+    let mut i: u16 = 0;
+    while usize::from(i) < BLOB_INFO {
+        let item = u32::from(reply.get(usize::from(i)).copied().unwrap_or_default());
+        i += 1;
+        let at = usize::from(i);
+        if ends.contains(&item) || at >= BLOB_INFO {
+            return None;
+        }
+        let item_len =
+            vax(reply.get(at..(at + 2).min(BLOB_INFO)).unwrap_or_default()).to_ne_bytes();
+        let item_len = u16::from_ne_bytes([item_len[0], item_len[1]]);
+        if item == isc_info_blob_total_length {
+            // isc_vax_integer reads 1 to 4 bytes, and is 0 for any other length.
+            if !(1..=4).contains(&item_len) {
+                return Some(0);
+            }
+            let start = (at + 2).min(BLOB_INFO);
+            let end = (start + usize::from(item_len)).min(BLOB_INFO);
+            return Some(vax(reply.get(start..end).unwrap_or_default()));
+        }
+        i = i.wrapping_add(item_len).wrapping_add(2);
+    }
+    Some(0)
+}
+
+/// Zeros to fill a BLOB's string with before its segments are read in.
+static ZEROS: [u8; 65535] = [0; 65535];
+
+/// `isc_segment` and `isc_segstr_eof`, the statuses a segment read ends a
+/// blob's reading with.
+fn segment_status(code: u32) -> ISC_STATUS {
+    ISC_STATUS::try_from(code).unwrap_or_default()
+}
+
+/// The open blob's data read into `result`: its total length from the blob's
+/// info, then its segments. As in C, a failed segment read still sets the
+/// value, then records the error.
+fn read_blob(dbh: &Dbh, stmt: &Stmt, blob: Handle<'_>, result: &Slot) -> bool {
+    let status = swr_firebird_status(dbh);
+    let item =
+        c_char::from_ne_bytes([u8::try_from(isc_info_blob_total_length).unwrap_or_default()]);
+    let mut reply = [0u8; BLOB_INFO];
+    let failed = lend_in(&[item], |items, items_length| {
+        lend_out(&mut reply, |out, len| {
+            swoole_isc_blob_info(status, blob, items_length, items, len, out.chars())
+        })
+    }) != 0;
+    if failed {
+        crate::error::status_error(dbh, Some(stmt));
+        return false;
+    }
+    let Some(len) = blob_length(&reply) else {
+        crate::error::stmt_message(dbh, stmt, b"Couldn't determine BLOB size");
+        return false;
+    };
+    if len == 0 {
+        return true;
+    }
+    // Past what a string can be allocated with (`isize::MAX`, below C's
+    // ZSTR_MAX_LEN on every target): false, nothing recorded.
+    let Some(len) = usize::try_from(len)
+        .ok()
+        .filter(|&len| isize::try_from(len).is_ok())
+    else {
+        return false;
+    };
+    // One Zend string, as C's zend_string_alloc, read into in place.
+    let mut string = ZBuf::with_capacity(len);
+    let (segment, eof) = (segment_status(isc_segment), segment_status(isc_segstr_eof));
+    let mut stat = 0;
+    string.fill(|spare| {
+        // Zeroed first: what no segment fills stays zero.
+        let mut left = len;
+        while left > 0 {
+            let zeros = ZEROS.get(..left.min(ZEROS.len())).unwrap_or_default();
+            if spare.put(zeros).is_none() {
+                break;
+            }
+            left -= zeros.len();
+        }
+        let data = spare.written();
+        let mut read = 0usize;
+        while (stat == 0 || stat == segment) && read < len {
+            let chunk = (len - read).min(usize::from(u16::MAX));
+            let mut segment_len = 0;
+            stat = lend_out(
+                data.get_mut(read..read + chunk).unwrap_or_default(),
+                |out, count| {
+                    swoole_isc_get_segment(status, blob, &mut segment_len, count, out.chars())
+                },
+            );
+            read += usize::from(segment_len);
+        }
+    });
+    result.set(Owned::string(string.into_zstring()));
+    let vector = crate::error::swr_firebird_status_vector(dbh);
+    if vector.first() == Some(&1) && stat != 0 && stat != eof && stat != segment {
+        crate::error::stmt_message(dbh, stmt, b"Error reading from BLOB");
+        return false;
+    }
+    true
+}
+
+/// `php_firebird_fetch_blob`: the `BLOB` whose id is the lent `id` bytes (an
+/// `ISC_QUAD`) opened, read into `result` and closed, each failure recorded on
+/// the statement.
+#[unsafe(no_mangle)]
+pub extern "C" fn swr_firebird_fetch_blob<'a>(
+    stmt: &Stmt,
+    id: In<'a, u8>,
+    id_len: Count<'a>,
+    result: &Slot,
+) -> bool {
+    let dbh = swr_firebird_stmt_dbh(stmt);
+    let status = swr_firebird_status(dbh);
+    let id = id.drain(id_len).bytes();
+    let word = |at: usize| {
+        id.get(at..at + 4)
+            .and_then(|bytes| bytes.try_into().ok())
+            .map_or(0, u32::from_ne_bytes)
+    };
+    let mut quad = [word(0), word(4)];
+    let mut handle = 0;
+    let blob = Handle::new(&mut handle);
+    let opened = swoole_isc_open_blob(
+        status,
+        swr_firebird_db(dbh),
+        swr_firebird_tr(dbh),
+        blob,
+        Quad::new(&mut quad),
+    );
+    if opened != 0 {
+        crate::error::status_error(dbh, Some(stmt));
+        return false;
+    }
+    let read = read_blob(dbh, stmt, blob, result);
+    if swoole_isc_close_blob(status, blob) != 0 {
+        crate::error::status_error(dbh, Some(stmt));
+        return false;
+    }
+    read
 }
 
 /// `PDO_FB_SQLDA_VERSION`: `SQLDA_VERSION1`, as ibase.h defines no `SQLDA_VERSION`.

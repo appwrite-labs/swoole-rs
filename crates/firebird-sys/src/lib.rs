@@ -24,7 +24,7 @@
 
 use std::ffi::{CStr, c_char, c_int, c_short, c_uint, c_ushort, c_void};
 use std::marker::PhantomData;
-use swoole_rs_corebase::lent::{Count, In};
+use swoole_rs_corebase::lent::{Count, In, Out};
 
 /// `ISC_STATUS`: `intptr_t`.
 pub type ISC_STATUS = isize;
@@ -39,11 +39,19 @@ pub type ISC_SCHAR = c_char;
 pub struct Status(*mut ISC_STATUS);
 
 /// A database, transaction, statement or blob handle the caller keeps
-/// (`isc_*_handle *`): readable and writable, holding a live handle of the kind
-/// the call takes there, or zero where the call makes one.
+/// (`isc_*_handle *`) for `'a`: readable and writable, holding a live handle of
+/// the kind the call takes there, or zero where the call makes one.
 #[repr(transparent)]
 #[derive(Clone, Copy)]
-pub struct Handle(*mut FB_API_HANDLE);
+pub struct Handle<'a>(*mut FB_API_HANDLE, PhantomData<&'a mut FB_API_HANDLE>);
+
+impl<'a> Handle<'a> {
+    /// A handle the Rust caller keeps, for the calls it lends it to.
+    #[must_use]
+    pub fn new(handle: &'a mut FB_API_HANDLE) -> Self {
+        Self(handle, PhantomData)
+    }
+}
 
 /// Bytes the caller handed over: readable for the length passed beside them, or
 /// up to their NUL where the call takes no length or it is zero, and not
@@ -68,29 +76,25 @@ impl<'a> Bytes<'a> {
     }
 }
 
-/// Where the call writes its `T`s: writable for the capacity passed beside it, or for
-/// one `T` when none is.
-#[repr(transparent)]
-pub struct Out<T>(*mut T);
-
-impl<T> Clone for Out<T> {
-    fn clone(&self) -> Self {
-        *self
-    }
-}
-
-impl<T> Copy for Out<T> {}
-
 /// An `XSQLDA *` descriptor area: null where the call takes none, else allocated for its own
 /// `sqln` entries, whose data and indicator buffers are live for the call.
 #[repr(transparent)]
 #[derive(Clone, Copy)]
 pub struct Sqlda(*mut c_void);
 
-/// An `ISC_QUAD *` blob id, which the call reads (open) or writes (create).
+/// An `ISC_QUAD *` blob id for `'a`, which the call reads (open) or writes
+/// (create).
 #[repr(transparent)]
 #[derive(Clone, Copy)]
-pub struct Quad(*mut c_void);
+pub struct Quad<'a>(*mut c_void, PhantomData<&'a mut [u32; 2]>);
+
+impl<'a> Quad<'a> {
+    /// A blob id the Rust caller keeps: `ISC_QUAD`'s two 32-bit words.
+    #[must_use]
+    pub fn new(id: &'a mut [u32; 2]) -> Self {
+        Self(id.as_mut_ptr().cast(), PhantomData)
+    }
+}
 
 /// The caller's `ISC_VERSION_CALLBACK`, which takes the [`VersionArg`] passed beside
 /// it and each version line, and only touches what that argument lends it.
@@ -108,7 +112,7 @@ pub struct VersionArg(*mut c_void);
 // `repr(C)`: Firebird's transaction existence block, which `isc_start_multiple` reads.
 #[repr(C)]
 pub struct Teb<'a> {
-    pub database: Handle,
+    pub database: Handle<'a>,
     pub tpb_length: c_int,
     pub tpb: Bytes<'a>,
 }
@@ -157,7 +161,7 @@ unsafe extern "C" {
         items_length: Count<'i, c_short>,
         items: In<'i, ISC_SCHAR>,
         buffer_length: Count<'b, c_short>,
-        buffer: swoole_rs_corebase::lent::Out<'b, ISC_SCHAR>,
+        buffer: Out<'b, ISC_SCHAR>,
     ) -> ISC_STATUS;
     pub safe fn isc_dsql_free_statement(
         status: Status,
@@ -198,20 +202,20 @@ unsafe extern "C" {
         blob: Handle,
         id: Quad,
     ) -> ISC_STATUS;
-    pub safe fn isc_blob_info(
+    pub safe fn isc_blob_info<'i, 'b>(
         status: Status,
         blob: Handle,
-        items_length: c_short,
-        items: Bytes,
-        buffer_length: c_short,
-        buffer: Out<ISC_SCHAR>,
+        items_length: Count<'i, c_short>,
+        items: In<'i, ISC_SCHAR>,
+        buffer_length: Count<'b, c_short>,
+        buffer: Out<'b, ISC_SCHAR>,
     ) -> ISC_STATUS;
-    pub safe fn isc_get_segment(
+    pub safe fn isc_get_segment<'b>(
         status: Status,
         blob: Handle,
-        length: Out<c_ushort>,
-        buffer_length: c_ushort,
-        buffer: Out<ISC_SCHAR>,
+        length: &mut c_ushort,
+        buffer_length: Count<'b, c_ushort>,
+        buffer: Out<'b, ISC_SCHAR>,
     ) -> ISC_STATUS;
     pub safe fn isc_put_segment(
         status: Status,

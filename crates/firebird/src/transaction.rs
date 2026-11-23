@@ -19,8 +19,8 @@ use crate::{
 unsafe extern "C" {
     /// The connection's status vector, `&H->db` and `&H->tr`.
     safe fn swr_firebird_status(dbh: &Dbh) -> Status;
-    safe fn swr_firebird_db(dbh: &Dbh) -> Handle;
-    safe fn swr_firebird_tr(dbh: &Dbh) -> Handle;
+    safe fn swr_firebird_db(dbh: &Dbh) -> Handle<'_>;
+    safe fn swr_firebird_tr(dbh: &Dbh) -> Handle<'_>;
     /// Whether the connection has a transaction open (`H->tr`).
     safe fn swr_firebird_in_transaction(dbh: &Dbh) -> bool;
     /// `H->is_writable_txn` and `H->txn_isolation_level`.

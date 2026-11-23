@@ -14,7 +14,7 @@ use crate::{swoole_fb_ping, swoole_isc_detach_database};
 unsafe extern "C" {
     /// The connection's status vector and `&H->db`.
     safe fn swr_firebird_status(dbh: &Dbh) -> Status;
-    safe fn swr_firebird_db(dbh: &Dbh) -> Handle;
+    safe fn swr_firebird_db(dbh: &Dbh) -> Handle<'_>;
     /// `H->in_manually_txn`, and setting it.
     safe fn swr_firebird_in_manual_txn(dbh: &Dbh) -> bool;
     safe fn swr_firebird_set_manual(dbh: &Dbh, manual: bool);
