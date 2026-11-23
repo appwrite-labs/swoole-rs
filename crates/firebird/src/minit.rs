@@ -4,7 +4,7 @@
 use swoole_rs_zend::{Minit, Mshutdown, pdo::Driver};
 
 unsafe extern "C" {
-    /// The bundled driver (`thirdparty/php*/pdo_firebird/firebird_driver.c`).
+    /// The driver entry (`native/hooks/firebird_driver.c`).
     safe static swoole_pdo_firebird_driver: Driver;
 }
 

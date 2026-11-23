@@ -93,7 +93,7 @@ mod php {
             .ok()
     }
 
-    fn profile(third: &Path) -> Profile {
+    fn profile() -> Profile {
         let mut p = Profile::default();
         if feature("sockets") {
             p.define(&["SW_SOCKETS", "HAVE_SOCKETS"]);
@@ -197,9 +197,8 @@ mod php {
         }
         if feature("firebird") {
             p.define(&["SW_USE_FIREBIRD"]);
-            let dir = third.join("pdo_firebird");
-            p.c.extend(["firebird_driver.c", "firebird_statement.c"].map(|f| dir.join(f)));
-            p.cxx.push(dir.join("pdo_firebird_utils.cpp"));
+            // native/hooks/firebird_*.c and pdo_firebird_utils.cc come with the hooks module's
+            // sources, each inside SW_USE_FIREBIRD.
             p.libs.push("fbclient");
         }
         if feature("ssh2") {
@@ -260,7 +259,7 @@ mod php {
         let os = env::var("CARGO_CFG_TARGET_OS").expect("ext: target OS");
         let owned = native.join("swoole-src");
         let vendored = owned.join("thirdparty");
-        let profile = profile(&vendored);
+        let profile = profile();
         // config.m4: thread context replaces boost.context's assembly switch.
         let asm_context = !feature("thread_context");
         let config: String = COMMON

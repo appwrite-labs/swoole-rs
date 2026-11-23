@@ -14,9 +14,21 @@
   +----------------------------------------------------------------------+
 */
 
+/* pdo_firebird's statement side, one copy for every supported PHP version.
+ * crates/firebird/src has the operations: statement.rs (executing, fetching, describing,
+ * the values, BLOBs, the attributes and the destructor) and param.rs (binding).
+ *
+ * Stays C (docs/zend.md, What stays C): allocator (the record, its descriptors' data and
+ * indicator storage and the stream copied for a BLOB parameter are Zend's to allocate and
+ * free), budget (the accessors over the statement record, whose bitfields and inlined
+ * descriptor Rust would reach through a #[repr(C)] mirror and raw derefs), globals
+ * (EG(objects_store), for PHP 8.4's check that the connection object is alive), version
+ * (that check, a function from PHP 8.5) and bailout (pdo_raise_impl_error and the stream
+ * copy can raise). The method table is C because PDO declares each entry over pdo_stmt_t
+ * pointers, which the C compiler checks against the functions here. */
 #include "php_swoole_firebird.h"
 
-
+#ifdef SW_USE_FIREBIRD
 #include "php.h"
 #include "php_ini.h"
 #include "ext/standard/info.h"
@@ -377,3 +389,4 @@ const struct pdo_stmt_methods swoole_firebird_stmt_methods = { /* {{{ */
 	pdo_firebird_stmt_cursor_closer
 };
 /* }}} */
+#endif

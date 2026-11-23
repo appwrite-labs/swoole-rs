@@ -14,9 +14,11 @@
   +----------------------------------------------------------------------+
 */
 
+/* Firebird's OO API (firebird/Interface.h), which only C++ reaches: the client version,
+ * the date and time encoders and, with Firebird 4 headers, the time-zone decoders. */
 #include "php_swoole_firebird.h"
 
-
+#ifdef SW_USE_FIREBIRD
 #include "pdo_firebird_utils.h"
 #include <firebird/Interface.h>
 #include <cstring>
@@ -90,5 +92,7 @@ extern "C" ISC_STATUS fb_decode_timestamp_tz(ISC_STATUS* isc_status, const ISC_T
 	status->dispose();
 	return isc_status[1];
 }
+
+#endif
 
 #endif

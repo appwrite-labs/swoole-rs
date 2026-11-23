@@ -83,6 +83,11 @@ impl<'a> Bytes<'a> {
 #[derive(Clone, Copy)]
 pub struct Sqlda(*mut c_void);
 
+impl Sqlda {
+    /// No descriptor area, where the call takes none.
+    pub const NONE: Self = Self(std::ptr::null_mut());
+}
+
 /// An `ISC_QUAD *` blob id for `'a`, which the call reads (open) or writes
 /// (create).
 #[repr(transparent)]
