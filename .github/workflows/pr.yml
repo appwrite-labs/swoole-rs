@@ -42,7 +42,7 @@ jobs:
         run: cargo test --manifest-path fuzz/Cargo.toml
       - uses: taiki-e/install-action@fe3acb53a98b62c772db35de75ce0e4595e7ca8c # v2
         with:
-          tool: cbindgen@0.29.4,cargo-deny@0.18.9
+          tool: cbindgen@0.29.4,cargo-deny@0.18.9,deslop-please@0.1.3
       - name: Check licence headers
         run: tools/headers.sh --check
       - name: Check libcurl and libssh2 constants
@@ -57,6 +57,12 @@ jobs:
       # Unused ones fail clippy above: Cargo's unused_dependencies lint (root Cargo.toml).
       - name: Check dependencies
         run: cargo deny check
+      # Module structure: no module cycle, tangle, leaked field or shallow module beyond those
+      # .deslop-please.allow records. It reads the index `rust-analyzer scip` writes.
+      - name: Check module structure
+        run: |
+          rustup component add rust-analyzer
+          deslop-please --allow .deslop-please.allow
 
   tooling:
     runs-on: gcrunner=${{ github.run_id }}/runner=standard
