@@ -4,7 +4,6 @@ use core::mem::offset_of;
 use core::sync::atomic::Ordering::SeqCst;
 
 use swoole_rs_corebase::reactor::Event;
-use swoole_rs_corebase::tls::upstream::with_queue;
 use swoole_rs_corebase::{DataHead, ServerEvent, log, microtime};
 use swoole_rs_error::ErrorCode as E;
 
@@ -32,7 +31,7 @@ pub(crate) fn pipe_write(serv: view::Server<'_>, reactor: Reactor, event: &Event
         }
         Some(Ok(queue.pop().ok()))
     };
-    while let Some(sent) = with_queue(*sock, flush_front) {
+    while let Some(sent) = sock.with_output_queue(flush_front) {
         match sent {
             Ok(popped) => popped.map_or((), swoole_rs_corebase::buffer::TypedDetached::dispose),
             Err(errno) => {
@@ -95,10 +94,8 @@ mod tests {
 
     const SW_OK: c_int = swoole_rs_corebase::constants::ResultCode::SW_OK as c_int;
     const SW_ERR: c_int = swoole_rs_corebase::constants::ResultCode::SW_ERR as c_int;
-    use crate::reactor_ops::out_buffer;
     use std::os::fd::AsRawFd;
     use std::os::unix::net::UnixDatagram;
-    use swoole_rs_corebase::buffer::cpp::swr_cpp_buffer_count;
     use swoole_rs_corebase::reactor::SocketRecord;
 
     use swoole_rs_corebase::ServerEvent::{RecvDgram, SendData};
@@ -149,11 +146,12 @@ mod tests {
             ours.set_nonblocking(true).unwrap();
             theirs.set_nonblocking(true).unwrap();
             let sock = Box::new(SocketRecord::with_fd(ours.as_raw_fd(), FD_PIPE)).into_socket();
-            let buffer = swoole_rs_corebase::buffer::cpp::new_buffer(0);
-            for m in messages {
-                buffer.append(m);
-            }
-            sock.edit(|s| s.output.out_buffer = Some(buffer));
+            sock.edit(|s| {
+                s.open_output_queue(0);
+                for m in messages {
+                    s.queue_output(m);
+                }
+            });
             Self {
                 live,
                 _client: client,
@@ -174,9 +172,9 @@ mod tests {
         fn conn(&self) -> crate::records::Connection<'_> {
             self.live.state().connection(1, Lookup::Verified).unwrap()
         }
+        /// The bytes still queued.
         fn queued(&self) -> usize {
-            self.sock
-                .read(|s| out_buffer(s).map_or(0, swr_cpp_buffer_count))
+            self.sock.read(|s| s.queued_bytes() as usize)
         }
         /// The worker's messages so far.
         fn received(&self) -> Vec<Vec<u8>> {
@@ -230,13 +228,15 @@ mod tests {
     #[test]
     #[cfg_attr(miri, ignore = "Miri's socketpair is stream-only")]
     fn a_full_pipe_waits_and_a_closed_one_fails() {
-        let p = Pipe::new(&[message(SendData, 9, b"later")]);
+        let later = message(SendData, 9, b"later");
+        let p = Pipe::new(std::slice::from_ref(&later));
         while p.ours.send(b"fill").is_ok() {}
         assert_eq!(p.write(), SW_OK, "it waits for the next writable event");
-        assert_eq!(p.queued(), 1, "with the message still queued");
-        let p = Pipe::new(&[message(SendData, 9, b"never")]);
+        assert_eq!(p.queued(), later.len(), "with the message still queued");
+        let never = message(SendData, 9, b"never");
+        let p = Pipe::new(std::slice::from_ref(&never));
         p.ours.shutdown(std::net::Shutdown::Write).unwrap();
         assert_eq!(p.write(), SW_ERR);
-        assert_eq!(p.queued(), 1);
+        assert_eq!(p.queued(), never.len());
     }
 }

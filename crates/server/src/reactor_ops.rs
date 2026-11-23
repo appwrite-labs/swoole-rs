@@ -4,8 +4,7 @@ use core::cell::Cell;
 use core::ffi::c_int;
 
 use swoole_rs_corebase::TrustedAllocator;
-use swoole_rs_corebase::buffer::cpp::OutputQueue;
-use swoole_rs_corebase::reactor::{SocketFields, SocketRecord};
+use swoole_rs_corebase::reactor::SocketRecord;
 
 use crate::reactor_handle::Reactor;
 use crate::records::Connection;
@@ -39,11 +38,6 @@ impl<'a> ReactorContext<'a> {
 }
 
 pub(crate) use swoole_rs_corebase::ossupport::pthread_self;
-
-/// A socket's output buffer, or `None` without one.
-pub(crate) fn out_buffer(socket: &SocketFields) -> Option<&OutputQueue> {
-    socket.output.buffer()
-}
 
 /// `Server::is_valid_connection`.
 pub(crate) fn valid(conn: Option<Connection<'_>>) -> bool {

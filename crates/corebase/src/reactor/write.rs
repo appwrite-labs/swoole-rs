@@ -4,14 +4,19 @@
 //! objects: making the socket nonblocking, the send, creating the `Buffer`, and
 //! registering write interest. It logs and raises from the returned outcome.
 use crate::CCast;
-use crate::buffer::cpp::{OutputQueue, swr_cpp_buffer_count, swr_cpp_buffer_length};
-use crate::reactor::{Drain, Socket};
+use crate::buffer::EntryKind;
+use crate::buffer::cpp::{
+    OutputQueue, dispose_queue, new_buffer, swr_cpp_buffer_count, swr_cpp_buffer_length,
+    swr_cpp_buffer_typed_close, swr_cpp_buffer_typed_front,
+};
+use crate::reactor::{Drain, Socket, SocketFields};
 use std::io::IoSlice;
 
 /// `network::Socket`'s write-path fields, in the order and types it embeds them.
 pub struct SocketOutput {
     /// `Buffer *out_buffer`: the `Buffer` the socket owns, a null pointer without one.
-    pub out_buffer: Option<Box<OutputQueue>>,
+    /// Outside the reactor it is reached through the socket's output operations below.
+    pub(super) out_buffer: Option<Box<OutputQueue>>,
     /// `TimerNode *send_timer`, held by id.
     pub send_timer: Option<crate::timer_key::Held>,
     pub buffer_size: u32,
@@ -24,14 +29,104 @@ pub struct SocketOutput {
 impl SocketOutput {
     /// `out_buffer`, or `None` without one.
     #[must_use]
-    pub fn buffer(&self) -> Option<&OutputQueue> {
+    pub(super) fn buffer(&self) -> Option<&OutputQueue> {
         self.out_buffer.as_deref()
     }
+}
 
-    /// `Buffer::empty(out_buffer)`: none, or no entries.
-    pub(crate) fn empty(&self) -> bool {
-        self.buffer()
+/// The socket's queued output, as its callers use it.
+impl SocketFields {
+    /// `if (!out_buffer) out_buffer = new Buffer(chunk_size)`: the queue later output
+    /// goes behind.
+    #[inline]
+    pub fn open_output_queue(&mut self, chunk_size: u32) {
+        if self.output.out_buffer.is_none() {
+            self.output.out_buffer = Some(new_buffer(chunk_size));
+        }
+    }
+
+    /// Whether the socket has an output queue, empty or not: a send that may bypass the
+    /// queue can't once it exists.
+    #[inline]
+    #[must_use]
+    pub fn has_output_queue(&self) -> bool {
+        self.output.out_buffer.is_some()
+    }
+
+    /// `Buffer::empty(out_buffer)`: nothing is queued, with or without a queue.
+    #[inline]
+    #[must_use]
+    pub fn output_drained(&self) -> bool {
+        self.output
+            .buffer()
             .is_none_or(|buffer| swr_cpp_buffer_count(buffer) == 0)
+    }
+
+    /// `get_out_buffer_length()`: the bytes queued, 0 without a queue.
+    #[inline]
+    #[must_use]
+    pub fn queued_bytes(&self) -> u32 {
+        self.output.buffer().map_or(0, swr_cpp_buffer_length)
+    }
+
+    /// The kind of the next queued entry (`typed_front().kind`), None when nothing is
+    /// queued.
+    #[inline]
+    #[must_use]
+    pub fn next_output(&self) -> Option<EntryKind> {
+        self.output
+            .buffer()
+            .filter(|&buffer| swr_cpp_buffer_count(buffer) != 0)
+            .map(|buffer| swr_cpp_buffer_typed_front(buffer).kind)
+    }
+
+    /// Queues `data` behind the output, when the socket has a queue.
+    #[inline]
+    pub fn queue_output(&self, data: &[u8]) {
+        if let Some(buffer) = self.output.buffer() {
+            buffer.append(data);
+        }
+    }
+
+    /// `typed_close()`: queues a close behind the output, when the socket has a queue.
+    #[inline]
+    pub fn queue_close(&self) {
+        if let Some(buffer) = self.output.buffer() {
+            swr_cpp_buffer_typed_close(buffer);
+        }
+    }
+
+    /// The output queue, out of the socket, for the caller to free outside the record's
+    /// borrow: an entry's disposer runs as it goes.
+    #[must_use]
+    pub fn take_output_queue(&mut self) -> Option<Box<OutputQueue>> {
+        self.output.out_buffer.take()
+    }
+}
+
+impl Socket<'_> {
+    /// `f` over the socket's output queue (None without one, or while it is lent),
+    /// taken out of its buffer meanwhile and put back after, or freed if the socket lost
+    /// its buffer meanwhile. `f` may use the socket, but not reach its queue through it.
+    pub fn with_output_queue<R>(
+        self,
+        f: impl FnOnce(Option<&mut crate::buffer::Buffer>) -> R,
+    ) -> R {
+        let queue = self.read(|record| record.output.buffer().and_then(OutputQueue::take_queue));
+        let Some(mut queue) = queue else {
+            return f(None);
+        };
+        let result = f(Some(&mut queue));
+        if let Some(queue) = self.read(|record| match record.output.buffer() {
+            Some(buffer) => {
+                buffer.put_queue(queue);
+                None
+            }
+            None => Some(queue),
+        }) {
+            dispose_queue(queue);
+        }
+        result
     }
 }
 
@@ -157,7 +252,6 @@ pub fn swr_v1_reactor_write(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::buffer::cpp::new_buffer;
     use crate::reactor::SocketRecord;
     use std::cell::RefCell;
     use std::ffi::c_int;

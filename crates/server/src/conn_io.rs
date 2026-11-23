@@ -13,13 +13,9 @@ use swoole_rs_corebase::ServerEvent;
 use swoole_rs_corebase::reactor::Events;
 
 use swoole_rs_corebase::buffer::EntryKind;
-use swoole_rs_corebase::buffer::cpp::{
-    new_buffer, swr_cpp_buffer_empty, swr_cpp_buffer_length, swr_cpp_buffer_typed_close,
-    swr_cpp_buffer_typed_front,
-};
 use swoole_rs_corebase::buffer::string::with_thread_buffer;
 use swoole_rs_corebase::constants::{SW_SEND_BUFFER_SIZE, SocketType};
-use swoole_rs_corebase::reactor::{Event, Heap, Socket, what_event_want};
+use swoole_rs_corebase::reactor::{Event, Heap, Socket, SocketFields, what_event_want};
 use swoole_rs_corebase::timer::{del_id, delay_held};
 use swoole_rs_corebase::tls::Accept;
 use swoole_rs_corebase::tls::upstream as tls;
@@ -30,7 +26,7 @@ use crate::callbacks::CallbackKind;
 use crate::hybrid::hybrid;
 use crate::port_config::{PortConfig, ReadEvent};
 use crate::reactor_handle::Reactor;
-use crate::reactor_ops::{out_buffer, valid};
+use crate::reactor_ops::valid;
 use crate::records::{Connection, Lookup};
 use crate::view;
 
@@ -304,15 +300,6 @@ fn handshaking(sock: Socket<'_>) -> bool {
     sock.read(|s| !s.ssl().is_null() && s.tls.state != SSL_READY)
 }
 
-/// The socket's queued output, in bytes, and whether none is queued.
-fn output(sock: Socket<'_>) -> (u32, bool) {
-    sock.read(|s| {
-        out_buffer(s).map_or((0, true), |b| {
-            (swr_cpp_buffer_length(b), swr_cpp_buffer_empty(b))
-        })
-    })
-}
-
 /// `ReactorThread_onWrite`: notify a pending close, or flush the output buffer, then
 /// report the drained buffer and stop watching for writes once it is empty.
 pub(crate) fn write(serv: view::Server<'_>, reactor: Reactor, event: &mut Event) -> bool {
@@ -345,17 +332,14 @@ pub(crate) fn write(serv: view::Server<'_>, reactor: Reactor, event: &mut Event)
     } else if config.disable_notify.get() && conn.close_force() {
         return close_connection(serv, reactor, Some(sock));
     }
-    while let Some(kind) = sock.read(|s| {
-        let buffer = out_buffer(s).filter(|b| !swr_cpp_buffer_empty(b))?;
-        Some(swr_cpp_buffer_typed_front(buffer).kind)
-    }) {
+    while let Some(kind) = sock.read(SocketFields::next_output) {
         let sent = match kind {
             EntryKind::Close => return close_connection(serv, reactor, Some(sock)),
             EntryKind::Sendfile => tls::socket_handle_sendfile(*sock),
             EntryKind::Data => {
                 let sent = tls::socket_handle_send(*sock);
                 if sent {
-                    conn.set_send_queued_bytes(output(*sock).0);
+                    conn.set_send_queued_bytes(sock.read(SocketFields::queued_bytes));
                 }
                 sent
             }
@@ -371,7 +355,7 @@ pub(crate) fn write(serv: view::Server<'_>, reactor: Reactor, event: &mut Event)
             }
         }
     }
-    let queued = output(*sock).0;
+    let queued = sock.read(SocketFields::queued_bytes);
     if conn.overflow() && queued < sock.read(|s| s.output.buffer_size) {
         conn.set_overflow(false);
     }
@@ -382,10 +366,8 @@ pub(crate) fn write(serv: view::Server<'_>, reactor: Reactor, event: &mut Event)
         crate::server_methods::notify(serv, conn, ServerEvent::BufferEmpty);
     }
     // Read after the notification, which may queue more.
-    let (timer, removed, empty) = sock.read(|s| {
-        let empty = out_buffer(s).is_none_or(swr_cpp_buffer_empty);
-        (s.output.send_timer, s.removed, empty)
-    });
+    let (timer, removed, empty) =
+        sock.read(|s| (s.output.send_timer, s.removed, s.output_drained()));
     if let Some(timer) = timer {
         if empty {
             del_id(timer);
@@ -551,11 +533,10 @@ fn owes_close_notify(conn: Connection<'_>, sock: Socket<'_>) -> bool {
 
 /// Queues a close behind the socket's output.
 fn queue_close(conn: Connection<'_>, sock: Socket<'_>) {
-    if sock.read(|s| s.output.out_buffer.is_none()) {
-        let buffer = Some(new_buffer(SW_SEND_BUFFER_SIZE));
-        sock.edit(|s| s.output.out_buffer = buffer);
-    }
-    sock.read(|s| out_buffer(s).map(swr_cpp_buffer_typed_close));
+    sock.edit(|s| {
+        s.open_output_queue(SW_SEND_BUFFER_SIZE);
+        s.queue_close();
+    });
     conn.set_close_queued(true);
 }
 
@@ -746,11 +727,10 @@ pub(crate) mod tests {
 
     /// `bytes` queued on the connection's socket.
     pub(crate) fn queue(conn: Connection<'_>, bytes: &[u8]) {
-        let buffer = swoole_rs_corebase::buffer::cpp::new_buffer(0);
-        buffer.append(bytes);
-        conn.socket()
-            .unwrap()
-            .edit(|s| s.output.out_buffer = Some(buffer));
+        conn.socket().unwrap().edit(|s| {
+            s.open_output_queue(0);
+            s.queue_output(bytes);
+        });
     }
 
     #[test]
@@ -770,7 +750,10 @@ pub(crate) mod tests {
         let mut got = [0; 6];
         client.read_exact(&mut got).unwrap();
         assert_eq!(&got, b"queued");
-        assert_eq!(output(*sock), (0, true));
+        assert_eq!(
+            sock.read(|s| (s.queued_bytes(), s.output_drained())),
+            (0, true)
+        );
         assert_eq!(conn.send_queued_bytes(), 0);
         let events = sock.read(|s| s.events);
         assert!(!events.intersects(Events::WRITE), "reads only");
@@ -795,7 +778,8 @@ pub(crate) mod tests {
         );
         assert_eq!(calls(), [close]);
         assert!(!conn.close_notify());
-        assert_eq!(output(*conn.socket().unwrap()).0, 4, "nothing flushed");
+        let queued = conn.socket().unwrap().read(SocketFields::queued_bytes);
+        assert_eq!(queued, 4, "nothing flushed");
 
         live.server().config().disable_notify.set(true);
         let conn = session(&live, 2);

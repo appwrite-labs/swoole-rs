@@ -812,31 +812,6 @@ pub(crate) fn buffer_check(status: Result<(), crate::buffer::Error>) {
     }
 }
 
-/// `f` over the socket's `out_buffer` queue (None without one, or while it is lent),
-/// taken out of its buffer meanwhile and put back after, or freed if the socket lost
-/// its buffer meanwhile. `f` may use the socket, but not reach its queue through it.
-pub fn with_queue<R>(
-    socket: Socket<'_>,
-    f: impl FnOnce(Option<&mut crate::buffer::Buffer>) -> R,
-) -> R {
-    use crate::buffer::cpp::{OutputQueue, dispose_queue};
-    let queue = socket.read(|record| record.output.buffer().and_then(OutputQueue::take_queue));
-    let Some(mut queue) = queue else {
-        return f(None);
-    };
-    let result = f(Some(&mut queue));
-    if let Some(queue) = socket.read(|record| match record.output.buffer() {
-        Some(buffer) => {
-            buffer.put_queue(queue);
-            None
-        }
-        None => Some(queue),
-    }) {
-        dispose_queue(queue);
-    }
-    result
-}
-
 /// The queued output's effects on a socket.
 struct Output<'a>(Socket<'a>);
 
@@ -871,7 +846,7 @@ impl OutputEffects for Output<'_> {
 #[must_use]
 pub fn socket_handle_send(record: Socket<'_>) -> bool {
     let hooks = Output(record);
-    let output = with_queue(record, |queue| {
+    let output = record.with_output_queue(|queue| {
         handle_send_owned(
             record,
             queue.unwrap_or_else(|| crate::fatal("handle_send on a socket without a send queue")),
@@ -901,7 +876,7 @@ const HALFCLOSE_REPAIRS: bool = cfg!(feature = "halfclose");
 pub fn socket_handle_sendfile(socket: Socket<'_>) -> bool {
     let hooks = Output(socket);
     // The effects send the request's file and never reach the queue itself.
-    let (failed, detached) = with_queue(socket, |queue| {
+    let (failed, detached) = socket.with_output_queue(|queue| {
         let Some(queue) = queue else {
             crate::fatal("sendfile on a socket with nothing queued");
         };
@@ -955,12 +930,9 @@ pub fn socket_sendfile_async(
     let Some(request) = file_request(filename, offset, length) else {
         return false;
     };
-    if socket.read(|record| record.output.out_buffer.is_none()) {
-        let buffer = crate::buffer::cpp::new_buffer(65536);
-        socket.edit(|record| record.output.out_buffer = Some(buffer));
-    }
+    socket.edit(|record| record.open_output_queue(65536));
     // A refused request is dropped with its file.
-    let status = with_queue(socket, |queue| {
+    let status = socket.with_output_queue(|queue| {
         queue.map_or(Err(crate::buffer::Error::Invalid), |queue| {
             queue.push_file(request)
         })
@@ -1308,11 +1280,11 @@ mod tests {
     #[cfg_attr(miri, ignore = "Miri has no sendfile")]
     fn queued_file_and_data_drain_through_the_handlers() {
         let (mut left, right) = pair();
-        left.output.out_buffer = Some(crate::buffer::cpp::new_buffer(65536));
+        left.open_output_queue(65536);
         let (path, name) = temp_file("swoole-sendfile-async", b"abcdef");
         let handle = unsafe { Socket::from_ptr(&raw mut left) }.unwrap();
         let request = file_request(&name, 1, 0).unwrap();
-        let queued = with_queue(handle, |queue| queue.unwrap().push_file(request));
+        let queued = handle.with_output_queue(|queue| queue.unwrap().push_file(request));
         assert_eq!(queued, Ok(()));
         assert!(
             file_request(c"/nonexistent/x", 0, 0).is_none(),
@@ -1321,18 +1293,18 @@ mod tests {
         assert!(socket_handle_sendfile(handle));
         assert_eq!(read_all(&right, 5), b"bcdef");
         assert_eq!(
-            with_queue(handle, |queue| queue.unwrap().append(b"tail")),
+            handle.with_output_queue(|queue| queue.unwrap().append(b"tail")),
             Ok(())
         );
         assert!(socket_handle_send(handle));
         assert_eq!(read_all(&right, 4), b"tail");
         assert_eq!(
-            with_queue(handle, |queue| queue.unwrap().stats()),
+            handle.with_output_queue(|queue| queue.unwrap().stats()),
             (0, 0),
             "both chunks popped"
         );
         // The queue is released with its `Buffer`, which ends the test if it can't be.
-        drop(left.output.out_buffer.take());
+        drop(left.take_output_queue());
         std::fs::remove_file(path).unwrap();
         unsafe { libc::close(left.fd) };
         unsafe { libc::close(right.fd) };

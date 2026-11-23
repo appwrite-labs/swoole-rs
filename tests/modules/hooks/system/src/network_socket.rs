@@ -375,13 +375,7 @@ impl Socket {
     }
 
     fn get_out_buffer_length(&self) -> u32 {
-        self.handle().read(|record| {
-            record
-                .output
-                .out_buffer
-                .as_deref()
-                .map_or(0, swoole_rs_corebase::buffer::cpp::swr_cpp_buffer_length)
-        })
+        self.handle().read(SocketFields::queued_bytes)
     }
 
     fn catch_write_error(&self, error: c_int) -> c_int {
