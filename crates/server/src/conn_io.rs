@@ -15,7 +15,7 @@ use swoole_rs_corebase::reactor::Events;
 use swoole_rs_corebase::buffer::EntryKind;
 use swoole_rs_corebase::buffer::string::with_thread_buffer;
 use swoole_rs_corebase::constants::{SW_SEND_BUFFER_SIZE, SocketType};
-use swoole_rs_corebase::reactor::{Event, Heap, Socket, SocketFields, what_event_want};
+use swoole_rs_corebase::reactor::{Event, Heap, SendStall, Socket, SocketFields, what_event_want};
 use swoole_rs_corebase::timer::{del_id, delay_held};
 use swoole_rs_corebase::tls::Accept;
 use swoole_rs_corebase::tls::upstream as tls;
@@ -345,13 +345,14 @@ pub(crate) fn write(serv: view::Server<'_>, reactor: Reactor, event: &mut Event)
             }
         };
         if !sent {
-            let (close_wait, send_wait) = sock.read(|s| (s.output.close_wait, s.output.send_wait));
-            if close_wait {
-                let errno = std::io::Error::last_os_error().raw_os_error().unwrap_or(0);
-                conn.set_close_errno(errno.c_cast::<u16>());
-                return reactor.trigger_close(event);
-            } else if send_wait {
-                break;
+            match sock.read(SocketFields::send_stall) {
+                Some(SendStall::Close) => {
+                    let errno = std::io::Error::last_os_error().raw_os_error().unwrap_or(0);
+                    conn.set_close_errno(errno.c_cast::<u16>());
+                    return reactor.trigger_close(event);
+                }
+                Some(SendStall::Wait) => break,
+                None => {}
             }
         }
     }

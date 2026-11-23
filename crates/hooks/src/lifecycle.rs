@@ -10,7 +10,7 @@ use crate::co_socket::Co;
 use crate::socket_wait::wait_for;
 use core::ffi::c_int;
 use swoole_rs_corebase::net_types::SocketAddress;
-use swoole_rs_corebase::reactor::Events;
+use swoole_rs_corebase::reactor::{Events, SocketFields};
 
 /// The syscalls: `shutdown(2)`, `connect(2)` to an address and
 /// `getsockopt(SO_ERROR)` into the int it is given. Tests script them.
@@ -143,7 +143,7 @@ fn close(socket: Co, sys: Sys) -> bool {
         .with_state(|state| state.bound_co(Events::READ | Events::WRITE))
         .is_null()
     {
-        socket.net(|record| record.output.close_wait = true);
+        socket.net(SocketFields::defer_close);
         socket.cancel(Events::WRITE);
         socket.cancel(Events::READ);
         set_err(socket, CLOSE_WAIT_ERROR);
@@ -303,7 +303,7 @@ mod tests {
             crate::socket_extra::run_close_hook(s);
             true
         } else {
-            unsafe { (*s.socket()).fields.output.close_wait = true };
+            unsafe { (*s.socket()).fields.defer_close() };
             upstream_cancel(s, Events::WRITE);
             upstream_cancel(s, Events::READ);
             set_err(s, CLOSE_WAIT_ERROR);
@@ -472,7 +472,7 @@ mod tests {
                 socket.0.descriptor().raw_fd(),
                 flags,
                 socket.0.err_code.get(),
-                unsafe { socket.0.record() }.output.close_wait,
+                unsafe { socket.0.record() }.close_deferred(),
                 read,
                 write,
                 errno(),
@@ -680,7 +680,7 @@ mod tests {
                     s.0.set_test_fd(-1);
                 }
                 if admission == 2 {
-                    unsafe { s.0.record() }.output.close_wait = true;
+                    unsafe { s.0.record() }.defer_close();
                 }
             };
             let hooks = move || {

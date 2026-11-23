@@ -17,7 +17,7 @@ use std::{
 };
 use swoole_rs_corebase::CCast;
 use swoole_rs_corebase::CellExt;
-use swoole_rs_corebase::reactor::Events;
+use swoole_rs_corebase::reactor::{Events, SocketFields};
 use swoole_rs_http::llhttp::{self, Callbacks, EndOfInput, Flow, Parser};
 use swoole_rs_http::status::{BAD_GATEWAY, NO_CONTENT, SERVICE_UNAVAILABLE, SWITCHING_PROTOCOLS};
 use swoole_rs_inflate::{Inflate, brotli, zstd};
@@ -1021,7 +1021,7 @@ impl Client {
                 return false;
             }
             if socket
-                .with_net(|net| net.read(|record| record.output.close_wait))
+                .with_net(|net| net.read(SocketFields::close_deferred))
                 .unwrap_or(false)
             {
                 break false;
@@ -1249,7 +1249,7 @@ impl Client {
             return false;
         };
         if self.in_callback.get() {
-            socket.with_net(|net| net.edit(|record| record.output.close_wait = true));
+            socket.with_net(|net| net.edit(SocketFields::defer_close));
             return true;
         }
         self.props().bool(c"connected", false);
@@ -1331,7 +1331,7 @@ impl Drop for Client {
         // no longer finds it (`Weak::owner`), and nothing reads them again.
         if let Some(socket) = self.co() {
             if self.in_callback.get() {
-                socket.with_net(|net| net.edit(|record| record.output.close_wait = true));
+                socket.with_net(|net| net.edit(SocketFields::defer_close));
             } else {
                 socket.close();
             }

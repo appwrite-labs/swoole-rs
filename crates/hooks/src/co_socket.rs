@@ -614,7 +614,7 @@ impl CoSocket {
             .and_then(|network| {
                 network.read(|record| match record.fd {
                     -1 => Descriptor::Closed,
-                    fd if record.output.close_wait => Descriptor::Closing(fd),
+                    fd if record.close_deferred() => Descriptor::Closing(fd),
                     fd => Descriptor::Open(fd),
                 })
             })
@@ -1004,7 +1004,7 @@ fn close_network(network: OwnedSocket) {
     if !socket.read(|record| record.ssl().is_null()) {
         socket_ssl_close(socket);
     }
-    if socket.read(|record| record.output.close_wait) {
+    if socket.read(SocketFields::close_deferred) {
         release_descriptor(socket);
     }
     free_network(network);

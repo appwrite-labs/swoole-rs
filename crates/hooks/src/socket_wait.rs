@@ -40,7 +40,7 @@ impl Wait {
     fn snapshot(&self) -> Option<WaitState> {
         self.0
             .net(|record| {
-                if record.output.close_wait {
+                if record.close_deferred() {
                     return None;
                 }
                 let tls = !record.ssl().is_null();
@@ -297,7 +297,9 @@ mod tests {
         install();
         let socket = TestSocket::new();
         let record = unsafe { socket.0.record() };
-        record.output.close_wait = status & CLOSE_WAIT != 0;
+        if status & CLOSE_WAIT != 0 {
+            record.defer_close();
+        }
         record.kernel_nobufs = status & NOBUFS != 0;
         if status & (WANT_READ | WANT_WRITE) != 0 {
             record.set_ssl(Some(crate::co_socket::stub_ssl()));

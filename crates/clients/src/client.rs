@@ -615,7 +615,7 @@ fn on_package(_: *const Protocol, socket: Socket<'_>, mut package: Package<'_>) 
         let payload = listener.payload(package.bytes());
         (listener.notify)(Notification::Receive(payload));
     }
-    !socket.read(|socket| socket.output.close_wait)
+    !socket.read(SocketFields::close_deferred)
 }
 
 /// The client of the reactor event's socket, None without a socket.

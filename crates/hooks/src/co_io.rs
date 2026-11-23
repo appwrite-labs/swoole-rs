@@ -940,7 +940,9 @@ mod tests {
             let mut ids = [5, 7];
             bind(&socket, bound, &mut ids);
             socket.0.set_test_fd(if state == 1 { -1 } else { 100 });
-            unsafe { socket.0.record() }.output.close_wait = state == 2;
+            if state == 2 {
+                unsafe { socket.0.record() }.defer_close();
+            }
             let target = socket.co();
             if closes {
                 ON_BOUND.set(Some(Box::new(move || target.move_fd())));
