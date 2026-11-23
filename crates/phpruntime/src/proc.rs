@@ -705,19 +705,6 @@ fn open(call: &Call) {
     }
 }
 
-swoole_rs_zend::exports! {
-/// `_php_array_to_envp` for Win32's C `proc_open`, whose block it takes (POSIX's
-/// `proc_open` builds its own).
-#[unsafe(no_mangle)]
-extern "C" fn swr_proc_envp(
-    environment: &Array,
-    envp: &mut *mut c_char,
-    envarray: &mut *mut *mut c_char,
-) {
-    array_to_envp(environment, envp, envarray);
-}
-}
-
 unsafe extern "C" {
     /// `php_swoole_create_stream_from_pipe(fd, mode)`: a stream that takes `fd`, or
     /// none.

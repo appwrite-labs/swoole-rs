@@ -14,66 +14,55 @@
    +----------------------------------------------------------------------+
  */
 
-#include "thirdparty/php/standard/proc_open.h"
-#include "swoole_rs_phpruntime.h"
+/* What stays C of proc_open (docs/zend.md, What stays C); crates/phpruntime/src/proc.rs has
+ * its arguments, command, environment, descriptor walk, fork, parent side and wait, and
+ * proc_terminate, proc_close and proc_get_status.
+ * - the process resource's record, its pipes and command, the descriptor array and the
+ *   argv and environment proc.rs builds, and the resource destructor PHP calls: allocator
+ *   (emalloc, efree, zend_string_release, zend_register_resource).
+ * - opening a 'file' descriptor through its stream wrapper, casting a stream to its
+ *   descriptor, and the walk and fork, which warn: bailout (swr_proc_open_spawn's zend_try).
+ * - a pipe's stream into $pipes (php_stream_to_zval, STREAMS_CC): allocator.
+ * - the child's exec (execl and execle): variadic. */
+#include "swoole_rs_phphost.h"
 
-using swoole::Coroutine;
-using swoole::coroutine::System;
+SW_EXTERN_C_BEGIN
+/* For crates/phpruntime's MINIT. */
+void swoole_proc_open_init(int module_number);
+/* native/hooks/plain_wrapper.c */
+php_stream *php_swoole_create_stream_from_pipe(int fd, const char *mode, const char *persistent_id STREAMS_DC);
+SW_EXTERN_C_END
 
-#ifdef HAVE_SYS_WAIT_H
-#include <sys/wait.h>
-#endif
+typedef int php_file_descriptor_t;
+typedef pid_t php_process_id_t;
+#define PHP_INVALID_FD (-1)
 
-#ifdef HAVE_FCNTL_H
-#include <fcntl.h>
-#endif
+/* The environment proc.rs builds: its strings' block, and the argv-style array over it. */
+typedef struct {
+    char *envp;
+    char **envarray;
+} sw_php_process_env;
 
-#ifdef HAVE_PTY_H
-#include <pty.h>
-#elif defined(__FreeBSD__)
-/* FreeBSD defines `openpty` in <libutil.h> */
-#include <libutil.h>
-#elif defined(__NetBSD__) || defined(__DragonFly__)
-/* On recent NetBSD/DragonFlyBSD releases the emalloc, estrdup ... calls had been introduced in libutil */
-#if defined(__NetBSD__)
-#include <sys/termios.h>
-#else
-#include <termios.h>
-#endif
-extern int openpty(int *, int *, char *, struct termios *, struct winsize *);
-#elif defined(__sun)
-#include <termios.h>
-#else
-/* Mac OS X (and some BSDs) define `openpty` in <util.h> */
-#include <util.h>
-#endif
+typedef struct {
+    bool running;
+    int *wstatus;
+    php_process_id_t child;
+    int npipes;
+    zend_resource **pipes;
+    zend_string *command;
+    sw_php_process_env env;
+} sw_php_process_handle;
 
 static int le_proc_open;
 static const char *le_proc_name = "process/coroutine";
 
 SW_EXTERN_C_BEGIN
-/* crates/phpruntime (proc.rs): the environment and argv `proc_open` builds before it forks,
- * in request memory freed here (`_php_free_envp`, `efree_argv`). */
-void swr_proc_envp(HashTable *environment, char **envp, char ***envarray);
 /* proc_co_rsrc_dtor's wait (proc.rs): a still-running child reaped into `wstatus`. */
 void swr_proc_reap(bool running, pid_t child, int *wstatus);
 SW_EXTERN_C_END
 
-/* {{{ _php_array_to_envp
- * Process the `environment` argument to `proc_open`
- * Convert into data structures which can be passed to underlying OS APIs like `exec` on POSIX */
-static sw_php_process_env _php_array_to_envp(zval *environment) {
-    sw_php_process_env env;
-    memset(&env, 0, sizeof(env));
-    if (environment) {
-        swr_proc_envp(Z_ARRVAL_P(environment), &env.envp, &env.envarray);
-    }
-    return env;
-}
-/* }}} */
-
 /* {{{ _php_free_envp
- * Free the structures allocated by `_php_array_to_envp` */
+ * Free the environment proc.rs built (`array_to_envp`) */
 static void _php_free_envp(sw_php_process_env env) {
     if (env.envarray) {
         efree(env.envarray);
@@ -165,8 +154,6 @@ typedef struct _descriptorspec_item {
     int mode_flags;                  /* mode for opening FDs: r/o, r/w, binary (on Win32), etc */
 } descriptorspec_item;
 
-
-
 static descriptorspec_item *alloc_descriptor_array(HashTable *descriptorspec) {
     uint32_t ndescriptors = zend_hash_num_elements(descriptorspec);
     return (descriptorspec_item *) ecalloc(sizeof(descriptorspec_item), ndescriptors);
@@ -228,9 +215,6 @@ bool swr_proc_stream_fd(zval *resource, int *fd) {
     return true;
 }
 SW_EXTERN_C_END
-
-
-
 
 SW_EXTERN_C_BEGIN
 /* What the forked child execs (proc.rs passes it back untouched). */

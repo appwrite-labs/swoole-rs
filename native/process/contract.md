@@ -62,6 +62,6 @@ and result-flag decision against the upstream expression it replaces, and the
 C layout of the exit records.
 
 
-Only `System::waitpid` and `System::waitpid_safe` retain wait exports: bundled
-`proc_open.cc` uses the former normally and the latter with `SW_THREAD`. Rust
+Only `System::waitpid` and `System::waitpid_safe` retain wait exports: `proc_open`
+(`crates/phpruntime/src/proc.rs`) uses the former normally and the latter with `SW_THREAD`. Rust
 fixtures call `system_waitpid`, `system_wait` and `swoole_waitpid` directly.

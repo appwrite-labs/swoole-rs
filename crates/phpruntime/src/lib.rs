@@ -167,7 +167,7 @@ mod registration {
         /// `native/hooks/plain_wrapper.c`'s copy of PHP's plain-files
         /// wrapper, which nothing writes.
         safe static sw_php_plain_files_wrapper: Wrapper;
-        /// `thirdparty/php/standard/proc_open.cc`: `proc_open`'s resource type,
+        /// `native/hooks/proc_open.cc`: `proc_open`'s resource type,
         /// a list destructor registered under the module's number.
         safe fn swoole_proc_open_init(module_number: c_int);
         /// PHP's table of URL wrappers keeps `wrapper` under a copy of

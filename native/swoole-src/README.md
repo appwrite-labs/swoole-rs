@@ -3,14 +3,14 @@
 Files from swoole-src v6.2.6 (13d2f33), at the paths they have there. crates/ext's build.rs
 compiles these; it reads nothing from the pin.
 
-Some carry changes the deleted patch set made: `php_swoole.h`, the curl hooks and `proc_open`
-(`plain_wrapper.c` is now `native/hooks/plain_wrapper.c`, #5519; the pdo_sqlite driver and
+Some carry changes the deleted patch set made: `php_swoole.h` and the curl hooks
+(`proc_open.cc` is now `native/hooks/proc_open.cc`, #5636; `plain_wrapper.c` is `native/hooks/plain_wrapper.c`, #5519; the pdo_sqlite driver and
 statement are `native/hooks/sqlite_*.c`, #5514; the pdo_firebird driver, upstream's `php84` and
 `php85` copies made one, is `native/hooks/firebird_*.c`, #5516). The rest are byte-for-byte copies
 of code swoole-src bundles from elsewhere and that has no Rust replacement:
 
-- `thirdparty/LICENSE`: the PHP License 3.01, for `thirdparty/php/standard/proc_open.*` and
-  what `native/hooks` keeps of PHP's PDO drivers, as each file's header says.
+- `thirdparty/LICENSE`: the PHP License 3.01, for what `native/hooks` keeps of PHP's
+  `proc_open` and PDO drivers, as each file's header says.
 - `thirdparty/LICENSE-ZEND`: the Zend License 2.00, copied verbatim from
   [PHP 8.4.0's Zend license](https://github.com/php/php-src/blob/php-8.4.0/Zend/LICENSE),
   for `native/hooks/zend_execute_private.h`, the part of Swoole's
