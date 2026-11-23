@@ -66,65 +66,24 @@ static void set_coercing_output_data_types(XSQLDA* sqlda)
 }
 #endif
 
-/* map driver specific error message to PDO error */
-void php_firebird_set_error(pdo_dbh_t *dbh, pdo_stmt_t *stmt, const char *state, const size_t state_len,
-	const char *msg, const size_t msg_len) /* {{{ */
+/* php_firebird_set_error is Rust (crates/firebird/src/error.rs); it reads the
+ * status vector and keeps the message through these. */
+const ISC_STATUS *swr_firebird_status_vector(pdo_dbh_t *dbh)
 {
-	pdo_error_type *const error_code = stmt ? &stmt->error_code : &dbh->error_code;
-	pdo_firebird_db_handle *H = (pdo_firebird_db_handle *)dbh->driver_data;
-	pdo_firebird_error_info *einfo = &H->einfo;
-	int sqlcode = -999;
+	return ((pdo_firebird_db_handle *)dbh->driver_data)->isc_status;
+}
+
+void swr_firebird_set_einfo(pdo_dbh_t *dbh, int sqlcode, const char *msg, size_t len, bool has_message)
+{
+	pdo_firebird_error_info *einfo = &((pdo_firebird_db_handle *)dbh->driver_data)->einfo;
 
 	if (einfo->errmsg) {
 		pefree(einfo->errmsg, dbh->is_persistent);
-		einfo->errmsg = NULL;
-		einfo->errmsg_length = 0;
 	}
-
-	if (H->isc_status[0] == 1 && H->isc_status[1] > 0) {
-		char buf[512];
-		size_t buf_size = sizeof(buf), read_len = 0;
-		ssize_t tmp_len;
-		const ISC_STATUS *s = H->isc_status;
-		sqlcode = isc_sqlcode(s);
-
-		while ((buf_size > (read_len + 1)) && (tmp_len = fb_interpret(&buf[read_len], (buf_size - read_len - 1), &s)) && tmp_len > 0) {
-			read_len += tmp_len;
-			buf[read_len++] = ' ';
-		}
-
-		/* remove last space */
-		if (read_len) {
-			buf[read_len--] = '\0';
-		}
-
-		einfo->errmsg_length = read_len;
-		einfo->errmsg = pestrndup(buf, read_len, dbh->is_persistent);
-
-		char sqlstate[sizeof(pdo_error_type)];
-		fb_sqlstate(sqlstate, H->isc_status);
-		if (strlen(sqlstate) < sizeof(pdo_error_type)) {
-			strcpy(*error_code, sqlstate);
-			goto end;
-		}
-	} else if (msg && msg_len) {
-		einfo->errmsg_length = msg_len;
-		einfo->errmsg = pestrndup(msg, einfo->errmsg_length, dbh->is_persistent);
-	}
-
-	if (state && state_len && state_len < sizeof(pdo_error_type)) {
-		memcpy(*error_code, state, state_len + 1);
-	} else {
-		memcpy(*error_code, "HY000", sizeof("HY000"));
-	}
-
-end:
+	einfo->errmsg = has_message ? pestrndup(msg, len, dbh->is_persistent) : NULL;
+	einfo->errmsg_length = has_message ? len : 0;
 	einfo->sqlcode = sqlcode;
-	if (!dbh->methods) {
-		pdo_throw_exception(0, einfo->errmsg, error_code);
-	}
 }
-/* }}} */
 
 /* called by PDO to close a db handle */
 /* The closer is Rust (crates/firebird/src/connection.rs). */
