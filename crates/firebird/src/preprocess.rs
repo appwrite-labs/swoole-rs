@@ -260,9 +260,12 @@ pub fn preprocess(sql: &[u8], mut name: impl FnMut(&[u8], i64)) -> Option<Vec<u8
 }
 
 #[cfg(feature = "php")]
+pub(crate) use export::named;
+
+#[cfg(feature = "php")]
 mod export {
     use std::ffi::c_long;
-    use swoole_rs_corebase::lent::{Count, In, Out, lend_in};
+    use swoole_rs_corebase::lent::{Count, In, lend_in};
     use swoole_rs_zend::{Array, ZStr};
 
     unsafe extern "C" {
@@ -276,28 +279,17 @@ mod export {
         );
     }
 
-    swoole_rs_zend::exports! {
-    /// `php_firebird_preprocess`: `sql` preprocessed into the lent buffer, at
-    /// least `ZSTR_LEN(sql) + 1` bytes, as a C string, each named parameter's
-    /// index recorded in `named_params` when given. False where C returned 0.
-    #[unsafe(no_mangle)]
-    pub extern "C" fn swr_firebird_preprocess<'a>(
-        sql: &ZStr,
-        out: Out<'a, u8>,
-        count: Count<'a>,
-        named_params: Option<&Array>,
-    ) -> bool {
+    /// `php_firebird_preprocess`: `sql` preprocessed into the C string Firebird
+    /// prepares (without its NUL), each named parameter's index recorded in
+    /// `named_params` when given. None where C returned 0.
+    pub(crate) fn named(sql: &ZStr, named_params: Option<&Array>) -> Option<Vec<u8>> {
         let named = |key: &[u8], index: i64| {
             if let Some(table) = named_params {
-                lend_in(key, |name, len| swr_firebird_name_param(table, name, len, index));
+                lend_in(key, |name, len| {
+                    swr_firebird_name_param(table, name, len, index);
+                });
             }
         };
-        let Some(preprocessed) = super::preprocess(sql.bytes(), named) else {
-            return false;
-        };
-        out.fill(count).spare(|buffer| {
-            buffer.put(&preprocessed).is_some() && buffer.put(&[0]).is_some()
-        })
-    }
+        super::preprocess(sql.bytes(), named)
     }
 }

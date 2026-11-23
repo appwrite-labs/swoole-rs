@@ -23,90 +23,6 @@
 #include "ext/pdo/php_pdo.h"
 #include "ext/pdo/php_pdo_driver.h"
 #include "php_pdo_firebird_int.h"
-#include "pdo_firebird_utils.h"
-
-#include <time.h>
-
-#define READ_AND_RETURN_USING_MEMCPY(type, sqldata) do { \
-		type ret; \
-		memcpy(&ret, sqldata, sizeof(ret)); \
-		return ret; \
-	} while (0);
-
-static zend_always_inline ISC_QUAD php_get_isc_quad_from_sqldata(const ISC_SCHAR *sqldata)
-{
-	READ_AND_RETURN_USING_MEMCPY(ISC_QUAD, sqldata);
-}
-
-#if FB_API_VER >= 40
-
-static zend_always_inline ISC_TIME_TZ php_get_isc_time_tz_from_sqldata(const ISC_SCHAR *sqldata)
-{
-	READ_AND_RETURN_USING_MEMCPY(ISC_TIME_TZ, sqldata);
-}
-
-static zend_always_inline ISC_TIMESTAMP_TZ php_get_isc_timestamp_tz_from_sqldata(const ISC_SCHAR *sqldata)
-{
-	READ_AND_RETURN_USING_MEMCPY(ISC_TIMESTAMP_TZ, sqldata);
-}
-
-/* fetch formatted time with time zone */
-static int get_formatted_time_tz(pdo_stmt_t *stmt, const ISC_TIME_TZ* timeTz, zval *result)
-{
-	pdo_firebird_stmt *S = (pdo_firebird_stmt*)stmt->driver_data;
-	unsigned hours = 0, minutes = 0, seconds = 0, fractions = 0;
-	char timeZoneBuffer[40] = {0};
-	char *fmt;
-	struct tm t;
-	ISC_TIME time;
-	char timeBuf[80] = {0};
-	if (fb_decode_time_tz(S->H->isc_status, timeTz, &hours, &minutes, &seconds, &fractions, sizeof(timeZoneBuffer), timeZoneBuffer)) {
-		return 1;
-	}
-	time = fb_encode_time(hours, minutes, seconds, fractions);
-	isc_decode_sql_time(&time, &t);
-	fmt = S->H->time_format ? S->H->time_format : PDO_FB_DEF_TIME_FMT;
-
-	size_t len = strftime(timeBuf, sizeof(timeBuf), fmt, &t);
-	if (len == 0) {
-		return 1;
-	}
-
-	zend_string *time_tz_str = zend_strpprintf(0, "%s %s", timeBuf, timeZoneBuffer);
-	ZVAL_NEW_STR(result, time_tz_str);
-	return 0;
-}
-
-/* fetch formatted timestamp with time zone */
-static int get_formatted_timestamp_tz(pdo_stmt_t *stmt, const ISC_TIMESTAMP_TZ* timestampTz, zval *result)
-{
-	pdo_firebird_stmt *S = (pdo_firebird_stmt*)stmt->driver_data;
-	unsigned year, month, day, hours, minutes, seconds, fractions;
-	char timeZoneBuffer[40] = {0};
-	char *fmt;
-	struct tm t;
-	ISC_TIMESTAMP ts;
-	char timestampBuf[80] = {0};
-	if (fb_decode_timestamp_tz(S->H->isc_status, timestampTz, &year, &month, &day, &hours, &minutes, &seconds, &fractions, sizeof(timeZoneBuffer), timeZoneBuffer)) {
-		return 1;
-	}
-	ts.timestamp_date = fb_encode_date(year, month, day);
-	ts.timestamp_time = fb_encode_time(hours, minutes, seconds, fractions);
-	isc_decode_timestamp(&ts, &t);
-
-	fmt = S->H->timestamp_format ? S->H->timestamp_format : PDO_FB_DEF_TIMESTAMP_FMT;
-
-	size_t len = strftime(timestampBuf, sizeof(timestampBuf), fmt, &t);
-	if (len == 0) {
-		return 1;
-	}
-
-	zend_string *timestamp_tz_str = zend_strpprintf(0, "%s %s", timestampBuf, timeZoneBuffer);
-	ZVAL_NEW_STR(result, timestamp_tz_str);
-	return 0;
-}
-
-#endif
 
 /* free the allocated space for passing field values to the db and back */
 static void php_firebird_free_sqlda(XSQLDA const *sqlda) /* {{{ */
@@ -267,8 +183,10 @@ static int pdo_firebird_stmt_get_column_meta(pdo_stmt_t *stmt, zend_long colno, 
 bool swr_firebird_fetch_blob(pdo_stmt_t *stmt, const ISC_SCHAR *id, size_t id_len, zval *result);
 
 bool swr_firebird_value(pdo_dbh_t *dbh, XSQLVAR const *var, bool null, const ISC_SCHAR *data, size_t len, zval *result);
+/* A TIME or TIMESTAMP WITH TIME ZONE (Firebird 4 headers) is Rust too. */
+bool swr_firebird_time_tz(pdo_dbh_t *dbh, XSQLVAR const *var, const ISC_SCHAR *data, size_t len, zval *result);
 
-static int pdo_firebird_stmt_get_col(
+int pdo_firebird_stmt_get_col(
 		pdo_stmt_t *stmt, int colno, zval *result, enum pdo_param_type *type)
 {
 	pdo_firebird_stmt *S = (pdo_firebird_stmt*)stmt->driver_data;
@@ -281,63 +199,103 @@ static int pdo_firebird_stmt_get_col(
 		return 1;
 	}
 
-	switch (var->sqltype & ~1) {
-#if FB_API_VER >= 40
-		case SQL_TIME_TZ: {
-			ISC_TIME_TZ time = php_get_isc_time_tz_from_sqldata(var->sqldata);
-			return get_formatted_time_tz(stmt, &time, result);
-		}
-		case SQL_TIMESTAMP_TZ: {
-			ISC_TIMESTAMP_TZ ts = php_get_isc_timestamp_tz_from_sqldata(var->sqldata);
-			return get_formatted_timestamp_tz(stmt, &ts, result);
-		}
-#endif
-		case SQL_BLOB:
-			return swr_firebird_fetch_blob(stmt, var->sqldata, sizeof(ISC_QUAD), result);
+	if ((var->sqltype & ~1) == SQL_BLOB) {
+		return swr_firebird_fetch_blob(stmt, var->sqldata, sizeof(ISC_QUAD), result);
 	}
-	return 1;
+	/* Upstream returned 0 once it set a time-zone value, and 1 otherwise. */
+	return !swr_firebird_time_tz(stmt->dbh, var, var->sqldata, var->sqllen, result);
 }
 
-static int php_firebird_bind_blob(pdo_stmt_t *stmt, ISC_QUAD *blob_id, zval *param)
+/* Parameter binding is Rust (crates/firebird/src/param.rs), given the descriptor's
+ * variables (a count of -1 without one) and the value, dereferenced; it reaches
+ * the statement record and each input variable's storage through these. */
+bool swr_firebird_param_hook(pdo_stmt_t *stmt, XSQLVAR *vars, short count, enum pdo_param_event event,
+	bool is_param, zend_string *name, zend_long *paramno, zval *value);
+
+HashTable *swr_firebird_named_params(pdo_stmt_t *stmt)
 {
-	pdo_firebird_stmt *S = (pdo_firebird_stmt*)stmt->driver_data;
-	pdo_firebird_db_handle *H = S->H;
-	isc_blob_handle h = PDO_FIREBIRD_HANDLE_INITIALIZER;
-	zval data;
-	zend_ulong put_cnt = 0, rem_cnt;
-	unsigned short chunk_size;
-	int result = 1;
+	return ((pdo_firebird_stmt *)stmt->driver_data)->named_params;
+}
 
-	if (isc_create_blob(H->isc_status, &H->db, &H->tr, &h, blob_id)) {
-		php_firebird_error_stmt(stmt);
-		return 0;
+/* Input variable `index`, or NULL past the input descriptor. */
+static XSQLVAR *swr_firebird_input(pdo_stmt_t *stmt, zend_long index)
+{
+	XSQLDA *sqlda = ((pdo_firebird_stmt *)stmt->driver_data)->in_sqlda;
+	return sqlda && index >= 0 && index < sqlda->sqld ? &sqlda->sqlvar[index] : NULL;
+}
+
+short swr_firebird_input_type(pdo_stmt_t *stmt, zend_long index)
+{
+	XSQLVAR *var = swr_firebird_input(stmt, index);
+	return var ? var->sqltype : 0;
+}
+
+void swr_firebird_input_alloc(pdo_stmt_t *stmt, zend_long index)
+{
+	XSQLVAR *var = swr_firebird_input(stmt, index);
+	if (!var) {
+		return;
 	}
-
-	if (Z_TYPE_P(param) != IS_STRING) {
-		ZVAL_STR(&data, zval_get_string_func(param));
-	} else {
-		ZVAL_COPY_VALUE(&data, param);
+	if (var->sqlind) {
+		efree(var->sqlind);
 	}
+	var->sqlind = (void*)emalloc(var->sqllen + 2*sizeof(short));
+	var->sqldata = &((char*)var->sqlind)[sizeof(short)];
+}
 
-	for (rem_cnt = Z_STRLEN(data); rem_cnt > 0; rem_cnt -= chunk_size) {
-		chunk_size = rem_cnt > USHRT_MAX ? USHRT_MAX : (unsigned short)rem_cnt;
-		if (isc_put_segment(H->isc_status, &h, chunk_size, &Z_STRVAL(data)[put_cnt])) {
-			php_firebird_error_stmt(stmt);
-			result = 0;
+void swr_firebird_input_null(pdo_stmt_t *stmt, zend_long index, bool null)
+{
+	XSQLVAR *var = swr_firebird_input(stmt, index);
+	if (var && var->sqlind) {
+		*var->sqlind = null ? -1 : 0;
+	}
+}
+
+void swr_firebird_input_data(pdo_stmt_t *stmt, zend_long index, const char *data, size_t len)
+{
+	XSQLVAR *var = swr_firebird_input(stmt, index);
+	if (var && var->sqlind && len <= (size_t) var->sqllen) {
+		memcpy(var->sqldata, data, len);
+	}
+}
+
+void swr_firebird_input_point(pdo_stmt_t *stmt, zend_long index, short sqltype, zval *value)
+{
+	XSQLVAR *var = swr_firebird_input(stmt, index);
+	if (!var) {
+		return;
+	}
+	/* keep the allow-NULL flag */
+	var->sqltype = sqltype | (var->sqltype & 1);
+	switch (Z_TYPE_P(value)) {
+		case IS_LONG:
+			var->sqldata = (void*)&Z_LVAL_P(value);
+			var->sqllen = sizeof(zend_long);
 			break;
-		}
-		put_cnt += chunk_size;
+		case IS_DOUBLE:
+			var->sqldata = (void*)&Z_DVAL_P(value);
+			var->sqllen = sizeof(double);
+			break;
+		case IS_STRING:
+			var->sqldata = Z_STRVAL_P(value);
+			var->sqllen = Z_STRLEN_P(value);
+			break;
 	}
+}
 
-	if (Z_TYPE_P(param) != IS_STRING) {
-		zval_ptr_dtor_str(&data);
-	}
+bool swr_firebird_param_stream(pdo_stmt_t *stmt, zval *parameter)
+{
+	php_stream *stm = NULL;
 
-	if (isc_close_blob(H->isc_status, &h)) {
-		php_firebird_error_stmt(stmt);
-		return 0;
+	php_stream_from_zval_no_verify(stm, parameter);
+	if (!stm) {
+		pdo_raise_impl_error(stmt->dbh, stmt, "HY105", "Expected a stream resource");
+		return false;
 	}
-	return result;
+	zend_string *mem = php_stream_copy_to_mem(stm, PHP_STREAM_COPY_ALL, 0);
+	zval_ptr_dtor(parameter);
+	ZVAL_STR(parameter, mem ? mem : ZSTR_EMPTY_ALLOC());
+	return true;
 }
 
 static int pdo_firebird_stmt_param_hook(pdo_stmt_t *stmt, struct pdo_bound_param_data *param, /* {{{ */
@@ -345,252 +303,11 @@ static int pdo_firebird_stmt_param_hook(pdo_stmt_t *stmt, struct pdo_bound_param
 {
 	pdo_firebird_stmt *S = (pdo_firebird_stmt*)stmt->driver_data;
 	XSQLDA *sqlda = param->is_param ? S->in_sqlda : &S->out_sqlda;
-	XSQLVAR *var;
+	zval *value = &param->parameter;
 
-	if (event_type == PDO_PARAM_EVT_FREE) { /* not used */
-		return 1;
-	}
-
-	if (!sqlda || param->paramno >= sqlda->sqld) {
-		const char *msg = "Invalid parameter index";
-		php_firebird_error_stmt_with_info(stmt, "HY093", strlen("HY093"), msg, strlen(msg));
-		return 0;
-	}
-	if (param->is_param && param->paramno == -1) {
-		zval *index;
-
-		/* try to determine the index by looking in the named_params hash */
-		if ((index = zend_hash_find(S->named_params, param->name)) != NULL) {
-			param->paramno = Z_LVAL_P(index);
-		} else {
-			/* ... or by looking in the input descriptor */
-			int i;
-
-			for (i = 0; i < sqlda->sqld; ++i) {
-				XSQLVAR *var = &sqlda->sqlvar[i];
-
-				if ((var->aliasname_length && !strncasecmp(ZSTR_VAL(param->name), var->aliasname,
-						min(ZSTR_LEN(param->name), var->aliasname_length)))
-						|| (var->sqlname_length && !strncasecmp(ZSTR_VAL(param->name), var->sqlname,
-						min(ZSTR_LEN(param->name), var->sqlname_length)))) {
-					param->paramno = i;
-					break;
-				}
-			}
-			if (i >= sqlda->sqld) {
-				const char *msg = "Invalid parameter name";
-				php_firebird_error_stmt_with_info(stmt, "HY093", strlen("HY093"), msg, strlen(msg));
-				return 0;
-			}
-		}
-	}
-
-	var = &sqlda->sqlvar[param->paramno];
-
-	switch (event_type) {
-		zval *parameter;
-
-		case PDO_PARAM_EVT_ALLOC:
-			if (param->is_param) {
-				/* allocate the parameter */
-				if (var->sqlind) {
-					efree(var->sqlind);
-				}
-				var->sqlind = (void*)emalloc(var->sqllen + 2*sizeof(short));
-				var->sqldata = &((char*)var->sqlind)[sizeof(short)];
-			}
-			break;
-
-		case PDO_PARAM_EVT_EXEC_PRE:
-			if (!param->is_param) {
-				break;
-			}
-
-			*var->sqlind = 0;
-			if (Z_ISREF(param->parameter)) {
-				parameter = Z_REFVAL(param->parameter);
-			} else {
-				parameter = &param->parameter;
-			}
-
-			if (Z_TYPE_P(parameter) == IS_RESOURCE) {
-				php_stream *stm = NULL;
-
-				php_stream_from_zval_no_verify(stm, parameter);
-				if (stm) {
-					zend_string *mem =  php_stream_copy_to_mem(stm, PHP_STREAM_COPY_ALL, 0);
-					zval_ptr_dtor(parameter);
-					ZVAL_STR(parameter, mem ? mem : ZSTR_EMPTY_ALLOC());
-				} else {
-					pdo_raise_impl_error(stmt->dbh, stmt, "HY105", "Expected a stream resource");
-					return 0;
-				}
-			}
-
-			switch (var->sqltype & ~1) {
-				case SQL_ARRAY:
-					{
-						const char *msg = "Cannot bind to array field";
-						php_firebird_error_stmt_with_info(stmt, "HY000", strlen("HY000"), msg, strlen(msg));
-					}
-					return 0;
-
-				case SQL_BLOB: {
-					if (Z_TYPE_P(parameter) == IS_NULL) {
-						/* Check if field allow NULL values */
-						if (~var->sqltype & 1) {
-							const char *msg = "Parameter requires non-null value";
-							php_firebird_error_stmt_with_info(stmt, "HY105", strlen("HY105"), msg, strlen(msg));
-							return 0;
-						}
-						*var->sqlind = -1;
-						return 1;
-					}
-					ISC_QUAD quad = php_get_isc_quad_from_sqldata(var->sqldata);
-					if (php_firebird_bind_blob(stmt, &quad, parameter) != 0) {
-						memcpy(var->sqldata, &quad, sizeof(quad));
-						return 1;
-					}
-					return 0;
-				}
-			}
-
-			/* keep native BOOLEAN type */
-			if ((var->sqltype & ~1) == SQL_BOOLEAN) {
-				switch (Z_TYPE_P(parameter)) {
-					case IS_LONG:
-					case IS_DOUBLE:
-					case IS_TRUE:
-					case IS_FALSE:
-						*(FB_BOOLEAN*)var->sqldata = zend_is_true(parameter) ? FB_TRUE : FB_FALSE;
-						break;
-					case IS_STRING:
-						{
-							zend_long lval;
-							double dval;
-
-							if (Z_STRLEN_P(parameter) == 0) {
-								*(FB_BOOLEAN*)var->sqldata = FB_FALSE;
-								break;
-							}
-
-							switch (is_numeric_string(Z_STRVAL_P(parameter), Z_STRLEN_P(parameter), &lval, &dval, 0)) {
-								case IS_LONG:
-									*(FB_BOOLEAN*)var->sqldata = (lval != 0) ? FB_TRUE : FB_FALSE;
-									break;
-								case IS_DOUBLE:
-									*(FB_BOOLEAN*)var->sqldata = (dval != 0) ? FB_TRUE : FB_FALSE;
-									break;
-								default:
-									if (!zend_binary_strncasecmp(Z_STRVAL_P(parameter), Z_STRLEN_P(parameter), "true", 4, 4)) {
-										*(FB_BOOLEAN*)var->sqldata = FB_TRUE;
-									} else if (!zend_binary_strncasecmp(Z_STRVAL_P(parameter), Z_STRLEN_P(parameter), "false", 5, 5)) {
-										*(FB_BOOLEAN*)var->sqldata = FB_FALSE;
-									} else {
-										const char *msg = "Cannot convert string to boolean";
-										php_firebird_error_stmt_with_info(stmt, "HY105", strlen("HY105"), msg, strlen(msg));
-										return 0;
-									}
-
-							}
-						}
-						break;
-					case IS_NULL:
-						*var->sqlind = -1;
-						break;
-					default:
-						{
-							const char *msg = "Binding arrays/objects is not supported";
-							php_firebird_error_stmt_with_info(stmt, "HY105", strlen("HY105"), msg, strlen(msg));
-						}
-						return 0;
-				}
-				break;
-			}
-
-			/* check if a NULL should be inserted */
-			switch (Z_TYPE_P(parameter)) {
-				int force_null;
-
-				case IS_LONG:
-					/* keep the allow-NULL flag */
-					var->sqltype = (sizeof(zend_long) == 8 ? SQL_INT64 : SQL_LONG) | (var->sqltype & 1);
-					var->sqldata = (void*)&Z_LVAL_P(parameter);
-					var->sqllen = sizeof(zend_long);
-					break;
-				case IS_DOUBLE:
-					/* keep the allow-NULL flag */
-					var->sqltype = SQL_DOUBLE | (var->sqltype & 1);
-					var->sqldata = (void*)&Z_DVAL_P(parameter);
-					var->sqllen = sizeof(double);
-					break;
-				case IS_STRING:
-					force_null = 0;
-
-					/* for these types, an empty string can be handled like a NULL value */
-					switch (var->sqltype & ~1) {
-						case SQL_SHORT:
-						case SQL_LONG:
-						case SQL_INT64:
-						case SQL_FLOAT:
-						case SQL_DOUBLE:
-						case SQL_TIMESTAMP:
-						case SQL_TYPE_DATE:
-						case SQL_TYPE_TIME:
-#if FB_API_VER >= 40
-						case SQL_INT128:
-						case SQL_DEC16:
-						case SQL_DEC34:
-						case SQL_TIMESTAMP_TZ:
-						case SQL_TIME_TZ:
-#endif
-							force_null = (Z_STRLEN_P(parameter) == 0);
-					}
-					if (!force_null) {
-						/* keep the allow-NULL flag */
-						var->sqltype = SQL_TEXT | (var->sqltype & 1);
-						var->sqldata = Z_STRVAL_P(parameter);
-						var->sqllen = Z_STRLEN_P(parameter);
-						break;
-					}
-					ZEND_FALLTHROUGH;
-				case IS_NULL:
-					/* complain if this field doesn't allow NULL values */
-					if (~var->sqltype & 1) {
-						const char *msg = "Parameter requires non-null value";
-						php_firebird_error_stmt_with_info(stmt, "HY105", strlen("HY105"), msg, strlen(msg));
-						return 0;
-					}
-					*var->sqlind = -1;
-					break;
-				default:
-					{
-						const char *msg = "Binding arrays/objects is not supported";
-						php_firebird_error_stmt_with_info(stmt, "HY105", strlen("HY105"), msg, strlen(msg));
-					}
-					return 0;
-			}
-			break;
-
-		case PDO_PARAM_EVT_FETCH_POST:
-			if (param->paramno == -1) {
-				return 0;
-			}
-			if (param->is_param) {
-				break;
-			}
-			if (Z_ISREF(param->parameter)) {
-				parameter = Z_REFVAL(param->parameter);
-			} else {
-				parameter = &param->parameter;
-			}
-			zval_ptr_dtor(parameter);
-			ZVAL_NULL(parameter);
-			return pdo_firebird_stmt_get_col(stmt, param->paramno, parameter, NULL);
-		default:
-			;
-	}
-	return 1;
+	ZVAL_DEREF(value);
+	return swr_firebird_param_hook(stmt, sqlda ? sqlda->sqlvar : NULL, sqlda ? sqlda->sqld : -1, event_type,
+		param->is_param, param->name, &param->paramno, value);
 }
 /* }}} */
 

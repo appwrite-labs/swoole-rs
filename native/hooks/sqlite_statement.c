@@ -14,16 +14,27 @@
   +----------------------------------------------------------------------+
 */
 
+/* pdo_sqlite's statement side. crates/sqlite/src/statement.rs has the operations:
+ * execution, fetching, column values and metadata, binds and the readonly, busy and
+ * explain attributes.
+ *
+ * Stays C (docs/zend.md, What stays C): allocator (the statement record, and the Zend
+ * strings of a column's name and value, ZVAL_STRINGL_FAST's short-string cache
+ * included), bailout (the parameter hook's string conversion can call __toString, and
+ * its LOB read a user stream), budget (describe's writes into PDO's columns array,
+ * ZSTR_KNOWN, and the parameter hook's zval conversions) and version (the explain type
+ * error's zend_zval_value_name, which PHP 8.2 lacks, and sqlite3_stmt_explain, which
+ * SQLite 3.43 and macOS 14.2 added). The method table is C because PDO declares it over
+ * pdo_stmt_t pointers, which the C compiler checks against the functions here. */
 #define SW_USE_SQLITE_HOOK
 #include "php_swoole_sqlite.h"
 
+#ifdef SW_USE_SQLITE
+
 #include "php.h"
-#include "php_ini.h"
-#include "ext/standard/info.h"
 #include "ext/pdo/php_pdo.h"
 #include "ext/pdo/php_pdo_driver.h"
-#include "thirdparty/pdo_sqlite/php_pdo_sqlite.h"
-#include "thirdparty/pdo_sqlite/php_pdo_sqlite_int.h"
+#include "php_pdo_sqlite_int.h"
 
 #if defined(__APPLE__)
 // If more than one usage, a Zend macro could be created
@@ -143,22 +154,13 @@ zend_string *swr_sqlite_column_string(sqlite3_stmt *stmt, int colno, bool blob)
 	return Z_STR(value);
 }
 
-extern void swr_sqlite_column_value(sqlite3_stmt *, int, zval *);
+extern bool swr_sqlite_get_col(pdo_stmt_t *, sqlite3_stmt *, int, zval *);
 
 static int pdo_sqlite_stmt_get_col(
 		pdo_stmt_t *stmt, int colno, zval *result, enum pdo_param_type *type)
 {
 	pdo_sqlite_stmt *S = (pdo_sqlite_stmt*)stmt->driver_data;
-	if (!S->stmt) {
-		return 0;
-	}
-	if(colno >= sqlite3_data_count(S->stmt)) {
-		/* error invalid column */
-		pdo_sqlite_error_stmt(stmt);
-		return 0;
-	}
-	swr_sqlite_column_value(S->stmt, colno, result);
-	return 1;
+	return swr_sqlite_get_col(stmt, S->stmt, colno, result);
 }
 
 /* Zend owns the interned native type names for the life of the request. */
@@ -167,26 +169,12 @@ const zend_string *swr_sqlite_known_type(unsigned int id)
 	return ZSTR_KNOWN(id);
 }
 
-extern void swr_sqlite_column_meta(zval *, int, const char *, const char *);
+extern bool swr_sqlite_column_meta(pdo_stmt_t *, sqlite3_stmt *, zend_long, zval *);
 
 static int pdo_sqlite_stmt_col_meta(pdo_stmt_t *stmt, zend_long colno, zval *return_value)
 {
 	pdo_sqlite_stmt *S = (pdo_sqlite_stmt*)stmt->driver_data;
-	if (!S->stmt || !stmt->executed) {
-		return FAILURE;
-	}
-	if (colno >= sqlite3_column_count(S->stmt)) {
-		pdo_sqlite_error_stmt(stmt);
-		return FAILURE;
-	}
-
-	const char *table = NULL;
-#ifdef HAVE_SW_SQLITE3_COLUMN_TABLE_NAME
-	table = sqlite3_column_table_name(S->stmt, colno);
-#endif
-	swr_sqlite_column_meta(return_value, sqlite3_column_type(S->stmt, colno),
-		sqlite3_column_decltype(S->stmt, colno), table);
-	return SUCCESS;
+	return swr_sqlite_column_meta(stmt, S->stmt, colno, return_value) ? SUCCESS : FAILURE;
 }
 
 static int pdo_sqlite_stmt_cursor_closer(pdo_stmt_t *stmt)
@@ -248,3 +236,5 @@ const struct pdo_stmt_methods swoole_sqlite_stmt_methods = {
 	NULL, /* next_rowset */
 	pdo_sqlite_stmt_cursor_closer
 };
+
+#endif /* SW_USE_SQLITE */

@@ -165,6 +165,20 @@ impl Dbh {
         self.update(|dbh| copy_state(&mut dbh.error_code, sqlstate));
     }
 
+    /// `dbh->error_mode`: how PDO reports the handle's errors (`PDO_ERRMODE_*`), a
+    /// byte from PHP 8.5.
+    #[must_use]
+    pub fn error_mode(&self) -> crate::sys::pdo_error_mode {
+        #[cfg(php85)]
+        {
+            self.0.get().error_mode.into()
+        }
+        #[cfg(not(php85))]
+        {
+            self.0.get().error_mode
+        }
+    }
+
     /// Whether PDO requested autocommit on this connection.
     #[must_use]
     pub fn auto_commit(&self) -> bool {

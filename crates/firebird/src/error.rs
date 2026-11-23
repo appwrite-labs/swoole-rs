@@ -76,6 +76,25 @@ fn interpret(vector: &Vector) -> Vec<u8> {
         .to_vec()
 }
 
+/// The connection's status vector's first error, as one `fb_interpret` into a
+/// 512-byte buffer printed it, to its NUL; and the vector's second entry, its
+/// error code.
+pub(crate) fn first_error(dbh: &Dbh) -> (Vec<u8>, isize) {
+    let vector = swr_firebird_status_vector(dbh);
+    let mut buffer = [0u8; MESSAGE_MAX];
+    let mut cursor = Cursor(vector.as_ptr(), PhantomData);
+    // Its length goes unread, as C's did: the text ends at its NUL.
+    let _printed = lend_out(&mut buffer, |out: Out<'_, u8>, len| {
+        fb_interpret(out.chars(), len, &mut cursor)
+    });
+    let text = buffer
+        .split(|&b| b == 0)
+        .next()
+        .unwrap_or_default()
+        .to_vec();
+    (text, vector.get(1).copied().unwrap_or_default())
+}
+
 /// `php_firebird_set_error`: the connection's error recorded from its status
 /// vector when the last call failed, its SQLSTATE the statement's (with
 /// `stmt`) or the connection's error code; else the lent `message`, and
@@ -141,7 +160,12 @@ pub(crate) fn status_error(dbh: &Dbh, stmt: Option<&Stmt>) {
 /// `php_firebird_error_stmt_with_info(stmt, "HY000", ...)`: the status
 /// vector's failure recorded if it holds one, else `message` with `HY000`.
 pub(crate) fn stmt_message(dbh: &Dbh, stmt: &Stmt, message: &[u8]) {
-    swoole_rs_corebase::lent::lend_in(b"HY000", |state, state_len| {
+    stmt_state_message(dbh, stmt, b"HY000", message);
+}
+
+/// [`stmt_message`] with the SQLSTATE `state`.
+pub(crate) fn stmt_state_message(dbh: &Dbh, stmt: &Stmt, state: &[u8], message: &[u8]) {
+    swoole_rs_corebase::lent::lend_in(state, |state, state_len| {
         swoole_rs_corebase::lent::lend_in(message, |message, message_len| {
             php_firebird_set_error(dbh, Some(stmt), state, state_len, message, message_len);
         });

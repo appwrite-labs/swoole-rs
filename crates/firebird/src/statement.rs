@@ -1,10 +1,15 @@
 //! `pdo_firebird`'s statement methods (`firebird_statement.c`): so far the
 //! column description, metadata and output type coercion, which read a
-//! column's `XSQLVAR` in the statement's output descriptor, and the values
-//! other than blobs and the time-zone types. The methods PDO calls stay C, as
-//! thin callers that find the descriptor in their statement record.
+//! column's `XSQLVAR` in the statement's output descriptor, and the values.
+//! The methods PDO calls stay C, as thin callers that find the descriptor in
+//! their statement record.
 use std::ffi::{c_char, c_int, c_uint};
 
+#[cfg(fb_api_40)]
+use std::ffi::CStr;
+
+#[cfg(fb_api_40)]
+use swoole_rs_corebase::lent::Out;
 use swoole_rs_corebase::lent::{Count, In, lend_in, lend_out};
 use swoole_rs_corebase::sys::Text;
 use swoole_rs_firebird_sys::ibase::{
@@ -27,9 +32,10 @@ use swoole_rs_zend::sys::{
 
 use crate::transaction::php_firebird_commit_transaction;
 use crate::{
-    swoole_isc_blob_info, swoole_isc_close_blob, swoole_isc_dsql_execute, swoole_isc_dsql_execute2,
-    swoole_isc_dsql_fetch, swoole_isc_dsql_free_statement, swoole_isc_dsql_set_cursor_name,
-    swoole_isc_dsql_sql_info, swoole_isc_get_segment, swoole_isc_open_blob,
+    swoole_isc_blob_info, swoole_isc_close_blob, swoole_isc_create_blob, swoole_isc_dsql_execute,
+    swoole_isc_dsql_execute2, swoole_isc_dsql_fetch, swoole_isc_dsql_free_statement,
+    swoole_isc_dsql_set_cursor_name, swoole_isc_dsql_sql_info, swoole_isc_get_segment,
+    swoole_isc_open_blob, swoole_isc_put_segment,
 };
 use swoole_rs_zend::sys::{
     pdo_column_data, pdo_param_type_PDO_PARAM_BOOL as PARAM_BOOL,
@@ -44,7 +50,7 @@ unsafe extern "C" {
     /// The connection's status vector.
     safe fn swr_firebird_status(dbh: &Dbh) -> Status;
     /// The statement's connection (`stmt->dbh`) and `&S->stmt`.
-    safe fn swr_firebird_stmt_dbh(stmt: &Stmt) -> &Dbh;
+    pub(crate) safe fn swr_firebird_stmt_dbh(stmt: &Stmt) -> &Dbh;
     safe fn swr_firebird_stmt_handle(stmt: &Stmt) -> Handle<'_>;
     /// The cursor's name (`S->name`), empty when it has none, live until the
     /// cursor is renamed or closed; whether its cursor is open
@@ -90,8 +96,51 @@ unsafe extern "C" {
     safe fn isc_decode_timestamp(timestamp: &ISC_TIMESTAMP, tm: &mut libc::tm);
 }
 
+// pdo_firebird_utils.cpp's helpers over Firebird 4's `IUtil`, which it defines
+// only when built against a Firebird 4 ibase.h.
+#[cfg(fb_api_40)]
+unsafe extern "C" {
+    /// A `TIME WITH TIME ZONE` (`ISC_TIME_TZ`: the UTC time, then the zone's
+    /// 16-bit id, padded to two words) decoded into the zone's local time and
+    /// the zone's name, NUL-terminated in the lent buffer. Nonzero
+    /// (`status[1]`) when it failed, with the error in `status`.
+    safe fn fb_decode_time_tz<'z>(
+        status: Status,
+        time: &[u32; 2],
+        hours: &mut c_uint,
+        minutes: &mut c_uint,
+        seconds: &mut c_uint,
+        fractions: &mut c_uint,
+        zone_length: Count<'z, c_uint>,
+        zone: Out<'z, c_char>,
+    ) -> ISC_STATUS;
+    /// The same for a `TIMESTAMP WITH TIME ZONE` (`ISC_TIMESTAMP_TZ`: the UTC
+    /// `ISC_TIMESTAMP`, then the zone's id, padded to three words).
+    safe fn fb_decode_timestamp_tz<'z>(
+        status: Status,
+        timestamp: &[u32; 3],
+        year: &mut c_uint,
+        month: &mut c_uint,
+        day: &mut c_uint,
+        hours: &mut c_uint,
+        minutes: &mut c_uint,
+        seconds: &mut c_uint,
+        fractions: &mut c_uint,
+        zone_length: Count<'z, c_uint>,
+        zone: Out<'z, c_char>,
+    ) -> ISC_STATUS;
+    /// An `ISC_TIME` and an `ISC_DATE` from their parts.
+    safe fn fb_encode_time(
+        hours: c_uint,
+        minutes: c_uint,
+        seconds: c_uint,
+        fractions: c_uint,
+    ) -> u32;
+    safe fn fb_encode_date(year: c_uint, month: c_uint, day: c_uint) -> i32;
+}
+
 /// An SQL type code without its nullable bit.
-fn base_type(sqltype: i16) -> u32 {
+pub(crate) fn base_type(sqltype: i16) -> u32 {
     u32::from(sqltype.cast_unsigned() & !1)
 }
 
@@ -202,6 +251,111 @@ fn datetime(dbh: &Dbh, var: &XSQLVAR, data: &[u8]) -> Option<Owned> {
     )))
 }
 
+/// `get_formatted_time_tz` and `get_formatted_timestamp_tz`: a
+/// `TIME WITH TIME ZONE` or `TIMESTAMP WITH TIME ZONE` as its zone's local time,
+/// printed by `strftime` in the connection's time or timestamp format, then a
+/// space and the zone's name. True with the value in `result`; false, setting
+/// nothing, for any other type, when the decoding or `strftime` fails, and
+/// always below a Firebird 4 ibase.h, where C compiled them out.
+///
+/// The C caller keeps upstream's inverted return for these:
+/// `pdo_firebird_stmt_get_col` returned 0 once it set a time-zone value and 1,
+/// with no value, when the decoding failed.
+#[unsafe(no_mangle)]
+pub extern "C" fn swr_firebird_time_tz<'a>(
+    dbh: &Dbh,
+    var: &XSQLVAR,
+    data: In<'a, u8>,
+    len: Count<'a>,
+    result: &Slot,
+) -> bool {
+    let data = data.drain(len).bytes();
+    let Some(text) = time_tz(dbh, var, data) else {
+        return false;
+    };
+    result.set(Owned::string(ZString::new(&text)));
+    true
+}
+
+/// [`swr_firebird_time_tz`]'s text.
+#[cfg(fb_api_40)]
+fn time_tz(dbh: &Dbh, var: &XSQLVAR, data: &[u8]) -> Option<Vec<u8>> {
+    let word = |at: usize| integer::<4>(data.get(at..)?).map(u32::from_ne_bytes);
+    let status = swr_firebird_status(dbh);
+    let mut zone = [0u8; 40];
+    let (mut hours, mut minutes, mut seconds, mut fractions) = (0, 0, 0, 0);
+    let mut tm = swoole_rs_corebase::sys::zeroed::<libc::tm>();
+    let which = match base_type(var.sqltype) {
+        SQL_TIME_TZ => {
+            let time = [word(0)?, word(4)?];
+            let failed = lend_out(&mut zone, |out, length| {
+                fb_decode_time_tz(
+                    status,
+                    &time,
+                    &mut hours,
+                    &mut minutes,
+                    &mut seconds,
+                    &mut fractions,
+                    length,
+                    out.chars(),
+                )
+            }) != 0;
+            if failed {
+                return None;
+            }
+            isc_decode_sql_time(&fb_encode_time(hours, minutes, seconds, fractions), &mut tm);
+            1
+        }
+        SQL_TIMESTAMP_TZ => {
+            let timestamp = [word(0)?, word(4)?, word(8)?];
+            let (mut year, mut month, mut day) = (0, 0, 0);
+            let failed = lend_out(&mut zone, |out, length| {
+                fb_decode_timestamp_tz(
+                    status,
+                    &timestamp,
+                    &mut year,
+                    &mut month,
+                    &mut day,
+                    &mut hours,
+                    &mut minutes,
+                    &mut seconds,
+                    &mut fractions,
+                    length,
+                    out.chars(),
+                )
+            }) != 0;
+            if failed {
+                return None;
+            }
+            let local = ISC_TIMESTAMP {
+                timestamp_date: fb_encode_date(year, month, day),
+                timestamp_time: fb_encode_time(hours, minutes, seconds, fractions),
+            };
+            isc_decode_timestamp(&local, &mut tm);
+            2
+        }
+        _ => return None,
+    };
+    let format = swr_firebird_format(dbh, which);
+    let mut text = [0u8; 80];
+    let len = swoole_rs_corebase::sys::strftime(&mut text, format.get(), &tm);
+    if len == 0 {
+        return None;
+    }
+    // C's `"%s %s"` of the two buffers.
+    let zone = CStr::from_bytes_until_nul(&zone).map_or(&zone[..], CStr::to_bytes);
+    let mut value = text.get(..len)?.to_vec();
+    value.push(b' ');
+    value.extend_from_slice(zone);
+    Some(value)
+}
+
+/// [`swr_firebird_time_tz`]'s text: none below a Firebird 4 ibase.h.
+#[cfg(not(fb_api_40))]
+fn time_tz(_dbh: &Dbh, _var: &XSQLVAR, _data: &[u8]) -> Option<Vec<u8>> {
+    None
+}
+
 /// `pdo_firebird_stmt_get_col` for a null value, a scaled `SMALLINT`,
 /// `INTEGER`, `BIGINT` or `DOUBLE`, a `VARCHAR` or `CHAR`, an unscaled integer,
 /// a `BOOLEAN`, `FLOAT` and `DOUBLE`, and a `DATE`, `TIME` or `TIMESTAMP` in
@@ -271,11 +425,11 @@ pub extern "C" fn swr_firebird_value<'a>(
 /// Firebird 4's type codes (`SQL_INT128`, `SQL_TIMESTAMP_TZ`, `SQL_TIME_TZ`,
 /// `SQL_DEC16`, `SQL_DEC34`), which a Firebird 3 ibase.h lacks: the driver
 /// coerces them only when built against a Firebird 4 one.
-const SQL_INT128: u32 = 32752;
-const SQL_TIMESTAMP_TZ: u32 = 32754;
-const SQL_TIME_TZ: u32 = 32756;
-const SQL_DEC16: u32 = 32760;
-const SQL_DEC34: u32 = 32762;
+pub(crate) const SQL_INT128: u32 = 32752;
+pub(crate) const SQL_TIMESTAMP_TZ: u32 = 32754;
+pub(crate) const SQL_TIME_TZ: u32 = 32756;
+pub(crate) const SQL_DEC16: u32 = 32760;
+pub(crate) const SQL_DEC34: u32 = 32762;
 
 /// `set_coercing_output_data_types` for one output variable: Firebird 4's
 /// `INT128` (with its scale dropped), `DECFLOAT(16)` and `DECFLOAT(34)`, and
@@ -594,8 +748,52 @@ pub extern "C" fn swr_firebird_fetch_blob<'a>(
     read
 }
 
+/// `php_firebird_bind_blob`: a new `BLOB` created, its id written to `id`, and
+/// `param`'s value written to it as a string, in segments of at most 65535
+/// bytes, then closed. False, with the error recorded on the statement, when
+/// a call fails; a failed segment stops the writing, and the blob is still
+/// closed. False, writing nothing, when the conversion bailed out.
+#[unsafe(no_mangle)]
+pub extern "C" fn swr_firebird_bind_blob(stmt: &Stmt, id: &mut [u32; 2], param: &Value) -> bool {
+    let dbh = swr_firebird_stmt_dbh(stmt);
+    let status = swr_firebird_status(dbh);
+    let mut handle = 0;
+    let blob = Handle::new(&mut handle);
+    let created = swoole_isc_create_blob(
+        status,
+        swr_firebird_db(dbh),
+        swr_firebird_tr(dbh),
+        blob,
+        Quad::new(id),
+    );
+    if created != 0 {
+        crate::error::status_error(dbh, Some(stmt));
+        return false;
+    }
+    let data = param.string();
+    // A conversion that bailed out (`__toString` calling `exit()`) writes
+    // nothing: the bind fails, the blob still closed.
+    let mut written = !swoole_rs_zend::bailout::pending();
+    let chunks = if written { data.bytes() } else { &[][..] };
+    for chunk in chunks.chunks(usize::from(u16::MAX)) {
+        if lend_in(chunk, |buffer, length| {
+            swoole_isc_put_segment(status, blob, length, buffer.chars())
+        }) != 0
+        {
+            crate::error::status_error(dbh, Some(stmt));
+            written = false;
+            break;
+        }
+    }
+    if swoole_isc_close_blob(status, blob) != 0 {
+        crate::error::status_error(dbh, Some(stmt));
+        return false;
+    }
+    written
+}
+
 /// `PDO_FB_SQLDA_VERSION`: `SQLDA_VERSION1`, as ibase.h defines no `SQLDA_VERSION`.
-const SQLDA_VERSION: u16 = 1;
+pub(crate) const SQLDA_VERSION: u16 = 1;
 
 /// `pdo_firebird_stmt_fetch`: the next row into the output descriptor,
 /// counted. Before execution, the `HY000` closed-cursor error; an `EXECUTE

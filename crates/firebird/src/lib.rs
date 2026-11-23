@@ -23,6 +23,10 @@ pub mod connection;
 pub mod error;
 #[cfg(feature = "php")]
 pub mod minit;
+#[cfg(feature = "php")]
+pub mod param;
+#[cfg(feature = "php")]
+pub mod prepare;
 pub mod preprocess;
 #[cfg(feature = "php")]
 pub mod statement;
@@ -34,9 +38,10 @@ use std::{
     ffi::{c_int, c_short, c_ushort},
 };
 use swoole_rs_corebase::lent::{self, Count, In};
+use swoole_rs_corebase::sys::Text;
 use swoole_rs_firebird_sys::{
-    Bytes, Handle, ISC_SCHAR, ISC_STATUS, Quad, Sqlda, Status, Teb, TebCount, VersionArg,
-    VersionCallback, fb_ping, isc_attach_database, isc_blob_info, isc_close_blob,
+    Bytes, Handle, ISC_SCHAR, ISC_STATUS, NameLength, Quad, Sqlda, Status, Teb, TebCount,
+    VersionArg, VersionCallback, fb_ping, isc_attach_database, isc_blob_info, isc_close_blob,
     isc_commit_retaining, isc_commit_transaction, isc_create_blob, isc_detach_database,
     isc_dsql_allocate_statement, isc_dsql_execute, isc_dsql_execute2, isc_dsql_fetch,
     isc_dsql_free_statement, isc_dsql_prepare, isc_dsql_set_cursor_name, isc_dsql_sql_info,
@@ -83,9 +88,6 @@ macro_rules! offloaded {
 }
 
 offloaded! {
-    swoole_isc_attach_database => isc_attach_database(
-        status: Status, name_length: c_short, name: Bytes,
-        db: Handle, dpb_length: c_short, dpb: Bytes);
     swoole_isc_detach_database => isc_detach_database(status: Status, db: Handle);
     swoole_isc_dsql_execute => isc_dsql_execute(
         status: Status, tr: Handle, stmt: Handle,
@@ -108,8 +110,6 @@ offloaded! {
     swoole_isc_open_blob => isc_open_blob(
         status: Status, db: Handle, tr: Handle,
         blob: Handle, id: Quad);
-    swoole_isc_put_segment => isc_put_segment(
-        status: Status, blob: Handle, length: c_ushort, buffer: Bytes);
     swoole_isc_create_blob => isc_create_blob(
         status: Status, db: Handle, tr: Handle,
         blob: Handle, id: Quad);
@@ -119,6 +119,26 @@ offloaded! {
     swoole_fb_ping => fb_ping(status: Status, db: Handle);
     swoole_isc_version => isc_version(
         db: Handle, callback: VersionCallback, arg: VersionArg) -> c_int = -1;
+}
+
+/// `swoole_isc_attach_database`: `isc_attach_database` off the coroutine.
+#[unsafe(no_mangle)]
+pub extern "C" fn swoole_isc_attach_database<'d>(
+    status: Status,
+    name_length: NameLength,
+    name: Option<Text<'_>>,
+    db: Handle,
+    dpb_length: Count<'d, c_short>,
+    dpb: In<'d, ISC_SCHAR>,
+) -> ISC_STATUS {
+    // The lent pair and the length are not `Copy`: the one run takes them.
+    let mut lent = Some((name_length, dpb_length, dpb));
+    offload(NOT_RUN, || {
+        lent.take()
+            .map_or(NOT_RUN, |(name_length, dpb_length, dpb)| {
+                isc_attach_database(status, name_length, name, db, dpb_length, dpb)
+            })
+    })
 }
 
 /// `swoole_isc_dsql_sql_info`: `isc_dsql_sql_info` off the coroutine.
@@ -175,6 +195,23 @@ pub extern "C" fn swoole_isc_get_segment<'b>(
     offload(NOT_RUN, || {
         lent.take().map_or(NOT_RUN, |(buffer_length, buffer)| {
             isc_get_segment(status, blob, length, buffer_length, buffer)
+        })
+    })
+}
+
+/// `swoole_isc_put_segment`: `isc_put_segment` off the coroutine.
+#[unsafe(no_mangle)]
+pub extern "C" fn swoole_isc_put_segment<'b>(
+    status: Status,
+    blob: Handle,
+    length: Count<'b, c_ushort>,
+    buffer: In<'b, ISC_SCHAR>,
+) -> ISC_STATUS {
+    // The lent pair is not `Copy`: the one run takes it.
+    let mut lent = Some((length, buffer));
+    offload(NOT_RUN, || {
+        lent.take().map_or(NOT_RUN, |(length, buffer)| {
+            isc_put_segment(status, blob, length, buffer)
         })
     })
 }

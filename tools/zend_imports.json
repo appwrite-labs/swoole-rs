@@ -81,6 +81,7 @@
   "crates/phpruntime/src/plain_files.rs:swr_zend_try_copy_file": "shim_errors.c: SWR_ZEND_TRY encloses php_copy_file, whose stream wrappers and warnings may run PHP code.",
   "crates/phpruntime/src/plain_files.rs:swr_zend_try_open_basedir": "shim_errors.c: SWR_ZEND_TRY encloses php_check_open_basedir_ex, whose warning may run PHP code.",
   "crates/ssh2/src/php.rs:swr_zend_try_open_basedir": "shim_errors.c: SWR_ZEND_TRY encloses php_check_open_basedir_ex, whose warning may run PHP code.",
+  "crates/sqlite/src/driver.rs:swr_zend_try_open_basedir": "shim_errors.c: SWR_ZEND_TRY encloses php_check_open_basedir_ex, whose warning may run PHP code.",
   "crates/phpruntime/src/select.rs:swr_zend_runtime_select_args": "select.rs stream_select: contain_with encloses Zend parameter parsing and array separation.",
   "crates/phpruntime/src/select.rs:swr_zend_stream_zval_buffered": "shim_stream.c: obtains a stream without verification warnings and compares its buffer positions.",
   "crates/phpruntime/src/stream.rs:php_network_get_peer_name": "PHP formats the supplied native socket address and fills the requested output slots without invoking PHP code.",

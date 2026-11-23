@@ -1,6 +1,7 @@
 /* The coroutine sqlite3 calls crates/sqlite exports (--enable-swoole-sqlite),
- * and the macros that point the bundled pdo_sqlite driver at them. The driver
- * includes this first, after defining SW_USE_SQLITE_HOOK. */
+ * and the macros that point pdo_sqlite's C glue (sqlite_driver.c and
+ * sqlite_statement.c) at them. The glue includes this first, after defining
+ * SW_USE_SQLITE_HOOK. */
 #ifndef PHP_SWOOLE_SQLITE_H
 #define PHP_SWOOLE_SQLITE_H
 #include "php_swoole.h"
