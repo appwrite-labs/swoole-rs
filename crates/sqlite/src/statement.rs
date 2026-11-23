@@ -27,8 +27,27 @@ const SQLITE_TEXT: c_int = 3;
 const SQLITE_BLOB: c_int = 4;
 const SQLITE_NULL: c_int = 5;
 
+/// `get_col`: the current row's column, or false for a statement without a row's
+/// columns (recording SQLite's error past the last).
 #[unsafe(no_mangle)]
-extern "C" fn swr_sqlite_column_value(stmt: Stmt, column: c_int, output: &mut MaybeUninit<zval>) {
+extern "C" fn swr_sqlite_get_col(
+    pdo: &PdoStmt,
+    stmt: Stmt,
+    column: c_int,
+    output: &mut MaybeUninit<zval>,
+) -> bool {
+    if stmt.0.is_null() {
+        return false;
+    }
+    if column >= sqlite3_data_count(stmt) {
+        swr_sqlite_stmt_error(pdo);
+        return false;
+    }
+    column_value(stmt, column, output);
+    true
+}
+
+fn column_value(stmt: Stmt, column: c_int, output: &mut MaybeUninit<zval>) {
     unsafe extern "C" {
         safe fn sqlite3_column_type(stmt: Stmt, column: c_int) -> c_int;
         safe fn sqlite3_column_int64(stmt: Stmt, column: c_int) -> i64;
@@ -54,13 +73,41 @@ extern "C" fn swr_sqlite_column_value(stmt: Stmt, column: c_int, output: &mut Ma
     output.write(value.into_zval());
 }
 
+/// `get_column_meta`: the column's storage class, declared type and table, or false
+/// before execution or (recording SQLite's error) past the last column.
 #[unsafe(no_mangle)]
 extern "C" fn swr_sqlite_column_meta(
+    pdo: &PdoStmt,
+    stmt: Stmt,
+    column: zend_long,
     output: &Slot,
-    kind: c_int,
-    declared: Option<Text<'_>>,
-    table: Option<Text<'_>>,
-) {
+) -> bool {
+    unsafe extern "C" {
+        safe fn sqlite3_column_type(stmt: Stmt, column: c_int) -> c_int;
+        /// The column's declared type, or none for an expression; SQLite keeps it until
+        /// the statement is prepared again or finalized.
+        safe fn sqlite3_column_decltype<'a>(stmt: Stmt, column: c_int) -> Option<Text<'a>>;
+        /// The column's table, or none for an expression, kept as the declared type.
+        safe fn sqlite3_column_table_name<'a>(stmt: Stmt, column: c_int) -> Option<Text<'a>>;
+    }
+    if stmt.0.is_null() || !pdo.executed() {
+        return false;
+    }
+    if column >= sqlite3_column_count(stmt).into() {
+        swr_sqlite_stmt_error(pdo);
+        return false;
+    }
+    let column = column.c_cast::<c_int>();
+    column_meta(
+        output,
+        sqlite3_column_type(stmt, column),
+        sqlite3_column_decltype(stmt, column),
+        sqlite3_column_table_name(stmt, column),
+    );
+    true
+}
+
+fn column_meta(output: &Slot, kind: c_int, declared: Option<Text<'_>>, table: Option<Text<'_>>) {
     unsafe extern "C" {
         /// Called only with Zend's known string IDs below.
         safe fn swr_sqlite_known_type(id: u32) -> &'static ZStr;
