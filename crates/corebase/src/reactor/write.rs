@@ -245,11 +245,18 @@ impl SocketFields {
         }
     }
 
-    /// The output block alone, for [`crate::reactor::OutputResult::publish`], which
-    /// borrows only it so that pointers to the socket's other fields stay usable.
+    /// Records why a send stopped, as its result asks: `close_wait` (the socket is to
+    /// close) and `send_wait` (it waits for writability). It writes only those two
+    /// flags of the output block, so pointers to the socket's other fields, such as the
+    /// hooks' `kernel_nobufs`, stay usable.
     #[inline]
-    pub(crate) const fn output_block(&mut self) -> &mut SocketOutput {
-        &mut self.output
+    pub const fn note_send_stall(&mut self, close_wait: bool, send_wait: bool) {
+        if close_wait {
+            self.output.close_wait = true;
+        }
+        if send_wait {
+            self.output.send_wait = true;
+        }
     }
 
     /// A send went out: restarts the idle clock when an idle timer watches sends.
