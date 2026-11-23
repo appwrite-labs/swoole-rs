@@ -14,7 +14,7 @@ use swoole_rs_firebird_sys::ibase::{
 use swoole_rs_firebird_sys::{
     Bytes, Handle, Sqlda, Status,
     ibase::{
-        DSQL_close, isc_info_end, isc_info_req_select_count, isc_info_sql_records,
+        DSQL_close, DSQL_drop, isc_info_end, isc_info_req_select_count, isc_info_sql_records,
         isc_info_sql_stmt_delete, isc_info_sql_stmt_exec_procedure, isc_info_sql_stmt_insert,
         isc_info_sql_stmt_update,
     },
@@ -74,6 +74,12 @@ unsafe extern "C" {
     /// After an execute: the name cleared, the cursor open when the statement
     /// returns rows but is no procedure, exhausted when it returns none.
     safe fn swr_firebird_executed(stmt: &Stmt);
+    /// Whether the statement's connection object is still usable (the server
+    /// side of the statement is gone with it otherwise).
+    safe fn swr_firebird_db_usable(stmt: &Stmt) -> bool;
+    /// The statement record freed: its named parameters, descriptors' storage
+    /// and itself. The statement's accessors may not be called again.
+    safe fn swr_firebird_stmt_free(stmt: &Stmt);
     /// The cursor's name set to `name`'s first 31 bytes (`strlcpy`).
     safe fn swr_firebird_cursor_named(stmt: &Stmt, name: Text<'_>);
     /// fbclient's decoders: a `DATE`, `TIME` or `TIMESTAMP` into the `tm`.
@@ -570,4 +576,24 @@ fn execute(dbh: &Dbh, stmt: &Stmt) -> bool {
     }
     swr_firebird_executed(stmt);
     true
+}
+
+/// `pdo_firebird_stmt_dtor`: the statement dropped on the server
+/// (`DSQL_drop`) while its connection object is usable, false with the error
+/// recorded when that fails, and the record freed either way.
+#[unsafe(no_mangle)]
+pub extern "C" fn swr_firebird_stmt_dtor(stmt: &Stmt) -> bool {
+    let dbh = swr_firebird_stmt_dbh(stmt);
+    let drop = u16::try_from(DSQL_drop).unwrap_or_default();
+    let failed = swr_firebird_db_usable(stmt)
+        && swoole_isc_dsql_free_statement(
+            swr_firebird_status(dbh),
+            swr_firebird_stmt_handle(stmt),
+            drop,
+        ) != 0;
+    if failed {
+        crate::error::status_error(dbh, Some(stmt));
+    }
+    swr_firebird_stmt_free(stmt);
+    !failed
 }

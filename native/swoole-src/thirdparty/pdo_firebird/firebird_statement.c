@@ -123,27 +123,27 @@ static void php_firebird_free_sqlda(XSQLDA const *sqlda) /* {{{ */
 }
 /* }}} */
 
-/* called by PDO to clean up a statement handle */
-static int pdo_firebird_stmt_dtor(pdo_stmt_t *stmt) /* {{{ */
-{
-	pdo_firebird_stmt *S = (pdo_firebird_stmt*)stmt->driver_data;
-	int result = 1;
+/* The destructor is Rust (crates/firebird/src/statement.rs); it reads and frees the record
+ * through these. */
+bool swr_firebird_stmt_dtor(pdo_stmt_t *stmt);
 
-	/* release the statement.
-	 * Note: if the server object is already gone then the statement was closed already as well. */
+bool swr_firebird_db_usable(pdo_stmt_t *stmt)
+{
+	/* Note: if the server object is already gone then the statement was closed already as well. */
 #if PHP_VERSION_ID >= 80500
-	bool server_obj_usable = php_pdo_stmt_valid_db_obj_handle(stmt);
+	return php_pdo_stmt_valid_db_obj_handle(stmt);
 #else
 	/* TODO: for master, move this check to a separate function shared between pdo drivers.
 	 *       pdo_pgsql and pdo_mysql do this exact same thing */
-	bool server_obj_usable = !Z_ISUNDEF(stmt->database_object_handle)
+	return !Z_ISUNDEF(stmt->database_object_handle)
 		&& IS_OBJ_VALID(EG(objects_store).object_buckets[Z_OBJ_HANDLE(stmt->database_object_handle)])
 		&& !(OBJ_FLAGS(Z_OBJ(stmt->database_object_handle)) & IS_OBJ_FREE_CALLED);
 #endif
-	if (server_obj_usable && isc_dsql_free_statement(S->H->isc_status, &S->stmt, DSQL_drop)) {
-		php_firebird_error_stmt(stmt);
-		result = 0;
-	}
+}
+
+void swr_firebird_stmt_free(pdo_stmt_t *stmt)
+{
+	pdo_firebird_stmt *S = (pdo_firebird_stmt*)stmt->driver_data;
 
 	zend_hash_destroy(S->named_params);
 	FREE_HASHTABLE(S->named_params);
@@ -156,8 +156,12 @@ static int pdo_firebird_stmt_dtor(pdo_stmt_t *stmt) /* {{{ */
 
 	php_firebird_free_sqlda(&S->out_sqlda);
 	efree(S);
+}
 
-	return result;
+/* called by PDO to clean up a statement handle */
+static int pdo_firebird_stmt_dtor(pdo_stmt_t *stmt) /* {{{ */
+{
+	return swr_firebird_stmt_dtor(stmt);
 }
 /* }}} */
 
