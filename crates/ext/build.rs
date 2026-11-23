@@ -1,6 +1,5 @@
-//! Compile what the extension still needs of C and C++ (native/ and the bundled
-//! thirdparty sources config.m4 lists) and link it into `swoole.so`, in place of
-//! phpize and configure. The thirdparty sources are native/swoole-src's.
+//! Compile what the extension still needs of C and C++ (native/) and link it into
+//! `swoole.so`, in place of phpize and configure.
 
 #[cfg(feature = "php")]
 #[path = "../corebase/platform.rs"]
@@ -52,8 +51,6 @@ mod php {
     #[derive(Default)]
     struct Profile {
         defines: Vec<String>,
-        c: Vec<PathBuf>,
-        cxx: Vec<PathBuf>,
         includes: Vec<PathBuf>,
         libs: Vec<&'static str>,
     }
@@ -258,7 +255,6 @@ mod php {
         let out = PathBuf::from(env::var("OUT_DIR").expect("ext: OUT_DIR"));
         let os = env::var("CARGO_CFG_TARGET_OS").expect("ext: target OS");
         let owned = native.join("swoole-src");
-        let vendored = owned.join("thirdparty");
         let profile = profile();
         // config.m4: thread context replaces boost.context's assembly switch.
         let asm_context = !feature("thread_context");
@@ -291,7 +287,7 @@ mod php {
             .collect();
         modules.sort();
         includes.extend(modules.iter().cloned());
-        includes.extend([owned, vendored.clone()]);
+        includes.push(owned);
         includes.extend(env::var_os("DEP_OPENSSL_INCLUDE").map(PathBuf::from));
         includes.extend(php_includes(&php_config));
         includes.extend(profile.includes);
@@ -317,16 +313,14 @@ mod php {
         for module in &modules {
             cxx.files(sources(module, "cc"));
         }
-        cxx.file(vendored.join("php/standard/proc_open.cc"))
-            .files(profile.cxx)
-            .compile("swoole_native_cxx");
+        cxx.compile("swoole_native_cxx");
 
         let mut c = base(false);
         for module in &modules {
             c.files(sources(module, "c"));
         }
         // native/hooks/plain_wrapper.c comes with the hooks module's sources above.
-        c.files(profile.c).compile("swoole_native_c");
+        c.compile("swoole_native_c");
 
         for library in profile.libs.into_iter().chain(["z", "pthread", "m"]) {
             println!("cargo::rustc-link-lib={library}");

@@ -30,7 +30,7 @@ use swoole_rs_zend::{
     },
 };
 
-// The replacements that live elsewhere: `proc_open` (thirdparty proc_open.cc; its
+// The replacements that live elsewhere: `proc_open` (native/hooks/proc_open.cc; its
 // close, status and terminate are crate::proc's), and crates/phpcoroutines'
 // `gethostbyname` and (PHP 8.4+) `exit`.
 unsafe extern "C" {
