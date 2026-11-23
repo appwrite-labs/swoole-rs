@@ -793,7 +793,7 @@ pub extern "C" fn swr_firebird_bind_blob(stmt: &Stmt, id: &mut [u32; 2], param: 
 }
 
 /// `PDO_FB_SQLDA_VERSION`: `SQLDA_VERSION1`, as ibase.h defines no `SQLDA_VERSION`.
-const SQLDA_VERSION: u16 = 1;
+pub(crate) const SQLDA_VERSION: u16 = 1;
 
 /// `pdo_firebird_stmt_fetch`: the next row into the output descriptor,
 /// counted. Before execution, the `HY000` closed-cursor error; an `EXECUTE

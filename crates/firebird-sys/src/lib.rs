@@ -189,6 +189,18 @@ unsafe extern "C" {
         dialect: c_ushort,
         sqlda: Sqlda,
     ) -> ISC_STATUS;
+    pub safe fn isc_dsql_describe(
+        status: Status,
+        stmt: Handle,
+        dialect: c_ushort,
+        sqlda: Sqlda,
+    ) -> ISC_STATUS;
+    pub safe fn isc_dsql_describe_bind(
+        status: Status,
+        stmt: Handle,
+        dialect: c_ushort,
+        sqlda: Sqlda,
+    ) -> ISC_STATUS;
     pub safe fn isc_dsql_fetch(
         status: Status,
         stmt: Handle,
