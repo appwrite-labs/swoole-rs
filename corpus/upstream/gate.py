@@ -24,6 +24,10 @@ signature both engines hit at the same rate (#200, #406) is inconclusive: it is 
 of the verdict and re-run once more. A test whose re-runs on an engine are all
 inconclusive fails the gate, labelled inconclusive.
 
+A shard report is named <engine>-<index>.json (phpt.yml). When none of the tests in upstream's
+shard N has a result on an engine, that engine's shard N died or was cancelled before writing its
+report: the gate fails with one line naming it, not with each of its tests as a regression (#5616).
+
 On a debug PHP (debug.yml) a failure may carry Zend's leak report or a failed assertion;
 the summary lists those per engine, upstream's own too, and gates them as any failure.
 """
@@ -63,6 +67,10 @@ MIXED_RERUNS = 48
 # More flagged tests than this is a broad breakage, not flakiness: they aren't re-run.
 RECHECK_LIMIT = 20
 STATUSES = ['passed', 'failed', 'skipped', 'excluded']
+# phpt.yml's shard report name, <engine>-<index>.json.
+SHARD_REPORT = re.compile(r'(.+)-(\d+)')
+# The annotation title for a shard that produced no results; ci.py stuck reads it as a runner death.
+LOST_SHARD = 'PHPT shard lost'
 # Pinned tests of upstream fixes to code that is Rust now, by the open issue porting them
 # (#1905 moved the pin to v6.2.5 ahead of the ports). The gate lists them instead of
 # failing on them, and lists those cargo already passes so their entries go.
@@ -95,9 +103,12 @@ def rows(reports):
         data = json.loads(Path(report).read_text())
         if data.get('execution_status', 'complete') != 'complete':
             raise ValueError(f'{report}: run {data["execution_status"]}')
+        shard = SHARD_REPORT.fullmatch(Path(report).stem)
         for row in data['results']:
             entry = {'test': row['test'], 'family': row['module'], 'engine': row.get('engine', 'upstream'),
                      'status': row['status'], 'upstream_status': row.get('upstream_status')}
+            if shard:
+                entry['shard'] = int(shard[2])
             if 'leftovers' in row:
                 entry['leftovers'] = row['leftovers']
             if row.get('racy'):
@@ -137,8 +148,26 @@ def resource_regressions(results):
     return sorted(regressions)
 
 
+def lost_shards(results):
+    """(engine, index) for each upstream shard none of whose tests has a result on that engine."""
+    others = {row['engine'] for row in results} - {'upstream'}
+    tested = {(row['test'], row['engine']) for row in results}
+    shards = defaultdict(set)
+    for row in results:
+        if row['engine'] == 'upstream' and 'shard' in row:
+            shards[row['shard']].add(row['test'])
+    return sorted((engine, index) for index, tests in shards.items() for engine in others
+                  if not any((test, engine) in tested for test in tests))
+
+
+def lost_messages(results):
+    return [f'{engine} shard {index} produced no results (its runner died or was cancelled)'
+            for engine, index in lost_shards(results)]
+
+
 def compare(results):
-    """(regressions, failing on both): a missing result counts as not passed."""
+    """(regressions, failing on both): a missing result counts as not passed, unless its whole
+    shard is missing on that engine (lost_shards)."""
     status = defaultdict(dict)
     # A racy original run with --run-racy is reported (racy_listing), not gated.
     racy = {row['test'] for row in results if row.get('racy')}
@@ -146,9 +175,11 @@ def compare(results):
         if row['test'] not in racy:
             status[row['test']][row['engine']] = row['status']
     others = sorted({row['engine'] for row in results} - {'upstream'})
+    lost = lost_shards(results)
+    shard = {row['test']: row.get('shard') for row in results if row['engine'] == 'upstream'}
     regressions = sorted(f'{test} ({engine}: {engines.get(engine, "missing")})' for test, engines in status.items()
                          if engines.get('upstream') == 'passed' and test not in PENDING
-                         for engine in others if engines.get(engine) != 'passed')
+                         for engine in others if engines.get(engine) != 'passed' and (engine, shard[test]) not in lost)
     both = sorted(test for test, engines in status.items() if others and engines.get('upstream') == 'failed'
                   and all(engines.get(engine) == 'failed' for engine in others))
     return regressions, both
@@ -282,6 +313,8 @@ def markdown(results, rechecked=None, stubbed=()):
     for row in results:
         families[row['family']][row['engine'], row['status']] += 1
     lines = [f'**{LIBRARIES}** ({len(stubbed)} report(s)).', ''] if stubbed else []
+    for message in lost_messages(results):
+        lines += [f'**{message}.**', '']
     for engine in engines:
         statuses = Counter(row['status'] for row in results if row['engine'] == engine)
         skips = Counter(row['category'] for row in results if row['engine'] == engine and row['status'] == 'skipped')
@@ -355,6 +388,9 @@ def main():
     print(markdown(results, rechecked, stubbed))
     if stubbed:
         annotate('warning', 'PHPT libraries', f'{LIBRARIES}: {", ".join(stubbed)}')
+    lost = lost_messages(results)
+    for message in lost:
+        annotate('error', LOST_SHARD, message)
     resources = resource_regressions(results)
     for regression in resources:
         annotate('error', 'PHPT regression', regression)
@@ -365,11 +401,11 @@ def main():
             annotate('notice', 'PHPT flaky on upstream', test)
         for test in recovered:
             annotate('notice', 'PHPT passed on re-run', test)
-        return int(bool(confirmed or inconclusive or resources))
+        return int(bool(confirmed or inconclusive or resources or lost))
     regressions = compare(results)[0]
     for regression in regressions:
         annotate('error', 'PHPT regression', regression)
-    return int(bool(regressions or resources))
+    return int(bool(regressions or resources or lost))
 
 
 def annotate_regressions(results, tests):

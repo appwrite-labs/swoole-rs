@@ -383,6 +383,30 @@ class PhptGate(unittest.TestCase):
         self.assertIn('- `tests/y.phpt (upstream: leak)`', summary)
         self.assertNotIn('leak or assertion', markdown(results[:1]))
 
+    def test_a_shard_without_results_is_one_line_not_its_tests(self):
+        import subprocess
+        # cargo-2 died before writing its report (#5616); cargo-1 reported but lost one test.
+        reports = {'upstream-1': [('a', 'upstream', 'passed'), ('b', 'upstream', 'passed')],
+                   'upstream-2': [('c', 'upstream', 'passed'), ('d', 'upstream', 'passed')],
+                   'cargo-1': [('a', 'cargo', 'passed')]}
+        root = Path(__file__).resolve().parents[2]
+        with tempfile.TemporaryDirectory() as temp:
+            for name, results in reports.items():
+                Path(temp, f'{name}.json').write_text(json.dumps({'results': [
+                    {'test': f'tests/t/{test}.phpt', 'module': 't', 'engine': engine, 'status': status}
+                    for test, engine, status in results]}))
+            paths = sorted(Path(temp).glob('*.json'))
+            results = list(rows(paths))
+            self.assertEqual(compare(results)[0], ['tests/t/b.phpt (cargo: missing)'])
+            self.assertIn('**cargo shard 2 produced no results (its runner died or was cancelled).**', markdown(results))
+            environment = {key: value for key, value in os.environ.items() if key != 'GITHUB_ACTIONS'}
+            gate = subprocess.run([sys.executable, root / 'corpus/upstream/gate.py', *paths],
+                                  env={**environment, 'GITHUB_ACTIONS': 'true'}, capture_output=True, text=True)
+        self.assertEqual(gate.returncode, 1)
+        self.assertEqual(gate.stderr.splitlines(), [
+            '::error title=PHPT shard lost::cargo shard 2 produced no results (its runner died or was cancelled)',
+            '::error title=PHPT regression::tests/t/b.phpt (cargo: missing)'])
+
     def test_incomplete_shards_are_refused(self):
         with tempfile.TemporaryDirectory() as temp:
             report = Path(temp) / 'shard.json'
