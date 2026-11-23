@@ -476,10 +476,6 @@ fn blob_length(reply: &[u8; BLOB_INFO]) -> Option<u64> {
     Some(0)
 }
 
-/// `ZSTR_MAX_LEN`: the most bytes a `zend_string` holds, its header and NUL
-/// aside (`SIZE_MAX - ZEND_MM_ALIGNED_SIZE(_ZSTR_HEADER_SIZE + 1)`).
-const ZSTR_MAX_LEN: usize = usize::MAX - 32;
-
 /// Zeros to fill a BLOB's string with before its segments are read in.
 static ZEROS: [u8; 65535] = [0; 65535];
 
@@ -513,8 +509,12 @@ fn read_blob(dbh: &Dbh, stmt: &Stmt, blob: Handle<'_>, result: &Slot) -> bool {
     if len == 0 {
         return true;
     }
-    // Past what a string can hold (C's ZSTR_MAX_LEN): false, nothing recorded.
-    let Some(len) = usize::try_from(len).ok().filter(|&len| len <= ZSTR_MAX_LEN) else {
+    // Past what a string can be allocated with (`isize::MAX`, below C's
+    // ZSTR_MAX_LEN on every target): false, nothing recorded.
+    let Some(len) = usize::try_from(len)
+        .ok()
+        .filter(|&len| isize::try_from(len).is_ok())
+    else {
         return false;
     };
     // One Zend string, as C's zend_string_alloc, read into in place.
