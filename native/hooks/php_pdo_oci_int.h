@@ -17,6 +17,9 @@
 #ifndef PHP_PDO_OCI_INT_H
 #define PHP_PDO_OCI_INT_H
 
+/* Only with --with-swoole-oracle: oci.h comes from Instant Client's SDK. */
+#ifdef SW_USE_ORACLE
+
 #include "zend_portability.h"
 
 #include <oci.h>
@@ -74,4 +77,5 @@ enum {
     PDO_OCI_ATTR_CALL_TIMEOUT
 };
 
+#endif /* SW_USE_ORACLE */
 #endif /* PHP_PDO_OCI_INT_H */
