@@ -1,15 +1,17 @@
-//! The bundled ext/ssh2's PHP functions (once `thirdparty/php/ssh2/ssh2.cc`) as
-//! they move to Rust: so far `ssh2_connect`, `ssh2_methods_negotiated`,
+//! The bundled ext/ssh2's PHP functions (once `thirdparty/php/ssh2/`), every
+//! one of them: `ssh2_connect`, `ssh2_methods_negotiated`,
 //! `ssh2_fingerprint`, the `ssh2_auth_*` functions,
 //! `ssh2_forward_listen`/`ssh2_forward_accept`, the SFTP functions that
 //! change a path, `ssh2_sftp_readlink`/`ssh2_sftp_realpath`, `ssh2_sftp`,
 //! `ssh2_sftp_chmod`, `ssh2_sftp_stat`/`ssh2_sftp_lstat`, and
 //! `ssh2_send_eof`/`ssh2_shell_resize` on a channel stream, `ssh2_tunnel`,
 //! `ssh2_shell`, `ssh2_exec`, `ssh2_scp_recv`, `ssh2_scp_send` and
-//! `ssh2_fetch_stream`, `ssh2_disconnect`, and the `ssh2.*://` wrappers'
-//! authentication.
+//! `ssh2_fetch_stream`, `ssh2_disconnect`, the `ssh2.*://` wrappers'
+//! authentication, and the publickey subsystem ([`publickey`]).
 //! The resources stay ext/ssh2's; their sessions, listeners and SFTP sessions
 //! are read through `swr_ssh2_session`, `swr_ssh2_listener` and `swr_ssh2_sftp`.
+mod publickey;
+
 use crate::{Ops, Session, Sftp, Wait};
 use std::ffi::{CStr, CString, c_int, c_long, c_uint, c_ulong, c_void};
 use std::ptr::NonNull;
@@ -459,6 +461,10 @@ swoole_rs_zend::handlers! {
     zif_ssh2_auth_agent => auth_agent;
     zif_ssh2_forward_listen => forward_listen;
     zif_ssh2_forward_accept => forward_accept;
+    zif_ssh2_publickey_init => publickey::init;
+    zif_ssh2_publickey_add => publickey::add;
+    zif_ssh2_publickey_remove => publickey::remove;
+    zif_ssh2_publickey_list => publickey::list;
 }
 
 /// A PHP string as the C string libssh2 reads, up to its NUL, and its length
