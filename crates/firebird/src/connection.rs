@@ -163,13 +163,17 @@ fn dpb(values: [(u32, Option<Text<'_>>); 4]) -> Vec<u8> {
             continue;
         };
         let value = value.get().to_bytes();
-        let mut item = vec![tag.c_cast::<u8>(), value.len().c_cast::<u8>()];
-        item.extend_from_slice(value);
-        // `slprintf` keeps what fits before its NUL, and returns that length.
-        let written = item
-            .len()
-            .min(usize::try_from(room).unwrap_or_default() - 1);
-        dpb.extend_from_slice(item.get(..written).unwrap_or_default());
+        // `slprintf` keeps what fits before its NUL, and returns that length:
+        // only those bytes of the tag, the length byte and the value are copied.
+        let fits = usize::try_from(room).unwrap_or_default() - 1;
+        let head = [tag.c_cast::<u8>(), value.len().c_cast::<u8>()];
+        let head = head.get(..fits.min(2)).unwrap_or_default();
+        let value = value
+            .get(..(fits - head.len()).min(value.len()))
+            .unwrap_or_default();
+        dpb.extend_from_slice(head);
+        dpb.extend_from_slice(value);
+        let written = head.len() + value.len();
         room -= c_short::try_from(written).unwrap_or(room);
     }
     dpb
