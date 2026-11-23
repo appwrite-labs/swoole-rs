@@ -137,3 +137,10 @@ pub(crate) fn status_error(dbh: &Dbh, stmt: Option<&Stmt>) {
         });
     });
 }
+
+/// Whether the connection's last call left an error in its status vector
+/// (`isc_status[0] && isc_status[1]`).
+pub(crate) fn status_failed(dbh: &Dbh) -> bool {
+    let vector = swr_firebird_status_vector(dbh);
+    vector.first().is_some_and(|&v| v != 0) && vector.get(1).is_some_and(|&v| v != 0)
+}

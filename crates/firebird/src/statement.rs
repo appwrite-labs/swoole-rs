@@ -12,7 +12,7 @@ use swoole_rs_firebird_sys::ibase::{
     SQL_TIMESTAMP, SQL_TYPE_DATE, SQL_TYPE_TIME, SQL_VARYING, XSQLVAR,
 };
 use swoole_rs_firebird_sys::{
-    Bytes, Handle, Status,
+    Bytes, Handle, Sqlda, Status,
     ibase::{DSQL_close, isc_info_end, isc_info_req_select_count},
 };
 use swoole_rs_zend::pdo::{Attribute, Dbh, Slot, Stmt};
@@ -20,7 +20,9 @@ use swoole_rs_zend::sys::{
     PHP_VERSION_ID, pdo_attribute_type_PDO_ATTR_CURSOR_NAME as CURSOR_NAME, zend_long, zend_ulong,
 };
 
-use crate::{swoole_isc_dsql_free_statement, swoole_isc_dsql_set_cursor_name};
+use crate::{
+    swoole_isc_dsql_fetch, swoole_isc_dsql_free_statement, swoole_isc_dsql_set_cursor_name,
+};
 use swoole_rs_zend::sys::{
     pdo_column_data, pdo_param_type_PDO_PARAM_BOOL as PARAM_BOOL,
     pdo_param_type_PDO_PARAM_INT as PARAM_INT, pdo_param_type_PDO_PARAM_STR as PARAM_STR,
@@ -42,6 +44,13 @@ unsafe extern "C" {
     safe fn swr_firebird_cursor_name(stmt: &Stmt) -> Text<'_>;
     safe fn swr_firebird_cursor_open(stmt: &Stmt) -> bool;
     safe fn swr_firebird_cursor_closed(stmt: &Stmt);
+    /// Whether the statement's rows are exhausted (`S->exhausted`), and
+    /// marking them so; whether it is an `EXECUTE PROCEDURE`; and its output
+    /// descriptor (`&S->out_sqlda`).
+    safe fn swr_firebird_exhausted(stmt: &Stmt) -> bool;
+    safe fn swr_firebird_set_exhausted(stmt: &Stmt);
+    safe fn swr_firebird_is_procedure(stmt: &Stmt) -> bool;
+    safe fn swr_firebird_out_sqlda(stmt: &Stmt) -> Sqlda;
     /// The cursor's name set to `name`'s first 31 bytes (`strlcpy`).
     safe fn swr_firebird_cursor_named(stmt: &Stmt, name: Text<'_>);
     /// fbclient's decoders: a `DATE`, `TIME` or `TIMESTAMP` into the `tm`.
@@ -404,5 +413,58 @@ pub extern "C" fn swr_firebird_records<'a>(
         }
         at += length + 3;
     }
+    true
+}
+
+/// `PDO_FB_SQLDA_VERSION`: `SQLDA_VERSION1`, as ibase.h defines no `SQLDA_VERSION`.
+const SQLDA_VERSION: u16 = 1;
+
+/// `pdo_firebird_stmt_fetch`: the next row into the output descriptor,
+/// counted. Before execution, the `HY000` closed-cursor error; an `EXECUTE
+/// PROCEDURE`'s one row, which `execute` already fetched; false once
+/// exhausted, the fetch's error recorded when it left one.
+#[unsafe(no_mangle)]
+pub extern "C" fn swr_firebird_fetch(stmt: &Stmt) -> bool {
+    let dbh = swr_firebird_stmt_dbh(stmt);
+    if !stmt.executed() {
+        swoole_rs_corebase::lent::lend_in(b"HY000", |state, state_len| {
+            swoole_rs_corebase::lent::lend_in(
+                b"Cannot fetch from a closed cursor",
+                |message, message_len| {
+                    crate::error::php_firebird_set_error(
+                        dbh,
+                        Some(stmt),
+                        state,
+                        state_len,
+                        message,
+                        message_len,
+                    );
+                },
+            );
+        });
+        return false;
+    }
+    if swr_firebird_exhausted(stmt) {
+        return false;
+    }
+    if swr_firebird_is_procedure(stmt) {
+        stmt.set_row_count(1);
+        swr_firebird_set_exhausted(stmt);
+        return true;
+    }
+    let fetched = swoole_isc_dsql_fetch(
+        swr_firebird_status(dbh),
+        swr_firebird_stmt_handle(stmt),
+        SQLDA_VERSION,
+        swr_firebird_out_sqlda(stmt),
+    );
+    if fetched != 0 {
+        if crate::error::status_failed(dbh) {
+            crate::error::status_error(dbh, Some(stmt));
+        }
+        swr_firebird_set_exhausted(stmt);
+        return false;
+    }
+    stmt.set_row_count(stmt.row_count().wrapping_add(1));
     true
 }
