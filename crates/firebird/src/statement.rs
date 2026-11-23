@@ -1,19 +1,32 @@
 //! `pdo_firebird`'s statement methods (`firebird_statement.c`): so far the
-//! column description and metadata, which read a column's `XSQLVAR` in the
-//! statement's output descriptor, and the integer, string and bool values. The methods PDO calls stay C, as thin
-//! callers that find the descriptor in their statement record.
-use std::ffi::{c_char, c_uint};
+//! column description, metadata and output type coercion, which read a
+//! column's `XSQLVAR` in the statement's output descriptor, and the values
+//! other than blobs and the time-zone types. The methods PDO calls stay C, as
+//! thin callers that find the descriptor in their statement record.
+use std::ffi::{c_char, c_int, c_uint};
+
 use swoole_rs_corebase::lent::{Count, In};
+use swoole_rs_corebase::sys::Text;
 use swoole_rs_firebird_sys::ibase::{
-    SQL_BOOLEAN, SQL_DOUBLE, SQL_FLOAT, SQL_INT64, SQL_LONG, SQL_SHORT, SQL_TEXT, SQL_VARYING,
-    XSQLVAR,
+    ISC_TIMESTAMP, SQL_BOOLEAN, SQL_DOUBLE, SQL_FLOAT, SQL_INT64, SQL_LONG, SQL_SHORT, SQL_TEXT,
+    SQL_TIMESTAMP, SQL_TYPE_DATE, SQL_TYPE_TIME, SQL_VARYING, XSQLVAR,
 };
-use swoole_rs_zend::pdo::Slot;
+use swoole_rs_zend::pdo::{Dbh, Slot};
 use swoole_rs_zend::sys::{
     pdo_column_data, pdo_param_type_PDO_PARAM_BOOL as PARAM_BOOL,
     pdo_param_type_PDO_PARAM_INT as PARAM_INT, pdo_param_type_PDO_PARAM_STR as PARAM_STR,
 };
 use swoole_rs_zend::{Owned, OwnedArray, ZString};
+
+unsafe extern "C" {
+    /// The connection's date (0), time (1) or timestamp (2) format, or its
+    /// default, live until it is set again.
+    safe fn swr_firebird_format<'a>(dbh: &'a Dbh, which: c_int) -> Text<'a>;
+    /// fbclient's decoders: a `DATE`, `TIME` or `TIMESTAMP` into the `tm`.
+    safe fn isc_decode_sql_date(date: &i32, tm: &mut libc::tm);
+    safe fn isc_decode_sql_time(time: &u32, tm: &mut libc::tm);
+    safe fn isc_decode_timestamp(timestamp: &ISC_TIMESTAMP, tm: &mut libc::tm);
+}
 
 /// An SQL type code without its nullable bit.
 fn base_type(sqltype: i16) -> u32 {
@@ -95,12 +108,46 @@ fn scaled(n: i64, scale: u32) -> Option<String> {
     })
 }
 
+/// A `DATE`, `TIME` or `TIMESTAMP` as `strftime` prints it in the
+/// connection's format for its type, at most 79 bytes as C's buffer held.
+fn datetime(dbh: &Dbh, var: &XSQLVAR, data: &[u8]) -> Option<Owned> {
+    let mut tm = swoole_rs_corebase::sys::zeroed::<libc::tm>();
+    let which = match base_type(var.sqltype) {
+        SQL_TYPE_DATE => {
+            isc_decode_sql_date(&i32::from_ne_bytes(integer::<4>(data)?), &mut tm);
+            0
+        }
+        SQL_TYPE_TIME => {
+            isc_decode_sql_time(&u32::from_ne_bytes(integer::<4>(data)?), &mut tm);
+            1
+        }
+        _ => {
+            let date = i32::from_ne_bytes(integer::<4>(data)?);
+            let time = u32::from_ne_bytes(integer::<4>(data.get(4..)?)?);
+            let timestamp = ISC_TIMESTAMP {
+                timestamp_date: date,
+                timestamp_time: time,
+            };
+            isc_decode_timestamp(&timestamp, &mut tm);
+            2
+        }
+    };
+    let format = swr_firebird_format(dbh, which);
+    let mut text = [0u8; 80];
+    let len = swoole_rs_corebase::sys::strftime(&mut text, format.get(), &tm);
+    Some(Owned::string(ZString::new(
+        text.get(..len).unwrap_or_default(),
+    )))
+}
+
 /// `pdo_firebird_stmt_get_col` for a null value, a scaled `SMALLINT`,
 /// `INTEGER`, `BIGINT` or `DOUBLE`, a `VARCHAR` or `CHAR`, an unscaled integer,
-/// a `BOOLEAN`, `FLOAT` and `DOUBLE`: the value in `result`, read from the lent `sqldata` bytes. False,
+/// a `BOOLEAN`, `FLOAT` and `DOUBLE`, and a `DATE`, `TIME` or `TIMESTAMP` in
+/// the connection's format: the value in `result`, read from the lent `sqldata` bytes. False,
 /// setting nothing, for the types C still reads.
 #[unsafe(no_mangle)]
 pub extern "C" fn swr_firebird_value<'a>(
+    dbh: &Dbh,
     var: &XSQLVAR,
     null: bool,
     data: In<'a, u8>,
@@ -148,6 +195,7 @@ pub extern "C" fn swr_firebird_value<'a>(
                 .map(|n| Owned::string(ZString::double_digits(f32::from_ne_bytes(n).into(), 8))),
             SQL_DOUBLE => integer::<8>(data)
                 .map(|n| Owned::string(ZString::double_digits(f64::from_ne_bytes(n), 16))),
+            SQL_TYPE_DATE | SQL_TYPE_TIME | SQL_TIMESTAMP => datetime(dbh, var, data),
             _ => None,
         }
     };
