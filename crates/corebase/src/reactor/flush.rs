@@ -28,7 +28,7 @@ pub fn swr_v1_reactor_flush(socket: Socket<'_>, ops: &impl FlushEffects) -> bool
     // One read per pass: the front entry's kind (`typed_front().kind`), or the timer
     // once the queue is empty.
     let timer = loop {
-        let (kind, timer) = socket.read(|record| (record.next_output(), record.output.send_timer));
+        let (kind, timer) = socket.read(|record| (record.next_output(), record.send_timer()));
         let Some(kind) = kind else {
             break timer;
         };
@@ -50,7 +50,7 @@ pub fn swr_v1_reactor_flush(socket: Socket<'_>, ops: &impl FlushEffects) -> bool
     if let Some(timer) = timer {
         ops.delete_timer(timer);
         empty = socket.edit(|record| {
-            record.output.send_timer = None;
+            _ = record.take_send_timer();
             record.output_drained()
         });
     }
@@ -68,7 +68,7 @@ pub fn swr_v1_reactor_drain(socket: Socket<'_>, ops: &impl FlushEffects) {
             break;
         }
         swr_v1_reactor_flush(socket, ops);
-        if socket.read(|record| record.output.close_wait || record.removed) {
+        if socket.read(|record| record.close_deferred() || record.removed) {
             break;
         }
     }

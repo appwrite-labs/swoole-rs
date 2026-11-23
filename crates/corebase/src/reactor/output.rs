@@ -42,16 +42,10 @@ pub struct OutputResult {
 }
 
 impl OutputResult {
-    /// Sets the socket's `close_wait` and `send_wait` flags the result asks for. It
-    /// borrows only the socket's output state, so it leaves pointers to the socket's
-    /// other fields, such as the hooks' `kernel_nobufs`, usable.
-    pub const fn publish(&self, output: &mut crate::reactor::SocketOutput) {
-        if self.close_wait {
-            output.close_wait = true;
-        }
-        if self.send_wait {
-            output.send_wait = true;
-        }
+    /// Sets the socket's `close_wait` and `send_wait` flags the result asks for
+    /// ([`crate::reactor::SocketFields::note_send_stall`], which writes only those).
+    pub const fn publish(&self, socket: &mut crate::reactor::SocketFields) {
+        socket.note_send_stall(self.close_wait, self.send_wait);
     }
 }
 
@@ -201,7 +195,7 @@ pub fn handle_send_owned(
     }
     // A complete send sets neither flag, and then the record needs no edit.
     if output.result.close_wait || output.result.send_wait {
-        socket.edit(|record| output.result.publish(&mut record.output));
+        socket.edit(|record| output.result.publish(record));
     }
     if output.result.pop {
         // Detach transfers custody to the caller without invoking a disposer.
