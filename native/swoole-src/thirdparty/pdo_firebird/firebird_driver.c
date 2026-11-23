@@ -170,77 +170,8 @@ static bool firebird_handle_preparer(pdo_dbh_t *dbh, zend_string *sql, /* {{{ */
 }
 /* }}} */
 
-/* called by PDO to execute a statement that doesn't produce a result set */
-static zend_long firebird_handle_doer(pdo_dbh_t *dbh, const zend_string *sql) /* {{{ */
-{
-	pdo_firebird_db_handle *H = (pdo_firebird_db_handle *)dbh->driver_data;
-	isc_stmt_handle stmt = PDO_FIREBIRD_HANDLE_INITIALIZER;
-	static char const info_count[] = { isc_info_sql_records };
-	char result[64];
-	int ret = 0;
-	XSQLDA in_sqlda, out_sqlda;
-
-	/* TODO no placeholders in exec() for now */
-	in_sqlda.version = out_sqlda.version = PDO_FB_SQLDA_VERSION;
-	in_sqlda.sqld = out_sqlda.sqld = 0;
-	out_sqlda.sqln = 1;
-
-	/* allocate and prepare statement */
-	if (!php_firebird_alloc_prepare_stmt(dbh, sql, &out_sqlda, &stmt, 0)) {
-		return -1;
-	}
-
-	/* execute the statement */
-	if (isc_dsql_execute2(H->isc_status, &H->tr, &stmt, PDO_FB_SQLDA_VERSION, &in_sqlda, &out_sqlda)) {
-		php_firebird_error(dbh);
-		ret = -1;
-		goto free_statement;
-	}
-
-	/* find out how many rows were affected */
-	if (isc_dsql_sql_info(H->isc_status, &stmt, sizeof(info_count), const_cast(info_count),
-			sizeof(result),	result)) {
-		php_firebird_error(dbh);
-		ret = -1;
-		goto free_statement;
-	}
-
-	if (result[0] == isc_info_sql_records) {
-		unsigned i = 3, result_size = isc_vax_integer(&result[1],2);
-
-		if (result_size > sizeof(result)) {
-			ret = -1;
-			goto free_statement;
-		}
-		while (result[i] != isc_info_end && i < result_size) {
-			short len = (short)isc_vax_integer(&result[i+1],2);
-			/* bail out on bad len */
-			if (len != 1 && len != 2 && len != 4) {
-				ret = -1;
-				goto free_statement;
-			}
-			if (result[i] != isc_info_req_select_count) {
-				ret += isc_vax_integer(&result[i+3],len);
-			}
-			i += len+3;
-		}
-	}
-
-	if (dbh->auto_commit && !H->in_manually_txn) {
-		if (!php_firebird_commit_transaction(dbh, /* retain */ true)) {
-			ret = -1;
-		}
-	}
-
-free_statement:
-
-	if (isc_dsql_free_statement(H->isc_status, &stmt, DSQL_drop)) {
-		php_firebird_error(dbh);
-	}
-
-	return ret;
-}
-/* }}} */
+/* The doer (PDO::exec) is Rust (crates/firebird/src/connection.rs). */
+zend_long firebird_handle_doer(pdo_dbh_t *dbh, const zend_string *sql);
 
 /* called by the PDO SQL parser to add quotes to values that are copied into SQL */
 static zend_string* firebird_handle_quoter(pdo_dbh_t *dbh, const zend_string *unquoted, enum pdo_param_type paramtype)

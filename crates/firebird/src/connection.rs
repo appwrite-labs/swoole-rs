@@ -1,24 +1,31 @@
 //! `pdo_firebird`'s connection methods (`firebird_driver.c`), under their C
-//! names: `firebird_handle_closer`, `pdo_firebird_check_liveness`,
+//! names: `firebird_handle_closer`, `firebird_handle_doer`, `pdo_firebird_check_liveness`,
 //! `pdo_firebird_fetch_error_func`, `pdo_firebird_in_manually_transaction`,
 //! and the handle factory's connecting (`swr_firebird_connect`). The
 //! connection record stays C, read through the driver's `swr_firebird_*`
 //! accessors.
-use std::ffi::{CString, c_int, c_short, c_ushort};
+use std::ffi::{CString, c_char, c_int, c_short, c_ushort};
 use swoole_rs_corebase::CCast;
 use swoole_rs_corebase::lent::{Count, Out, lend_in, lend_out};
 use swoole_rs_corebase::sys::Text;
 use swoole_rs_firebird_sys::ibase::{
-    isc_dpb_lc_ctype, isc_dpb_password, isc_dpb_sql_role_name, isc_dpb_user_name, isc_dpb_version1,
+    DSQL_drop, isc_dpb_lc_ctype, isc_dpb_password, isc_dpb_sql_role_name, isc_dpb_user_name,
+    isc_dpb_version1, isc_info_sql_records,
 };
-use swoole_rs_firebird_sys::{Handle, NameLength, Status};
-use swoole_rs_zend::Value;
+use swoole_rs_firebird_sys::{FB_API_HANDLE, Handle, NameLength, Sqlda, Status};
 use swoole_rs_zend::pdo::{Dbh, Slot, attr_long};
-use swoole_rs_zend::sys::zend_result;
+use swoole_rs_zend::sys::{zend_long, zend_result, zend_ulong};
+use swoole_rs_zend::{Value, ZStr};
 
 use crate::attribute::{ISOLATION_LEVEL, READ_COMMITTED, REPEATABLE_READ, SERIALIZABLE, WRITABLE};
-use crate::swoole_isc_attach_database;
+use crate::error::status_error;
+use crate::prepare::php_firebird_alloc_prepare_stmt;
+use crate::statement::{SQLDA_VERSION, records};
 use crate::transaction::php_firebird_begin_transaction;
+use crate::{
+    swoole_isc_attach_database, swoole_isc_dsql_execute, swoole_isc_dsql_free_statement,
+    swoole_isc_dsql_sql_info,
+};
 
 use crate::transaction::{php_firebird_commit_transaction, php_firebird_rollback_transaction};
 use crate::{swoole_fb_ping, swoole_isc_detach_database};
@@ -27,6 +34,7 @@ unsafe extern "C" {
     /// The connection's status vector and `&H->db`.
     safe fn swr_firebird_status(dbh: &Dbh) -> Status;
     safe fn swr_firebird_db(dbh: &Dbh) -> Handle<'_>;
+    safe fn swr_firebird_tr(dbh: &Dbh) -> Handle<'_>;
     /// `H->in_manually_txn`, and setting it.
     safe fn swr_firebird_in_manual_txn(dbh: &Dbh) -> bool;
     safe fn swr_firebird_set_manual(dbh: &Dbh, manual: bool);
@@ -86,6 +94,70 @@ pub extern "C" fn firebird_handle_closer(dbh: &Dbh) {
         swr_firebird_error(dbh);
     }
     swr_firebird_free(dbh);
+}
+
+/// `firebird_handle_doer` (`PDO::exec`): `sql` prepared and executed in the
+/// connection's transaction, which autocommit mode then commits, and the
+/// statement dropped. It keeps no result, so it takes no descriptor area.
+/// The rows changed, or -1 with the error recorded on the connection.
+#[unsafe(no_mangle)]
+pub extern "C" fn firebird_handle_doer(dbh: &Dbh, sql: &ZStr) -> zend_long {
+    let mut handle: FB_API_HANDLE = 0;
+    if !php_firebird_alloc_prepare_stmt(dbh, sql, Sqlda::NONE, Handle::new(&mut handle), None) {
+        return -1;
+    }
+    let rows = exec(dbh, &mut handle);
+    let drop = u16::try_from(DSQL_drop).unwrap_or_default();
+    if swoole_isc_dsql_free_statement(swr_firebird_status(dbh), Handle::new(&mut handle), drop) != 0
+    {
+        status_error(dbh, None);
+    }
+    rows.unwrap_or(-1)
+}
+
+/// [`firebird_handle_doer`] between the preparing and the dropping: the rows
+/// the prepared statement changed, an `int`'s worth as C summed them.
+fn exec(dbh: &Dbh, handle: &mut FB_API_HANDLE) -> Option<zend_long> {
+    let status = swr_firebird_status(dbh);
+    let tr = swr_firebird_tr(dbh);
+    if swoole_isc_dsql_execute(status, tr, Handle::new(handle), SQLDA_VERSION, Sqlda::NONE) != 0 {
+        status_error(dbh, None);
+        return None;
+    }
+    let mut reply = [0u8; 64];
+    // The one item asked for: `isc_info_sql_records`.
+    let item = c_char::from_ne_bytes([u8::try_from(isc_info_sql_records).unwrap_or_default()]);
+    let failed = lend_in(&[item], |items, items_length| {
+        lend_out(&mut reply, |out, len| {
+            swoole_isc_dsql_sql_info(
+                status,
+                Handle::new(handle),
+                items_length,
+                items,
+                len,
+                out.chars(),
+            )
+        })
+    }) != 0;
+    if failed {
+        status_error(dbh, None);
+        return None;
+    }
+    let mut rows: zend_ulong = 0;
+    if reply
+        .first()
+        .is_some_and(|&item| u32::from(item) == isc_info_sql_records)
+        && !records(&reply, &mut rows)
+    {
+        return None;
+    }
+    if dbh.auto_commit()
+        && !swr_firebird_in_manual_txn(dbh)
+        && !php_firebird_commit_transaction(dbh, true)
+    {
+        return None;
+    }
+    Some(rows.c_cast::<c_int>().into())
 }
 
 /// `pdo_firebird_check_liveness`: whether `fb_ping` reaches the server.

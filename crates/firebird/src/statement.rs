@@ -558,7 +558,7 @@ fn vax(bytes: &[u8]) -> u64 {
 /// each count but the selected rows' added to `rows`, at the `zend_ulong`'s
 /// width. False for a reply whose size, an item's length or an item's bytes run
 /// past it or are malformed, as C's `goto error`.
-fn records(reply: &[u8], rows: &mut zend_ulong) -> bool {
+pub(crate) fn records(reply: &[u8], rows: &mut zend_ulong) -> bool {
     // C's `unsigned result_size = isc_vax_integer(&result[1], 2)`.
     let size = reply.get(1..3).map_or(0, vax);
     if usize::try_from(size).map_or(true, |size| size > reply.len()) {
