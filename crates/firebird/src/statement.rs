@@ -11,7 +11,10 @@ use swoole_rs_firebird_sys::ibase::{
     ISC_TIMESTAMP, SQL_BOOLEAN, SQL_DOUBLE, SQL_FLOAT, SQL_INT64, SQL_LONG, SQL_SHORT, SQL_TEXT,
     SQL_TIMESTAMP, SQL_TYPE_DATE, SQL_TYPE_TIME, SQL_VARYING, XSQLVAR,
 };
-use swoole_rs_firebird_sys::{Bytes, Handle, Status, ibase::DSQL_close};
+use swoole_rs_firebird_sys::{
+    Bytes, Handle, Status,
+    ibase::{DSQL_close, isc_info_end, isc_info_req_select_count},
+};
 use swoole_rs_zend::pdo::{Attribute, Dbh, Slot, Stmt};
 use swoole_rs_zend::sys::{
     PHP_VERSION_ID, pdo_attribute_type_PDO_ATTR_CURSOR_NAME as CURSOR_NAME, zend_long,
@@ -338,5 +341,61 @@ pub extern "C" fn swr_firebird_stmt_set_attribute(
         return false;
     }
     swr_firebird_cursor_named(stmt, text.into());
+    true
+}
+
+/// `isc_vax_integer`: a little-endian integer of 1 to 4 bytes, its last byte
+/// signed, sign-extended to the unsigned 64 bits C's unsigned uses of it read.
+fn vax(bytes: &[u8]) -> u64 {
+    let Some((&last, rest)) = bytes.split_last() else {
+        return 0;
+    };
+    let value = rest
+        .iter()
+        .rev()
+        .fold(i64::from(last.cast_signed()), |value, &byte| {
+            (value << 8) | i64::from(byte)
+        });
+    value.cast_unsigned()
+}
+
+/// `pdo_firebird_stmt_execute`'s count of the rows an `INSERT`, `UPDATE`,
+/// `DELETE` or procedure changed, from the lent `isc_info_sql_records` reply:
+/// each count but the selected rows' added to `rows`. False for a reply whose
+/// size or a count's length is malformed, as C's `goto error`.
+#[unsafe(no_mangle)]
+pub extern "C" fn swr_firebird_records<'a>(
+    reply: In<'a, u8>,
+    len: Count<'a>,
+    rows: &mut u64,
+) -> bool {
+    let reply = reply.drain(len).bytes();
+    // C's `unsigned result_size = isc_vax_integer(&result[1], 2)`.
+    let size = reply.get(1..3).map_or(0, vax);
+    if usize::try_from(size).map_or(true, |size| size > reply.len()) {
+        return false;
+    }
+    let end = u8::try_from(isc_info_end).unwrap_or_default();
+    let selected = u8::try_from(isc_info_req_select_count).unwrap_or_default();
+    let mut at = 3;
+    while let Some(&item) = reply.get(at)
+        && item != end
+        && u64::try_from(at).is_ok_and(|at| at < size)
+    {
+        let Some(length) = reply.get(at + 1..at + 3).map(vax) else {
+            return false;
+        };
+        let Ok(length @ (1 | 2 | 4)) = usize::try_from(length) else {
+            return false;
+        };
+        if item != selected {
+            let Some(count) = reply.get(at + 3..at + 3 + length) else {
+                return false;
+            };
+            // C's zend_ulong `+=` of the ISC_LONG.
+            *rows = rows.wrapping_add(vax(count));
+        }
+        at += length + 3;
+    }
     true
 }

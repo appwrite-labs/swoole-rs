@@ -161,6 +161,9 @@ static int pdo_firebird_stmt_dtor(pdo_stmt_t *stmt) /* {{{ */
 }
 /* }}} */
 
+/* The records reply's row counts are Rust (crates/firebird/src/statement.rs). */
+bool swr_firebird_records(const char *reply, size_t len, zend_ulong *rows);
+
 /* called by PDO to execute a prepared query */
 static int pdo_firebird_stmt_execute(pdo_stmt_t *stmt) /* {{{ */
 {
@@ -213,19 +216,8 @@ static int pdo_firebird_stmt_execute(pdo_stmt_t *stmt) /* {{{ */
 					break;
 				}
 				if (result[0] == isc_info_sql_records) {
-					unsigned i = 3, result_size = isc_vax_integer(&result[1], 2);
-					if (result_size > sizeof(result)) {
+					if (!swr_firebird_records(result, sizeof(result), &affected_rows)) {
 						goto error;
-					}
-					while (result[i] != isc_info_end && i < result_size) {
-						short len = (short) isc_vax_integer(&result[i + 1], 2);
-						if (len != 1 && len != 2 && len != 4) {
-							goto error;
-						}
-						if (result[i] != isc_info_req_select_count) {
-							affected_rows += isc_vax_integer(&result[i + 3], len);
-						}
-						i += len + 3;
 					}
 					stmt->row_count = affected_rows;
 				}
