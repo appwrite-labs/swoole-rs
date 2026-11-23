@@ -194,7 +194,6 @@ mod php {
                 "SW_USE_SQLITE",
                 "HAVE_SW_PDO_SQLITELIB",
                 "HAVE_SW_SQLITE3_CLOSE_V2",
-                "HAVE_SW_SQLITE3_COLUMN_TABLE_NAME",
             ]);
             let dir = third.join("pdo_sqlite");
             p.c.extend(["sqlite_driver.c", "sqlite_statement.c"].map(|f| dir.join(f)));

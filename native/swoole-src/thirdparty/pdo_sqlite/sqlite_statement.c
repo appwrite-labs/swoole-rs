@@ -143,22 +143,13 @@ zend_string *swr_sqlite_column_string(sqlite3_stmt *stmt, int colno, bool blob)
 	return Z_STR(value);
 }
 
-extern void swr_sqlite_column_value(sqlite3_stmt *, int, zval *);
+extern bool swr_sqlite_get_col(pdo_stmt_t *, sqlite3_stmt *, int, zval *);
 
 static int pdo_sqlite_stmt_get_col(
 		pdo_stmt_t *stmt, int colno, zval *result, enum pdo_param_type *type)
 {
 	pdo_sqlite_stmt *S = (pdo_sqlite_stmt*)stmt->driver_data;
-	if (!S->stmt) {
-		return 0;
-	}
-	if(colno >= sqlite3_data_count(S->stmt)) {
-		/* error invalid column */
-		pdo_sqlite_error_stmt(stmt);
-		return 0;
-	}
-	swr_sqlite_column_value(S->stmt, colno, result);
-	return 1;
+	return swr_sqlite_get_col(stmt, S->stmt, colno, result);
 }
 
 /* Zend owns the interned native type names for the life of the request. */
@@ -167,26 +158,12 @@ const zend_string *swr_sqlite_known_type(unsigned int id)
 	return ZSTR_KNOWN(id);
 }
 
-extern void swr_sqlite_column_meta(zval *, int, const char *, const char *);
+extern bool swr_sqlite_column_meta(pdo_stmt_t *, sqlite3_stmt *, zend_long, zval *);
 
 static int pdo_sqlite_stmt_col_meta(pdo_stmt_t *stmt, zend_long colno, zval *return_value)
 {
 	pdo_sqlite_stmt *S = (pdo_sqlite_stmt*)stmt->driver_data;
-	if (!S->stmt || !stmt->executed) {
-		return FAILURE;
-	}
-	if (colno >= sqlite3_column_count(S->stmt)) {
-		pdo_sqlite_error_stmt(stmt);
-		return FAILURE;
-	}
-
-	const char *table = NULL;
-#ifdef HAVE_SW_SQLITE3_COLUMN_TABLE_NAME
-	table = sqlite3_column_table_name(S->stmt, colno);
-#endif
-	swr_sqlite_column_meta(return_value, sqlite3_column_type(S->stmt, colno),
-		sqlite3_column_decltype(S->stmt, colno), table);
-	return SUCCESS;
+	return swr_sqlite_column_meta(stmt, S->stmt, colno, return_value) ? SUCCESS : FAILURE;
 }
 
 static int pdo_sqlite_stmt_cursor_closer(pdo_stmt_t *stmt)
