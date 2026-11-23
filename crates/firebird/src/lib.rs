@@ -23,6 +23,8 @@ pub mod connection;
 pub mod error;
 #[cfg(feature = "php")]
 pub mod minit;
+#[cfg(feature = "php")]
+pub mod param;
 pub mod preprocess;
 #[cfg(feature = "php")]
 pub mod statement;
