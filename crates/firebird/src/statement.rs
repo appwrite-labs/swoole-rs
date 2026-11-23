@@ -2,7 +2,7 @@
 //! column description and metadata, which read a column's `XSQLVAR` in the
 //! statement's output descriptor, and the integer, string and bool values. The methods PDO calls stay C, as thin
 //! callers that find the descriptor in their statement record.
-use std::ffi::c_char;
+use std::ffi::{c_char, c_uint};
 use swoole_rs_corebase::lent::{Count, In};
 use swoole_rs_firebird_sys::ibase::{
     SQL_BOOLEAN, SQL_INT64, SQL_LONG, SQL_SHORT, SQL_TEXT, SQL_VARYING, XSQLVAR,
@@ -143,4 +143,34 @@ pub extern "C" fn swr_firebird_value<'a>(
     };
     result.set(value);
     true
+}
+
+/// Firebird 4's type codes (`SQL_INT128`, `SQL_TIMESTAMP_TZ`, `SQL_TIME_TZ`,
+/// `SQL_DEC16`, `SQL_DEC34`), which a Firebird 3 ibase.h lacks: the driver
+/// coerces them only when built against a Firebird 4 one.
+const SQL_INT128: u32 = 32752;
+const SQL_TIMESTAMP_TZ: u32 = 32754;
+const SQL_TIME_TZ: u32 = 32756;
+const SQL_DEC16: u32 = 32760;
+const SQL_DEC34: u32 = 32762;
+
+/// `set_coercing_output_data_types` for one output variable: Firebird 4's
+/// `INT128` (with its scale dropped), `DECFLOAT(16)` and `DECFLOAT(34)`, and
+/// the time-zone types below a Firebird 4 client, fetched as `VARCHAR`s of
+/// their longest text, the nullable bit kept.
+#[unsafe(no_mangle)]
+pub extern "C" fn swr_firebird_coerce(var: &mut XSQLVAR, client_major: c_uint) {
+    let length = match base_type(var.sqltype) {
+        SQL_INT128 => {
+            var.sqlscale = 0;
+            46
+        }
+        SQL_DEC16 => 24,
+        SQL_DEC34 => 43,
+        SQL_TIMESTAMP_TZ if client_major < 4 => 58,
+        SQL_TIME_TZ if client_major < 4 => 46,
+        _ => return,
+    };
+    var.sqltype = i16::try_from(SQL_VARYING).unwrap_or_default() | (var.sqltype & 1);
+    var.sqllen = length;
 }
