@@ -18,10 +18,10 @@ points to stays, and the gates' executables would need all the extension's libra
 theirs. PHP has FFI built in for the timer and ports gates. A report from code this repository
 builds fails the run whatever the tests say; upstream's reference build is counted apart. Reports stay in target/asan/reports/ and are only counted on stdout: a
 report may locate an upstream bug, which goes to the private security repository (AGENTS.md), so a public CI log
-never shows one. Rerun locally to read them. The loader runs LeakSanitizer at MSHUTDOWN.
-A process-mode worker checks separately at worker stop after serving a request.
-Workers exit without shutting PHP down. Forked PHP processes that reach MSHUTDOWN
-skip the check there because that shutdown path hung in #2345. tools/lsan.supp names PHP's own allocations that
+never shows one. Rerun locally to read them. LeakSanitizer runs at MSHUTDOWN, in the loader
+and in any process forked from it that shuts PHP down (pcntl_fork, Swoole\Process).
+Server workers exit without shutting PHP down, so a process-mode worker checks
+separately at worker stop after serving a request. tools/lsan.supp names PHP's own allocations that
 look lost there. USE_TRACKED_ALLOC hands the request heap to malloc, as PHP's CI runs
 it. PCRE's JIT is off, its SIMD scans read past the subject.
 
