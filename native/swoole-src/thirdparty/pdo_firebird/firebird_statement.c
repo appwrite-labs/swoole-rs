@@ -263,92 +263,8 @@ static int pdo_firebird_stmt_get_column_meta(pdo_stmt_t *stmt, zend_long colno, 
 	return 1;
 }
 
-static int php_firebird_fetch_blob(pdo_stmt_t *stmt, int colno, zval *result, ISC_QUAD *blob_id)
-{
-	pdo_firebird_stmt *S = (pdo_firebird_stmt*)stmt->driver_data;
-	pdo_firebird_db_handle *H = S->H;
-	isc_blob_handle blobh = PDO_FIREBIRD_HANDLE_INITIALIZER;
-	char const bl_item = isc_info_blob_total_length;
-	char bl_info[20];
-	unsigned short i;
-	int retval = 0;
-	size_t len = 0;
-
-	if (isc_open_blob(H->isc_status, &H->db, &H->tr, &blobh, blob_id)) {
-		php_firebird_error_stmt(stmt);
-		return 0;
-	}
-
-	if (isc_blob_info(H->isc_status, &blobh, 1, const_cast(&bl_item),
-			sizeof(bl_info), bl_info)) {
-		php_firebird_error_stmt(stmt);
-		goto fetch_blob_end;
-	}
-
-	/* find total length of blob's data */
-	for (i = 0; i < sizeof(bl_info); ) {
-		unsigned short item_len;
-		char item = bl_info[i++];
-
-		if (item == isc_info_end || item == isc_info_truncated || item == isc_info_error
-				|| i >= sizeof(bl_info)) {
-			const char *msg = "Couldn't determine BLOB size";
-			php_firebird_error_stmt_with_info(stmt, "HY000", strlen("HY000"), msg, strlen(msg));
-			goto fetch_blob_end;
-		}
-
-		item_len = (unsigned short) isc_vax_integer(&bl_info[i], 2);
-
-		if (item == isc_info_blob_total_length) {
-			len = isc_vax_integer(&bl_info[i+2], item_len);
-			break;
-		}
-		i += item_len+2;
-	}
-
-	/* we've found the blob's length, now fetch! */
-
-	if (len) {
-		zend_ulong cur_len;
-		unsigned short seg_len;
-		ISC_STATUS stat;
-		zend_string *str;
-
-		/* prevent overflow */
-		if (len > ZSTR_MAX_LEN) {
-			result = 0;
-			goto fetch_blob_end;
-		}
-
-		str = zend_string_alloc(len, 0);
-
-		for (cur_len = stat = 0; (!stat || stat == isc_segment) && cur_len < len; cur_len += seg_len) {
-
-			unsigned short chunk_size = (len - cur_len) > USHRT_MAX ? USHRT_MAX
-				: (unsigned short)(len - cur_len);
-
-			stat = isc_get_segment(H->isc_status, &blobh, &seg_len, chunk_size, ZSTR_VAL(str) + cur_len);
-		}
-
-		ZSTR_VAL(str)[len] = '\0';
-		ZVAL_STR(result, str);
-
-		if (H->isc_status[0] == 1 && (stat != 0 && stat != isc_segstr_eof && stat != isc_segment)) {
-			const char *msg = "Error reading from BLOB";
-			php_firebird_error_stmt_with_info(stmt, "HY000", strlen("HY000"), msg, strlen(msg));
-			goto fetch_blob_end;
-		}
-	}
-	retval = 1;
-
-fetch_blob_end:
-	if (isc_close_blob(H->isc_status, &blobh)) {
-		php_firebird_error_stmt(stmt);
-		return 0;
-	}
-	return retval;
-}
-/* }}} */
+/* Reading a BLOB is Rust (crates/firebird/src/statement.rs), given its id's bytes. */
+bool swr_firebird_fetch_blob(pdo_stmt_t *stmt, const ISC_SCHAR *id, size_t id_len, zval *result);
 
 bool swr_firebird_value(pdo_dbh_t *dbh, XSQLVAR const *var, bool null, const ISC_SCHAR *data, size_t len, zval *result);
 
@@ -376,10 +292,8 @@ static int pdo_firebird_stmt_get_col(
 			return get_formatted_timestamp_tz(stmt, &ts, result);
 		}
 #endif
-		case SQL_BLOB: {
-			ISC_QUAD quad = php_get_isc_quad_from_sqldata(var->sqldata);
-			return php_firebird_fetch_blob(stmt, colno, result, &quad);
-		}
+		case SQL_BLOB:
+			return swr_firebird_fetch_blob(stmt, var->sqldata, sizeof(ISC_QUAD), result);
 	}
 	return 1;
 }

@@ -19,7 +19,7 @@ struct Cursor<'a>(*const isize, PhantomData<&'a Vector>);
 
 unsafe extern "C" {
     /// The connection's status vector (`H->isc_status`), as the last call left it.
-    safe fn swr_firebird_status_vector(dbh: &Dbh) -> &Vector;
+    pub(crate) safe fn swr_firebird_status_vector(dbh: &Dbh) -> &Vector;
     /// The connection's error record (`H->einfo`): `sqlcode`, and the lent
     /// bytes as its message when `has_message`, else none; the old one freed.
     safe fn swr_firebird_set_einfo<'a>(
@@ -134,6 +134,16 @@ pub(crate) fn status_error(dbh: &Dbh, stmt: Option<&Stmt>) {
     swoole_rs_corebase::lent::lend_in(&[], |state, state_len| {
         swoole_rs_corebase::lent::lend_in(&[], |message, message_len| {
             php_firebird_set_error(dbh, stmt, state, state_len, message, message_len);
+        });
+    });
+}
+
+/// `php_firebird_error_stmt_with_info(stmt, "HY000", ...)`: the status
+/// vector's failure recorded if it holds one, else `message` with `HY000`.
+pub(crate) fn stmt_message(dbh: &Dbh, stmt: &Stmt, message: &[u8]) {
+    swoole_rs_corebase::lent::lend_in(b"HY000", |state, state_len| {
+        swoole_rs_corebase::lent::lend_in(message, |message, message_len| {
+            php_firebird_set_error(dbh, Some(stmt), state, state_len, message, message_len);
         });
     });
 }

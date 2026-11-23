@@ -35,7 +35,7 @@ use std::{
 };
 use swoole_rs_corebase::lent::{self, Count, In};
 use swoole_rs_firebird_sys::{
-    Bytes, Handle, ISC_SCHAR, ISC_STATUS, Out, Quad, Sqlda, Status, Teb, TebCount, VersionArg,
+    Bytes, Handle, ISC_SCHAR, ISC_STATUS, Quad, Sqlda, Status, Teb, TebCount, VersionArg,
     VersionCallback, fb_ping, isc_attach_database, isc_blob_info, isc_close_blob,
     isc_commit_retaining, isc_commit_transaction, isc_create_blob, isc_detach_database,
     isc_dsql_allocate_statement, isc_dsql_execute, isc_dsql_execute2, isc_dsql_fetch,
@@ -108,12 +108,6 @@ offloaded! {
     swoole_isc_open_blob => isc_open_blob(
         status: Status, db: Handle, tr: Handle,
         blob: Handle, id: Quad);
-    swoole_isc_blob_info => isc_blob_info(
-        status: Status, blob: Handle, items_length: c_short,
-        items: Bytes, buffer_length: c_short, buffer: Out<ISC_SCHAR>);
-    swoole_isc_get_segment => isc_get_segment(
-        status: Status, blob: Handle, length: Out<c_ushort>,
-        buffer_length: c_ushort, buffer: Out<ISC_SCHAR>);
     swoole_isc_put_segment => isc_put_segment(
         status: Status, blob: Handle, length: c_ushort, buffer: Bytes);
     swoole_isc_create_blob => isc_create_blob(
@@ -144,6 +138,44 @@ pub extern "C" fn swoole_isc_dsql_sql_info<'i, 'b>(
             .map_or(NOT_RUN, |(items_length, items, buffer_length, buffer)| {
                 isc_dsql_sql_info(status, stmt, items_length, items, buffer_length, buffer)
             })
+    })
+}
+
+/// `swoole_isc_blob_info`: `isc_blob_info` off the coroutine.
+#[unsafe(no_mangle)]
+pub extern "C" fn swoole_isc_blob_info<'i, 'b>(
+    status: Status,
+    blob: Handle,
+    items_length: Count<'i, c_short>,
+    items: In<'i, ISC_SCHAR>,
+    buffer_length: Count<'b, c_short>,
+    buffer: lent::Out<'b, ISC_SCHAR>,
+) -> ISC_STATUS {
+    // The lent pairs are not `Copy`: the one run takes them.
+    let mut lent = Some((items_length, items, buffer_length, buffer));
+    offload(NOT_RUN, || {
+        lent.take()
+            .map_or(NOT_RUN, |(items_length, items, buffer_length, buffer)| {
+                isc_blob_info(status, blob, items_length, items, buffer_length, buffer)
+            })
+    })
+}
+
+/// `swoole_isc_get_segment`: `isc_get_segment` off the coroutine.
+#[unsafe(no_mangle)]
+pub extern "C" fn swoole_isc_get_segment<'b>(
+    status: Status,
+    blob: Handle,
+    length: &mut c_ushort,
+    buffer_length: Count<'b, c_ushort>,
+    buffer: lent::Out<'b, ISC_SCHAR>,
+) -> ISC_STATUS {
+    // The lent pair is not `Copy`: the one run takes it.
+    let mut lent = Some((buffer_length, buffer));
+    offload(NOT_RUN, || {
+        lent.take().map_or(NOT_RUN, |(buffer_length, buffer)| {
+            isc_get_segment(status, blob, length, buffer_length, buffer)
+        })
     })
 }
 
