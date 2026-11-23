@@ -33,11 +33,6 @@
 		return ret; \
 	} while (0);
 
-static zend_always_inline ISC_TIMESTAMP php_get_isc_timestamp_from_sqldata(const ISC_SCHAR *sqldata)
-{
-	READ_AND_RETURN_USING_MEMCPY(ISC_TIMESTAMP, sqldata);
-}
-
 static zend_always_inline ISC_QUAD php_get_isc_quad_from_sqldata(const ISC_SCHAR *sqldata)
 {
 	READ_AND_RETURN_USING_MEMCPY(ISC_QUAD, sqldata);
@@ -394,7 +389,7 @@ fetch_blob_end:
 }
 /* }}} */
 
-bool swr_firebird_value(XSQLVAR const *var, bool null, const ISC_SCHAR *data, size_t len, zval *result);
+bool swr_firebird_value(pdo_dbh_t *dbh, XSQLVAR const *var, bool null, const ISC_SCHAR *data, size_t len, zval *result);
 
 static int pdo_firebird_stmt_get_col(
 		pdo_stmt_t *stmt, int colno, zval *result, enum pdo_param_type *type)
@@ -402,37 +397,14 @@ static int pdo_firebird_stmt_get_col(
 	pdo_firebird_stmt *S = (pdo_firebird_stmt*)stmt->driver_data;
 	XSQLVAR const *var = &S->out_sqlda.sqlvar[colno];
 
-	/* Null, the scaled numbers, the strings, the unscaled integers, BOOLEAN, FLOAT
-	 * and DOUBLE are Rust (crates/firebird/src/statement.rs). */
-	if (swr_firebird_value(var, *var->sqlind == -1, var->sqldata,
+	/* Null, the scaled numbers, the strings, the unscaled integers, BOOLEAN, FLOAT,
+	 * DOUBLE and the dates and times are Rust (crates/firebird/src/statement.rs). */
+	if (swr_firebird_value(stmt->dbh, var, *var->sqlind == -1, var->sqldata,
 			var->sqllen + ((var->sqltype & ~1) == SQL_VARYING ? 2 : 0), result)) {
 		return 1;
 	}
 
 	switch (var->sqltype & ~1) {
-		struct tm t;
-		char *fmt;
-
-		case SQL_TYPE_DATE:
-			isc_decode_sql_date((ISC_DATE*)var->sqldata, &t);
-			fmt = S->H->date_format ? S->H->date_format : PDO_FB_DEF_DATE_FMT;
-			if (0) {
-		case SQL_TYPE_TIME:
-				isc_decode_sql_time((ISC_TIME*)var->sqldata, &t);
-				fmt = S->H->time_format ? S->H->time_format : PDO_FB_DEF_TIME_FMT;
-			} else if (0) {
-		case SQL_TIMESTAMP:
-				{
-					ISC_TIMESTAMP timestamp = php_get_isc_timestamp_from_sqldata(var->sqldata);
-					isc_decode_timestamp(&timestamp, &t);
-				}
-				fmt = S->H->timestamp_format ? S->H->timestamp_format : PDO_FB_DEF_TIMESTAMP_FMT;
-			}
-			/* convert the timestamp into a string */
-			char buf[80];
-			size_t len = strftime(buf, sizeof(buf), fmt, &t);
-			ZVAL_STRINGL(result, buf, len);
-			break;
 #if FB_API_VER >= 40
 		case SQL_TIME_TZ: {
 			ISC_TIME_TZ time = php_get_isc_time_tz_from_sqldata(var->sqldata);
