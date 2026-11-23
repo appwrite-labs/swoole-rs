@@ -5,7 +5,7 @@
 //! thin callers that find the descriptor in their statement record.
 use std::ffi::{c_char, c_int, c_uint};
 
-use swoole_rs_corebase::lent::{Count, In};
+use swoole_rs_corebase::lent::{Count, In, Out, lend_out};
 use swoole_rs_corebase::sys::Text;
 use swoole_rs_firebird_sys::ibase::{
     ISC_TIMESTAMP, SQL_BOOLEAN, SQL_DOUBLE, SQL_FLOAT, SQL_INT64, SQL_LONG, SQL_SHORT, SQL_TEXT,
@@ -13,15 +13,21 @@ use swoole_rs_firebird_sys::ibase::{
 };
 use swoole_rs_firebird_sys::{
     Bytes, Handle, Sqlda, Status,
-    ibase::{DSQL_close, isc_info_end, isc_info_req_select_count},
+    ibase::{
+        DSQL_close, isc_info_end, isc_info_req_select_count, isc_info_sql_records,
+        isc_info_sql_stmt_delete, isc_info_sql_stmt_exec_procedure, isc_info_sql_stmt_insert,
+        isc_info_sql_stmt_update,
+    },
 };
 use swoole_rs_zend::pdo::{Attribute, Dbh, Slot, Stmt};
 use swoole_rs_zend::sys::{
     PHP_VERSION_ID, pdo_attribute_type_PDO_ATTR_CURSOR_NAME as CURSOR_NAME, zend_long, zend_ulong,
 };
 
+use crate::transaction::php_firebird_commit_transaction;
 use crate::{
-    swoole_isc_dsql_fetch, swoole_isc_dsql_free_statement, swoole_isc_dsql_set_cursor_name,
+    swoole_isc_dsql_execute, swoole_isc_dsql_execute2, swoole_isc_dsql_fetch,
+    swoole_isc_dsql_free_statement, swoole_isc_dsql_set_cursor_name,
 };
 use swoole_rs_zend::sys::{
     pdo_column_data, pdo_param_type_PDO_PARAM_BOOL as PARAM_BOOL,
@@ -51,6 +57,23 @@ unsafe extern "C" {
     safe fn swr_firebird_set_exhausted(stmt: &Stmt);
     safe fn swr_firebird_is_procedure(stmt: &Stmt) -> bool;
     safe fn swr_firebird_out_sqlda(stmt: &Stmt) -> Sqlda;
+    /// The statement's input descriptor (`S->in_sqlda`, null without
+    /// parameters) and type (`S->statement_type`); the connection's
+    /// transaction (`&H->tr`) and manual-transaction flag.
+    safe fn swr_firebird_in_sqlda(stmt: &Stmt) -> Sqlda;
+    safe fn swr_firebird_statement_type(stmt: &Stmt) -> c_char;
+    safe fn swr_firebird_tr(dbh: &Dbh) -> Handle;
+    safe fn swr_firebird_in_manual_txn(dbh: &Dbh) -> bool;
+    /// `S->cursor_open = 0`.
+    safe fn swr_firebird_cursor_reset(stmt: &Stmt);
+    /// Each output variable's indicator and data storage (re)allocated
+    /// (`ecalloc` of its length and two shorts).
+    safe fn swr_firebird_alloc_output(stmt: &Stmt);
+    /// `!isc_dsql_sql_info` of `isc_info_sql_records` into the lent bytes.
+    safe fn swr_firebird_records_info<'a>(stmt: &Stmt, reply: Out<'a, u8>, len: Count<'a>) -> bool;
+    /// After an execute: the name cleared, the cursor open when the statement
+    /// returns rows but is no procedure, exhausted when it returns none.
+    safe fn swr_firebird_executed(stmt: &Stmt);
     /// The cursor's name set to `name`'s first 31 bytes (`strlcpy`).
     safe fn swr_firebird_cursor_named(stmt: &Stmt, name: Text<'_>);
     /// fbclient's decoders: a `DATE`, `TIME` or `TIMESTAMP` into the `tm`.
@@ -369,17 +392,11 @@ fn vax(bytes: &[u8]) -> u64 {
 }
 
 /// `pdo_firebird_stmt_execute`'s count of the rows an `INSERT`, `UPDATE`,
-/// `DELETE` or procedure changed, from the lent `isc_info_sql_records` reply:
+/// `DELETE` or procedure changed, from the `isc_info_sql_records` reply:
 /// each count but the selected rows' added to `rows`, at the `zend_ulong`'s
 /// width. False for a reply whose size, an item's length or an item's bytes run
 /// past it or are malformed, as C's `goto error`.
-#[unsafe(no_mangle)]
-pub extern "C" fn swr_firebird_records<'a>(
-    reply: In<'a, u8>,
-    len: Count<'a>,
-    rows: &mut zend_ulong,
-) -> bool {
-    let reply = reply.drain(len).bytes();
+fn records(reply: &[u8], rows: &mut zend_ulong) -> bool {
     // C's `unsigned result_size = isc_vax_integer(&result[1], 2)`.
     let size = reply.get(1..3).map_or(0, vax);
     if usize::try_from(size).map_or(true, |size| size > reply.len()) {
@@ -466,5 +483,91 @@ pub extern "C" fn swr_firebird_fetch(stmt: &Stmt) -> bool {
         return false;
     }
     stmt.set_row_count(stmt.row_count().wrapping_add(1));
+    true
+}
+
+/// `pdo_firebird_stmt_execute`: a named or open cursor closed, the output
+/// storage allocated, and the statement executed in the connection's
+/// transaction (an `EXECUTE PROCEDURE`'s outputs into the output descriptor),
+/// the rows an `INSERT`, `UPDATE`, `DELETE` or procedure changed counted, and
+/// in autocommit mode the transaction committed and kept. False with the
+/// error recorded on the statement.
+#[unsafe(no_mangle)]
+pub extern "C" fn swr_firebird_execute(stmt: &Stmt) -> bool {
+    let dbh = swr_firebird_stmt_dbh(stmt);
+    let executed = execute(dbh, stmt);
+    if !executed {
+        crate::error::status_error(dbh, Some(stmt));
+    }
+    executed
+}
+
+/// [`swr_firebird_execute`] but for recording its failure.
+fn execute(dbh: &Dbh, stmt: &Stmt) -> bool {
+    let (status, handle) = (swr_firebird_status(dbh), swr_firebird_stmt_handle(stmt));
+    let named = !swr_firebird_cursor_name(stmt).get().is_empty();
+    let close = u16::try_from(DSQL_close).unwrap_or_default();
+    if (named || swr_firebird_cursor_open(stmt))
+        && swoole_isc_dsql_free_statement(status, handle, close) != 0
+    {
+        return false;
+    }
+    swr_firebird_cursor_reset(stmt);
+    swr_firebird_alloc_output(stmt);
+    let kind = u32::from(swr_firebird_statement_type(stmt).cast_unsigned());
+    let tr = swr_firebird_tr(dbh);
+    let failed = if kind == isc_info_sql_stmt_exec_procedure {
+        swoole_isc_dsql_execute2(
+            status,
+            tr,
+            handle,
+            SQLDA_VERSION,
+            swr_firebird_in_sqlda(stmt),
+            swr_firebird_out_sqlda(stmt),
+        )
+    } else {
+        swoole_isc_dsql_execute(
+            status,
+            tr,
+            handle,
+            SQLDA_VERSION,
+            swr_firebird_in_sqlda(stmt),
+        )
+    };
+    if failed != 0 {
+        return false;
+    }
+    stmt.set_row_count(0);
+    let changes = [
+        isc_info_sql_stmt_insert,
+        isc_info_sql_stmt_update,
+        isc_info_sql_stmt_delete,
+        isc_info_sql_stmt_exec_procedure,
+    ];
+    if changes.contains(&kind) {
+        let mut reply = [0u8; 64];
+        // A failed info call leaves the count at 0, as C's `break` from its switch.
+        let answered = lend_out(&mut reply, |out, len| {
+            swr_firebird_records_info(stmt, out, len)
+        });
+        if answered
+            && reply
+                .first()
+                .is_some_and(|&item| u32::from(item) == isc_info_sql_records)
+        {
+            let mut rows: zend_ulong = 0;
+            if !records(&reply, &mut rows) {
+                return false;
+            }
+            stmt.set_row_count(rows.cast_signed());
+        }
+    }
+    if dbh.auto_commit()
+        && !swr_firebird_in_manual_txn(dbh)
+        && !php_firebird_commit_transaction(dbh, true)
+    {
+        return false;
+    }
+    swr_firebird_executed(stmt);
     true
 }

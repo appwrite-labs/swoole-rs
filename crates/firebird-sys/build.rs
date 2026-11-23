@@ -30,7 +30,8 @@ mod ibase {
                     .map(|dir| format!("-I{dir}")),
             )
             .allowlist_type("XSQLDA|XSQLVAR|ISC_TIMESTAMP")
-            .allowlist_var("DSQL_close|isc_info_end|isc_info_req_select_count")
+            .allowlist_var("DSQL_close|isc_info_end|isc_info_req_select_count|isc_info_sql_records")
+            .allowlist_var("isc_info_sql_stmt_(insert|update|delete|exec_procedure)")
             .allowlist_var("SQL_(TEXT|VARYING|SHORT|LONG|INT64|FLOAT|DOUBLE|BOOLEAN|TYPE_DATE|TYPE_TIME|TIMESTAMP)")
             .generate()
             .expect("firebird-sys: bindgen")

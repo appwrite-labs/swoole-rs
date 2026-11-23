@@ -161,86 +161,59 @@ static int pdo_firebird_stmt_dtor(pdo_stmt_t *stmt) /* {{{ */
 }
 /* }}} */
 
-/* The records reply's row counts are Rust (crates/firebird/src/statement.rs). */
-bool swr_firebird_records(const char *reply, size_t len, zend_ulong *rows);
+/* The execute is Rust (crates/firebird/src/statement.rs); it reads the record through these. */
+bool swr_firebird_execute(pdo_stmt_t *stmt);
+
+XSQLDA *swr_firebird_in_sqlda(pdo_stmt_t *stmt)
+{
+	return ((pdo_firebird_stmt *)stmt->driver_data)->in_sqlda;
+}
+
+char swr_firebird_statement_type(pdo_stmt_t *stmt)
+{
+	return ((pdo_firebird_stmt *)stmt->driver_data)->statement_type;
+}
+
+void swr_firebird_cursor_reset(pdo_stmt_t *stmt)
+{
+	((pdo_firebird_stmt *)stmt->driver_data)->cursor_open = 0;
+}
+
+void swr_firebird_alloc_output(pdo_stmt_t *stmt)
+{
+	pdo_firebird_stmt *S = (pdo_firebird_stmt *)stmt->driver_data;
+
+	for (unsigned int i = 0; i < (unsigned) S->out_sqlda.sqld; i++) {
+		XSQLVAR *var = &S->out_sqlda.sqlvar[i];
+		if (var->sqlind) {
+			efree(var->sqlind);
+		}
+		var->sqlind = (void*)ecalloc(1, var->sqllen + 2 * sizeof(short));
+		var->sqldata = &((char*)var->sqlind)[sizeof(short)];
+	}
+}
+
+bool swr_firebird_records_info(pdo_stmt_t *stmt, char *reply, size_t len)
+{
+	static char info_count[] = {isc_info_sql_records};
+	pdo_firebird_stmt *S = (pdo_firebird_stmt *)stmt->driver_data;
+
+	return !isc_dsql_sql_info(S->H->isc_status, &S->stmt, sizeof(info_count), info_count, (short) len, reply);
+}
+
+void swr_firebird_executed(pdo_stmt_t *stmt)
+{
+	pdo_firebird_stmt *S = (pdo_firebird_stmt *)stmt->driver_data;
+
+	*S->name = 0;
+	S->cursor_open = S->out_sqlda.sqln && (S->statement_type != isc_info_sql_stmt_exec_procedure);
+	S->exhausted = !S->out_sqlda.sqln; /* There are data to fetch */
+}
 
 /* called by PDO to execute a prepared query */
 static int pdo_firebird_stmt_execute(pdo_stmt_t *stmt) /* {{{ */
 {
-	pdo_firebird_stmt *S = (pdo_firebird_stmt*)stmt->driver_data;
-	pdo_firebird_db_handle *H = S->H;
-	zend_ulong affected_rows = 0;
-	static char info_count[] = {isc_info_sql_records};
-	char result[64];
-
-	do {
-		/* named or open cursors should be closed first */
-		if ((*S->name || S->cursor_open) && isc_dsql_free_statement(H->isc_status, &S->stmt, DSQL_close)) {
-			break;
-		}
-		S->cursor_open = 0;
-
-		/* allocate storage for the output data */
-		if (S->out_sqlda.sqld) {
-			unsigned int i;
-			for (i = 0; i < S->out_sqlda.sqld; i++) {
-				XSQLVAR *var = &S->out_sqlda.sqlvar[i];
-				if (var->sqlind) {
-					efree(var->sqlind);
-				}
-				var->sqlind = (void*)ecalloc(1, var->sqllen + 2 * sizeof(short));
-				var->sqldata = &((char*)var->sqlind)[sizeof(short)];
-			}
-		}
-
-		if (S->statement_type == isc_info_sql_stmt_exec_procedure) {
-			if (isc_dsql_execute2(H->isc_status, &H->tr, &S->stmt, PDO_FB_SQLDA_VERSION, S->in_sqlda, &S->out_sqlda)) {
-				break;
-			}
-		} else if (isc_dsql_execute(H->isc_status, &H->tr, &S->stmt, PDO_FB_SQLDA_VERSION, S->in_sqlda)) {
-			break;
-		}
-
-		/* Determine how many rows have changed. In this case we are
-		 * only interested in rows changed, not rows retrieved. That
-		 * should be handled by the client when fetching. */
-		stmt->row_count = affected_rows;
-
-		switch (S->statement_type) {
-			case isc_info_sql_stmt_insert:
-			case isc_info_sql_stmt_update:
-			case isc_info_sql_stmt_delete:
-			case isc_info_sql_stmt_exec_procedure:
-				if (isc_dsql_sql_info(H->isc_status, &S->stmt, sizeof ( info_count),
-					info_count, sizeof(result), result)) {
-					break;
-				}
-				if (result[0] == isc_info_sql_records) {
-					if (!swr_firebird_records(result, sizeof(result), &affected_rows)) {
-						goto error;
-					}
-					stmt->row_count = affected_rows;
-				}
-			/* TODO Dead code or assert one of the previous cases are hit? */
-			default:
-				;
-		}
-
-		if (stmt->dbh->auto_commit && !S->H->in_manually_txn && !php_firebird_commit_transaction(stmt->dbh, /* retain */ true)) {
-			break;
-		}
-
-		*S->name = 0;
-		S->cursor_open = S->out_sqlda.sqln && (S->statement_type != isc_info_sql_stmt_exec_procedure);
-		S->exhausted = !S->out_sqlda.sqln; /* There are data to fetch */
-
-		return 1;
-	} while (0);
-
-error:
-	php_firebird_error_stmt(stmt);
-
-	return 0;
+	return swr_firebird_execute(stmt);
 }
 /* }}} */
 
