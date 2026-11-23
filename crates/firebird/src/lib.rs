@@ -25,6 +25,8 @@ pub mod error;
 pub mod minit;
 #[cfg(feature = "php")]
 pub mod param;
+#[cfg(feature = "php")]
+pub mod prepare;
 pub mod preprocess;
 #[cfg(feature = "php")]
 pub mod statement;

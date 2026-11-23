@@ -30,8 +30,13 @@
 #include "php_pdo_firebird_int.h"
 #include "pdo_firebird_utils.h"
 
-static int php_firebird_alloc_prepare_stmt(pdo_dbh_t*, const zend_string*, XSQLDA*, isc_stmt_handle*,
+/* The statement's allocation, preprocessing and preparing, and its describing, are Rust
+ * (crates/firebird/src/prepare.rs); the preparer allocates the record and descriptors between them. */
+bool php_firebird_alloc_prepare_stmt(pdo_dbh_t*, const zend_string*, XSQLDA*, isc_stmt_handle*,
 	HashTable*);
+bool swr_firebird_describe_stmt(pdo_dbh_t *dbh, isc_stmt_handle *s, char *statement_type, XSQLDA *out_sqlda,
+	XSQLDA *num_sqlda);
+bool swr_firebird_describe_input(pdo_dbh_t *dbh, isc_stmt_handle *s, XSQLDA *in_sqlda, XSQLVAR *vars, short count);
 bool php_firebird_begin_transaction(pdo_dbh_t *dbh, bool is_auto_commit_txn);
 bool firebird_handle_manually_begin(pdo_dbh_t *dbh);
 bool firebird_handle_manually_commit(pdo_dbh_t *dbh);
@@ -44,7 +49,6 @@ bool pdo_firebird_in_manually_transaction(pdo_dbh_t *dbh);
 
 /* php_firebird_preprocess and its tokenizer are Rust (crates/firebird/src/preprocess.rs),
  * which records each named parameter here. */
-bool swr_firebird_preprocess(const zend_string *sql, char *sql_out, size_t sql_out_len, HashTable *named_params);
 
 void swr_firebird_name_param(HashTable *named_params, const char *name, size_t name_len, zend_long index)
 {
@@ -100,8 +104,7 @@ static bool firebird_handle_preparer(pdo_dbh_t *dbh, zend_string *sql, /* {{{ */
 	do {
 		isc_stmt_handle s = PDO_FIREBIRD_HANDLE_INITIALIZER;
 		XSQLDA num_sqlda;
-		static char const info[] = { isc_info_sql_stmt_type };
-		char result[8];
+		char statement_type;
 
 		num_sqlda.version = PDO_FB_SQLDA_VERSION;
 		num_sqlda.sqln = 1;
@@ -122,44 +125,25 @@ static bool firebird_handle_preparer(pdo_dbh_t *dbh, zend_string *sql, /* {{{ */
 		S->out_sqlda.sqln = stmt->column_count = num_sqlda.sqld;
 		S->named_params = np;
 
-		/* determine the statement type */
-		if (isc_dsql_sql_info(H->isc_status, &s, sizeof(info), const_cast(info), sizeof(result),
-				result)) {
+		/* its type, its output columns and the number of its parameters */
+		if (!swr_firebird_describe_stmt(dbh, &s, &statement_type, &S->out_sqlda, &num_sqlda)) {
 			break;
 		}
-		S->statement_type = result[3];
-
-		/* fill the output sqlda with information about the prepared query */
-		if (isc_dsql_describe(H->isc_status, &s, PDO_FB_SQLDA_VERSION, &S->out_sqlda)) {
-			php_firebird_error(dbh);
-			break;
-		}
+		S->statement_type = statement_type;
 
 #if FB_API_VER >= 40
 		/* set coercing a data type */
 		set_coercing_output_data_types(&S->out_sqlda);
 #endif
 
-		/* allocate the input descriptors */
-		if (isc_dsql_describe_bind(H->isc_status, &s, PDO_FB_SQLDA_VERSION, &num_sqlda)) {
-			break;
-		}
-
+		/* allocate the input descriptors, all parameters nullable */
 		if (num_sqlda.sqld) {
 			S->in_sqlda = ecalloc(1,XSQLDA_LENGTH(num_sqlda.sqld));
 			S->in_sqlda->version = PDO_FB_SQLDA_VERSION;
 			S->in_sqlda->sqln = num_sqlda.sqld;
 
-			if (isc_dsql_describe_bind(H->isc_status, &s, PDO_FB_SQLDA_VERSION, S->in_sqlda)) {
+			if (!swr_firebird_describe_input(dbh, &s, S->in_sqlda, S->in_sqlda->sqlvar, S->in_sqlda->sqln)) {
 				break;
-			}
-
-			/* make all parameters nullable */
-			unsigned int i;
-			XSQLVAR* var;
-			for (i = 0, var = S->in_sqlda->sqlvar; i < S->in_sqlda->sqld; i++, var++) {
-				/* The low bit of sqltype indicates that the parameter can take a NULL value */
-				var->sqltype |= 1;
 			}
 		}
 
@@ -366,40 +350,6 @@ void swr_firebird_free(pdo_dbh_t *dbh)
 	pefree(H, dbh->is_persistent);
 }
 
-/* used by prepare and exec to allocate a statement handle and prepare the SQL */
-static int php_firebird_alloc_prepare_stmt(pdo_dbh_t *dbh, const zend_string *sql,
-	XSQLDA *out_sqlda, isc_stmt_handle *s, HashTable *named_params)
-{
-	pdo_firebird_db_handle *H = (pdo_firebird_db_handle *)dbh->driver_data;
-	char *new_sql;
-
-	/* allocate the statement */
-	if (isc_dsql_allocate_statement(H->isc_status, &H->db, s)) {
-		php_firebird_error(dbh);
-		return 0;
-	}
-
-	/* in order to support named params, which Firebird itself doesn't,
-	   we need to replace :foo by ?, and store the name we just replaced */
-	new_sql = emalloc(ZSTR_LEN(sql)+1);
-	new_sql[0] = '\0';
-	if (!swr_firebird_preprocess(sql, new_sql, ZSTR_LEN(sql)+1, named_params)) {
-		php_firebird_error_with_info(dbh, "07000", strlen("07000"), NULL, 0);
-		efree(new_sql);
-		return 0;
-	}
-
-	/* prepare the statement */
-	if (isc_dsql_prepare(H->isc_status, &H->tr, s, 0, new_sql, H->sql_dialect, out_sqlda)) {
-		php_firebird_error(dbh);
-		efree(new_sql);
-		return 0;
-	}
-
-	efree(new_sql);
-	return 1;
-}
-
 /* called by PDO to set a driver-specific dbh attribute */
 /* pdo_firebird_set_attribute and pdo_firebird_get_attribute are Rust
  * (crates/firebird/src/attribute.rs); they reach the connection record through these. */
@@ -416,6 +366,11 @@ static void php_firebird_info_cb(void *arg, char const *s) /* {{{ */
 	}
 }
 /* }}} */
+
+unsigned short swr_firebird_dialect(pdo_dbh_t *dbh)
+{
+	return ((pdo_firebird_db_handle *)dbh->driver_data)->sql_dialect;
+}
 
 bool swr_firebird_in_manual_txn(pdo_dbh_t *dbh)
 {
