@@ -33,6 +33,7 @@ use std::{
     cell::Cell,
     ffi::{c_int, c_short, c_ushort},
 };
+use swoole_rs_corebase::lent::{self, Count, In};
 use swoole_rs_firebird_sys::{
     Bytes, Handle, ISC_SCHAR, ISC_STATUS, Out, Quad, Sqlda, Status, Teb, TebCount, VersionArg,
     VersionCallback, fb_ping, isc_attach_database, isc_blob_info, isc_close_blob,
@@ -92,9 +93,6 @@ offloaded! {
     swoole_isc_dsql_execute2 => isc_dsql_execute2(
         status: Status, tr: Handle, stmt: Handle,
         dialect: c_ushort, in_sqlda: Sqlda, out_sqlda: Sqlda);
-    swoole_isc_dsql_sql_info => isc_dsql_sql_info(
-        status: Status, stmt: Handle, items_length: c_short,
-        items: Bytes, buffer_length: c_short, buffer: Out<ISC_SCHAR>);
     swoole_isc_dsql_free_statement => isc_dsql_free_statement(
         status: Status, stmt: Handle, option: c_ushort);
     swoole_isc_commit_retaining => isc_commit_retaining(status: Status, tr: Handle);
@@ -127,6 +125,26 @@ offloaded! {
     swoole_fb_ping => fb_ping(status: Status, db: Handle);
     swoole_isc_version => isc_version(
         db: Handle, callback: VersionCallback, arg: VersionArg) -> c_int = -1;
+}
+
+/// `swoole_isc_dsql_sql_info`: `isc_dsql_sql_info` off the coroutine.
+#[unsafe(no_mangle)]
+pub extern "C" fn swoole_isc_dsql_sql_info<'i, 'b>(
+    status: Status,
+    stmt: Handle,
+    items_length: Count<'i, c_short>,
+    items: In<'i, ISC_SCHAR>,
+    buffer_length: Count<'b, c_short>,
+    buffer: lent::Out<'b, ISC_SCHAR>,
+) -> ISC_STATUS {
+    // The lent pairs are not `Copy`: the one run takes them.
+    let mut lent = Some((items_length, items, buffer_length, buffer));
+    offload(NOT_RUN, || {
+        lent.take()
+            .map_or(NOT_RUN, |(items_length, items, buffer_length, buffer)| {
+                isc_dsql_sql_info(status, stmt, items_length, items, buffer_length, buffer)
+            })
+    })
 }
 
 /// `swoole_isc_start_transaction`: one database's transaction, as the variadic

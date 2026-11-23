@@ -12,6 +12,10 @@ description = "Declarations of the Firebird client calls pdo_firebird makes (iba
 # builds and tests on machines without Firebird's headers.
 ibase = ["dep:bindgen"]
 
+[dependencies]
+# The lent buffer-and-length pairs (`lent`) the calls that take a length use.
+swoole-rs-corebase = { path = "../corebase" }
+
 [build-dependencies]
 bindgen = { version = "=0.73.2", default-features = false, features = ["runtime"], optional = true }
 

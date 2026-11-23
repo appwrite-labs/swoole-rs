@@ -5,7 +5,7 @@
 //! thin callers that find the descriptor in their statement record.
 use std::ffi::{c_char, c_int, c_uint};
 
-use swoole_rs_corebase::lent::{Count, In, Out, lend_out};
+use swoole_rs_corebase::lent::{Count, In, lend_in, lend_out};
 use swoole_rs_corebase::sys::Text;
 use swoole_rs_firebird_sys::ibase::{
     ISC_TIMESTAMP, SQL_BOOLEAN, SQL_DOUBLE, SQL_FLOAT, SQL_INT64, SQL_LONG, SQL_SHORT, SQL_TEXT,
@@ -27,7 +27,7 @@ use swoole_rs_zend::sys::{
 use crate::transaction::php_firebird_commit_transaction;
 use crate::{
     swoole_isc_dsql_execute, swoole_isc_dsql_execute2, swoole_isc_dsql_fetch,
-    swoole_isc_dsql_free_statement, swoole_isc_dsql_set_cursor_name,
+    swoole_isc_dsql_free_statement, swoole_isc_dsql_set_cursor_name, swoole_isc_dsql_sql_info,
 };
 use swoole_rs_zend::sys::{
     pdo_column_data, pdo_param_type_PDO_PARAM_BOOL as PARAM_BOOL,
@@ -69,8 +69,6 @@ unsafe extern "C" {
     /// Each output variable's indicator and data storage (re)allocated
     /// (`ecalloc` of its length and two shorts).
     safe fn swr_firebird_alloc_output(stmt: &Stmt);
-    /// `!isc_dsql_sql_info` of `isc_info_sql_records` into the lent bytes.
-    safe fn swr_firebird_records_info<'a>(stmt: &Stmt, reply: Out<'a, u8>, len: Count<'a>) -> bool;
     /// After an execute: the name cleared, the cursor open when the statement
     /// returns rows but is no procedure, exhausted when it returns none.
     safe fn swr_firebird_executed(stmt: &Stmt);
@@ -553,8 +551,19 @@ fn execute(dbh: &Dbh, stmt: &Stmt) -> bool {
     if changes.contains(&kind) {
         let mut reply = [0u8; 64];
         // A failed info call leaves the count at 0, as C's `break` from its switch.
-        let answered = lend_out(&mut reply, |out, len| {
-            swr_firebird_records_info(stmt, out, len)
+        // The one item asked for: `isc_info_sql_records`.
+        let item = c_char::from_ne_bytes([u8::try_from(isc_info_sql_records).unwrap_or_default()]);
+        let answered = lend_in(&[item], |items, items_length| {
+            lend_out(&mut reply, |out, len| {
+                swoole_isc_dsql_sql_info(
+                    swr_firebird_status(dbh),
+                    swr_firebird_stmt_handle(stmt),
+                    items_length,
+                    items,
+                    len,
+                    out.chars(),
+                ) == 0
+            })
         });
         if answered
             && reply

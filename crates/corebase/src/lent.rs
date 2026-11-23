@@ -102,6 +102,7 @@ pub trait Narrow: sealed::Sealed + Copy {
 mod sealed {
     pub trait Sealed {}
     impl Sealed for usize {}
+    impl Sealed for i16 {}
     impl Sealed for i32 {}
     impl Sealed for u32 {}
     impl Sealed for u64 {}
@@ -124,7 +125,7 @@ macro_rules! narrow {
         }
     )*};
 }
-narrow!(i32, u32, u64);
+narrow!(i16, i32, u32, u64);
 
 /// Lends `slots` to `call` as an [`Out`] and its [`Count`].
 #[inline]

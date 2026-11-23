@@ -8,6 +8,8 @@
 //! Nothing here makes an argument: only the C caller's, passed through an
 //! export's parameters (`crates/firebird`), where its contract (the call's, as
 //! `ibase.h` declares it) stands for the constructor. None is `Send` or `Sync`.
+//! A buffer passed with its length is corebase's lent pair instead (`In` or
+//! `Out` with its `Count`), which a Rust lending of a live buffer also mints.
 #![expect(
     non_camel_case_types,
     reason = "the C type names, as ibase.h spells them"
@@ -22,6 +24,7 @@
 
 use std::ffi::{CStr, c_char, c_int, c_short, c_uint, c_ushort, c_void};
 use std::marker::PhantomData;
+use swoole_rs_corebase::lent::{Count, In};
 
 /// `ISC_STATUS`: `intptr_t`.
 pub type ISC_STATUS = isize;
@@ -148,13 +151,13 @@ unsafe extern "C" {
         in_sqlda: Sqlda,
         out_sqlda: Sqlda,
     ) -> ISC_STATUS;
-    pub safe fn isc_dsql_sql_info(
+    pub safe fn isc_dsql_sql_info<'i, 'b>(
         status: Status,
         stmt: Handle,
-        items_length: c_short,
-        items: Bytes,
-        buffer_length: c_short,
-        buffer: Out<ISC_SCHAR>,
+        items_length: Count<'i, c_short>,
+        items: In<'i, ISC_SCHAR>,
+        buffer_length: Count<'b, c_short>,
+        buffer: swoole_rs_corebase::lent::Out<'b, ISC_SCHAR>,
     ) -> ISC_STATUS;
     pub safe fn isc_dsql_free_statement(
         status: Status,
