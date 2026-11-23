@@ -31,12 +31,15 @@ jobs:
         run: cargo test --locked --workspace --all-features
       # fuzz/ is its own workspace, so the steps above don't build it, and ClusterFuzzLite PR
       # isn't required: a crate change that breaks the harness would fail every nightly batch.
+      # Not --locked: Renovate bumps an exact pin in crates/*/Cargo.toml and the root
+      # Cargo.lock but not fuzz/Cargo.lock (#5630). Cargo still starts from fuzz/Cargo.lock and
+      # moves only what the pin forces, as `cargo fuzz build` does.
       - name: Check fuzz harness
-        run: cargo check --locked --manifest-path fuzz/Cargo.toml --all-targets
+        run: cargo check --manifest-path fuzz/Cargo.toml --all-targets
       # Its tests, which include the seed replay that holds each target's compared share
       # over fuzz/seeds above a floor (#5355).
       - name: Test fuzz harness
-        run: cargo test --locked --manifest-path fuzz/Cargo.toml
+        run: cargo test --manifest-path fuzz/Cargo.toml
       - uses: taiki-e/install-action@fe3acb53a98b62c772db35de75ce0e4595e7ca8c # v2
         with:
           tool: cbindgen@0.29.4,cargo-deny@0.18.9
