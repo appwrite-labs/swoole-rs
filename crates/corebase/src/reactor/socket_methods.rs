@@ -122,7 +122,7 @@ fn io_of(socket: Socket<'_>) -> (c_int, bool, bool, bool) {
     socket.read(|record| {
         (
             record.fd,
-            record.output.nonblock,
+            record.is_nonblocking(),
             record.dont_restart,
             !record.ssl().is_null(),
         )
@@ -238,7 +238,7 @@ pub fn count_write(
     if let Some(sent @ 1..) = sent
         && socket.edit(|record| {
             record.total_send_bytes += sent;
-            record.output.send_timer.is_some()
+            record.send_timer().is_some()
         })
     {
         let time = now();

@@ -886,7 +886,7 @@ pub fn socket_handle_sendfile(socket: Socket<'_>) -> bool {
             return (false, None);
         }
         let result = request.sent(&hooks, rv, requested);
-        socket.edit(|record| result.publish(&mut record.output));
+        socket.edit(|record| result.publish(record.output_block()));
         if result.warn {
             let at = request.fields().begin;
             let name = String::from_utf8_lossy(request.path());

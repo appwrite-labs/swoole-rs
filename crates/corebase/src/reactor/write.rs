@@ -209,6 +209,49 @@ impl SocketFields {
         self.output.send_timer.take()
     }
 
+    /// The queue, out of the output buffer until [`Self::return_output_queue`]; None
+    /// without a buffer, or while the queue is already lent.
+    #[inline]
+    fn lend_output_queue(&self) -> Option<Box<crate::buffer::Buffer>> {
+        self.output.buffer().and_then(OutputQueue::take_queue)
+    }
+
+    /// Gives back a lent queue, or hands it back to be freed when the socket lost its
+    /// buffer meanwhile.
+    #[inline]
+    fn return_output_queue(
+        &self,
+        queue: Box<crate::buffer::Buffer>,
+    ) -> Option<Box<crate::buffer::Buffer>> {
+        match self.output.buffer() {
+            Some(buffer) => {
+                buffer.put_queue(queue);
+                None
+            }
+            None => Some(queue),
+        }
+    }
+
+    /// Queues the bytes of `payload` past `offset` behind the output; the buffer must
+    /// exist (`new Buffer` throwing is fatal upstream, which nothing catches).
+    #[inline]
+    fn queue_payload(&self, payload: WritePayload<'_>, offset: u64) {
+        let Some(buffer) = self.output.buffer() else {
+            crate::fatal("a socket's output buffer can't be created");
+        };
+        match payload {
+            WritePayload::Bytes(data) => buffer.append_from(&[data.bytes()], offset),
+            WritePayload::Vectors(vectors) => buffer.append_from(vectors, offset),
+        }
+    }
+
+    /// The output block alone, for [`crate::reactor::OutputResult::publish`], which
+    /// borrows only it so that pointers to the socket's other fields stay usable.
+    #[inline]
+    pub(crate) const fn output_block(&mut self) -> &mut SocketOutput {
+        &mut self.output
+    }
+
     /// A send went out: restarts the idle clock when an idle timer watches sends.
     #[inline]
     pub fn note_sent(&mut self) {
@@ -226,18 +269,12 @@ impl Socket<'_> {
         self,
         f: impl FnOnce(Option<&mut crate::buffer::Buffer>) -> R,
     ) -> R {
-        let queue = self.read(|record| record.output.buffer().and_then(OutputQueue::take_queue));
+        let queue = self.read(SocketFields::lend_output_queue);
         let Some(mut queue) = queue else {
             return f(None);
         };
         let result = f(Some(&mut queue));
-        if let Some(queue) = self.read(|record| match record.output.buffer() {
-            Some(buffer) => {
-                buffer.put_queue(queue);
-                None
-            }
-            None => Some(queue),
-        }) {
+        if let Some(queue) = self.read(|record| record.return_output_queue(queue)) {
             dispose_queue(queue);
         }
         result
@@ -301,16 +338,17 @@ pub fn swr_v1_reactor_write(
     let length = payload.length();
     // Making the socket nonblocking leaves the queue as it is.
     let (mut buffer_size, nonblock, ssl_send, held) = socket.read(|record| {
-        let output = &record.output;
-        let held = output
-            .buffer()
-            .filter(|&buffer| swr_cpp_buffer_count(buffer) != 0)
-            .map(swr_cpp_buffer_length);
-        (output.buffer_size, output.nonblock, output.ssl_send, held)
+        let held = (!record.output_drained()).then(|| record.queued_bytes());
+        (
+            record.output_limit(),
+            record.is_nonblocking(),
+            record.sends_through_tls(),
+            held,
+        )
     });
     if buffer_size == 0 {
         buffer_size = default_buffer_size;
-        socket.edit(|record| record.output.buffer_size = buffer_size);
+        socket.edit(|record| record.limit_output(buffer_size));
     }
     if !nonblock {
         ops.set_nonblock();
@@ -343,23 +381,13 @@ pub fn swr_v1_reactor_write(
                 }
             }
         }
-        if socket.read(|record| record.output.out_buffer.is_none()) {
+        if !socket.read(SocketFields::has_output_queue) {
             ops.create_buffer();
         }
         ops.watch_writable();
     }
     let offset = sent as u64;
-    socket.read(|record| {
-        let Some(buffer) = record.output.buffer() else {
-            // `new Buffer` threw, which nothing catches.
-            crate::fatal("a socket's output buffer can't be created");
-        };
-        // The bytes past the `offset` sent.
-        match payload {
-            WritePayload::Bytes(data) => buffer.append_from(&[data.bytes()], offset),
-            WritePayload::Vectors(vectors) => buffer.append_from(vectors, offset),
-        }
-    });
+    socket.read(|record| record.queue_payload(payload, offset));
     Ok(length)
 }
 
