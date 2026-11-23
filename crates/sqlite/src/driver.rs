@@ -4,21 +4,24 @@ use crate::{
     swoole_sqlite3_open_v2, swoole_sqlite3_prepare_v2,
 };
 use std::{
-    ffi::{CStr, c_int},
+    ffi::{CStr, CString, c_char, c_int},
     ptr,
 };
 use swoole_rs_corebase::{CCast, sys::Text};
 use swoole_rs_zend::{
-    Owned, Value, ZStr, ZString,
+    E_WARNING, Owned, Value, ZStr, ZString, bailout,
     pdo::{self, Attribute, Dbh, Slot},
     string::ZBuf,
     sys::{
-        pdo_attribute_type_PDO_ATTR_CLIENT_VERSION as CLIENT_VERSION,
+        PHP_VERSION_ID, pdo_attribute_type_PDO_ATTR_CLIENT_VERSION as CLIENT_VERSION,
         pdo_attribute_type_PDO_ATTR_CURSOR as CURSOR,
         pdo_attribute_type_PDO_ATTR_DRIVER_SPECIFIC as DRIVER_SPECIFIC,
         pdo_attribute_type_PDO_ATTR_SERVER_VERSION as SERVER_VERSION,
         pdo_attribute_type_PDO_ATTR_TIMEOUT as TIMEOUT,
-        pdo_cursor_type_PDO_CURSOR_FWDONLY as FORWARD, zend_long, zend_string,
+        pdo_cursor_type_PDO_CURSOR_FWDONLY as FORWARD,
+        pdo_error_mode_PDO_ERRMODE_EXCEPTION as ERRMODE_EXCEPTION,
+        pdo_error_mode_PDO_ERRMODE_WARNING as ERRMODE_WARNING, pdo_param_type, zend_long,
+        zend_string,
     },
 };
 
@@ -35,11 +38,9 @@ extern "C" fn pdo_sqlite_sqlstate(code: c_int, state: &mut [u8; 6]) {
     };
 }
 
-/// The caller checks SQLite's length limit and handles PHP 8.5's NUL diagnostic.
-/// Earlier PHP versions quote the bytes before the first NUL, as SQLite's %q does.
-#[unsafe(no_mangle)]
-extern "C" fn pdo_sqlite_quote_literal(value: Text<'_>) -> *mut zend_string {
-    let bytes = value.get().to_bytes();
+/// `sqlite3_mprintf("'%q'", value)`: the bytes before the first NUL, quoted.
+fn quote_literal(value: &CStr) -> ZString {
+    let bytes = value.to_bytes();
     let mut parts = bytes.split(|&byte| byte == b'\'');
     let first = parts.next().unwrap_or_default();
     let mut result = ZBuf::with_capacity(bytes.len() + parts.clone().count() + 2);
@@ -50,7 +51,47 @@ extern "C" fn pdo_sqlite_quote_literal(value: Text<'_>) -> *mut zend_string {
         result.extend_from_slice(part);
     }
     result.extend_from_slice(b"'");
-    result.into_zstring().into_raw()
+    result.into_zstring()
+}
+
+swoole_rs_zend::exports! {
+/// `quoter`. PHP 8.5 refuses a NUL, as `PDO::$errorMode` says; earlier versions quote
+/// the bytes before it.
+#[unsafe(no_mangle)]
+extern "C" fn swr_pdo_sqlite_quote(dbh: &Dbh, unquoted: &ZStr, _kind: pdo_param_type) -> *mut zend_string {
+    // (INT_MAX - 3) / 2: SQLite's %q doubles every byte and adds the quotes.
+    if unquoted.bytes().len() > 0x3fff_fffe {
+        return ptr::null_mut();
+    }
+    if PHP_VERSION_ID >= 80500 && unquoted.bytes().contains(&0) {
+        let message = c"SQLite PDO::quote does not support null bytes";
+        match dbh.error_mode() {
+            ERRMODE_EXCEPTION => dbh.throw_exception(0, message),
+            ERRMODE_WARNING => bailout::defer(swoole_rs_zend::report(E_WARNING, message)),
+            _ => {}
+        }
+        return ptr::null_mut();
+    }
+    quote_literal(unquoted.c_str()).into_raw()
+}
+}
+
+/// `last_id`: the connection's last rowid, as decimal text.
+#[unsafe(no_mangle)]
+extern "C" fn swr_pdo_sqlite_last_insert_id(dbh: &Dbh, _name: Option<&ZStr>) -> *mut zend_string {
+    unsafe extern "C" {
+        safe fn sqlite3_last_insert_rowid(db: Db) -> i64;
+    }
+    let rowid = sqlite3_last_insert_rowid(swr_pdo_sqlite_connection(dbh));
+    ZString::new(rowid.to_string().as_bytes()).into_raw()
+}
+
+/// `fetch_err`: the driver's code and message, once SQLite has reported an error.
+#[unsafe(no_mangle)]
+extern "C" fn swr_pdo_sqlite_error_info(info: &Slot, code: u32, message: Option<Text<'_>>) {
+    if code != 0 {
+        info.push_error_info(Some(code), message.map(|message| message.get().to_bytes()));
+    }
 }
 
 unsafe extern "C" {
@@ -63,6 +104,43 @@ unsafe extern "C" {
     safe fn sqlite3_extended_result_codes(db: Db, enabled: c_int) -> c_int;
     safe fn swr_sqlite_open_basedir_active() -> bool;
     safe fn sqlite3_get_autocommit(db: Db) -> c_int;
+    /// `expand_filepath(path, real_path)`: the absolute form of `path` in `real_path`, a
+    /// `MAXPATHLEN` buffer, or null. It reads this thread's working directory and runs
+    /// no PHP code.
+    safe fn expand_filepath(path: Text<'_>, real_path: &mut [u8; PATH_BUFFER]) -> *mut c_char;
+    /// `php_check_open_basedir_ex(path, warn)` into `refused`, inside `zend_try`: with
+    /// `warn`, a refusal is an `E_WARNING`. 1 if it bailed out.
+    safe fn swr_zend_try_open_basedir(path: Text<'_>, warn: c_int, refused: &mut bool) -> c_int;
+}
+
+/// At least `MAXPATHLEN`, which is `PATH_MAX`: 4096 on Linux, 1024 on macOS.
+const PATH_BUFFER: usize = 4096;
+
+/// `make_filename_safe`: the file SQLite may open for a data source, or none when
+/// `open_basedir` refuses it. A `file:` URI is refused whenever `open_basedir` is set,
+/// since SQLite would resolve it; a path is made absolute and checked, warning when
+/// refused; an empty name and `:memory:` open no file. A bailout is deferred.
+fn local_file<'a>(source: &'a CStr, expanded: &'a mut [u8; PATH_BUFFER]) -> Option<&'a CStr> {
+    let bytes = source.to_bytes();
+    if bytes
+        .get(..5)
+        .is_some_and(|scheme| scheme.eq_ignore_ascii_case(b"file:"))
+    {
+        return (!swr_sqlite_open_basedir_active()).then_some(source);
+    }
+    if bytes.is_empty() || bytes == b":memory:" {
+        return Some(source);
+    }
+    if expand_filepath(source.into(), expanded).is_null() {
+        return None;
+    }
+    let path = CStr::from_bytes_until_nul(expanded).ok()?;
+    let mut refused = true;
+    if let Err(bailed) = bailout::trapped(swr_zend_try_open_basedir(path.into(), 1, &mut refused)) {
+        bailed.defer();
+        return None;
+    }
+    (!refused).then_some(path)
 }
 
 /// Execute on the coroutine hook and leave the driver's diagnostic on failure.
@@ -173,19 +251,35 @@ extern "C" fn swr_pdo_sqlite_prepare(dbh: &Dbh, sql: &ZStr, options: Option<&Val
     false
 }
 
+/// The factory's work once it has allocated the connection record: open the data
+/// source's file, with the options' flags and busy timeout, and set the handle's flags.
+/// A refused file throws; a failed open records SQLite's error.
 #[unsafe(no_mangle)]
-extern "C" fn swr_pdo_sqlite_open(filename: Text<'_>, db: &mut *mut Sqlite3, options: Option<&Value>) -> bool {
+extern "C" fn swr_pdo_sqlite_open(dbh: &Dbh, source: Option<Text<'_>>, db: &mut *mut Sqlite3, options: Option<&Value>) -> bool {
+    let mut expanded = [0; PATH_BUFFER];
+    let Some(filename) = source.and_then(|source| local_file(source.get(), &mut expanded)) else {
+        if !bailout::pending() {
+            let mut message = b"open_basedir prohibits opening ".to_vec();
+            message.extend_from_slice(source.map_or(b"(null)", |source| source.get().to_bytes()));
+            dbh.throw_exception(0, &CString::new(message).unwrap_or_default());
+        }
+        return false;
+    };
     // SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE, with URI filenames enabled
     // when PHP permits them. Conversion can invoke PHP's error handler.
     let mut flags = pdo::attr_long(options, DRIVER_SPECIFIC, 0x02 | 0x04).c_cast::<c_int>();
-    if swoole_rs_zend::bailout::pending() { return false; }
+    if bailout::pending() { return false; }
     if !swr_sqlite_open_basedir_active() { flags |= 0x40; }
-    swoole_sqlite3_open_v2(filename, db, flags, None) == 0
-}
-
-#[unsafe(no_mangle)]
-extern "C" fn swr_pdo_sqlite_initial_timeout(db: Db, options: Option<&Value>) {
+    if swoole_sqlite3_open_v2(filename.into(), db, flags, None) != 0 {
+        swr_pdo_sqlite_record_error(dbh);
+        return false;
+    }
     let seconds = pdo::attr_long(options, TIMEOUT, 60);
-    if !swoole_rs_zend::bailout::pending() { set_timeout(db, seconds); }
+    if bailout::pending() { return false; }
+    set_timeout(swr_pdo_sqlite_connection(dbh), seconds);
+    // Every parameter event but PDO_PARAM_EVT_EXEC_PRE is skipped; a quoted byte
+    // takes at most two.
+    dbh.set_driver_flags(0x7f ^ (1 << 2), 2);
+    true
 }
 }
