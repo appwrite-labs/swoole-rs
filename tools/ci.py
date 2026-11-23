@@ -20,7 +20,8 @@ puts a PR in main's merge queue once its PR tier passes.
   ci.py stuck                auto-merge PRs that conflict with main, failed a required check, have
                              a review requesting changes (answer it), or whose finished PR-tier run has none (GitHub abandoned its jobs:
                              re-run it), and PRs the merge queue dropped (fix what their run
-                             broke, then queue them again), and ready PRs whose `required` passed
+                             broke, then queue them again; only queue them when a PHPT shard's
+                             runner died), and ready PRs whose `required` passed
                              but were never put on auto-merge (queue them), oldest first (exit 2 when there are none);
                              first, a merge-tier run on main that a job waiting for a runner holds
                              open (cancel it: every later hourly run waits behind it)
@@ -65,6 +66,8 @@ EXIT = {'passed': 0, 'failed': 1, 'none': 2, 'running': 2, 'cancelled': 3, 'conf
 GATE_JOB = 'phpt / gate'
 # gate.py's annotation title for each regressed test, whose message starts with the test.
 REGRESSION = 'PHPT regression'
+# gate.py's annotation title for a shard that produced no results: its runner died, not the PR.
+LOST_SHARD = 'PHPT shard lost'
 # The merge-tier jobs (full-gates, or its shards "full-gates (N)") whose dev.py phases the
 # `phases*` artifacts list, replacing their annotations.
 PHASES_JOB = 'full-gates'
@@ -618,10 +621,14 @@ def stuck():
     if any(row['dequeued'] for row in rows):
         # A group's branch is gh-readonly-queue/main/pr-<number>-<base sha>; only GitHub's run list has it.
         runs = json.loads(gh('run', 'list', '--workflow', 'merge.yml', '--event', 'merge_group', '--limit', '100',
-                             '--json', 'headBranch,url'))
+                             '--json', 'headBranch,url,databaseId,headSha'))
         for row in (row for row in rows if row['dequeued']):
-            run = next((run['url'] for run in runs if f"/pr-{row['number']}-" in run.get('headBranch', '')), None)
-            row['blocking'] += [run] if run else []
+            run = next((run for run in runs if f"/pr-{row['number']}-" in run.get('headBranch', '')), None)
+            if run:
+                gate = [line for job in status('merge.yml', run['headSha'], run['databaseId']).get('jobs', [])
+                        if job['name'] == GATE_JOB for line in job['annotations']]
+                row['blocking'] += [run['url']] + [line + ': queue it again'
+                                                   for line in gate if line.startswith(LOST_SHARD + ': ')]
     return sorted(({key: value for key, value in row.items() if key != 'dequeued'} for row in rows),
                   key=lambda row: row['created'])
 

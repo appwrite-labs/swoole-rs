@@ -338,13 +338,23 @@ class Ci(unittest.TestCase):
         queue = [pull(8, '2026-10-15T00:00:00Z', removed), pull(9, '2026-10-16T00:00:00Z', [{'__typename': 'AddedToMergeQueueEvent'}], queued=True),
                  pull(10, '2026-10-17T00:00:00Z', []), pull(11, '2026-10-18T00:00:00Z', removed, auto={'enabledAt': 'x'}),
                  pull(12, '2026-10-19T00:00:00Z', [{'__typename': 'RemovedFromMergeQueueEvent', 'reason': None}])]
-        history = [{'headBranch': 'gh-readonly-queue/main/pr-8-abc', 'url': 'u8', 'event': 'merge_group'},
+        history = [{'headBranch': 'gh-readonly-queue/main/pr-8-abc', 'url': 'u8', 'event': 'merge_group',
+                    'databaseId': 20, 'conclusion': 'failure'},
                    {'headBranch': 'main', 'url': 'm', 'event': 'schedule'}]
         code, result, _ = self.ci('stuck', runs={}, flags=('--json',), queue=queue, history=history)
         # 9 is queued, 10 never was, and 11 was queued again: its auto-merge waits on a new PR-tier run.
         self.assertEqual((code, [(row['number'], row['blocking']) for row in result]),
                          (0, [(8, ['left the merge queue: failed status checks', 'u8']),
                               (12, ['left the merge queue: no reason given'])]))
+        # A group run whose gate found a PHPT shard without results lost a runner (#5616): queue the PR again.
+        lost = 'cargo shard 9 produced no results (its runner died or was cancelled)'
+        jobs = {'20': [['phpt / cargo 9', 'cancelled'], ['phpt / gate', 'failure']]}
+        annotations = {'101': [{'title': 'PHPT shard lost', 'message': lost},
+                               {'title': 'PHPT regression', 'message': 'tests/a/x.phpt (cargo: failed)'}]}
+        code, result, _ = self.ci('stuck', runs={}, flags=('--json',), queue=queue[:1], history=history,
+                                  jobs=jobs, annotations=annotations)
+        self.assertEqual(result[0]['blocking'], ['left the merge queue: failed status checks', 'u8',
+                                                 f'PHPT shard lost: {lost}: queue it again'])
         # A merge-tier run on main held open by a job no runner took (#3553) comes first, with no PR stuck
         # too: 5 holds main's group, since 6 waits behind it, while 3 is a run GitHub abandoned long before.
         ago = lambda hours: (datetime.now(timezone.utc) - timedelta(hours=hours)).strftime('%Y-%m-%dT%H:%M:%SZ')
