@@ -59,6 +59,9 @@ runs:
         # The php8.3 source's packages only: the image's PECL ones (php8.3-redis, …) have their own versions.
         installed() { dpkg-query -W -f='${db:Status-Abbrev}${source:Package} ${Package}\n' 'php8.3*' | sed -n 's/^ii *php8\.3 //p'; }
         version() { dpkg-query -W -f='${Version}' php8.3-common; }
+        # Every apt fetch in this job gets five tries: one refused connection to the mirror
+        # failed a PHPT shard three times on 2026-11-23 (#5616). apt logs each retry.
+        echo 'Acquire::Retries "5";' | sudo tee /etc/apt/apt.conf.d/80-retries >/dev/null
         if [ "$WANT" = latest ]; then
           sudo apt-get update -q && sudo apt-get install -yq --only-upgrade $(installed)
         elif [ -n "$WANT" ] && [ "$(version)" != "$WANT" ]; then
