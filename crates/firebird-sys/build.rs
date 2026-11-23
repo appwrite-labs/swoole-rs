@@ -53,6 +53,7 @@ mod ibase {
             .allowlist_var("DSQL_close|DSQL_drop|isc_info_end|isc_info_req_select_count|isc_info_sql_records")
             .allowlist_var("isc_info_(truncated|error|blob_total_length)|isc_segment|isc_segstr_eof|SQL_(BLOB|ARRAY)")
             .allowlist_var("isc_info_sql_stmt_(type|insert|update|delete|exec_procedure)")
+            .allowlist_var("isc_dpb_(version1|user_name|password|lc_ctype|sql_role_name)")
             .allowlist_var("SQL_(TEXT|VARYING|SHORT|LONG|INT64|FLOAT|DOUBLE|BOOLEAN|TYPE_DATE|TYPE_TIME|TIMESTAMP)")
             .generate()
             .expect("firebird-sys: bindgen")

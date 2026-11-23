@@ -25,6 +25,7 @@
 use std::ffi::{CStr, c_char, c_int, c_short, c_uint, c_ushort, c_void};
 use std::marker::PhantomData;
 use swoole_rs_corebase::lent::{Count, In, Out};
+use swoole_rs_corebase::sys::Text;
 
 /// `ISC_STATUS`: `intptr_t`.
 pub type ISC_STATUS = isize;
@@ -128,16 +129,23 @@ pub enum TebCount {
     One = 1,
 }
 
+/// The length `isc_attach_database` is given for the database's name: none,
+/// so it reads the C string (or takes a null name as no database).
+#[repr(i16)]
+pub enum NameLength {
+    NulTerminated = 0,
+}
+
 // None of these keeps an argument past the call or runs a callback but
 // `isc_version`'s, and each reports through its status vector.
 unsafe extern "C" {
-    pub safe fn isc_attach_database(
+    pub safe fn isc_attach_database<'d>(
         status: Status,
-        name_length: c_short,
-        name: Bytes,
+        name_length: NameLength,
+        name: Option<Text<'_>>,
         db: Handle,
-        dpb_length: c_short,
-        dpb: Bytes,
+        dpb_length: Count<'d, c_short>,
+        dpb: In<'d, ISC_SCHAR>,
     ) -> ISC_STATUS;
     pub safe fn isc_detach_database(status: Status, db: Handle) -> ISC_STATUS;
     pub safe fn isc_dsql_execute(

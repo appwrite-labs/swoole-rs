@@ -1,12 +1,24 @@
 //! `pdo_firebird`'s connection methods (`firebird_driver.c`), under their C
-//! names: so far `firebird_handle_closer`, `pdo_firebird_check_liveness`,
-//! `pdo_firebird_fetch_error_func` and `pdo_firebird_in_manually_transaction`. The connection record stays C,
-//! read through the driver's `swr_firebird_*` accessors.
-use std::ffi::c_int;
-use swoole_rs_corebase::lent::{Count, Out, lend_out};
-use swoole_rs_firebird_sys::{Handle, Status};
-use swoole_rs_zend::pdo::{Dbh, Slot};
+//! names: `firebird_handle_closer`, `pdo_firebird_check_liveness`,
+//! `pdo_firebird_fetch_error_func`, `pdo_firebird_in_manually_transaction`,
+//! and the handle factory's connecting (`swr_firebird_connect`). The
+//! connection record stays C, read through the driver's `swr_firebird_*`
+//! accessors.
+use std::ffi::{CString, c_int, c_short, c_ushort};
+use swoole_rs_corebase::CCast;
+use swoole_rs_corebase::lent::{Count, Out, lend_in, lend_out};
+use swoole_rs_corebase::sys::Text;
+use swoole_rs_firebird_sys::ibase::{
+    isc_dpb_lc_ctype, isc_dpb_password, isc_dpb_sql_role_name, isc_dpb_user_name, isc_dpb_version1,
+};
+use swoole_rs_firebird_sys::{Handle, NameLength, Status};
+use swoole_rs_zend::Value;
+use swoole_rs_zend::pdo::{Dbh, Slot, attr_long};
 use swoole_rs_zend::sys::zend_result;
+
+use crate::attribute::{ISOLATION_LEVEL, READ_COMMITTED, REPEATABLE_READ, SERIALIZABLE, WRITABLE};
+use crate::swoole_isc_attach_database;
+use crate::transaction::php_firebird_begin_transaction;
 
 use crate::transaction::{php_firebird_commit_transaction, php_firebird_rollback_transaction};
 use crate::{swoole_fb_ping, swoole_isc_detach_database};
@@ -30,6 +42,13 @@ unsafe extern "C" {
     safe fn swr_firebird_free(dbh: &Dbh);
     /// The connection's last error (`H->einfo`): its SQL code in `sqlcode`,
     /// and up to the lent bytes of its message, whose length it returns.
+    safe fn swr_firebird_set_writable(dbh: &Dbh, writable: bool);
+    safe fn swr_firebird_set_isolation(dbh: &Dbh, level: std::ffi::c_ulong);
+    /// `H->sql_dialect = dialect`, a value its two bits hold.
+    safe fn swr_firebird_set_dialect(dbh: &Dbh, dialect: c_ushort);
+    /// The attached connection's PDO methods, upper-case column names, and
+    /// columns the driver allocates.
+    safe fn swr_firebird_set_methods(dbh: &Dbh);
     safe fn swr_firebird_last_error<'a>(
         dbh: &Dbh,
         sqlcode: &mut c_int,
@@ -103,4 +122,122 @@ pub extern "C" fn pdo_firebird_fetch_error_func(dbh: &Dbh, _stmt: Option<&!>, in
 #[unsafe(no_mangle)]
 pub extern "C" fn pdo_firebird_in_manually_transaction(dbh: &Dbh) -> bool {
     swr_firebird_in_manual_txn(dbh)
+}
+
+/// The DSN's `dialect` as C stored it: `atoi` (`(int) strtol(text, NULL,
+/// 10)`: leading whitespace and a sign taken, saturated at the long's range,
+/// truncated to an `int`), kept to the record's two-bit field.
+fn dialect(text: &[u8]) -> c_ushort {
+    let start = text
+        .iter()
+        .position(|b| !b" \t\n\x0b\x0c\r".contains(b))
+        .unwrap_or(text.len());
+    let text = text.get(start..).unwrap_or_default();
+    let (negative, digits) = match text.split_first() {
+        Some((b'-', rest)) => (true, rest),
+        Some((b'+', rest)) => (false, rest),
+        _ => (false, text),
+    };
+    let value = digits
+        .iter()
+        .take_while(|b| b.is_ascii_digit())
+        .fold(0_i64, |value, &digit| {
+            let digit = i64::from(digit - b'0');
+            if negative {
+                value.saturating_mul(10).saturating_sub(digit)
+            } else {
+                value.saturating_mul(10).saturating_add(digit)
+            }
+        });
+    (value.c_cast::<c_int>() & 3).c_cast()
+}
+
+/// `pdo_firebird_handle_factory`'s DPB: `isc_dpb_version1`, then each given
+/// value as its tag, its length's low byte and its bytes, as `slprintf` wrote
+/// them into the 256 bytes C counted from just past the version.
+fn dpb(values: [(u32, Option<Text<'_>>); 4]) -> Vec<u8> {
+    let mut dpb = vec![isc_dpb_version1.c_cast::<u8>()];
+    let mut room: c_short = 256;
+    for (tag, value) in values {
+        let Some(value) = value.filter(|_| room > 0) else {
+            continue;
+        };
+        let value = value.get().to_bytes();
+        let mut item = vec![tag.c_cast::<u8>(), value.len().c_cast::<u8>()];
+        item.extend_from_slice(value);
+        // `slprintf` keeps what fits before its NUL, and returns that length.
+        let written = item
+            .len()
+            .min(usize::try_from(room).unwrap_or_default() - 1);
+        dpb.extend_from_slice(item.get(..written).unwrap_or_default());
+        room -= c_short::try_from(written).unwrap_or(room);
+    }
+    dpb
+}
+
+/// `pdo_firebird_handle_factory` once C has parsed the DSN: the transaction
+/// options taken from `options` (a `ValueError` for an unknown isolation
+/// level, connecting anyway as C did), the DPB built from the user, password,
+/// charset and role, the dialect set, and the database attached. Attached,
+/// the connection gets its PDO methods and, in autocommit mode, its
+/// transaction; else a `PDOException` of Firebird's first error. False,
+/// the connection closed, when either failed.
+#[unsafe(no_mangle)]
+pub extern "C" fn swr_firebird_connect(
+    dbh: &Dbh,
+    options: Option<&Value>,
+    dbname: Option<Text<'_>>,
+    charset: Option<Text<'_>>,
+    role: Option<Text<'_>>,
+    dialect: Option<Text<'_>>,
+    user: Option<Text<'_>>,
+    password: Option<Text<'_>>,
+) -> bool {
+    swr_firebird_set_manual(dbh, false);
+    swr_firebird_set_writable(dbh, attr_long(options, WRITABLE, 1) != 0);
+    let level = attr_long(options, ISOLATION_LEVEL, REPEATABLE_READ);
+    if [READ_COMMITTED, REPEATABLE_READ, SERIALIZABLE].contains(&level) {
+        swr_firebird_set_isolation(dbh, level.cast_unsigned());
+    } else {
+        swoole_rs_zend::value_error(
+            c"Pdo\\Firebird::TRANSACTION_ISOLATION_LEVEL must be a valid transaction isolation level (Pdo\\Firebird::READ_COMMITTED, Pdo\\Firebird::REPEATABLE_READ, or Pdo\\Firebird::SERIALIZABLE)",
+        );
+    }
+    let dpb = dpb([
+        (isc_dpb_user_name, user),
+        (isc_dpb_password, password),
+        (isc_dpb_lc_ctype, charset),
+        (isc_dpb_sql_role_name, role),
+    ]);
+    // `PDO_FB_DIALECT` (3), C's default for the DSN's `dialect`.
+    swr_firebird_set_dialect(
+        dbh,
+        dialect.map_or(3, |text| self::dialect(text.get().to_bytes())),
+    );
+    let attached = lend_in(&dpb, |bytes, len| {
+        swoole_isc_attach_database(
+            swr_firebird_status(dbh),
+            NameLength::NulTerminated,
+            dbname,
+            swr_firebird_db(dbh),
+            len,
+            bytes.chars(),
+        )
+    }) == 0;
+    if attached {
+        swr_firebird_set_methods(dbh);
+    } else {
+        let (text, code) = crate::error::first_error(dbh);
+        let mut message = format!("SQLSTATE[HY000] [{code}] ").into_bytes();
+        message.extend_from_slice(&text);
+        dbh.throw_exception(code.c_cast(), &CString::new(message).unwrap_or_default());
+    }
+    let connected = attached
+        && (!dbh.auto_commit()
+            || swr_firebird_in_transaction(dbh)
+            || php_firebird_begin_transaction(dbh, true));
+    if !connected {
+        firebird_handle_closer(dbh);
+    }
+    connected
 }

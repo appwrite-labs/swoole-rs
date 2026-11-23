@@ -62,11 +62,11 @@ unsafe extern "C" {
 const DATE_FORMAT: u32 = DRIVER_SPECIFIC;
 const TIME_FORMAT: u32 = DRIVER_SPECIFIC + 1;
 const TIMESTAMP_FORMAT: u32 = DRIVER_SPECIFIC + 2;
-const ISOLATION_LEVEL: u32 = DRIVER_SPECIFIC + 3;
-const READ_COMMITTED: zend_long = DRIVER_SPECIFIC as zend_long + 4;
-const REPEATABLE_READ: zend_long = DRIVER_SPECIFIC as zend_long + 5;
-const SERIALIZABLE: zend_long = DRIVER_SPECIFIC as zend_long + 6;
-const WRITABLE: u32 = DRIVER_SPECIFIC + 7;
+pub(crate) const ISOLATION_LEVEL: u32 = DRIVER_SPECIFIC + 3;
+pub(crate) const READ_COMMITTED: zend_long = DRIVER_SPECIFIC as zend_long + 4;
+pub(crate) const REPEATABLE_READ: zend_long = DRIVER_SPECIFIC as zend_long + 5;
+pub(crate) const SERIALIZABLE: zend_long = DRIVER_SPECIFIC as zend_long + 6;
+pub(crate) const WRITABLE: u32 = DRIVER_SPECIFIC + 7;
 /// `INFO_BUF_LEN`.
 const INFO_LEN: usize = 512;
 

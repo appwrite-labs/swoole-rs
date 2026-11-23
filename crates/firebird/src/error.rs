@@ -76,6 +76,25 @@ fn interpret(vector: &Vector) -> Vec<u8> {
         .to_vec()
 }
 
+/// The connection's status vector's first error, as one `fb_interpret` into a
+/// 512-byte buffer printed it, to its NUL; and the vector's second entry, its
+/// error code.
+pub(crate) fn first_error(dbh: &Dbh) -> (Vec<u8>, isize) {
+    let vector = swr_firebird_status_vector(dbh);
+    let mut buffer = [0u8; MESSAGE_MAX];
+    let mut cursor = Cursor(vector.as_ptr(), PhantomData);
+    // Its length goes unread, as C's did: the text ends at its NUL.
+    let _printed = lend_out(&mut buffer, |out: Out<'_, u8>, len| {
+        fb_interpret(out.chars(), len, &mut cursor)
+    });
+    let text = buffer
+        .split(|&b| b == 0)
+        .next()
+        .unwrap_or_default()
+        .to_vec();
+    (text, vector.get(1).copied().unwrap_or_default())
+}
+
 /// `php_firebird_set_error`: the connection's error recorded from its status
 /// vector when the last call failed, its SQLSTATE the statement's (with
 /// `stmt`) or the connection's error code; else the lent `message`, and
