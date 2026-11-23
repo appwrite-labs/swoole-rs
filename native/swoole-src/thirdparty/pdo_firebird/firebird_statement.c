@@ -767,37 +767,41 @@ static int pdo_firebird_stmt_set_attribute(pdo_stmt_t *stmt, zend_long attr, zva
 }
 /* }}} */
 
-static int pdo_firebird_stmt_get_attribute(pdo_stmt_t *stmt, zend_long attr, zval *val) /* {{{ */
-{
-	pdo_firebird_stmt *S = (pdo_firebird_stmt*)stmt->driver_data;
+/* The cursor-name read and the cursor closer are Rust (crates/firebird/src/statement.rs);
+ * they reach the statement record through these. */
+int pdo_firebird_stmt_get_attribute(pdo_stmt_t *stmt, zend_long attr, zval *val);
+bool swr_firebird_cursor_close(pdo_stmt_t *stmt);
 
-	switch (attr) {
-		default:
-			return 0;
-		case PDO_ATTR_CURSOR_NAME:
-			if (*S->name) {
-				ZVAL_STRING(val, S->name);
-			} else {
-				ZVAL_NULL(val);
-			}
-			break;
-	}
-	return 1;
+pdo_dbh_t *swr_firebird_stmt_dbh(pdo_stmt_t *stmt)
+{
+	return stmt->dbh;
 }
-/* }}} */
+
+isc_stmt_handle *swr_firebird_stmt_handle(pdo_stmt_t *stmt)
+{
+	return &((pdo_firebird_stmt *)stmt->driver_data)->stmt;
+}
+
+const char *swr_firebird_cursor_name(pdo_stmt_t *stmt)
+{
+	return ((pdo_firebird_stmt *)stmt->driver_data)->name;
+}
+
+bool swr_firebird_cursor_open(pdo_stmt_t *stmt)
+{
+	return ((pdo_firebird_stmt *)stmt->driver_data)->cursor_open;
+}
+
+void swr_firebird_cursor_closed(pdo_stmt_t *stmt)
+{
+	pdo_firebird_stmt *S = (pdo_firebird_stmt *)stmt->driver_data;
+	*S->name = 0;
+	S->cursor_open = 0;
+}
 
 static int pdo_firebird_stmt_cursor_closer(pdo_stmt_t *stmt) /* {{{ */
 {
-	pdo_firebird_stmt *S = (pdo_firebird_stmt*)stmt->driver_data;
-
-	/* close the statement handle */
-	if ((*S->name || S->cursor_open) && isc_dsql_free_statement(S->H->isc_status, &S->stmt, DSQL_close)) {
-		php_firebird_error_stmt(stmt);
-		return 0;
-	}
-	*S->name = 0;
-	S->cursor_open = 0;
-	return 1;
+	return swr_firebird_cursor_close(stmt);
 }
 /* }}} */
 

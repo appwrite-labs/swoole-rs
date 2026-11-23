@@ -11,7 +11,11 @@ use swoole_rs_firebird_sys::ibase::{
     ISC_TIMESTAMP, SQL_BOOLEAN, SQL_DOUBLE, SQL_FLOAT, SQL_INT64, SQL_LONG, SQL_SHORT, SQL_TEXT,
     SQL_TIMESTAMP, SQL_TYPE_DATE, SQL_TYPE_TIME, SQL_VARYING, XSQLVAR,
 };
-use swoole_rs_zend::pdo::{Dbh, Slot};
+use swoole_rs_firebird_sys::{Handle, Status, ibase::DSQL_close};
+use swoole_rs_zend::pdo::{Attribute, Dbh, Slot, Stmt};
+use swoole_rs_zend::sys::{pdo_attribute_type_PDO_ATTR_CURSOR_NAME as CURSOR_NAME, zend_long};
+
+use crate::swoole_isc_dsql_free_statement;
 use swoole_rs_zend::sys::{
     pdo_column_data, pdo_param_type_PDO_PARAM_BOOL as PARAM_BOOL,
     pdo_param_type_PDO_PARAM_INT as PARAM_INT, pdo_param_type_PDO_PARAM_STR as PARAM_STR,
@@ -22,6 +26,17 @@ unsafe extern "C" {
     /// The connection's date (0), time (1) or timestamp (2) format, or its
     /// default, live until it is set again.
     safe fn swr_firebird_format<'a>(dbh: &'a Dbh, which: c_int) -> Text<'a>;
+    /// The connection's status vector.
+    safe fn swr_firebird_status(dbh: &Dbh) -> Status;
+    /// The statement's connection (`stmt->dbh`) and `&S->stmt`.
+    safe fn swr_firebird_stmt_dbh(stmt: &Stmt) -> &Dbh;
+    safe fn swr_firebird_stmt_handle(stmt: &Stmt) -> Handle;
+    /// The cursor's name (`S->name`), empty when it has none, live until the
+    /// cursor is renamed or closed; whether its cursor is open
+    /// (`S->cursor_open`); and both cleared.
+    safe fn swr_firebird_cursor_name(stmt: &Stmt) -> Text<'_>;
+    safe fn swr_firebird_cursor_open(stmt: &Stmt) -> bool;
+    safe fn swr_firebird_cursor_closed(stmt: &Stmt);
     /// fbclient's decoders: a `DATE`, `TIME` or `TIMESTAMP` into the `tm`.
     safe fn isc_decode_sql_date(date: &i32, tm: &mut libc::tm);
     safe fn isc_decode_sql_time(time: &u32, tm: &mut libc::tm);
@@ -234,4 +249,46 @@ pub extern "C" fn swr_firebird_coerce(var: &mut XSQLVAR, client_major: c_uint) {
     };
     var.sqltype = i16::try_from(SQL_VARYING).unwrap_or_default() | (var.sqltype & 1);
     var.sqllen = length;
+}
+
+/// `pdo_firebird_stmt_get_attribute`: the cursor's name, null when it has none.
+#[unsafe(no_mangle)]
+pub extern "C" fn pdo_firebird_stmt_get_attribute(
+    stmt: &Stmt,
+    attr: zend_long,
+    val: &Slot,
+) -> Attribute {
+    if u32::try_from(attr) != Ok(CURSOR_NAME) {
+        return Attribute::Unknown;
+    }
+    let name = swr_firebird_cursor_name(stmt);
+    let name = name.get().to_bytes();
+    val.set(if name.is_empty() {
+        Owned::null()
+    } else {
+        Owned::string(ZString::new(name))
+    });
+    Attribute::Set
+}
+
+/// `pdo_firebird_stmt_cursor_closer`: a named or open cursor closed
+/// (`DSQL_close`), its name and open flag cleared; false with the error
+/// recorded on the statement.
+#[unsafe(no_mangle)]
+pub extern "C" fn swr_firebird_cursor_close(stmt: &Stmt) -> bool {
+    let dbh = swr_firebird_stmt_dbh(stmt);
+    let open = !swr_firebird_cursor_name(stmt).get().is_empty() || swr_firebird_cursor_open(stmt);
+    let close = u16::try_from(DSQL_close).unwrap_or_default();
+    if open
+        && swoole_isc_dsql_free_statement(
+            swr_firebird_status(dbh),
+            swr_firebird_stmt_handle(stmt),
+            close,
+        ) != 0
+    {
+        crate::error::status_error(dbh, Some(stmt));
+        return false;
+    }
+    swr_firebird_cursor_closed(stmt);
+    true
 }

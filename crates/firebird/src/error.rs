@@ -127,3 +127,13 @@ pub extern "C" fn php_firebird_set_error<'s, 'm>(
         dbh.throw(0, &text);
     }
 }
+
+/// `php_firebird_error(dbh)`, or `php_firebird_error_stmt(stmt)` with `stmt`:
+/// the status vector's failure recorded, with no message of the caller's.
+pub(crate) fn status_error(dbh: &Dbh, stmt: Option<&Stmt>) {
+    swoole_rs_corebase::lent::lend_in(&[], |state, state_len| {
+        swoole_rs_corebase::lent::lend_in(&[], |message, message_len| {
+            php_firebird_set_error(dbh, stmt, state, state_len, message, message_len);
+        });
+    });
+}
