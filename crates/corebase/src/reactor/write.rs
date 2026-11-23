@@ -20,10 +20,22 @@ pub struct SocketOutput {
     /// `TimerNode *send_timer`, held by id.
     pub send_timer: Option<crate::timer_key::Held>,
     pub buffer_size: u32,
-    pub close_wait: bool,
+    /// Outside the reactor, `close_wait` and `send_wait` are reached through
+    /// [`SocketFields::defer_close`], [`SocketFields::close_deferred`] and
+    /// [`SocketFields::send_stall`].
+    pub(super) close_wait: bool,
     pub nonblock: bool,
     pub ssl_send: bool,
-    pub send_wait: bool,
+    pub(super) send_wait: bool,
+}
+
+/// What a send loop does after a send that could not proceed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SendStall {
+    /// The socket is to close (`close_wait`).
+    Close,
+    /// The send would block: wait for writability (`send_wait`).
+    Wait,
 }
 
 impl SocketOutput {
@@ -101,6 +113,34 @@ impl SocketFields {
     #[must_use]
     pub fn take_output_queue(&mut self) -> Option<Box<OutputQueue>> {
         self.output.out_buffer.take()
+    }
+
+    /// `close_wait = true`: the socket closes once whatever still uses it lets go, and
+    /// nothing more is sent or awaited on it meanwhile.
+    #[inline]
+    pub fn defer_close(&mut self) {
+        self.output.close_wait = true;
+    }
+
+    /// Whether the socket is waiting to close (`close_wait`).
+    #[inline]
+    #[must_use]
+    pub fn close_deferred(&self) -> bool {
+        self.output.close_wait
+    }
+
+    /// Why a send that could not proceed stops the send loop: the socket is to close,
+    /// or waits for writability; None to go on with the next entry.
+    #[inline]
+    #[must_use]
+    pub fn send_stall(&self) -> Option<SendStall> {
+        if self.output.close_wait {
+            Some(SendStall::Close)
+        } else if self.output.send_wait {
+            Some(SendStall::Wait)
+        } else {
+            None
+        }
     }
 }
 

@@ -908,7 +908,7 @@ fn framed_packages_reach_on_receive_until_the_socket_waits_to_close() {
     let package = Package::of(&mut data, 0, 4);
     assert!(on_package(core::ptr::null(), socket, package));
     assert_eq!(taken(), ["call Receive 4"]);
-    sock().output.close_wait = true;
+    sock().defer_close();
     let package = Package::of(&mut data, 0, 4);
     assert!(!on_package(core::ptr::null(), socket, package));
     data.dispose();

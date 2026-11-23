@@ -2,7 +2,7 @@
 //! `drain_write_buffer`) over the socket's write-path block and its output queue.
 //! `corebase::tls`'s `reactor_write.rs` supplies the effects.
 use crate::buffer::EntryKind;
-use crate::reactor::{Socket, SocketFields};
+use crate::reactor::{SendStall, Socket, SocketFields};
 
 /// The flush's effects (`corebase::tls`'s `reactor_write.rs`).
 pub trait FlushEffects {
@@ -38,13 +38,10 @@ pub fn swr_v1_reactor_flush(socket: Socket<'_>, ops: &impl FlushEffects) -> bool
             EntryKind::Data => ops.handle_send(),
         };
         if !sent {
-            let (close_wait, send_wait) =
-                socket.read(|record| (record.output.close_wait, record.output.send_wait));
-            if close_wait {
-                return ops.trigger_close();
-            }
-            if send_wait {
-                return true;
+            match socket.read(SocketFields::send_stall) {
+                Some(SendStall::Close) => return ops.trigger_close(),
+                Some(SendStall::Wait) => return true,
+                None => {}
             }
         }
     };
