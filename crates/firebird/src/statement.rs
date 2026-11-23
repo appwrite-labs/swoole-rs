@@ -1,8 +1,9 @@
 //! `pdo_firebird`'s statement methods (`firebird_statement.c`): so far the
 //! column description and metadata, which read a column's `XSQLVAR` in the
-//! statement's output descriptor. The methods PDO calls stay C, as thin
+//! statement's output descriptor, and the integer, string and bool values. The methods PDO calls stay C, as thin
 //! callers that find the descriptor in their statement record.
 use std::ffi::c_char;
+use swoole_rs_corebase::lent::{Count, In};
 use swoole_rs_firebird_sys::ibase::{
     SQL_BOOLEAN, SQL_INT64, SQL_LONG, SQL_SHORT, SQL_TEXT, SQL_VARYING, XSQLVAR,
 };
@@ -11,7 +12,7 @@ use swoole_rs_zend::sys::{
     pdo_column_data, pdo_param_type_PDO_PARAM_BOOL as PARAM_BOOL,
     pdo_param_type_PDO_PARAM_INT as PARAM_INT, pdo_param_type_PDO_PARAM_STR as PARAM_STR,
 };
-use swoole_rs_zend::{OwnedArray, ZString};
+use swoole_rs_zend::{Owned, OwnedArray, ZString};
 
 /// An SQL type code without its nullable bit.
 fn base_type(sqltype: i16) -> u32 {
@@ -70,4 +71,76 @@ pub extern "C" fn swr_firebird_column_meta(var: &XSQLVAR, meta: &Slot) {
     let mut array = OwnedArray::default();
     array.insert_long(b"pdo_type", param_type.into());
     meta.set(array.into_owned());
+}
+
+/// The column's integer of `N` bytes, as C copied it out of `sqldata`.
+fn integer<const N: usize>(data: &[u8]) -> Option<[u8; N]> {
+    data.get(..N)?.try_into().ok()
+}
+
+/// A scaled integer's digits, as `pdo_firebird_stmt_get_col` printed them:
+/// `n / 10^scale`, a point, then the remainder padded to `scale` digits, with
+/// the sign before a zero integer part kept.
+fn scaled(n: i64, scale: u32) -> Option<String> {
+    let f = 10_i64.checked_pow(scale)?;
+    let width = usize::try_from(scale).ok()?;
+    Some(if n >= 0 {
+        format!("{}.{:0width$}", n / f, n % f)
+    } else if n <= -f {
+        // C's `-n % f` of the negative value.
+        format!("{}.{:0width$}", n / f, n.wrapping_neg() % f)
+    } else {
+        format!("-0.{:0width$}", n.wrapping_neg() % f)
+    })
+}
+
+/// `pdo_firebird_stmt_get_col` for a null value, a scaled `SMALLINT`,
+/// `INTEGER` or `BIGINT`, a `VARCHAR` or `CHAR`, an unscaled integer and a
+/// `BOOLEAN`: the value in `result`, read from the lent `sqldata` bytes. False,
+/// setting nothing, for the types C still reads.
+#[unsafe(no_mangle)]
+pub extern "C" fn swr_firebird_value<'a>(
+    var: &XSQLVAR,
+    null: bool,
+    data: In<'a, u8>,
+    len: Count<'a>,
+    result: &Slot,
+) -> bool {
+    let data = data.drain(len).bytes();
+    let value = if null {
+        Some(Owned::null())
+    } else if var.sqlscale < 0 {
+        let n = match base_type(var.sqltype) {
+            SQL_SHORT => integer::<2>(data).map(|n| i16::from_ne_bytes(n).into()),
+            SQL_LONG => integer::<4>(data).map(|n| i32::from_ne_bytes(n).into()),
+            SQL_INT64 => integer::<8>(data).map(i64::from_ne_bytes),
+            _ => None,
+        };
+        let digits = n.and_then(|n| scaled(n, u32::from(var.sqlscale.unsigned_abs())));
+        digits.map(|digits| Owned::string(ZString::new(digits.as_bytes())))
+    } else {
+        match base_type(var.sqltype) {
+            SQL_VARYING => integer::<2>(data).map(|length| {
+                let length = usize::try_from(i16::from_ne_bytes(length)).unwrap_or(0);
+                let text = data.get(2..).unwrap_or_default();
+                Owned::string(ZString::new(text.get(..length).unwrap_or(text)))
+            }),
+            SQL_TEXT => Some(Owned::string(ZString::new(data))),
+            SQL_SHORT => integer::<2>(data).map(|n| Owned::long(i16::from_ne_bytes(n).into())),
+            SQL_LONG => integer::<4>(data).map(|n| Owned::long(i32::from_ne_bytes(n).into())),
+            // C's SIZEOF_ZEND_LONG >= 8, else the digits.
+            SQL_INT64 if cfg!(target_pointer_width = "64") => {
+                integer::<8>(data).map(|n| Owned::long(i64::from_ne_bytes(n)))
+            }
+            SQL_INT64 => integer::<8>(data)
+                .map(|n| Owned::string(ZString::new(i64::from_ne_bytes(n).to_string().as_bytes()))),
+            SQL_BOOLEAN => data.first().map(|&b| Owned::bool(b != 0)),
+            _ => None,
+        }
+    };
+    let Some(value) = value else {
+        return false;
+    };
+    result.set(value);
+    true
 }
