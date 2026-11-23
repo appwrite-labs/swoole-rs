@@ -599,7 +599,7 @@ pub extern "C" fn swr_firebird_fetch_blob<'a>(
 /// `param`'s value written to it as a string, in segments of at most 65535
 /// bytes, then closed. False, with the error recorded on the statement, when
 /// a call fails; a failed segment stops the writing, and the blob is still
-/// closed.
+/// closed. False, writing nothing, when the conversion bailed out.
 #[unsafe(no_mangle)]
 pub extern "C" fn swr_firebird_bind_blob(stmt: &Stmt, id: &mut [u32; 2], param: &Value) -> bool {
     let dbh = swr_firebird_stmt_dbh(stmt);
@@ -618,8 +618,11 @@ pub extern "C" fn swr_firebird_bind_blob(stmt: &Stmt, id: &mut [u32; 2], param: 
         return false;
     }
     let data = param.string();
-    let mut written = true;
-    for chunk in data.bytes().chunks(usize::from(u16::MAX)) {
+    // A conversion that bailed out (`__toString` calling `exit()`) writes
+    // nothing: the bind fails, the blob still closed.
+    let mut written = !swoole_rs_zend::bailout::pending();
+    let chunks = if written { data.bytes() } else { &[][..] };
+    for chunk in chunks.chunks(usize::from(u16::MAX)) {
         if lend_in(chunk, |buffer, length| {
             swoole_isc_put_segment(status, blob, length, buffer.chars())
         }) != 0
