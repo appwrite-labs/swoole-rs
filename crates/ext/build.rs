@@ -190,13 +190,8 @@ mod php {
             p.libs.push("clntsh");
         }
         if feature("sqlite") {
-            p.define(&[
-                "SW_USE_SQLITE",
-                "HAVE_SW_PDO_SQLITELIB",
-                "HAVE_SW_SQLITE3_CLOSE_V2",
-            ]);
-            let dir = third.join("pdo_sqlite");
-            p.c.extend(["sqlite_driver.c", "sqlite_statement.c"].map(|f| dir.join(f)));
+            p.define(&["SW_USE_SQLITE"]);
+            // native/hooks/sqlite_*.c come with the hooks module's sources, each inside SW_USE_SQLITE.
             p.includes.extend(pkg_includes("sqlite3"));
             p.libs.push("sqlite3");
         }

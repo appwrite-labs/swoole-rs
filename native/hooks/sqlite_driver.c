@@ -14,16 +14,26 @@
   +----------------------------------------------------------------------+
 */
 
+/* pdo_sqlite's connection side. crates/sqlite/src/driver.rs has the operations: opening
+ * (with the open_basedir checks), preparing, executing, transactions, quoting, the
+ * attributes, errorInfo and the last rowid.
+ *
+ * Stays C (docs/zend.md, What stays C): allocator (the connection and statement records
+ * and the copy of SQLite's last message are Zend's to allocate and free), budget (the
+ * accessors over the connection record, which Rust would reach through a #[repr(C)]
+ * mirror and raw derefs), globals (PG(open_basedir)) and version (PHP 8.4's scanner
+ * cursor). The method table and the driver entry are C because PDO declares them over
+ * pdo_dbh_t and pdo_stmt_t pointers, which the C compiler checks against the functions
+ * here. */
 #define SW_USE_SQLITE_HOOK
 #include "php_swoole_sqlite.h"
 
+#ifdef SW_USE_SQLITE
+
 #include "php.h"
-#include "php_ini.h"
-#include "ext/standard/info.h"
 #include "ext/pdo/php_pdo.h"
 #include "ext/pdo/php_pdo_driver.h"
-#include "thirdparty/pdo_sqlite/php_pdo_sqlite.h"
-#include "thirdparty/pdo_sqlite/php_pdo_sqlite_int.h"
+#include "php_pdo_sqlite_int.h"
 #include "zend_exceptions.h"
 
 extern void pdo_sqlite_sqlstate(int code, pdo_error_type *state);
@@ -71,11 +81,7 @@ static void sqlite_handle_closer(pdo_dbh_t *dbh) /* {{{ */
 		pdo_sqlite_error_info *einfo = &H->einfo;
 
 		if (H->db) {
-#ifdef HAVE_SW_SQLITE3_CLOSE_V2
 			sqlite3_close_v2(H->db);
-#else
-			sqlite3_close(H->db);
-#endif
 			H->db = NULL;
 		}
 		if (einfo->errmsg) {
@@ -197,3 +203,5 @@ const pdo_driver_t swoole_pdo_sqlite_driver = {
 	PDO_DRIVER_HEADER(sqlite),
 	pdo_sqlite_handle_factory
 };
+
+#endif /* SW_USE_SQLITE */

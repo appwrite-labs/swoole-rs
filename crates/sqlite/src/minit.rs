@@ -5,7 +5,7 @@ use std::ffi::CStr;
 use swoole_rs_zend::{Minit, Mshutdown, pdo::Driver};
 
 unsafe extern "C" {
-    /// The bundled driver (`thirdparty/pdo_sqlite/sqlite_driver.c`).
+    /// The driver's PDO glue (`native/hooks/sqlite_driver.c`).
     safe static swoole_pdo_sqlite_driver: Driver;
 }
 
