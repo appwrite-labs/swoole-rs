@@ -33,16 +33,6 @@
 		return ret; \
 	} while (0);
 
-static zend_always_inline ISC_INT64 php_get_isc_int64_from_sqldata(const ISC_SCHAR *sqldata)
-{
-	READ_AND_RETURN_USING_MEMCPY(ISC_INT64, sqldata);
-}
-
-static zend_always_inline ISC_LONG php_get_isc_long_from_sqldata(const ISC_SCHAR *sqldata)
-{
-	READ_AND_RETURN_USING_MEMCPY(ISC_LONG, sqldata);
-}
-
 static zend_always_inline double php_get_double_from_sqldata(const ISC_SCHAR *sqldata)
 {
 	READ_AND_RETURN_USING_MEMCPY(double, sqldata);
@@ -414,132 +404,70 @@ fetch_blob_end:
 }
 /* }}} */
 
+bool swr_firebird_value(XSQLVAR const *var, bool null, const ISC_SCHAR *data, size_t len, zval *result);
+
 static int pdo_firebird_stmt_get_col(
 		pdo_stmt_t *stmt, int colno, zval *result, enum pdo_param_type *type)
 {
 	pdo_firebird_stmt *S = (pdo_firebird_stmt*)stmt->driver_data;
 	XSQLVAR const *var = &S->out_sqlda.sqlvar[colno];
 
-	if (*var->sqlind == -1) {
-		ZVAL_NULL(result);
+	/* Null, the scaled integers, the strings, the unscaled integers and BOOLEAN are
+	 * Rust (crates/firebird/src/statement.rs). */
+	if (swr_firebird_value(var, *var->sqlind == -1, var->sqldata,
+			var->sqllen + ((var->sqltype & ~1) == SQL_VARYING ? 2 : 0), result)) {
+		return 1;
+	}
+
+	if (var->sqlscale < 0) {
+		/* SQL_DOUBLE */
+		ZVAL_STR(result, zend_strpprintf(0, "%.*F", -var->sqlscale, php_get_double_from_sqldata(var->sqldata)));
 	} else {
-		if (var->sqlscale < 0) {
-			static ISC_INT64 const scales[] = { 1, 10, 100, 1000,
-				10000,
-				100000,
-				1000000,
-				10000000,
-				100000000,
-				1000000000,
-				LL_LIT(10000000000),
-				LL_LIT(100000000000),
-				LL_LIT(1000000000000),
-				LL_LIT(10000000000000),
-				LL_LIT(100000000000000),
-				LL_LIT(1000000000000000),
-				LL_LIT(10000000000000000),
-				LL_LIT(100000000000000000),
-				LL_LIT(1000000000000000000)
-			};
-			ISC_INT64 n, f = scales[-var->sqlscale];
-			zend_string *str;
+		switch (var->sqltype & ~1) {
+			struct tm t;
+			char *fmt;
 
-			switch (var->sqltype & ~1) {
-				case SQL_SHORT:
-					n = *(short*)var->sqldata;
-					break;
-				case SQL_LONG:
-					n = php_get_isc_long_from_sqldata(var->sqldata);
-					break;
-				case SQL_INT64:
-					n = php_get_isc_int64_from_sqldata(var->sqldata);
-					break;
-				case SQL_DOUBLE:
-					break;
-				EMPTY_SWITCH_DEFAULT_CASE()
-			}
-
-			if ((var->sqltype & ~1) == SQL_DOUBLE) {
-				str = zend_strpprintf(0, "%.*F", -var->sqlscale, php_get_double_from_sqldata(var->sqldata));
-			} else if (n >= 0) {
-				str = zend_strpprintf(0, "%" LL_MASK "d.%0*" LL_MASK "d",
-					n / f, -var->sqlscale, n % f);
-			} else if (n <= -f) {
-				str = zend_strpprintf(0, "%" LL_MASK "d.%0*" LL_MASK "d",
-					n / f, -var->sqlscale, -n % f);
-			 } else {
-				str = zend_strpprintf(0, "-0.%0*" LL_MASK "d", -var->sqlscale, -n % f);
-			}
-			ZVAL_STR(result, str);
-		} else {
-			switch (var->sqltype & ~1) {
-				struct tm t;
-				char *fmt;
-
-				case SQL_VARYING:
-					ZVAL_STRINGL_FAST(result, &var->sqldata[2], *(short*)var->sqldata);
-					break;
-				case SQL_TEXT:
-					ZVAL_STRINGL_FAST(result, var->sqldata, var->sqllen);
-					break;
-				case SQL_SHORT:
-					ZVAL_LONG(result, *(short*)var->sqldata);
-					break;
-				case SQL_LONG:
-					ZVAL_LONG(result, php_get_isc_long_from_sqldata(var->sqldata));
-					break;
-				case SQL_INT64:
-#if SIZEOF_ZEND_LONG >= 8
-					ZVAL_LONG(result, php_get_isc_int64_from_sqldata(var->sqldata));
-#else
-					ZVAL_STR(result, zend_strpprintf(0, "%" LL_MASK "d", php_get_isc_int64_from_sqldata(var->sqldata)));
-#endif
-					break;
-				case SQL_FLOAT:
-					/* TODO: Why is this not returned as the native type? */
-					ZVAL_STR(result, zend_strpprintf_unchecked(0, "%.8H", php_get_float_from_sqldata(var->sqldata)));
-					break;
-				case SQL_DOUBLE:
-					/* TODO: Why is this not returned as the native type? */
-					ZVAL_STR(result, zend_strpprintf_unchecked(0, "%.16H", php_get_double_from_sqldata(var->sqldata)));
-					break;
-				case SQL_BOOLEAN:
-					ZVAL_BOOL(result, *(FB_BOOLEAN*)var->sqldata);
-					break;
-				case SQL_TYPE_DATE:
-					isc_decode_sql_date((ISC_DATE*)var->sqldata, &t);
-					fmt = S->H->date_format ? S->H->date_format : PDO_FB_DEF_DATE_FMT;
-					if (0) {
-				case SQL_TYPE_TIME:
-						isc_decode_sql_time((ISC_TIME*)var->sqldata, &t);
-						fmt = S->H->time_format ? S->H->time_format : PDO_FB_DEF_TIME_FMT;
-					} else if (0) {
-				case SQL_TIMESTAMP:
-						{
-							ISC_TIMESTAMP timestamp = php_get_isc_timestamp_from_sqldata(var->sqldata);
-							isc_decode_timestamp(&timestamp, &t);
-						}
-						fmt = S->H->timestamp_format ? S->H->timestamp_format : PDO_FB_DEF_TIMESTAMP_FMT;
+			case SQL_FLOAT:
+				/* TODO: Why is this not returned as the native type? */
+				ZVAL_STR(result, zend_strpprintf_unchecked(0, "%.8H", php_get_float_from_sqldata(var->sqldata)));
+				break;
+			case SQL_DOUBLE:
+				/* TODO: Why is this not returned as the native type? */
+				ZVAL_STR(result, zend_strpprintf_unchecked(0, "%.16H", php_get_double_from_sqldata(var->sqldata)));
+				break;
+			case SQL_TYPE_DATE:
+				isc_decode_sql_date((ISC_DATE*)var->sqldata, &t);
+				fmt = S->H->date_format ? S->H->date_format : PDO_FB_DEF_DATE_FMT;
+				if (0) {
+			case SQL_TYPE_TIME:
+					isc_decode_sql_time((ISC_TIME*)var->sqldata, &t);
+					fmt = S->H->time_format ? S->H->time_format : PDO_FB_DEF_TIME_FMT;
+				} else if (0) {
+			case SQL_TIMESTAMP:
+					{
+						ISC_TIMESTAMP timestamp = php_get_isc_timestamp_from_sqldata(var->sqldata);
+						isc_decode_timestamp(&timestamp, &t);
 					}
-					/* convert the timestamp into a string */
-					char buf[80];
-					size_t len = strftime(buf, sizeof(buf), fmt, &t);
-					ZVAL_STRINGL(result, buf, len);
-					break;
+					fmt = S->H->timestamp_format ? S->H->timestamp_format : PDO_FB_DEF_TIMESTAMP_FMT;
+				}
+				/* convert the timestamp into a string */
+				char buf[80];
+				size_t len = strftime(buf, sizeof(buf), fmt, &t);
+				ZVAL_STRINGL(result, buf, len);
+				break;
 #if FB_API_VER >= 40
-				case SQL_TIME_TZ: {
-					ISC_TIME_TZ time = php_get_isc_time_tz_from_sqldata(var->sqldata);
-					return get_formatted_time_tz(stmt, &time, result);
-				}
-				case SQL_TIMESTAMP_TZ: {
-					ISC_TIMESTAMP_TZ ts = php_get_isc_timestamp_tz_from_sqldata(var->sqldata);
-					return get_formatted_timestamp_tz(stmt, &ts, result);
-				}
+			case SQL_TIME_TZ: {
+				ISC_TIME_TZ time = php_get_isc_time_tz_from_sqldata(var->sqldata);
+				return get_formatted_time_tz(stmt, &time, result);
+			}
+			case SQL_TIMESTAMP_TZ: {
+				ISC_TIMESTAMP_TZ ts = php_get_isc_timestamp_tz_from_sqldata(var->sqldata);
+				return get_formatted_timestamp_tz(stmt, &ts, result);
+			}
 #endif
-				case SQL_BLOB: {
-					ISC_QUAD quad = php_get_isc_quad_from_sqldata(var->sqldata);
-					return php_firebird_fetch_blob(stmt, colno, result, &quad);
-				}
+			case SQL_BLOB: {
+				ISC_QUAD quad = php_get_isc_quad_from_sqldata(var->sqldata);
+				return php_firebird_fetch_blob(stmt, colno, result, &quad);
 			}
 		}
 	}
