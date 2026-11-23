@@ -8,7 +8,7 @@ use crate::constants::SocketFlag;
 use crate::lent::{Spare, lend_spare};
 use crate::net_address::{BAD_HOST_ADDR, assign, platform_parses};
 use crate::reactor::socket_upstream::{
-    make_typed, socket_cork, socket_set_fd_option, socket_uncork,
+    make_typed, socket_cork, socket_make_nonblocking, socket_uncork,
 };
 use crate::reactor::{
     Drain, Events, Fill, OutputEffects, RangeError, Socket, SocketAddress, SocketFields,
@@ -514,9 +514,7 @@ impl<S: ReadSlot> SyncEffects for Call<'_, '_, S> {
     /// and a write to a nonblocking plain socket only reads it.
     fn prepare(&self) {
         self.socket.edit(|record| {
-            if !record.output.nonblock {
-                socket_set_fd_option(record, 1, -1);
-            }
+            socket_make_nonblocking(record);
             if !record.ssl().is_null() {
                 swr_v1_socket_ssl_clear(&mut record.tls);
             }
@@ -829,11 +827,7 @@ impl OutputEffects for Output<'_> {
     }
 
     fn sent(&self) {
-        self.0.edit(|record| {
-            if record.output.send_timer.is_some() {
-                record.last_sent_time = steady_ms();
-            }
-        });
+        self.0.edit(SocketFields::note_sent);
     }
 
     fn catch_error(&self, error: c_int) -> crate::reactor::Caught {
@@ -1356,7 +1350,7 @@ mod tests {
         );
         assert_eq!((received, &buffer), (Some(4), b"ping"));
         assert_eq!(right.total_recv_bytes, 4);
-        assert!(right.output.nonblock);
+        assert!(right.is_nonblocking());
         unsafe { libc::close(fds[0]) };
         assert!(!check_liveness(
             unsafe { Socket::from_ptr(&raw mut right) }.unwrap()

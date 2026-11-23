@@ -117,7 +117,7 @@ impl EventSocket {
                     record.fd = -1;
                 }
                 (
-                    [record.recv_timer, record.output.send_timer],
+                    [record.recv_timer, record.take_send_timer()],
                     [record.in_buffer.take(), record.take_output_queue()],
                 )
             });

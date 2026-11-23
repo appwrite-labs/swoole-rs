@@ -13,19 +13,16 @@ use crate::reactor::{Drain, Socket, SocketFields};
 use std::io::IoSlice;
 
 /// `network::Socket`'s write-path fields, in the order and types it embeds them.
+/// Outside the reactor they are reached through the socket's output operations below.
 pub struct SocketOutput {
     /// `Buffer *out_buffer`: the `Buffer` the socket owns, a null pointer without one.
-    /// Outside the reactor it is reached through the socket's output operations below.
     pub(super) out_buffer: Option<Box<OutputQueue>>,
     /// `TimerNode *send_timer`, held by id.
-    pub send_timer: Option<crate::timer_key::Held>,
-    pub buffer_size: u32,
-    /// Outside the reactor, `close_wait` and `send_wait` are reached through
-    /// [`SocketFields::defer_close`], [`SocketFields::close_deferred`] and
-    /// [`SocketFields::send_stall`].
+    pub(super) send_timer: Option<crate::timer_key::Held>,
+    pub(super) buffer_size: u32,
     pub(super) close_wait: bool,
-    pub nonblock: bool,
-    pub ssl_send: bool,
+    pub(super) nonblock: bool,
+    pub(super) ssl_send: bool,
     pub(super) send_wait: bool,
 }
 
@@ -140,6 +137,83 @@ impl SocketFields {
             Some(SendStall::Wait)
         } else {
             None
+        }
+    }
+
+    /// `buffer_size = bytes`: the most output the socket queues (`u32::MAX` for none);
+    /// 0 takes the reactor's default on the first write.
+    #[inline]
+    pub fn limit_output(&mut self, bytes: u32) {
+        self.output.buffer_size = bytes;
+    }
+
+    /// The most output the socket queues (`buffer_size`).
+    #[inline]
+    #[must_use]
+    pub fn output_limit(&self) -> u32 {
+        self.output.buffer_size
+    }
+
+    /// Whether the queued output has reached the socket's limit.
+    #[inline]
+    #[must_use]
+    pub fn output_full(&self) -> bool {
+        self.queued_bytes() >= self.output.buffer_size
+    }
+
+    /// Records that the caller left the descriptor nonblocking (or not), so writes
+    /// don't set it again (`nonblock`).
+    #[inline]
+    pub fn note_nonblocking(&mut self, nonblock: bool) {
+        self.output.nonblock = nonblock;
+    }
+
+    /// Whether the socket knows its descriptor is nonblocking.
+    #[inline]
+    #[must_use]
+    pub fn is_nonblocking(&self) -> bool {
+        self.output.nonblock
+    }
+
+    /// `ssl_send = true`: writes go through the TLS session, never straight to the
+    /// descriptor.
+    #[inline]
+    pub fn send_through_tls(&mut self) {
+        self.output.ssl_send = true;
+    }
+
+    /// Whether writes go through the TLS session (`ssl_send`).
+    #[inline]
+    #[must_use]
+    pub fn sends_through_tls(&self) -> bool {
+        self.output.ssl_send
+    }
+
+    /// The idle timer watching the socket's sends (`send_timer`), if one is armed.
+    #[inline]
+    #[must_use]
+    pub fn send_timer(&self) -> Option<crate::timer_key::Held> {
+        self.output.send_timer
+    }
+
+    /// Arms `timer` as the idle timer watching the socket's sends.
+    #[inline]
+    pub fn arm_send_timer(&mut self, timer: crate::timer_key::Held) {
+        self.output.send_timer = Some(timer);
+    }
+
+    /// The send idle timer, disarmed, for the caller to delete.
+    #[inline]
+    #[must_use]
+    pub fn take_send_timer(&mut self) -> Option<crate::timer_key::Held> {
+        self.output.send_timer.take()
+    }
+
+    /// A send went out: restarts the idle clock when an idle timer watches sends.
+    #[inline]
+    pub fn note_sent(&mut self) {
+        if self.output.send_timer.is_some() {
+            self.last_sent_time = crate::reactor::steady_ms();
         }
     }
 }

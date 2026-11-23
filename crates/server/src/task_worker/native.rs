@@ -221,7 +221,7 @@ fn loop_async(pool: PoolRef<'_>, worker: Worker<'_>) -> CallbackResult {
     for id in (0..workers).filter_map(|id| u16::try_from(id).ok()) {
         for pipe in [serv.worker_pipe(id, false), serv.worker_pipe(id, true)] {
             in_worker_bus(state, config, pipe, |pipe| {
-                pipe.edit(|pipe| pipe.output.buffer_size = u32::MAX);
+                pipe.edit(|pipe| pipe.limit_output(u32::MAX));
             });
         }
     }

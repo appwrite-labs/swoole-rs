@@ -177,7 +177,7 @@ pub fn add<'a>(
     socket.edit(|s| {
         s.object = conn.as_ptr().cast();
         s.removed = true;
-        s.output.buffer_size = buffer_size;
+        s.limit_output(buffer_size);
         s.timeouts.write = 0.0;
         s.timeouts.read = 0.0;
     });

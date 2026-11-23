@@ -323,7 +323,7 @@ fn worker_ops(pool: Pool<'_>, worker: Record<'_>, op: Op, arg: u64) -> bool {
         Op::UnlimitPipes => {
             for master in [false, true] {
                 if let Some(end) = worker_pipe(worker, master) {
-                    end.edit(|end| end.output.buffer_size = u32::MAX);
+                    end.edit(|end| end.limit_output(u32::MAX));
                 }
             }
         }

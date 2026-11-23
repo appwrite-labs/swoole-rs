@@ -458,7 +458,7 @@ pub fn freeze_socket_context(
         });
     }
     let settings = owner.freeze(None).ok_or(SocketContextError::Create)?;
-    socket.edit(|record| record.output.ssl_send = true);
+    socket.edit(crate::reactor::SocketFields::send_through_tls);
     Ok(settings)
 }
 
@@ -800,7 +800,7 @@ mod tests {
                 let settings =
                     freeze_socket_context(&mut prepared.borrow_configuration(), handle, true, true)
                         .unwrap();
-                assert!((*socket).fields.output.ssl_send);
+                assert!((*socket).fields.sends_through_tls());
                 assert!(prepared.fields().http_v2);
                 // Session creation must use the snapshot even after the builder changes
                 // and its last reference is released.

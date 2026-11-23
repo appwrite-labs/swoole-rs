@@ -102,7 +102,7 @@ pub(crate) fn import_stream(
     sock.hold_stream(stream.copy());
     // Preserve the original one-bit nonblock assignment, rather than normalize other bits.
     if let Some(socket) = sock.co() {
-        socket.with_net(|net| net.edit(|record| record.output.nonblock = nonblock & 1 != 0));
+        socket.with_net(|net| net.edit(|record| record.note_nonblocking(nonblock & 1 != 0)));
     }
     Ok(Some(object))
 }

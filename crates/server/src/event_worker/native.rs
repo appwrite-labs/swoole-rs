@@ -606,7 +606,7 @@ pub(crate) fn start_event_worker(serv: view::Server<'_>, worker: Worker<'_>) -> 
         };
         for master in [true, false] {
             if let Some(pipe) = worker_pipe(worker, master) {
-                pipe.edit(|pipe| pipe.output.buffer_size = u32::MAX);
+                pipe.edit(|pipe| pipe.limit_output(u32::MAX));
             }
         }
     }

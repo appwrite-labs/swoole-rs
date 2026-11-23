@@ -119,7 +119,7 @@ fn buffers(cli: Cli<'_>, options: &Options) {
         let size = u32::try_from(clamp(size, 1, i32::MAX.into())).unwrap_or(1);
         if let Some(socket) = cli.net() {
             _ = swoole_rs_corebase::reactor::set_socket_buffer_size(socket.fd(), true, true, size);
-            socket.edit(|record| record.output.buffer_size = size);
+            socket.edit(|record| record.limit_output(size));
         }
     }
     for (key, high) in [

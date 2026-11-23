@@ -759,7 +759,7 @@ impl CoSocket {
     fn adopt(&self, fd: c_int, owner: Co) -> bool {
         let mut record = SocketRecord::with_fd(fd, FD_CO_SOCKET);
         record.socket_type = self.kind.get();
-        record.output.nonblock = true;
+        record.note_nonblocking(true);
         record.cloexec = true;
         self.attach(Some(Box::new(record)), owner)
     }
@@ -798,7 +798,7 @@ fn set_nonblock(network: Socket<'_>) -> u32 {
         swoole_rs_corebase::reactor::swr_v1_socket_fd_option(network.fd(), Some(true), None);
     if result.ok {
         network.edit(|record| {
-            record.output.nonblock = true;
+            record.note_nonblocking(true);
             record.cloexec = true;
         });
     }
@@ -1427,7 +1427,7 @@ mod tests {
             record.owner::<Co>().map(Co::raw),
             Some((&raw const *socket).cast_mut())
         );
-        assert!(record.output.nonblock);
+        assert!(record.is_nonblocking());
         assert_ne!(
             unsafe { libc::fcntl(fd, libc::F_GETFL) } & libc::O_NONBLOCK,
             0
