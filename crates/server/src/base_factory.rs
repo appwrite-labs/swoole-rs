@@ -5,7 +5,6 @@ use crate::callbacks::{CallbackKind, EventSlot, ReceiveSlot};
 use crate::factory::{CLOSE_ACTIVELY, CLOSE_RESET};
 use crate::hybrid::hybrid;
 use crate::reactor_handle::Reactor;
-use crate::reactor_ops::out_buffer;
 use crate::records::Lookup;
 use crate::table::Table;
 use crate::view;
@@ -13,12 +12,12 @@ use core::ffi::{c_char, c_int, c_long, c_void};
 use core::sync::atomic::Ordering;
 use swoole_rs_corebase::DataHead;
 use swoole_rs_corebase::ServerEvent;
-use swoole_rs_corebase::buffer::cpp::{swr_cpp_buffer_empty, swr_cpp_buffer_typed_close};
 use swoole_rs_corebase::constants::EventDataFlag;
 use swoole_rs_corebase::log::LogLevel::{SW_LOG_NOTICE as LOG_NOTICE, SW_LOG_TRACE as LOG_TRACE};
 use swoole_rs_corebase::process::methods::swoole_get_worker_id;
 use swoole_rs_corebase::process::worker_globals::{with_current, with_globals};
 use swoole_rs_corebase::process::worker_record::{Worker, WorkerStatus};
+use swoole_rs_corebase::reactor::SocketFields;
 use swoole_rs_corebase::{CCast, log};
 
 /// `swoole::SendData`, and the `swoole::RecvData` a receive callback reads (the same
@@ -492,13 +491,13 @@ pub(crate) fn end(serv: view::Server<'_>, id: c_long, flags: c_int) -> bool {
         return false;
     };
     let now = c.close_reset() || c.peer_closed() || c.close_force();
-    let empty = socket.read(|s| out_buffer(s).is_none_or(swr_cpp_buffer_empty));
+    let empty = socket.read(SocketFields::output_drained);
     let reactor = Reactor::thread();
     if empty || now {
         return crate::conn_io::close_connection(serv, reactor, Some(socket));
     }
     c.set_close_queued(true);
-    socket.read(|s| out_buffer(s).map(swr_cpp_buffer_typed_close));
+    socket.read(SocketFields::queue_close);
     // Only the half-close drain stops reading (`SW_HALFCLOSE_DRAIN`); upstream reads on.
     !cfg!(feature = "halfclose")
         || reactor.interest(socket, swoole_rs_corebase::reactor::Interest::RemoveRead)

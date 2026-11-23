@@ -118,7 +118,7 @@ impl EventSocket {
                 }
                 (
                     [record.recv_timer, record.output.send_timer],
-                    [record.in_buffer.take(), record.output.out_buffer.take()],
+                    [record.in_buffer.take(), record.take_output_queue()],
                 )
             });
             for timer in timers.into_iter().flatten() {

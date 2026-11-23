@@ -8,16 +8,12 @@
 use crate::base_factory::{SendData, allocated};
 use crate::callbacks::CallbackKind::{BufferEmpty, BufferFull};
 use crate::reactor_handle::Reactor;
-use crate::reactor_ops::out_buffer;
 use crate::records::Lookup;
 use crate::view::Server;
 use crate::{Connection, Mode, ServerState};
 use core::ffi::{CStr, c_int};
 use std::io::IoSlice;
 use swoole_rs_corebase::ServerEvent;
-use swoole_rs_corebase::buffer::cpp::{
-    new_buffer, swr_cpp_buffer_empty, swr_cpp_buffer_length, swr_cpp_buffer_typed_close,
-};
 use swoole_rs_corebase::constants::SW_SEND_BUFFER_SIZE;
 use swoole_rs_corebase::log::LogLevel::{
     SW_LOG_NOTICE as LOG_NOTICE, SW_LOG_TRACE as LOG_TRACE, SW_LOG_WARNING as LOG_WARNING,
@@ -141,7 +137,7 @@ fn write_now(
     }
     let socket = conn.socket()?;
     let (fd, dont_restart) = socket.read(|s| {
-        (s.direct_send && s.ssl().is_null() && s.output.out_buffer.is_none())
+        (s.direct_send && s.ssl().is_null() && !s.has_output_queue())
             .then_some((s.fd, s.dont_restart))
     })?;
     let sent = count_write(*socket, dont_restart, || write(fd), steady_ms);
@@ -280,7 +276,8 @@ fn to_connection(serv: Server<'_>, info: &DataHead, data: &[u8], first: Option<i
         };
     }
     let (mut data, file) = (data, kind == Some(ServerEvent::SendFile));
-    let (out_empty, unbuffered, direct) = sock.read(output_state);
+    let (out_empty, unbuffered, direct) =
+        sock.read(|s| (s.output_drained(), !s.has_output_queue(), s.direct_send));
     if out_empty {
         if close {
             crate::conn_io::close_connection(serv, reactor, Some(sock));
@@ -290,13 +287,12 @@ fn to_connection(serv: Server<'_>, info: &DataHead, data: &[u8], first: Option<i
             return true;
         }
         if unbuffered {
-            let buffer = Some(new_buffer(SW_SEND_BUFFER_SIZE));
-            sock.edit(|s| s.output.out_buffer = buffer);
+            sock.edit(|s| s.open_output_queue(SW_SEND_BUFFER_SIZE));
         }
     }
     let port = serv.port_by_server_fd(conn.server_fd());
     if close {
-        sock.read(|s| out_buffer(s).map(swr_cpp_buffer_typed_close));
+        sock.read(SocketFields::queue_close);
         conn.set_close_queued(true);
         if halfclose {
             reactor.interest(sock, Interest::RemoveRead);
@@ -313,7 +309,7 @@ fn to_connection(serv: Server<'_>, info: &DataHead, data: &[u8], first: Option<i
         }
         let callback = |index| state.callbacks.slot(index).is_set();
         let (on_full, on_empty) = (callback(BufferFull), callback(BufferEmpty));
-        if sock.read(|s| queued(s) >= s.output.buffer_size) {
+        if sock.read(|s| s.queued_bytes() >= s.output.buffer_size) {
             if send_yield {
                 yield_error();
             } else {
@@ -345,25 +341,10 @@ fn to_connection(serv: Server<'_>, info: &DataHead, data: &[u8], first: Option<i
     true
 }
 
-/// Whether the socket's output buffer is missing or empty, whether it is missing, and
-/// whether the socket sends directly.
-fn output_state(s: &SocketFields) -> (bool, bool, bool) {
-    let buffer = out_buffer(s);
-    let empty = buffer.is_none_or(swr_cpp_buffer_empty);
-    (empty, buffer.is_none(), s.direct_send)
-}
-
-/// The bytes queued in the socket's output buffer.
-fn queued(s: &SocketFields) -> u32 {
-    out_buffer(s).map_or(0, swr_cpp_buffer_length)
-}
-
 /// Queues `data` in the socket's output buffer, if it has one: the bytes queued after.
 fn append(s: &SocketFields, data: &[u8]) -> u32 {
-    if let Some(buffer) = out_buffer(s) {
-        buffer.append(data);
-    }
-    queued(s)
+    s.queue_output(data);
+    s.queued_bytes()
 }
 
 /// Writes the bytes straight to the socket: true when all of them went, else the rest
@@ -478,8 +459,7 @@ mod tests {
             conn.is_some_and(|conn| !conn.is_active() && conn.socket().is_none())
         }
         fn queued(&self) -> u32 {
-            self.sock()
-                .read(|s| out_buffer(s).map_or(0, swr_cpp_buffer_length))
+            self.sock().read(SocketFields::queued_bytes)
         }
         fn read(&mut self, len: usize) -> Vec<u8> {
             let mut got = vec![0; len];

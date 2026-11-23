@@ -64,8 +64,7 @@ fn port(info: &SocketAddress) -> i64 {
 
 /// `Socket::get_out_buffer_length()`.
 fn out_buffer_length(socket: &SocketFields) -> u64 {
-    let length = swoole_rs_corebase::buffer::cpp::swr_cpp_buffer_length;
-    crate::reactor_ops::out_buffer(socket).map_or(0, |buffer| length(buffer).into())
+    socket.queued_bytes().into()
 }
 
 fn socket(s: &SocketFields) -> Socket {

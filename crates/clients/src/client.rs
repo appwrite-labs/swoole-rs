@@ -34,7 +34,7 @@ use swoole_rs_corebase::reactor::{
     Caught, OwnedSocket, SOCKET_DEFAULTS, Socket, fd_clean, set_socket_buffer_size,
     socket_domain_and_type,
 };
-use swoole_rs_corebase::reactor::{Event, Events, Running};
+use swoole_rs_corebase::reactor::{Event, Events, Running, SocketFields};
 use swoole_rs_corebase::sys::ReadSlot;
 use swoole_rs_corebase::tls::{
     OwnedTlsContext, OwnedTlsFields, SslCreateFlag, SslState, SslVersion, TlsContext, TlsSettings,
@@ -468,12 +468,7 @@ impl Handle<'_> {
 
     /// `socket->get_out_buffer_length()`.
     fn queued(self) -> u32 {
-        self.socket().read(|socket| {
-            let buffer = socket.output.buffer();
-            buffer.map_or(0, |buffer| {
-                swoole_rs_corebase::buffer::cpp::swr_cpp_buffer_length(buffer)
-            })
-        })
+        self.socket().read(SocketFields::queued_bytes)
     }
 
     /// The input buffer (`cli->buffer`), null until an async connect makes it.

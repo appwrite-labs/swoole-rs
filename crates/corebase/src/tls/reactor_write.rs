@@ -52,10 +52,8 @@ impl<F: Fn() -> Option<usize>> WriteEffects for Write<'_, F> {
     }
 
     fn create_buffer(&self) {
-        let socket = self.socket;
-        let chunk_size = socket.read(|record| record.chunk_size);
-        let buffer = crate::buffer::cpp::new_buffer(chunk_size);
-        socket.edit(|record| record.output.out_buffer = Some(buffer));
+        self.socket
+            .edit(|record| record.open_output_queue(record.chunk_size));
     }
 
     fn watch_writable(&self) {

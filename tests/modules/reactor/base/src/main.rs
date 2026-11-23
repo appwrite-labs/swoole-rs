@@ -271,9 +271,7 @@ fn pair_write(pair: &SocketPair, data: &[u8]) -> isize {
 
 /// `socket->get_out_buffer_length()`.
 unsafe fn out_buffer_length(socket: Sock) -> u32 {
-    unsafe { (*socket).fields.output.out_buffer.as_deref() }.map_or(0, |buffer| {
-        swoole_rs_ffi::cpp::swr_cpp_buffer_length(buffer)
-    })
+    unsafe { (*socket).fields.queued_bytes() }
 }
 
 /// A `String str(DATA_SIZE)` holding `DATA_SIZE - 1` random bytes and a NUL.

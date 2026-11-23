@@ -2,8 +2,7 @@
 //! `drain_write_buffer`) over the socket's write-path block and its output queue.
 //! `corebase::tls`'s `reactor_write.rs` supplies the effects.
 use crate::buffer::EntryKind;
-use crate::buffer::cpp::{swr_cpp_buffer_count, swr_cpp_buffer_typed_front};
-use crate::reactor::Socket;
+use crate::reactor::{Socket, SocketFields};
 
 /// The flush's effects (`corebase::tls`'s `reactor_write.rs`).
 pub trait FlushEffects {
@@ -29,14 +28,7 @@ pub fn swr_v1_reactor_flush(socket: Socket<'_>, ops: &impl FlushEffects) -> bool
     // One read per pass: the front entry's kind (`typed_front().kind`), or the timer
     // once the queue is empty.
     let timer = loop {
-        let (kind, timer) = socket.read(|record| {
-            let kind = record
-                .output
-                .buffer()
-                .filter(|&buffer| swr_cpp_buffer_count(buffer) != 0)
-                .map(|buffer| swr_cpp_buffer_typed_front(buffer).kind);
-            (kind, record.output.send_timer)
-        });
+        let (kind, timer) = socket.read(|record| (record.next_output(), record.output.send_timer));
         let Some(kind) = kind else {
             break timer;
         };
@@ -62,7 +54,7 @@ pub fn swr_v1_reactor_flush(socket: Socket<'_>, ops: &impl FlushEffects) -> bool
         ops.delete_timer(timer);
         empty = socket.edit(|record| {
             record.output.send_timer = None;
-            record.output.empty()
+            record.output_drained()
         });
     }
     if empty {
@@ -74,7 +66,7 @@ pub fn swr_v1_reactor_flush(socket: Socket<'_>, ops: &impl FlushEffects) -> bool
 /// `Reactor::drain_write_buffer`: wait for writability and flush until the queue empties,
 /// the wait fails, or the socket starts closing or leaves the reactor.
 pub fn swr_v1_reactor_drain(socket: Socket<'_>, ops: &impl FlushEffects) {
-    while !socket.read(|record| record.output.empty()) {
+    while !socket.read(SocketFields::output_drained) {
         if !ops.wait_writable() {
             break;
         }

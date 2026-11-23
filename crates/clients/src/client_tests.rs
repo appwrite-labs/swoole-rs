@@ -3,7 +3,7 @@ use super::*;
 use std::cell::RefCell;
 use std::io::Write;
 use std::os::fd::{AsRawFd, IntoRawFd};
-use swoole_rs_corebase::reactor::{SocketFields, SocketRecord};
+use swoole_rs_corebase::reactor::SocketRecord;
 
 #[derive(Default)]
 struct Mock {
@@ -612,9 +612,8 @@ fn sync_connect_through_socks5_routes_and_handshakes() {
 fn async_send_raises_buffer_full_at_the_high_watermark() {
     let client = client(1, true, true);
     // Ten bytes queued on the socket.
-    let queue = swoole_rs_corebase::buffer::cpp::new_buffer(1024);
-    queue.append(&[0_u8; 10]);
-    sock().output.out_buffer = Some(queue);
+    sock().open_output_queue(1024);
+    sock().queue_output(&[0_u8; 10]);
     // SAFETY: a live state.
     unsafe { &*client }.set_watermark(true, 8);
     assert_eq!(send(Handle::raw(client), b"data", 0), Some(4));
