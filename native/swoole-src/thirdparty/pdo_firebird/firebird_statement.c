@@ -23,9 +23,6 @@
 #include "ext/pdo/php_pdo.h"
 #include "ext/pdo/php_pdo_driver.h"
 #include "php_pdo_firebird_int.h"
-#include "pdo_firebird_utils.h"
-
-#include <time.h>
 
 #define READ_AND_RETURN_USING_MEMCPY(type, sqldata) do { \
 		type ret; \
@@ -37,76 +34,6 @@ static zend_always_inline ISC_QUAD php_get_isc_quad_from_sqldata(const ISC_SCHAR
 {
 	READ_AND_RETURN_USING_MEMCPY(ISC_QUAD, sqldata);
 }
-
-#if FB_API_VER >= 40
-
-static zend_always_inline ISC_TIME_TZ php_get_isc_time_tz_from_sqldata(const ISC_SCHAR *sqldata)
-{
-	READ_AND_RETURN_USING_MEMCPY(ISC_TIME_TZ, sqldata);
-}
-
-static zend_always_inline ISC_TIMESTAMP_TZ php_get_isc_timestamp_tz_from_sqldata(const ISC_SCHAR *sqldata)
-{
-	READ_AND_RETURN_USING_MEMCPY(ISC_TIMESTAMP_TZ, sqldata);
-}
-
-/* fetch formatted time with time zone */
-static int get_formatted_time_tz(pdo_stmt_t *stmt, const ISC_TIME_TZ* timeTz, zval *result)
-{
-	pdo_firebird_stmt *S = (pdo_firebird_stmt*)stmt->driver_data;
-	unsigned hours = 0, minutes = 0, seconds = 0, fractions = 0;
-	char timeZoneBuffer[40] = {0};
-	char *fmt;
-	struct tm t;
-	ISC_TIME time;
-	char timeBuf[80] = {0};
-	if (fb_decode_time_tz(S->H->isc_status, timeTz, &hours, &minutes, &seconds, &fractions, sizeof(timeZoneBuffer), timeZoneBuffer)) {
-		return 1;
-	}
-	time = fb_encode_time(hours, minutes, seconds, fractions);
-	isc_decode_sql_time(&time, &t);
-	fmt = S->H->time_format ? S->H->time_format : PDO_FB_DEF_TIME_FMT;
-
-	size_t len = strftime(timeBuf, sizeof(timeBuf), fmt, &t);
-	if (len == 0) {
-		return 1;
-	}
-
-	zend_string *time_tz_str = zend_strpprintf(0, "%s %s", timeBuf, timeZoneBuffer);
-	ZVAL_NEW_STR(result, time_tz_str);
-	return 0;
-}
-
-/* fetch formatted timestamp with time zone */
-static int get_formatted_timestamp_tz(pdo_stmt_t *stmt, const ISC_TIMESTAMP_TZ* timestampTz, zval *result)
-{
-	pdo_firebird_stmt *S = (pdo_firebird_stmt*)stmt->driver_data;
-	unsigned year, month, day, hours, minutes, seconds, fractions;
-	char timeZoneBuffer[40] = {0};
-	char *fmt;
-	struct tm t;
-	ISC_TIMESTAMP ts;
-	char timestampBuf[80] = {0};
-	if (fb_decode_timestamp_tz(S->H->isc_status, timestampTz, &year, &month, &day, &hours, &minutes, &seconds, &fractions, sizeof(timeZoneBuffer), timeZoneBuffer)) {
-		return 1;
-	}
-	ts.timestamp_date = fb_encode_date(year, month, day);
-	ts.timestamp_time = fb_encode_time(hours, minutes, seconds, fractions);
-	isc_decode_timestamp(&ts, &t);
-
-	fmt = S->H->timestamp_format ? S->H->timestamp_format : PDO_FB_DEF_TIMESTAMP_FMT;
-
-	size_t len = strftime(timestampBuf, sizeof(timestampBuf), fmt, &t);
-	if (len == 0) {
-		return 1;
-	}
-
-	zend_string *timestamp_tz_str = zend_strpprintf(0, "%s %s", timestampBuf, timeZoneBuffer);
-	ZVAL_NEW_STR(result, timestamp_tz_str);
-	return 0;
-}
-
-#endif
 
 /* free the allocated space for passing field values to the db and back */
 static void php_firebird_free_sqlda(XSQLDA const *sqlda) /* {{{ */
@@ -267,6 +194,8 @@ static int pdo_firebird_stmt_get_column_meta(pdo_stmt_t *stmt, zend_long colno, 
 bool swr_firebird_fetch_blob(pdo_stmt_t *stmt, const ISC_SCHAR *id, size_t id_len, zval *result);
 
 bool swr_firebird_value(pdo_dbh_t *dbh, XSQLVAR const *var, bool null, const ISC_SCHAR *data, size_t len, zval *result);
+/* A TIME or TIMESTAMP WITH TIME ZONE (Firebird 4 headers) is Rust too. */
+bool swr_firebird_time_tz(pdo_dbh_t *dbh, XSQLVAR const *var, const ISC_SCHAR *data, size_t len, zval *result);
 
 static int pdo_firebird_stmt_get_col(
 		pdo_stmt_t *stmt, int colno, zval *result, enum pdo_param_type *type)
@@ -281,21 +210,11 @@ static int pdo_firebird_stmt_get_col(
 		return 1;
 	}
 
-	switch (var->sqltype & ~1) {
-#if FB_API_VER >= 40
-		case SQL_TIME_TZ: {
-			ISC_TIME_TZ time = php_get_isc_time_tz_from_sqldata(var->sqldata);
-			return get_formatted_time_tz(stmt, &time, result);
-		}
-		case SQL_TIMESTAMP_TZ: {
-			ISC_TIMESTAMP_TZ ts = php_get_isc_timestamp_tz_from_sqldata(var->sqldata);
-			return get_formatted_timestamp_tz(stmt, &ts, result);
-		}
-#endif
-		case SQL_BLOB:
-			return swr_firebird_fetch_blob(stmt, var->sqldata, sizeof(ISC_QUAD), result);
+	if ((var->sqltype & ~1) == SQL_BLOB) {
+		return swr_firebird_fetch_blob(stmt, var->sqldata, sizeof(ISC_QUAD), result);
 	}
-	return 1;
+	/* Upstream returned 0 once it set a time-zone value, and 1 otherwise. */
+	return !swr_firebird_time_tz(stmt->dbh, var, var->sqldata, var->sqllen, result);
 }
 
 /* Writing a BLOB is Rust (crates/firebird/src/statement.rs); the id it creates
