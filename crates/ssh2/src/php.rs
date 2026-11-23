@@ -1,15 +1,17 @@
-//! The bundled ext/ssh2's PHP functions (once `thirdparty/php/ssh2/ssh2.cc`) as
-//! they move to Rust: so far `ssh2_connect`, `ssh2_methods_negotiated`,
+//! The bundled ext/ssh2's PHP functions (once `thirdparty/php/ssh2/`), every
+//! one of them: `ssh2_connect`, `ssh2_methods_negotiated`,
 //! `ssh2_fingerprint`, the `ssh2_auth_*` functions,
 //! `ssh2_forward_listen`/`ssh2_forward_accept`, the SFTP functions that
 //! change a path, `ssh2_sftp_readlink`/`ssh2_sftp_realpath`, `ssh2_sftp`,
 //! `ssh2_sftp_chmod`, `ssh2_sftp_stat`/`ssh2_sftp_lstat`, and
 //! `ssh2_send_eof`/`ssh2_shell_resize` on a channel stream, `ssh2_tunnel`,
 //! `ssh2_shell`, `ssh2_exec`, `ssh2_scp_recv`, `ssh2_scp_send` and
-//! `ssh2_fetch_stream`, `ssh2_disconnect`, and the `ssh2.*://` wrappers'
-//! authentication.
+//! `ssh2_fetch_stream`, `ssh2_disconnect`, the `ssh2.*://` wrappers'
+//! authentication, and the publickey subsystem ([`publickey`]).
 //! The resources stay ext/ssh2's; their sessions, listeners and SFTP sessions
 //! are read through `swr_ssh2_session`, `swr_ssh2_listener` and `swr_ssh2_sftp`.
+mod publickey;
+
 use crate::{Ops, Session, Sftp, Wait};
 use std::ffi::{CStr, CString, c_int, c_long, c_uint, c_ulong, c_void};
 use std::ptr::NonNull;
@@ -459,6 +461,10 @@ swoole_rs_zend::handlers! {
     zif_ssh2_auth_agent => auth_agent;
     zif_ssh2_forward_listen => forward_listen;
     zif_ssh2_forward_accept => forward_accept;
+    zif_ssh2_publickey_init => publickey::init;
+    zif_ssh2_publickey_add => publickey::add;
+    zif_ssh2_publickey_remove => publickey::remove;
+    zif_ssh2_publickey_list => publickey::list;
 }
 
 /// A PHP string as the C string libssh2 reads, up to its NUL, and its length
@@ -1709,7 +1715,7 @@ fn shell_channel(session: Session, pty: Pty<'_>, environment: Option<&Value>) ->
         return None;
     };
     if let Some(environment) = environment.and_then(Value::array) {
-        set_environment(session, channel, environment, Values::Own);
+        set_environment(session, channel, environment);
     }
     if !request_pty(session, channel, pty) {
         return None;
@@ -1744,26 +1750,10 @@ struct Pty<'a> {
     unit: i64,
 }
 
-/// Which value each environment variable is set to.
-#[derive(Clone, Copy)]
-enum Values {
-    /// Its own (`ssh2_shell`).
-    Own,
-    /// The array's element at its internal pointer, whatever the key, and
-    /// none past the end (`ssh2_exec`: C read `zend_hash_get_current_data`
-    /// while it walked the keys with a position of its own).
-    Current,
-}
-
-/// Each string key of `environment` set on the channel to its value
-/// (`values`) as a string, with C's warning when the server refuses one; an
+/// Each string key of `environment` set on the channel to its own value as a
+/// string, with C's warning when the server refuses one; an
 /// integer key is skipped with C's notice.
-fn set_environment(
-    session: Session,
-    channel: Opened,
-    environment: &swoole_rs_zend::Array,
-    values: Values,
-) {
+fn set_environment(session: Session, channel: Opened, environment: &swoole_rs_zend::Array) {
     for (name, own) in environment.entries() {
         let Some(name) = name else {
             bailout::defer(report(
@@ -1772,13 +1762,7 @@ fn set_environment(
             ));
             continue;
         };
-        let value = match values {
-            Values::Own => Some(own),
-            Values::Current => environment.current(),
-        };
-        let Some(value) = value.map(Value::string) else {
-            continue;
-        };
+        let value = own.string();
         let set = hooked(session, || {
             lend_in(name, |name, name_len| {
                 lend_in(value.bytes(), |value, value_len| {
@@ -1913,7 +1897,7 @@ fn exec(call: &Call<'_>) {
 
 swoole_rs_zend::exports! {
 /// A session channel running `command`, with `environment`'s string keys set
-/// to the value at its internal pointer and, given a `term`, a pty requested
+/// to its own value and, given a `term`, a pty requested
 /// first, for `ssh2_exec` and the `ssh2.exec://` wrapper; null, with C's
 /// warning, when the channel, its pty or the command can't be had.
 #[unsafe(no_mangle)]
@@ -1955,7 +1939,7 @@ fn exec_channel(
         return None;
     };
     if let Some(environment) = environment.and_then(Value::array) {
-        set_environment(session, channel, environment, Values::Current);
+        set_environment(session, channel, environment);
     }
     if let Some(pty) = pty
         && !request_pty(session, channel, pty)
