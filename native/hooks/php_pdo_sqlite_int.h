@@ -17,8 +17,16 @@
 #ifndef PHP_PDO_SQLITE_INT_H
 #define PHP_PDO_SQLITE_INT_H
 
-#include "php_pdo_sqlite.h"
+/* Only with --enable-swoole-sqlite: sqlite3.h comes from the system's SQLite. */
+#ifdef SW_USE_SQLITE
+
 #include <sqlite3.h>
+
+enum pdo_sqlite_transaction_mode {
+	PDO_SQLITE_TRANSACTION_MODE_DEFERRED = 0,
+	PDO_SQLITE_TRANSACTION_MODE_IMMEDIATE = 1,
+	PDO_SQLITE_TRANSACTION_MODE_EXCLUSIVE = 2
+};
 
 typedef struct {
 	const char *file;
@@ -39,8 +47,6 @@ typedef struct {
 	uint8_t cursor; /* crates/sqlite owns the prefetched and done bits */
 } pdo_sqlite_stmt;
 
-extern const pdo_driver_t pdo_sqlite_driver;
-
 extern int _pdo_sqlite_error(pdo_dbh_t *dbh, pdo_stmt_t *stmt, const char *file, int line);
 #define pdo_sqlite_error(s) _pdo_sqlite_error(s, NULL, __FILE__, __LINE__)
 #define pdo_sqlite_error_stmt(s) _pdo_sqlite_error(stmt->dbh, stmt, __FILE__, __LINE__)
@@ -56,10 +62,5 @@ enum {
 	PDO_SQLITE_ATTR_TRANSACTION_MODE
 };
 
-typedef int pdo_sqlite_create_collation_callback(void*, int, const void*, int, const void*);
-
-void pdo_sqlite_create_function_internal(INTERNAL_FUNCTION_PARAMETERS);
-void pdo_sqlite_create_aggregate_internal(INTERNAL_FUNCTION_PARAMETERS);
-void pdo_sqlite_create_collation_internal(INTERNAL_FUNCTION_PARAMETERS, pdo_sqlite_create_collation_callback callback);
-
-#endif
+#endif /* SW_USE_SQLITE */
+#endif /* PHP_PDO_SQLITE_INT_H */

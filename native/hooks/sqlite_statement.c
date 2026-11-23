@@ -14,16 +14,27 @@
   +----------------------------------------------------------------------+
 */
 
+/* pdo_sqlite's statement side. crates/sqlite/src/statement.rs has the operations:
+ * execution, fetching, column values and metadata, binds and the readonly, busy and
+ * explain attributes.
+ *
+ * Stays C (docs/zend.md, What stays C): allocator (the statement record, and the Zend
+ * strings of a column's name and value, ZVAL_STRINGL_FAST's short-string cache
+ * included), bailout (the parameter hook's string conversion can call __toString, and
+ * its LOB read a user stream), budget (describe's writes into PDO's columns array,
+ * ZSTR_KNOWN, and the parameter hook's zval conversions) and version (the explain type
+ * error's zend_zval_value_name, which PHP 8.2 lacks, and sqlite3_stmt_explain, which
+ * SQLite 3.43 and macOS 14.2 added). The method table is C because PDO declares it over
+ * pdo_stmt_t pointers, which the C compiler checks against the functions here. */
 #define SW_USE_SQLITE_HOOK
 #include "php_swoole_sqlite.h"
 
+#ifdef SW_USE_SQLITE
+
 #include "php.h"
-#include "php_ini.h"
-#include "ext/standard/info.h"
 #include "ext/pdo/php_pdo.h"
 #include "ext/pdo/php_pdo_driver.h"
-#include "thirdparty/pdo_sqlite/php_pdo_sqlite.h"
-#include "thirdparty/pdo_sqlite/php_pdo_sqlite_int.h"
+#include "php_pdo_sqlite_int.h"
 
 #if defined(__APPLE__)
 // If more than one usage, a Zend macro could be created
@@ -225,3 +236,5 @@ const struct pdo_stmt_methods swoole_sqlite_stmt_methods = {
 	NULL, /* next_rowset */
 	pdo_sqlite_stmt_cursor_closer
 };
+
+#endif /* SW_USE_SQLITE */

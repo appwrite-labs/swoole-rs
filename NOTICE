@@ -7,11 +7,11 @@ its behaviour and parts of its C headers and tests derive from Swoole v6.2.6.
 
 native/swoole-src/thirdparty holds code Swoole bundles from PHP (https://www.php.net/)
 and PECL ssh2, Copyright (c) The PHP Group, under the PHP License 3.01
-(native/swoole-src/thirdparty/LICENSE; LICENSE-PHP in a release): the PDO drivers
-(pdo_sqlite, pdo_firebird) and proc_open (php/standard).
+(native/swoole-src/thirdparty/LICENSE; LICENSE-PHP in a release): the PDO driver
+pdo_firebird and proc_open (php/standard).
 
-native/hooks holds what stays C of PHP's pdo_pgsql, pdo_odbc and pdo_oci drivers
-(pgsql_*.c, odbc_*.c, oci_*.c and their php_pdo_*_int.h) and of PECL ssh2 (ssh2*.cc and php_ssh2.h),
+native/hooks holds what stays C of PHP's pdo_pgsql, pdo_odbc, pdo_oci and pdo_sqlite
+drivers (pgsql_*.c, odbc_*.c, oci_*.c, sqlite_*.c and their php_pdo_*_int.h) and of PECL ssh2 (ssh2*.cc and php_ssh2.h),
 Copyright (c) The PHP Group, under the same PHP License 3.01. The cURL adapter and object layouts in native/hooks (curl_handle.cc
 and swoole_rs_curl_layout.h) and its plain files stream wrapper (plain_wrapper.c, from
 Swoole's copy) derive from PHP under the same license. native/hooks/zend_execute_private.h

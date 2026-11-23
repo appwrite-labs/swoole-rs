@@ -3,11 +3,12 @@
 Files from swoole-src v6.2.6 (13d2f33), at the paths they have there. crates/ext's build.rs
 compiles these; it reads nothing from the pin.
 
-Some carry changes the deleted patch set made: `php_swoole.h`, the curl hooks, `proc_open`
-and the pdo_sqlite driver and statement (`plain_wrapper.c` is now `native/hooks/plain_wrapper.c`, #5519). The rest are byte-for-byte copies of code swoole-src
+Some carry changes the deleted patch set made: `php_swoole.h`, the curl hooks and `proc_open`
+(`plain_wrapper.c` is now `native/hooks/plain_wrapper.c`, #5519; the pdo_sqlite driver and
+statement are `native/hooks/sqlite_*.c`, #5514). The rest are byte-for-byte copies of code swoole-src
 bundles from elsewhere and that has no Rust replacement:
 
-- `thirdparty/php*/pdo_*`, `thirdparty/pdo_firebird`, `thirdparty/pdo_sqlite`: PHP's own PDO
+- `thirdparty/php*/pdo_*`, `thirdparty/pdo_firebird`: PHP's own PDO
   drivers, adapted by Swoole to its coroutine hooks. PHP License 3.01 (`thirdparty/LICENSE`), as each file's header says.
   `thirdparty/pdo_firebird` is upstream's `php84` and `php85` copies made one, with
   `PHP_VERSION_ID` where they differ (#5516).
