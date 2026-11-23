@@ -14,7 +14,18 @@
   +----------------------------------------------------------------------+
 */
 
+/* pdo_oci's connection side. crates/oci/src/driver.rs, handle.rs and error.rs have the
+ * operations.
+ *
+ * Stays C (docs/zend.md, What stays C): allocator (the connection and statement records
+ * are Zend's to allocate and free), bailout (ORA-01013, the user cancelling the call,
+ * ends the request), version (pdo_dbh_t's bitfields, which the factory sets) and the
+ * data source's parse (php_pdo_parse_data_source, whose values are Zend's to free). The method table and the driver
+ * entry are C because PDO declares them over pdo_dbh_t and pdo_stmt_t pointers, which
+ * the C compiler checks against the functions here. */
 #include "php_swoole_oracle.h"
+
+#ifdef SW_USE_ORACLE
 
 #include "php.h"
 #include "php_ini.h"
@@ -199,4 +210,4 @@ static int pdo_oci_handle_factory(pdo_dbh_t *dbh, zval *driver_options) /* {{{ *
 
 const pdo_driver_t swoole_pdo_oci_driver = {PDO_DRIVER_HEADER(oci), pdo_oci_handle_factory};
 
-
+#endif /* SW_USE_ORACLE */

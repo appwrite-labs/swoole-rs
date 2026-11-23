@@ -14,7 +14,19 @@
   +----------------------------------------------------------------------+
 */
 
+/* pdo_oci's statement side. crates/oci/src/statement.rs, columns.rs, bind.rs and lob.rs
+ * have the operations.
+ *
+ * Stays C (docs/zend.md, What stays C): allocator (the statement record and the LOB
+ * stream's state are Zend's to allocate and free), bailout (reading a bound stream into
+ * a LOB and closing a LOB stream can run PHP code), globals (the destructor checks the
+ * connection object in EG(objects_store)) and budget (pdo_oci_stmt's fields, read
+ * through the accessors here). The method table and the LOB stream's operations are
+ * C because PDO and the streams layer declare them over pdo_stmt_t and php_stream
+ * pointers, which the C compiler checks; OCI's dynamic-bind callbacks return its sb4. */
 #include "php_swoole_oracle.h"
+
+#ifdef SW_USE_ORACLE
 #include "php.h"
 #include "php_ini.h"
 #include "ext/standard/info.h"
@@ -422,3 +434,4 @@ const struct pdo_stmt_methods swoole_oci_stmt_methods = {oci_stmt_dtor,
                                                          NULL,
                                                          NULL};
 
+#endif /* SW_USE_ORACLE */

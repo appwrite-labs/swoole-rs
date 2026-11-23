@@ -184,7 +184,7 @@ mod php {
             ]);
             p.defines
                 .push(format!(r#"SWOOLE_PDO_OCI_CLIENT_VERSION "{version}.1""#));
-            p.c.extend(["oci_driver.c", "oci_statement.c"].map(|f| third.join("pdo_oci").join(f)));
+            // native/hooks/oci_*.c come with the hooks module's sources, each inside SW_USE_ORACLE.
             p.includes.push(dir.join("sdk/include"));
             println!("cargo::rustc-link-search=native={}", dir.display());
             p.libs.push("clntsh");

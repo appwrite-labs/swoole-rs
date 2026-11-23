@@ -8,7 +8,7 @@
 #ifdef SW_USE_ORACLE
 BEGIN_EXTERN_C()
 #include "ext/pdo/php_pdo_driver.h"
-#include "thirdparty/pdo_oci/php_pdo_oci_int.h"
+#include "php_pdo_oci_int.h"
 sword swoole_oci_session_begin(OCISvcCtx *svchp, OCIError *errhp, OCISession *usrhp, ub4 credt, ub4 mode);
 sword swoole_oci_server_detach(OCIServer *srvhp, OCIError *errhp, ub4 mode);
 sword swoole_oci_stmt_prepare(OCIStmt *stmtp, OCIError *errhp, const OraText *stmt, ub4 stmt_len, ub4 language,
