@@ -79,7 +79,7 @@ impl LiveServer {
         let mut settings = PortConfig::boxed(c_int::MAX);
         let mut record = SocketRecord::with_fd(fd, FD_STREAM_SERVER);
         record.socket_type = SOCK_TCP;
-        record.output.nonblock = true;
+        record.note_nonblocking(true);
         record.object = (&raw mut *settings).cast();
         let listener = record.into_raw();
         settings.r#type = SOCK_TCP;

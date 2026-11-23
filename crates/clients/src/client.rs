@@ -1130,7 +1130,7 @@ pub fn ssl_handshake(this: Handle<'_>) -> bool {
             settings
         };
     if this.socket().read(|socket| socket.ssl().is_null()) {
-        this.socket().edit(|socket| socket.output.ssl_send = true);
+        this.socket().edit(SocketFields::send_through_tls);
         if !(this.get().socket_ops.tls_session)(&settings, this.socket()) {
             log::set_last_error(ERROR_SSL_CREATE_SESSION_FAILED);
             return false;
@@ -1383,8 +1383,8 @@ fn tcp_connect_async(this: Handle<'_>, host: &CStr, port: c_int, timeout: f64) -
     this.set_timeout(timeout);
     this.input_init();
     if this.has(ClientEvent::BufferFull) && this.get().high_watermark.get() == 0 {
-        let mark = (f64::from(this.socket().read(|socket| socket.output.buffer_size)) * 0.8)
-            .c_cast::<u32>();
+        let mark =
+            (f64::from(this.socket().read(SocketFields::output_limit)) * 0.8).c_cast::<u32>();
         this.get().high_watermark.set(mark);
     }
     if !inet_addr(this, host, port) {

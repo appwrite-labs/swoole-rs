@@ -429,7 +429,7 @@ pub fn write(fd: c_int, buf: &[u8]) -> Result<usize, IoError> {
 fn blocking(fd: c_int, write: bool) -> SocketRecord {
     let mut socket = SocketRecord::new();
     socket.fd = fd;
-    socket.output.nonblock = true;
+    socket.note_nonblocking(true);
     if write {
         socket.timeouts.write = -1.0;
     } else {

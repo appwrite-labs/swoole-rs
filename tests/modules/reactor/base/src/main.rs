@@ -627,7 +627,7 @@ unsafe fn write_2m() {
         (*tg_buf).offset = 0;
 
         let socket = sock(&p, true);
-        (*socket).fields.output.buffer_size = 2 * 1024 * 1024;
+        (*socket).fields.limit_output(2 * 1024 * 1024);
 
         let n = event_api::event_write(handle(socket), &data);
         assert_eq!(n, Some(data.len()));
@@ -646,7 +646,7 @@ unsafe fn write_2m() {
 
         // Upstream's length, past its data's end, which the write refuses unread: here
         // bytes of that length (SW_ERR is `None`).
-        let oversize = vec![0; (*socket).fields.output.buffer_size as usize + 8192];
+        let oversize = vec![0; (*socket).fields.output_limit() as usize + 8192];
         assert_eq!(event_api::event_write(handle(socket), &oversize), None);
         assert_eq!(
             last_error(),
@@ -668,7 +668,7 @@ unsafe fn bad_fd() {
     unsafe {
         let _ = swoole_rs_ffi::swoole_event_init(SW_EVENTLOOP_WAIT_EXIT);
         let socket = SocketRecord::with_fd(999999, SW_FD_STREAM_CLIENT).into_raw();
-        (*socket).fields.output.nonblock = true;
+        (*socket).fields.note_nonblocking(true);
         let n = event_api::event_write(handle(socket), b"hello world");
         assert_eq!(n, None);
         assert_eq!(last_error(), EBADF);

@@ -357,7 +357,7 @@ pub(crate) fn write(serv: view::Server<'_>, reactor: Reactor, event: &mut Event)
         }
     }
     let queued = sock.read(SocketFields::queued_bytes);
-    if conn.overflow() && queued < sock.read(|s| s.output.buffer_size) {
+    if conn.overflow() && queued < sock.read(SocketFields::output_limit) {
         conn.set_overflow(false);
     }
     let buffer_empty = state.callbacks.slot(CallbackKind::BufferEmpty).is_set();
@@ -367,12 +367,11 @@ pub(crate) fn write(serv: view::Server<'_>, reactor: Reactor, event: &mut Event)
         crate::server_methods::notify(serv, conn, ServerEvent::BufferEmpty);
     }
     // Read after the notification, which may queue more.
-    let (timer, removed, empty) =
-        sock.read(|s| (s.output.send_timer, s.removed, s.output_drained()));
+    let (timer, removed, empty) = sock.read(|s| (s.send_timer(), s.removed, s.output_drained()));
     if let Some(timer) = timer {
         if empty {
             del_id(timer);
-            sock.edit(|s| s.output.send_timer = None);
+            sock.edit(SocketFields::take_send_timer);
         } else if let Some(port) = port {
             delay_held(Some(timer), port.max_idle_time.get().c_cast::<c_long>());
         }

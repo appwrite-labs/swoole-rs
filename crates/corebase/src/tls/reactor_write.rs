@@ -98,7 +98,7 @@ fn write(
             format_args!("data packet is too large, cannot exceed the socket buffer size"),
         ),
         Err(WriteError::Overflow(queued)) => {
-            let (fd, size) = socket.read(|record| (record.fd, record.output.buffer_size));
+            let (fd, size) = socket.read(|record| (record.fd, record.output_limit()));
             log::error_log(
                 log::LogLevel::SW_LOG_WARNING,
                 SW_ERROR_OUTPUT_BUFFER_OVERFLOW,

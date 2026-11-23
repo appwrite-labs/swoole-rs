@@ -309,7 +309,7 @@ fn to_connection(serv: Server<'_>, info: &DataHead, data: &[u8], first: Option<i
         }
         let callback = |index| state.callbacks.slot(index).is_set();
         let (on_full, on_empty) = (callback(BufferFull), callback(BufferEmpty));
-        if sock.read(|s| s.queued_bytes() >= s.output.buffer_size) {
+        if sock.read(SocketFields::output_full) {
             if send_yield {
                 yield_error();
             } else {
@@ -332,7 +332,7 @@ fn to_connection(serv: Server<'_>, info: &DataHead, data: &[u8], first: Option<i
         }
     }
     let idle = port.map_or(0.0, |port| port.config().max_idle_time.get());
-    if idle > 0.0 && sock.read(|s| s.output.send_timer.is_none()) {
+    if idle > 0.0 && sock.read(|s| s.send_timer().is_none()) {
         idle_timer(conn, *sock, idle);
     }
     if !sock.read(|s| s.events.intersects(Events::WRITE)) {
@@ -407,7 +407,9 @@ fn idle_timer(conn: Connection<'_>, sock: Socket<'_>, idle: f64) {
     sock.edit(|sock| {
         sock.timeouts.write = idle;
         sock.last_sent_time = now;
-        sock.output.send_timer = timer;
+        if let Some(timer) = timer {
+            sock.arm_send_timer(timer);
+        }
     });
 }
 #[cfg(test)]
@@ -626,7 +628,7 @@ mod tests {
         let a = Accepted::new();
         a.sock().edit(|s| {
             s.direct_send = false;
-            s.output.buffer_size = 4;
+            s.limit_output(4);
         });
         a.live.port().buffer_high_watermark.set(2);
         let callbacks = &a.live.state().callbacks;

@@ -442,7 +442,7 @@ pub(crate) fn accept(socket: Co, ops: &UringSocketOps<'_>) -> Option<OwnedCo> {
     conn.info.kind = socket
         .net(|listener| listener.socket_type)
         .unwrap_or_default();
-    conn.output.nonblock = true;
+    conn.note_nonblocking(true);
     conn.cloexec = true;
     // A `UringSocket` before it shares the server's TLS, so its session is over the
     // ring's memory BIOs.

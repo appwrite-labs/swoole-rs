@@ -895,14 +895,8 @@ impl Bus {
         // `make_socket`: a new record, which the bus frees on drop.
         let make = |fd| {
             let mut socket = SocketRecord::with_fd(fd, FdType::SW_FD_PIPE as c_int);
-            socket.output.buffer_size = u32::MAX;
-            if !socket.output.nonblock {
-                swoole_rs_corebase::reactor::socket_upstream::socket_set_fd_option(
-                    &mut socket,
-                    1,
-                    -1,
-                );
-            }
+            socket.limit_output(u32::MAX);
+            socket.make_nonblocking();
             socket
         };
         let fds = fds
@@ -985,13 +979,14 @@ mod tests {
         let fd = pipe.fds[1];
         pipe.bus.init_pipe_sockets([fd]);
         let record = pipe.bus.pipe_socket(fd);
-        pipe.bus
-            .pipe(fd)
-            .unwrap()
-            .edit(|f| f.output.buffer_size = 1);
+        pipe.bus.pipe(fd).unwrap().edit(|f| f.limit_output(1));
         pipe.bus.init_pipe_sockets([fd]);
         assert_eq!(pipe.bus.pipe_socket(fd), record, "the same record");
-        let size = pipe.bus.pipe(fd).unwrap().read(|f| f.output.buffer_size);
+        let size = pipe
+            .bus
+            .pipe(fd)
+            .unwrap()
+            .read(swoole_rs_corebase::reactor::SocketFields::output_limit);
         assert_eq!(size, u32::MAX, "started over");
         assert!(pipe.bus.pipe(pipe.fds[0]).is_none());
     }
