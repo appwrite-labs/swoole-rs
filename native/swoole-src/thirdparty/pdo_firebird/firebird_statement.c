@@ -208,7 +208,7 @@ int pdo_firebird_stmt_get_col(
 
 /* Parameter binding is Rust (crates/firebird/src/param.rs), given the descriptor's
  * variables (a count of -1 without one) and the value, dereferenced; it reaches
- * the variables' storage and the statement record through these. */
+ * the statement record and each input variable's storage through these. */
 bool swr_firebird_param_hook(pdo_stmt_t *stmt, XSQLVAR *vars, short count, enum pdo_param_event event,
 	bool is_param, zend_string *name, zend_long *paramno, zval *value);
 
@@ -217,8 +217,25 @@ HashTable *swr_firebird_named_params(pdo_stmt_t *stmt)
 	return ((pdo_firebird_stmt *)stmt->driver_data)->named_params;
 }
 
-void swr_firebird_alloc_param(XSQLVAR *var)
+/* Input variable `index`, or NULL past the input descriptor. */
+static XSQLVAR *swr_firebird_input(pdo_stmt_t *stmt, zend_long index)
 {
+	XSQLDA *sqlda = ((pdo_firebird_stmt *)stmt->driver_data)->in_sqlda;
+	return sqlda && index >= 0 && index < sqlda->sqld ? &sqlda->sqlvar[index] : NULL;
+}
+
+short swr_firebird_input_type(pdo_stmt_t *stmt, zend_long index)
+{
+	XSQLVAR *var = swr_firebird_input(stmt, index);
+	return var ? var->sqltype : 0;
+}
+
+void swr_firebird_input_alloc(pdo_stmt_t *stmt, zend_long index)
+{
+	XSQLVAR *var = swr_firebird_input(stmt, index);
+	if (!var) {
+		return;
+	}
 	if (var->sqlind) {
 		efree(var->sqlind);
 	}
@@ -226,17 +243,43 @@ void swr_firebird_alloc_param(XSQLVAR *var)
 	var->sqldata = &((char*)var->sqlind)[sizeof(short)];
 }
 
-void swr_firebird_set_null(XSQLVAR *var, bool null)
+void swr_firebird_input_null(pdo_stmt_t *stmt, zend_long index, bool null)
 {
-	if (var->sqlind) {
+	XSQLVAR *var = swr_firebird_input(stmt, index);
+	if (var && var->sqlind) {
 		*var->sqlind = null ? -1 : 0;
 	}
 }
 
-void swr_firebird_set_data(XSQLVAR *var, const char *data, size_t len)
+void swr_firebird_input_data(pdo_stmt_t *stmt, zend_long index, const char *data, size_t len)
 {
-	if (var->sqlind && len <= (size_t) var->sqllen) {
+	XSQLVAR *var = swr_firebird_input(stmt, index);
+	if (var && var->sqlind && len <= (size_t) var->sqllen) {
 		memcpy(var->sqldata, data, len);
+	}
+}
+
+void swr_firebird_input_point(pdo_stmt_t *stmt, zend_long index, short sqltype, zval *value)
+{
+	XSQLVAR *var = swr_firebird_input(stmt, index);
+	if (!var) {
+		return;
+	}
+	/* keep the allow-NULL flag */
+	var->sqltype = sqltype | (var->sqltype & 1);
+	switch (Z_TYPE_P(value)) {
+		case IS_LONG:
+			var->sqldata = (void*)&Z_LVAL_P(value);
+			var->sqllen = sizeof(zend_long);
+			break;
+		case IS_DOUBLE:
+			var->sqldata = (void*)&Z_DVAL_P(value);
+			var->sqllen = sizeof(double);
+			break;
+		case IS_STRING:
+			var->sqldata = Z_STRVAL_P(value);
+			var->sqllen = Z_STRLEN_P(value);
+			break;
 	}
 }
 
