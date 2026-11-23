@@ -20,7 +20,8 @@
     )
 )]
 
-use std::ffi::{c_char, c_int, c_short, c_uint, c_ushort, c_void};
+use std::ffi::{CStr, c_char, c_int, c_short, c_uint, c_ushort, c_void};
+use std::marker::PhantomData;
 
 /// `ISC_STATUS`: `intptr_t`.
 pub type ISC_STATUS = isize;
@@ -42,16 +43,25 @@ pub struct Status(*mut ISC_STATUS);
 pub struct Handle(*mut FB_API_HANDLE);
 
 /// Bytes the caller handed over: readable for the length passed beside them, or
-/// up to their NUL where the call takes no length or it is zero.
+/// up to their NUL where the call takes no length or it is zero, and not
+/// written for `'a`.
 #[repr(transparent)]
 #[derive(Clone, Copy)]
-pub struct Bytes(*const ISC_SCHAR);
+pub struct Bytes<'a>(*const ISC_SCHAR, PhantomData<&'a [u8]>);
 
-impl Bytes {
+impl Bytes<'static> {
     /// Bytes that live for the program, which any call may read.
     #[must_use]
     pub const fn from_static(bytes: &'static [u8]) -> Self {
-        Self(bytes.as_ptr().cast())
+        Self(bytes.as_ptr().cast(), PhantomData)
+    }
+}
+
+impl<'a> Bytes<'a> {
+    /// A C string's bytes, up to its NUL, for a call that takes no length.
+    #[must_use]
+    pub const fn from_c_str(text: &'a CStr) -> Self {
+        Self(text.as_ptr(), PhantomData)
     }
 }
 
@@ -94,14 +104,14 @@ pub struct VersionArg(*mut c_void);
 /// `isc_start_multiple` reads): its handle, and its TPB with the TPB's length.
 // `repr(C)`: Firebird's transaction existence block, which `isc_start_multiple` reads.
 #[repr(C)]
-pub struct Teb {
+pub struct Teb<'a> {
     pub database: Handle,
     pub tpb_length: c_int,
-    pub tpb: Bytes,
+    pub tpb: Bytes<'a>,
 }
 
 const _: () = assert!(
-    std::mem::offset_of!(Teb, tpb) == 2 * size_of::<*const u8>(),
+    std::mem::offset_of!(Teb<'static>, tpb) == 2 * size_of::<*const u8>(),
     "why.cpp's TEB: a pointer, an int, a pointer"
 );
 
