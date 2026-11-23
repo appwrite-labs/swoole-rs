@@ -244,37 +244,37 @@ error:
 }
 /* }}} */
 
+/* The fetch is Rust (crates/firebird/src/statement.rs); it reads the record through these. */
+bool swr_firebird_fetch(pdo_stmt_t *stmt);
+
+bool swr_firebird_exhausted(pdo_stmt_t *stmt)
+{
+	return ((pdo_firebird_stmt *)stmt->driver_data)->exhausted;
+}
+
+void swr_firebird_set_exhausted(pdo_stmt_t *stmt)
+{
+	((pdo_firebird_stmt *)stmt->driver_data)->exhausted = 1;
+}
+
+bool swr_firebird_is_procedure(pdo_stmt_t *stmt)
+{
+	return ((pdo_firebird_stmt *)stmt->driver_data)->statement_type == isc_info_sql_stmt_exec_procedure;
+}
+
+XSQLDA *swr_firebird_out_sqlda(pdo_stmt_t *stmt)
+{
+	return &((pdo_firebird_stmt *)stmt->driver_data)->out_sqlda;
+}
+
 /* called by PDO to fetch the next row from a statement */
 static int pdo_firebird_stmt_fetch(pdo_stmt_t *stmt, /* {{{ */
 	enum pdo_fetch_orientation ori, zend_long offset)
 {
-	pdo_firebird_stmt *S = (pdo_firebird_stmt*)stmt->driver_data;
-	pdo_firebird_db_handle *H = S->H;
-
-	if (!stmt->executed) {
-		const char *msg = "Cannot fetch from a closed cursor";
-		php_firebird_error_stmt_with_info(stmt, "HY000", strlen("HY000"), msg, strlen(msg));
-	} else if (!S->exhausted) {
-		if (S->statement_type == isc_info_sql_stmt_exec_procedure) {
-			stmt->row_count = 1;
-			S->exhausted = 1;
-			return 1;
-		}
-		if (isc_dsql_fetch(H->isc_status, &S->stmt, PDO_FB_SQLDA_VERSION, &S->out_sqlda)) {
-			if (H->isc_status[0] && H->isc_status[1]) {
-				php_firebird_error_stmt(stmt);
-			}
-			S->exhausted = 1;
-			return 0;
-		}
-		stmt->row_count++;
-		return 1;
-	}
-	return 0;
+	return swr_firebird_fetch(stmt);
 }
 /* }}} */
 
-/* called by PDO to retrieve information about the fields being returned */
 /* The column description and metadata are Rust (crates/firebird/src/statement.rs). */
 void swr_firebird_describe(XSQLVAR *var, bool fetch_table_names, struct pdo_column_data *col);
 void swr_firebird_column_meta(XSQLVAR *var, zval *return_value);
