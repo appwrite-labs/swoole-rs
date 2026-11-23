@@ -17,7 +17,7 @@ use swoole_rs_firebird_sys::{
 };
 use swoole_rs_zend::pdo::{Attribute, Dbh, Slot, Stmt};
 use swoole_rs_zend::sys::{
-    PHP_VERSION_ID, pdo_attribute_type_PDO_ATTR_CURSOR_NAME as CURSOR_NAME, zend_long,
+    PHP_VERSION_ID, pdo_attribute_type_PDO_ATTR_CURSOR_NAME as CURSOR_NAME, zend_long, zend_ulong,
 };
 
 use crate::{swoole_isc_dsql_free_statement, swoole_isc_dsql_set_cursor_name};
@@ -361,13 +361,14 @@ fn vax(bytes: &[u8]) -> u64 {
 
 /// `pdo_firebird_stmt_execute`'s count of the rows an `INSERT`, `UPDATE`,
 /// `DELETE` or procedure changed, from the lent `isc_info_sql_records` reply:
-/// each count but the selected rows' added to `rows`. False for a reply whose
-/// size or a count's length is malformed, as C's `goto error`.
+/// each count but the selected rows' added to `rows`, at the `zend_ulong`'s
+/// width. False for a reply whose size, an item's length or an item's bytes run
+/// past it or are malformed, as C's `goto error`.
 #[unsafe(no_mangle)]
 pub extern "C" fn swr_firebird_records<'a>(
     reply: In<'a, u8>,
     len: Count<'a>,
-    rows: &mut u64,
+    rows: &mut zend_ulong,
 ) -> bool {
     let reply = reply.drain(len).bytes();
     // C's `unsigned result_size = isc_vax_integer(&result[1], 2)`.
@@ -388,12 +389,18 @@ pub extern "C" fn swr_firebird_records<'a>(
         let Ok(length @ (1 | 2 | 4)) = usize::try_from(length) else {
             return false;
         };
+        let Some(count) = reply.get(at + 3..at + 3 + length) else {
+            return false;
+        };
         if item != selected {
-            let Some(count) = reply.get(at + 3..at + 3 + length) else {
-                return false;
-            };
-            // C's zend_ulong `+=` of the ISC_LONG.
-            *rows = rows.wrapping_add(vax(count));
+            // C's zend_ulong `+=` of the ISC_LONG: its low bytes at the
+            // zend_ulong's width.
+            let wide = vax(count).to_le_bytes();
+            let count = wide
+                .get(..size_of::<zend_ulong>())
+                .and_then(|low| low.try_into().ok())
+                .map_or(0, zend_ulong::from_le_bytes);
+            *rows = rows.wrapping_add(count);
         }
         at += length + 3;
     }
