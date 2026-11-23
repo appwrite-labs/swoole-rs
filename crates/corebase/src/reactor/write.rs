@@ -168,15 +168,6 @@ impl SocketFields {
         self.output.nonblock = nonblock;
     }
 
-    /// `if (!nonblock) set_fd_option(1, -1)`: the descriptor made nonblocking unless the
-    /// socket knows it is, warning as upstream when that fails.
-    #[inline]
-    pub fn make_nonblocking(&mut self) {
-        if !self.output.nonblock {
-            crate::reactor::socket_upstream::socket_set_fd_option(self, 1, -1);
-        }
-    }
-
     /// Whether the socket knows its descriptor is nonblocking.
     #[inline]
     #[must_use]

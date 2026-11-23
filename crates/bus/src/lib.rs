@@ -896,7 +896,7 @@ impl Bus {
         let make = |fd| {
             let mut socket = SocketRecord::with_fd(fd, FdType::SW_FD_PIPE as c_int);
             socket.limit_output(u32::MAX);
-            socket.make_nonblocking();
+            swoole_rs_corebase::reactor::socket_upstream::socket_make_nonblocking(&mut socket);
             socket
         };
         let fds = fds

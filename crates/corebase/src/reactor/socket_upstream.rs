@@ -140,6 +140,15 @@ pub fn socket_set_fd_option(socket: &mut SocketFields, nonblock: c_int, cloexec:
     result.ok
 }
 
+/// `if (!nonblock) set_fd_option(1, -1)`: the descriptor made nonblocking unless the
+/// socket knows it is, warning as [`socket_set_fd_option`] does when that fails.
+#[inline]
+pub fn socket_make_nonblocking(socket: &mut SocketFields) {
+    if !socket.is_nonblocking() {
+        socket_set_fd_option(socket, 1, -1);
+    }
+}
+
 /// `_set_timeout` and the timeout it records: `SO_SNDTIMEO` (`send`) or `SO_RCVTIMEO`.
 fn set_kernel_timeout(socket: &mut SocketFields, send: bool, timeout: f64) -> bool {
     if socket.set_kernel_timeout(send, timeout) {

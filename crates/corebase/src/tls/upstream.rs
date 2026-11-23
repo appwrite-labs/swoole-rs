@@ -7,7 +7,9 @@ use crate::buffer::string::StringBuffer;
 use crate::constants::SocketFlag;
 use crate::lent::{Spare, lend_spare};
 use crate::net_address::{BAD_HOST_ADDR, assign, platform_parses};
-use crate::reactor::socket_upstream::{make_typed, socket_cork, socket_uncork};
+use crate::reactor::socket_upstream::{
+    make_typed, socket_cork, socket_make_nonblocking, socket_uncork,
+};
 use crate::reactor::{
     Drain, Events, Fill, OutputEffects, RangeError, Socket, SocketAddress, SocketFields,
     SocketFileRequest, SslSendfileWarning, SyncEffects, SyncMode, handle_send_owned, record_peek,
@@ -512,7 +514,7 @@ impl<S: ReadSlot> SyncEffects for Call<'_, '_, S> {
     /// and a write to a nonblocking plain socket only reads it.
     fn prepare(&self) {
         self.socket.edit(|record| {
-            record.make_nonblocking();
+            socket_make_nonblocking(record);
             if !record.ssl().is_null() {
                 swr_v1_socket_ssl_clear(&mut record.tls);
             }
