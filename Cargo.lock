@@ -523,6 +523,7 @@ name = "swoole-rs-firebird-sys"
 version = "0.1.0"
 dependencies = [
  "bindgen",
+ "swoole-rs-corebase",
 ]
 
 [[package]]

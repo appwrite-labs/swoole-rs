@@ -197,14 +197,6 @@ void swr_firebird_alloc_output(pdo_stmt_t *stmt)
 	}
 }
 
-bool swr_firebird_records_info(pdo_stmt_t *stmt, char *reply, size_t len)
-{
-	static char info_count[] = {isc_info_sql_records};
-	pdo_firebird_stmt *S = (pdo_firebird_stmt *)stmt->driver_data;
-
-	return !isc_dsql_sql_info(S->H->isc_status, &S->stmt, sizeof(info_count), info_count, (short) len, reply);
-}
-
 void swr_firebird_executed(pdo_stmt_t *stmt)
 {
 	pdo_firebird_stmt *S = (pdo_firebird_stmt *)stmt->driver_data;
