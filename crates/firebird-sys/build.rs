@@ -29,8 +29,8 @@ mod ibase {
                     .filter(|dir| !dir.is_empty())
                     .map(|dir| format!("-I{dir}")),
             )
-            .allowlist_type("XSQLDA|XSQLVAR")
-            .allowlist_var("SQL_(TEXT|VARYING|SHORT|LONG|INT64|FLOAT|DOUBLE|BOOLEAN)")
+            .allowlist_type("XSQLDA|XSQLVAR|ISC_TIMESTAMP")
+            .allowlist_var("SQL_(TEXT|VARYING|SHORT|LONG|INT64|FLOAT|DOUBLE|BOOLEAN|TYPE_DATE|TYPE_TIME|TIMESTAMP)")
             .generate()
             .expect("firebird-sys: bindgen")
             .write_to_file(out.join("ibase.rs"))
