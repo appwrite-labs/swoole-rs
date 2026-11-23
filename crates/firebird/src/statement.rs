@@ -27,9 +27,10 @@ use swoole_rs_zend::sys::{
 
 use crate::transaction::php_firebird_commit_transaction;
 use crate::{
-    swoole_isc_blob_info, swoole_isc_close_blob, swoole_isc_dsql_execute, swoole_isc_dsql_execute2,
-    swoole_isc_dsql_fetch, swoole_isc_dsql_free_statement, swoole_isc_dsql_set_cursor_name,
-    swoole_isc_dsql_sql_info, swoole_isc_get_segment, swoole_isc_open_blob,
+    swoole_isc_blob_info, swoole_isc_close_blob, swoole_isc_create_blob, swoole_isc_dsql_execute,
+    swoole_isc_dsql_execute2, swoole_isc_dsql_fetch, swoole_isc_dsql_free_statement,
+    swoole_isc_dsql_set_cursor_name, swoole_isc_dsql_sql_info, swoole_isc_get_segment,
+    swoole_isc_open_blob, swoole_isc_put_segment,
 };
 use swoole_rs_zend::sys::{
     pdo_column_data, pdo_param_type_PDO_PARAM_BOOL as PARAM_BOOL,
@@ -592,6 +593,50 @@ pub extern "C" fn swr_firebird_fetch_blob<'a>(
         return false;
     }
     read
+}
+
+/// `php_firebird_bind_blob`: a new `BLOB` created, its id written to `id`, and
+/// `param`'s value written to it as a string, in segments of at most 65535
+/// bytes, then closed. False, with the error recorded on the statement, when
+/// a call fails; a failed segment stops the writing, and the blob is still
+/// closed. False, writing nothing, when the conversion bailed out.
+#[unsafe(no_mangle)]
+pub extern "C" fn swr_firebird_bind_blob(stmt: &Stmt, id: &mut [u32; 2], param: &Value) -> bool {
+    let dbh = swr_firebird_stmt_dbh(stmt);
+    let status = swr_firebird_status(dbh);
+    let mut handle = 0;
+    let blob = Handle::new(&mut handle);
+    let created = swoole_isc_create_blob(
+        status,
+        swr_firebird_db(dbh),
+        swr_firebird_tr(dbh),
+        blob,
+        Quad::new(id),
+    );
+    if created != 0 {
+        crate::error::status_error(dbh, Some(stmt));
+        return false;
+    }
+    let data = param.string();
+    // A conversion that bailed out (`__toString` calling `exit()`) writes
+    // nothing: the bind fails, the blob still closed.
+    let mut written = !swoole_rs_zend::bailout::pending();
+    let chunks = if written { data.bytes() } else { &[][..] };
+    for chunk in chunks.chunks(usize::from(u16::MAX)) {
+        if lend_in(chunk, |buffer, length| {
+            swoole_isc_put_segment(status, blob, length, buffer.chars())
+        }) != 0
+        {
+            crate::error::status_error(dbh, Some(stmt));
+            written = false;
+            break;
+        }
+    }
+    if swoole_isc_close_blob(status, blob) != 0 {
+        crate::error::status_error(dbh, Some(stmt));
+        return false;
+    }
+    written
 }
 
 /// `PDO_FB_SQLDA_VERSION`: `SQLDA_VERSION1`, as ibase.h defines no `SQLDA_VERSION`.

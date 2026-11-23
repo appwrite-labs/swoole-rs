@@ -52,6 +52,13 @@ impl<'id> In<'id, u8> {
         In(self.0.cast(), PhantomData)
     }
 
+    /// The same bytes, as the `char`s a call takes.
+    #[inline]
+    #[must_use]
+    pub fn chars(self) -> In<'id, c_char> {
+        In(self.0.cast(), PhantomData)
+    }
+
     /// The bytes as the [`Drain`] they are, `count` of them (a C lender's negative
     /// count is none): what a callback C lends bytes to reads them through.
     #[inline]
