@@ -23,24 +23,6 @@
 
 #define PDO_OCI_LOBMAXSIZE (4294967295UL) /* OCI_LOBMAXSIZE */
 
-#define STMT_CALL(name, params)                                                                                        \
-    do {                                                                                                               \
-        S->last_err = name params;                                                                                     \
-        S->last_err = _oci_error(S->err, stmt->dbh, stmt, #name, S->last_err, FALSE, __FILE__, __LINE__);              \
-        if (S->last_err) {                                                                                             \
-            return 0;                                                                                                  \
-        }                                                                                                              \
-    } while (0)
-
-#define STMT_CALL_MSG(name, msg, params)                                                                               \
-    do {                                                                                                               \
-        S->last_err = name params;                                                                                     \
-        S->last_err = _oci_error(S->err, stmt->dbh, stmt, #name ": " #msg, S->last_err, FALSE, __FILE__, __LINE__);    \
-        if (S->last_err) {                                                                                             \
-            return 0;                                                                                                  \
-        }                                                                                                              \
-    } while (0)
-
 static php_stream *oci_create_lob_stream(pdo_stmt_t *stmt, OCILobLocator *lob);
 
 /* The columns are Rust's (crates/oci/src/columns.rs). */
@@ -79,13 +61,6 @@ zend_string *swr_oci_param_name(OCIParam *param, OCIError *err, sword *status) {
     *status = OCIAttrGet(param, OCI_DTYPE_PARAM, &name, &length, OCI_ATTR_NAME, err);
     return *status == OCI_SUCCESS && name ? zend_string_init((char *) name, length, 0) : NULL;
 }
-
-#define OCI_TEMPLOB_CLOSE(envhp, svchp, errhp, lob)                                                                    \
-    do {                                                                                                               \
-        boolean isTempLOB;                                                                                             \
-        OCILobIsTemporary(envhp, errhp, lob, &isTempLOB);                                                              \
-        if (isTempLOB) OCILobFreeTemporary(svchp, errhp, lob);                                                         \
-    } while (0)
 
 static int oci_stmt_dtor(pdo_stmt_t *stmt) /* {{{ */
 {
@@ -133,339 +108,132 @@ static int oci_stmt_execute(pdo_stmt_t *stmt) /* {{{ */
     return swr_oci_execute(stmt, stmt->dbh) ? 1 : 0;
 } /* }}} */
 
-static sb4 oci_bind_input_cb(
-    dvoid *ctx, OCIBind *bindp, ub4 iter, ub4 index, dvoid **bufpp, ub4 *alenp, ub1 *piecep, dvoid **indpp) /* {{{ */
-{
-    struct pdo_bound_param_data *param = (struct pdo_bound_param_data *) ctx;
-    pdo_oci_bound_param *P = (pdo_oci_bound_param *) param->driver_data;
-    zval *parameter;
+/* The bound parameters are Rust (crates/oci/src/bind.rs), each record boxed in
+ * param->driver_data. OCI calls these during OCIStmtExecute, on the thread pool
+ * under the coroutine hook; they hand Rust only that record, and return the sb4
+ * OCI takes. */
+extern void swr_oci_bind_input(void *bound, dvoid **bufpp, ub4 *alenp, ub1 *piecep, dvoid **indpp);
+extern void swr_oci_bind_output(void *bound, dvoid **bufpp, ub4 **alenpp, ub1 *piecep, dvoid **indpp, ub2 **rcodepp);
 
-    ZEND_ASSERT(param);
-
-    *indpp = &P->indicator;
-
-    // TODO Duplicate dereferencing operation
-    if (Z_ISREF(param->parameter))
-        parameter = Z_REFVAL(param->parameter);
-    else
-        parameter = &param->parameter;
-
-    if (P->thing) {
-        *bufpp = P->thing;
-        *alenp = sizeof(void *);
-    } else if (ZVAL_IS_NULL(parameter)) {
-        /* insert a NULL value into the column */
-        P->indicator = -1; /* NULL */
-        *bufpp = 0;
-        *alenp = -1;
-    } else if (!P->thing) {
-        /* regular string bind */
-    	// safe: use preconverted C buffer (no Zend API here `try_convert_to_string`)
-        if (!P->preconv_buf) {
-            return OCI_ERROR;
-        }
-        *bufpp = P->preconv_buf;
-        *alenp = P->preconv_len;
-    }
-
-    *piecep = OCI_ONE_PIECE;
+sb4 swr_oci_bind_input_cb(
+    dvoid *ctx, OCIBind *bindp, ub4 iter, ub4 index, dvoid **bufpp, ub4 *alenp, ub1 *piecep, dvoid **indpp) {
+    swr_oci_bind_input(ctx, bufpp, alenp, piecep, indpp);
     return OCI_CONTINUE;
-} /* }}} */
+}
 
-/**
- * This function will be called during the execution of OCIStmtExecute,
- * while the OCIStmtExecute function is executed in an AIO asynchronous thread within asynchronous IO.
- *
- */
-static sb4 oci_bind_output_cb(dvoid *ctx,
-                              OCIBind *bindp,
-                              ub4 iter,
-                              ub4 index,
-                              dvoid **bufpp,
-                              ub4 **alenpp,
-                              ub1 *piecep,
-                              dvoid **indpp,
-                              ub2 **rcodepp) /* {{{ */
-{
-    struct pdo_bound_param_data *param = (struct pdo_bound_param_data *) ctx;
-    pdo_oci_bound_param *P = (pdo_oci_bound_param *) param->driver_data;
-    zval *parameter;
-
-    ZEND_ASSERT(param);
-
-    if (Z_ISREF(param->parameter)) {
-        parameter = Z_REFVAL(param->parameter);
-    } else {
-        parameter = &param->parameter;
-    }
-
-    if (PDO_PARAM_TYPE(param->param_type) == PDO_PARAM_LOB) {
-        P->actual_len = sizeof(OCILobLocator *);
-        *bufpp = P->thing;
-        *alenpp = &P->actual_len;
-        *piecep = OCI_ONE_PIECE;
-        *rcodepp = &P->retcode;
-        *indpp = &P->indicator;
-        return OCI_CONTINUE;
-    }
-
-    if (Z_TYPE_P(parameter) == IS_OBJECT || Z_TYPE_P(parameter) == IS_RESOURCE) {
-        return OCI_CONTINUE;
-    }
-
-    // It can be safely released in an aio thread, this is a persistent string,
-    // allocated with malloc instead of ZendMM emalloc.
-    zval_ptr_dtor(parameter);
-
-    // Must use malloc for persistent strings
-    Z_STR_P(parameter) = zend_string_alloc(param->max_value_len, 1);
-    P->used_for_output = 1;
-
-    P->actual_len = (ub4) Z_STRLEN_P(parameter);
-    *alenpp = &P->actual_len;
-    *bufpp = (Z_STR_P(parameter))->val;
-    *piecep = OCI_ONE_PIECE;
-    *rcodepp = &P->retcode;
-    *indpp = &P->indicator;
-
+sb4 swr_oci_bind_output_cb(dvoid *ctx,
+                           OCIBind *bindp,
+                           ub4 iter,
+                           ub4 index,
+                           dvoid **bufpp,
+                           ub4 **alenpp,
+                           ub1 *piecep,
+                           dvoid **indpp,
+                           ub2 **rcodepp) {
+    swr_oci_bind_output(ctx, bufpp, alenpp, piecep, indpp, rcodepp);
     return OCI_CONTINUE;
-} /* }}} */
+}
 
+extern bool swr_oci_param_event(pdo_stmt_t *stmt,
+                                pdo_dbh_t *dbh,
+                                enum pdo_param_event event,
+                                enum pdo_param_type kind,
+                                zend_long max_value_len,
+                                zend_string *name,
+                                zend_long paramno,
+                                void **data,
+                                zval *value);
+
+/* PDO's method table takes an int; Rust handles the event. */
 static int oci_stmt_param_hook(pdo_stmt_t *stmt,
                                struct pdo_bound_param_data *param,
                                enum pdo_param_event event_type) /* {{{ */
 {
+    zval *value = &param->parameter;
+    if (!param->is_param) {
+        return 1;
+    }
+    ZVAL_DEREF(value);
+    return swr_oci_param_event(stmt,
+                               stmt->dbh,
+                               event_type,
+                               PDO_PARAM_TYPE(param->param_type),
+                               param->max_value_len,
+                               param->name,
+                               param->paramno,
+                               &param->driver_data,
+                               value)
+               ? 1
+               : 0;
+} /* }}} */
+
+void swr_oci_set_have_blobs(pdo_stmt_t *stmt) {
+    ((pdo_oci_stmt *) stmt->driver_data)->have_blobs = 1;
+}
+
+/* A NULL output: the parameter released and left undefined, as C left it. */
+void swr_oci_param_undef(zval *value) {
+    zval_ptr_dtor(value);
+    ZVAL_UNDEF(value);
+}
+
+/* A LOB locator bound to a NULL: the query's LOB as a read-write stream. */
+void swr_oci_lob_stream(pdo_stmt_t *stmt, OCILobLocator *lob, zval *value) {
     pdo_oci_stmt *S = (pdo_oci_stmt *) stmt->driver_data;
+    php_stream *stm = oci_create_lob_stream(stmt, lob);
+    if (stm) {
+        OCILobOpen(swr_oci_svc(S->dbh), S->err, lob, OCI_LOB_READWRITE);
+        php_stream_to_zval(stm, value);
+    }
+}
 
-    /* we're only interested in parameters for prepared SQL right now */
-    if (param->is_param) {
-        pdo_oci_bound_param *P;
-        sb4 value_sz = -1;
-        zval *parameter;
+/* A LOB being inserted: the stream's data, or the string, written to it. Stays C:
+ * php_stream_from_zval_no_verify's resource fetch, and reading the stream. */
+void swr_oci_lob_fill(pdo_stmt_t *stmt, OCILobLocator *lob, zval *parameter) {
+    pdo_oci_stmt *S = (pdo_oci_stmt *) stmt->driver_data;
+    php_stream *stm;
+    size_t n;
+    ub4 amt, offset = 1;
+    char *consume;
 
-        if (Z_ISREF(param->parameter))
-            parameter = Z_REFVAL(param->parameter);
-        else
-            parameter = &param->parameter;
-
-        P = (pdo_oci_bound_param *) param->driver_data;
-
-        switch (event_type) {
-        case PDO_PARAM_EVT_FETCH_PRE:
-        case PDO_PARAM_EVT_FETCH_POST:
-        case PDO_PARAM_EVT_NORMALIZE:
-            /* Do nothing */
-            break;
-
-        case PDO_PARAM_EVT_FREE:
-            P = param->driver_data;
-            if (P && P->preconv_buf) {
-				efree(P->preconv_buf);
-				P->preconv_buf = NULL;
-				P->preconv_len = 0;
-			}
-            if (P && P->thing) {
-                OCI_TEMPLOB_CLOSE(swr_oci_env(S->dbh), swr_oci_svc(S->dbh), swr_oci_err(S->dbh), P->thing);
-                OCIDescriptorFree(P->thing, OCI_DTYPE_LOB);
-                P->thing = NULL;
-                efree(P);
-            } else if (P) {
-                efree(P);
-            }
-            break;
-
-        case PDO_PARAM_EVT_ALLOC:
-            P = (pdo_oci_bound_param *) ecalloc(1, sizeof(pdo_oci_bound_param));
-            param->driver_data = P;
-
-            /* figure out what we're doing */
-            switch (PDO_PARAM_TYPE(param->param_type)) {
-            case PDO_PARAM_STMT:
-                return 0;
-
-            case PDO_PARAM_LOB:
-                /* P->thing is now an OCILobLocator * */
-                P->oci_type = SQLT_BLOB;
-                value_sz = (sb4) sizeof(OCILobLocator *);
+    php_stream_from_zval_no_verify(stm, parameter);
+    if (stm) {
+        OCILobOpen(swr_oci_svc(S->dbh), S->err, lob, OCI_LOB_READWRITE);
+        do {
+            char buf[8192];
+            n = php_stream_read(stm, buf, sizeof(buf));
+            if ((int) n <= 0) {
                 break;
-
-            case PDO_PARAM_STR:
-            default:
-                P->oci_type = SQLT_CHR;
-                value_sz = (sb4) param->max_value_len;
-                if (param->max_value_len == 0) {
-                    value_sz = (sb4) 1332; /* maximum size before value is interpreted as a LONG value */
-                }
             }
-
-            if (param->name) {
-                STMT_CALL(OCIBindByName,
-                          (S->stmt,
-                           &P->bind,
-                           S->err,
-                           (text *) param->name->val,
-                           (sb4) param->name->len,
-                           0,
-                           value_sz,
-                           P->oci_type,
-                           &P->indicator,
-                           0,
-                           &P->retcode,
-                           0,
-                           0,
-                           OCI_DATA_AT_EXEC));
-            } else {
-                STMT_CALL(OCIBindByPos,
-                          (S->stmt,
-                           &P->bind,
-                           S->err,
-                           ((ub4) param->paramno) + 1,
-                           0,
-                           value_sz,
-                           P->oci_type,
-                           &P->indicator,
-                           0,
-                           &P->retcode,
-                           0,
-                           0,
-                           OCI_DATA_AT_EXEC));
+            consume = buf;
+            do {
+                amt = (ub4) n;
+                OCILobWrite(swr_oci_svc(S->dbh), S->err, lob, &amt, offset, consume, (ub4) n, OCI_ONE_PIECE, NULL,
+                            NULL, 0, SQLCS_IMPLICIT);
+                offset += amt;
+                n -= amt;
+                consume += amt;
+            } while (n);
+        } while (1);
+        OCILobClose(swr_oci_svc(S->dbh), S->err, lob);
+        OCILobFlushBuffer(swr_oci_svc(S->dbh), S->err, lob, 0);
+    } else if (Z_TYPE_P(parameter) == IS_STRING) {
+        /* stick the string into the LOB */
+        consume = Z_STRVAL_P(parameter);
+        n = Z_STRLEN_P(parameter);
+        if (n) {
+            OCILobOpen(swr_oci_svc(S->dbh), S->err, lob, OCI_LOB_READWRITE);
+            while (n) {
+                amt = (ub4) n;
+                OCILobWrite(swr_oci_svc(S->dbh), S->err, lob, &amt, offset, consume, (ub4) n, OCI_ONE_PIECE, NULL,
+                            NULL, 0, SQLCS_IMPLICIT);
+                consume += amt;
+                n -= amt;
             }
-
-
-            STMT_CALL(OCIBindDynamic, (P->bind, S->err, param, oci_bind_input_cb, param, oci_bind_output_cb));
-
-            return 1;
-
-        case PDO_PARAM_EVT_EXEC_PRE:
-            P->indicator = 0;
-            P->used_for_output = 0;
-            if (PDO_PARAM_TYPE(param->param_type) == PDO_PARAM_LOB) {
-                ub4 empty = 0;
-                STMT_CALL(OCIDescriptorAlloc, (swr_oci_env(S->dbh), &P->thing, OCI_DTYPE_LOB, 0, NULL));
-                STMT_CALL(OCIAttrSet, (P->thing, OCI_DTYPE_LOB, &empty, 0, OCI_ATTR_LOBEMPTY, S->err));
-                S->have_blobs = 1;
-            }
-
-            /* in PDO_PARAM_EVT_EXEC_PRE, executed in PHP-context (main thread) */
-            if (PDO_PARAM_TYPE(param->param_type) != PDO_PARAM_LOB && Z_TYPE_P(parameter) != IS_NULL) {
-                convert_to_string(parameter);
-                /* allocate persistent or temporary buffer that outlives dispatch to async thread */
-                P->preconv_len = Z_STRLEN_P(parameter);
-                P->preconv_buf = emalloc(P->preconv_len + 1);
-                memcpy(P->preconv_buf, Z_STRVAL_P(parameter), P->preconv_len);
-                P->preconv_buf[P->preconv_len] = '\0';
-            }
-
-            return 1;
-
-        case PDO_PARAM_EVT_EXEC_POST:
-            /* fixup stuff set in motion in oci_bind_output_cb */
-            if (P->used_for_output) {
-                if (P->indicator == -1) {
-                    /* set up a NULL value */
-                    if (Z_TYPE_P(parameter) == IS_STRING) {
-                        /* OCI likes to stick non-terminated strings in things */
-                        *Z_STRVAL_P(parameter) = '\0';
-                    }
-                    zval_ptr_dtor_str(parameter);
-                    ZVAL_UNDEF(parameter);
-                } else if (Z_TYPE_P(parameter) == IS_STRING) {
-                    Z_STR_P(parameter) = zend_string_init(Z_STRVAL_P(parameter), P->actual_len, 1);
-                }
-            } else if (PDO_PARAM_TYPE(param->param_type) == PDO_PARAM_LOB && P->thing) {
-                php_stream *stm;
-
-                if (Z_TYPE_P(parameter) == IS_NULL) {
-                    /* if the param is NULL, then we assume that they
-                     * wanted to bind a lob locator into it from the query
-                     * */
-
-                    stm = oci_create_lob_stream(stmt, (OCILobLocator *) P->thing);
-                    if (stm) {
-                        OCILobOpen(swr_oci_svc(S->dbh), S->err, (OCILobLocator *) P->thing, OCI_LOB_READWRITE);
-                        php_stream_to_zval(stm, parameter);
-                    }
-                } else {
-                    /* we're a LOB being used for insert; transfer the data now */
-                    size_t n;
-                    ub4 amt, offset = 1;
-                    char *consume;
-
-                    php_stream_from_zval_no_verify(stm, parameter);
-                    if (stm) {
-                        OCILobOpen(swr_oci_svc(S->dbh), S->err, (OCILobLocator *) P->thing, OCI_LOB_READWRITE);
-                        do {
-                            char buf[8192];
-                            n = php_stream_read(stm, buf, sizeof(buf));
-                            if ((int) n <= 0) {
-                                break;
-                            }
-                            consume = buf;
-                            do {
-                                amt = (ub4) n;
-                                OCILobWrite(swr_oci_svc(S->dbh),
-                                            S->err,
-                                            (OCILobLocator *) P->thing,
-                                            &amt,
-                                            offset,
-                                            consume,
-                                            (ub4) n,
-                                            OCI_ONE_PIECE,
-                                            NULL,
-                                            NULL,
-                                            0,
-                                            SQLCS_IMPLICIT);
-                                offset += amt;
-                                n -= amt;
-                                consume += amt;
-                            } while (n);
-                        } while (1);
-                        OCILobClose(swr_oci_svc(S->dbh), S->err, (OCILobLocator *) P->thing);
-                        OCILobFlushBuffer(swr_oci_svc(S->dbh), S->err, (OCILobLocator *) P->thing, 0);
-                    } else if (Z_TYPE_P(parameter) == IS_STRING) {
-                        /* stick the string into the LOB */
-                        consume = Z_STRVAL_P(parameter);
-                        n = Z_STRLEN_P(parameter);
-                        if (n) {
-                            OCILobOpen(swr_oci_svc(S->dbh), S->err, (OCILobLocator *) P->thing, OCI_LOB_READWRITE);
-                            while (n) {
-                                amt = (ub4) n;
-                                OCILobWrite(swr_oci_svc(S->dbh),
-                                            S->err,
-                                            (OCILobLocator *) P->thing,
-                                            &amt,
-                                            offset,
-                                            consume,
-                                            (ub4) n,
-                                            OCI_ONE_PIECE,
-                                            NULL,
-                                            NULL,
-                                            0,
-                                            SQLCS_IMPLICIT);
-                                consume += amt;
-                                n -= amt;
-                            }
-                            OCILobClose(swr_oci_svc(S->dbh), S->err, (OCILobLocator *) P->thing);
-                        }
-                    }
-                    OCI_TEMPLOB_CLOSE(swr_oci_env(S->dbh), swr_oci_svc(S->dbh), swr_oci_err(S->dbh), P->thing);
-                    OCIDescriptorFree(P->thing, OCI_DTYPE_LOB);
-                    P->thing = NULL;
-                }
-            }
-
-            if (P->preconv_buf) {
-				efree(P->preconv_buf);
-				P->preconv_buf = NULL;
-				P->preconv_len = 0;
-			}
-
-            return 1;
+            OCILobClose(swr_oci_svc(S->dbh), S->err, lob);
         }
     }
-
-    return 1;
-} /* }}} */
+}
 
 /* Rust fetches the row (crates/oci/src/statement.rs). PDO's method table takes an int. */
 extern bool swr_oci_fetch(pdo_stmt_t *stmt, pdo_dbh_t *dbh, uint32_t orientation, zend_long offset);
