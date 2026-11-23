@@ -14,13 +14,25 @@
   +----------------------------------------------------------------------+
 */
 
-#include "php_swoole_firebird.h"
-
-
+/* pdo_firebird's connection side, one copy for every supported PHP version.
+ * crates/firebird/src has the operations: connection.rs (connecting, exec, closing,
+ * liveness, errorInfo), prepare.rs, transaction.rs, attribute.rs and error.rs.
+ *
+ * Stays C (docs/zend.md, What stays C): allocator (the connection and statement records,
+ * the descriptor areas, the named-parameter table, the format strings, the error message
+ * and the quoted string are Zend's to allocate and free), budget (the accessors over the
+ * connection record, whose bitfields Rust would reach through a #[repr(C)] mirror and raw
+ * derefs; the version callback, which writes through the void pointer isc_version hands
+ * it) and version (the driver header's API number). The method table and the driver entry
+ * are C because PDO declares them over pdo_dbh_t and pdo_stmt_t pointers, which the C
+ * compiler checks against the functions here. */
 #ifndef _GNU_SOURCE
 # define _GNU_SOURCE
 #endif
 
+#include "php_swoole_firebird.h"
+
+#ifdef SW_USE_FIREBIRD
 #include "php.h"
 #include "zend_exceptions.h"
 #include "php_ini.h"
@@ -462,3 +474,4 @@ const pdo_driver_t swoole_pdo_firebird_driver = { /* {{{ */
 	pdo_firebird_handle_factory
 };
 /* }}} */
+#endif

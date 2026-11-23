@@ -1,5 +1,5 @@
 /* The coroutine Firebird calls crates/firebird exports (--with-swoole-firebird),
- * and the macros that point the bundled pdo_firebird driver at them. The driver
+ * and the macros that point the pdo_firebird driver (firebird_*.c) at them. The driver
  * includes this first. */
 #ifndef PHP_SWOOLE_FIREBIRD_H
 #define PHP_SWOOLE_FIREBIRD_H
@@ -7,7 +7,7 @@
 #ifdef SW_USE_FIREBIRD
 BEGIN_EXTERN_C()
 #include "ext/pdo/php_pdo_driver.h"
-#include "thirdparty/pdo_firebird/php_pdo_firebird_int.h"
+#include "php_pdo_firebird_int.h"
 ISC_STATUS swoole_isc_attach_database(ISC_STATUS *, short, const ISC_SCHAR *, isc_db_handle *, short, const ISC_SCHAR *);
 ISC_STATUS swoole_isc_detach_database(ISC_STATUS *, isc_db_handle *);
 ISC_STATUS swoole_isc_dsql_execute(ISC_STATUS *, isc_tr_handle *, isc_stmt_handle *, unsigned short, const XSQLDA *);

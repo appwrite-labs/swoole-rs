@@ -96,7 +96,7 @@ unsafe extern "C" {
     safe fn isc_decode_timestamp(timestamp: &ISC_TIMESTAMP, tm: &mut libc::tm);
 }
 
-// pdo_firebird_utils.cpp's helpers over Firebird 4's `IUtil`, which it defines
+// pdo_firebird_utils.cc's helpers over Firebird 4's `IUtil`, which it defines
 // only when built against a Firebird 4 ibase.h.
 #[cfg(fb_api_40)]
 unsafe extern "C" {
@@ -873,7 +873,10 @@ fn execute(dbh: &Dbh, stmt: &Stmt) -> bool {
     }
     swr_firebird_cursor_reset(stmt);
     swr_firebird_alloc_output(stmt);
-    let kind = u32::from(swr_firebird_statement_type(stmt).cast_unsigned());
+    // Through its byte: `c_char` is unsigned on some targets.
+    let kind = u32::from(u8::from_ne_bytes(
+        swr_firebird_statement_type(stmt).to_ne_bytes(),
+    ));
     let tr = swr_firebird_tr(dbh);
     let failed = if kind == isc_info_sql_stmt_exec_procedure {
         swoole_isc_dsql_execute2(
