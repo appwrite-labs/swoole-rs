@@ -719,56 +719,9 @@ static int pdo_firebird_stmt_param_hook(pdo_stmt_t *stmt, struct pdo_bound_param
 }
 /* }}} */
 
-static int pdo_firebird_stmt_set_attribute(pdo_stmt_t *stmt, zend_long attr, zval *val) /* {{{ */
-{
-	pdo_firebird_stmt *S = (pdo_firebird_stmt*)stmt->driver_data;
-
-	switch (attr) {
-		default:
-			return 0;
-#if PHP_VERSION_ID >= 80500
-		case PDO_ATTR_CURSOR_NAME: {
-			zend_string *str_val = zval_try_get_string(val);
-			if (str_val == NULL) {
-				return 0;
-			}
-			// TODO Check cursor name does not have null bytes?
-			if (ZSTR_LEN(str_val) >= sizeof(S->name)) {
-				zend_value_error("Cursor name must not be longer than %zu bytes", sizeof(S->name) - 1);
-				zend_string_release(str_val);
-				return 0;
-			}
-
-			if (isc_dsql_set_cursor_name(S->H->isc_status, &S->stmt, ZSTR_VAL(str_val), 0)) {
-				php_firebird_error_stmt(stmt);
-				zend_string_release(str_val);
-				return 0;
-			}
-			/* Include trailing nul byte */
-			memcpy(S->name, ZSTR_VAL(str_val), ZSTR_LEN(str_val) + 1);
-			zend_string_release(str_val);
-			break;
-		}
-#else
-		case PDO_ATTR_CURSOR_NAME:
-			if (!try_convert_to_string(val)) {
-				return 0;
-			}
-
-			if (isc_dsql_set_cursor_name(S->H->isc_status, &S->stmt, Z_STRVAL_P(val),0)) {
-				php_firebird_error_stmt(stmt);
-				return 0;
-			}
-			strlcpy(S->name, Z_STRVAL_P(val), sizeof(S->name));
-			break;
-#endif
-	}
-	return 1;
-}
-/* }}} */
-
-/* The cursor-name read and the cursor closer are Rust (crates/firebird/src/statement.rs);
+/* The cursor's naming, name and closer are Rust (crates/firebird/src/statement.rs);
  * they reach the statement record through these. */
+bool swr_firebird_stmt_set_attribute(pdo_stmt_t *stmt, zend_long attr, zval *val);
 int pdo_firebird_stmt_get_attribute(pdo_stmt_t *stmt, zend_long attr, zval *val);
 bool swr_firebird_cursor_close(pdo_stmt_t *stmt);
 
@@ -792,12 +745,24 @@ bool swr_firebird_cursor_open(pdo_stmt_t *stmt)
 	return ((pdo_firebird_stmt *)stmt->driver_data)->cursor_open;
 }
 
+void swr_firebird_cursor_named(pdo_stmt_t *stmt, const char *name)
+{
+	pdo_firebird_stmt *S = (pdo_firebird_stmt *)stmt->driver_data;
+	strlcpy(S->name, name, sizeof(S->name));
+}
+
 void swr_firebird_cursor_closed(pdo_stmt_t *stmt)
 {
 	pdo_firebird_stmt *S = (pdo_firebird_stmt *)stmt->driver_data;
 	*S->name = 0;
 	S->cursor_open = 0;
 }
+
+static int pdo_firebird_stmt_set_attribute(pdo_stmt_t *stmt, zend_long attr, zval *val) /* {{{ */
+{
+	return swr_firebird_stmt_set_attribute(stmt, attr, val);
+}
+/* }}} */
 
 static int pdo_firebird_stmt_cursor_closer(pdo_stmt_t *stmt) /* {{{ */
 {

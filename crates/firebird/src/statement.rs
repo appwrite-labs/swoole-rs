@@ -11,16 +11,18 @@ use swoole_rs_firebird_sys::ibase::{
     ISC_TIMESTAMP, SQL_BOOLEAN, SQL_DOUBLE, SQL_FLOAT, SQL_INT64, SQL_LONG, SQL_SHORT, SQL_TEXT,
     SQL_TIMESTAMP, SQL_TYPE_DATE, SQL_TYPE_TIME, SQL_VARYING, XSQLVAR,
 };
-use swoole_rs_firebird_sys::{Handle, Status, ibase::DSQL_close};
+use swoole_rs_firebird_sys::{Bytes, Handle, Status, ibase::DSQL_close};
 use swoole_rs_zend::pdo::{Attribute, Dbh, Slot, Stmt};
-use swoole_rs_zend::sys::{pdo_attribute_type_PDO_ATTR_CURSOR_NAME as CURSOR_NAME, zend_long};
+use swoole_rs_zend::sys::{
+    PHP_VERSION_ID, pdo_attribute_type_PDO_ATTR_CURSOR_NAME as CURSOR_NAME, zend_long,
+};
 
-use crate::swoole_isc_dsql_free_statement;
+use crate::{swoole_isc_dsql_free_statement, swoole_isc_dsql_set_cursor_name};
 use swoole_rs_zend::sys::{
     pdo_column_data, pdo_param_type_PDO_PARAM_BOOL as PARAM_BOOL,
     pdo_param_type_PDO_PARAM_INT as PARAM_INT, pdo_param_type_PDO_PARAM_STR as PARAM_STR,
 };
-use swoole_rs_zend::{Owned, OwnedArray, ZString};
+use swoole_rs_zend::{Owned, OwnedArray, Value, ZString, value_error};
 
 unsafe extern "C" {
     /// The connection's date (0), time (1) or timestamp (2) format, or its
@@ -37,6 +39,8 @@ unsafe extern "C" {
     safe fn swr_firebird_cursor_name(stmt: &Stmt) -> Text<'_>;
     safe fn swr_firebird_cursor_open(stmt: &Stmt) -> bool;
     safe fn swr_firebird_cursor_closed(stmt: &Stmt);
+    /// The cursor's name set to `name`'s first 31 bytes (`strlcpy`).
+    safe fn swr_firebird_cursor_named(stmt: &Stmt, name: Text<'_>);
     /// fbclient's decoders: a `DATE`, `TIME` or `TIMESTAMP` into the `tm`.
     safe fn isc_decode_sql_date(date: &i32, tm: &mut libc::tm);
     safe fn isc_decode_sql_time(time: &u32, tm: &mut libc::tm);
@@ -290,5 +294,49 @@ pub extern "C" fn swr_firebird_cursor_close(stmt: &Stmt) -> bool {
         return false;
     }
     swr_firebird_cursor_closed(stmt);
+    true
+}
+
+/// The longest cursor name the statement keeps (`sizeof(S->name) - 1`).
+const CURSOR_NAME_MAX: usize = 31;
+
+/// `pdo_firebird_stmt_set_attribute`: `PDO_ATTR_CURSOR_NAME` names the
+/// statement's cursor, a `null` value as the empty name. From PHP 8.5 a name of
+/// 32 bytes or more is a `ValueError`; before, it is kept to its first 31. False for any other
+/// attribute, or with the error recorded on the statement.
+#[unsafe(no_mangle)]
+pub extern "C" fn swr_firebird_stmt_set_attribute(
+    stmt: &Stmt,
+    attr: zend_long,
+    val: Option<&Value>,
+) -> bool {
+    if u32::try_from(attr) != Ok(CURSOR_NAME) {
+        return false;
+    }
+    // PDO passes no value for `null`, whose string is the empty name.
+    let name = match val {
+        Some(val) => match val.try_string() {
+            Some(name) => name,
+            None => return false,
+        },
+        None => ZString::empty(),
+    };
+    if PHP_VERSION_ID >= 80500 && name.bytes().len() > CURSOR_NAME_MAX {
+        value_error(c"Cursor name must not be longer than 31 bytes");
+        return false;
+    }
+    let dbh = swr_firebird_stmt_dbh(stmt);
+    let text = name.c_str();
+    if swoole_isc_dsql_set_cursor_name(
+        swr_firebird_status(dbh),
+        swr_firebird_stmt_handle(stmt),
+        Bytes::from_c_str(text),
+        0,
+    ) != 0
+    {
+        crate::error::status_error(dbh, Some(stmt));
+        return false;
+    }
+    swr_firebird_cursor_named(stmt, text.into());
     true
 }
