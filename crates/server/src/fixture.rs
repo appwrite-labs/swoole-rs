@@ -80,7 +80,7 @@ impl LiveServer {
         let mut record = SocketRecord::with_fd(fd, FD_STREAM_SERVER);
         record.socket_type = SOCK_TCP;
         record.note_nonblocking(true);
-        record.object = (&raw mut *settings).cast();
+        record.attach_object(&raw mut *settings);
         let listener = record.into_raw();
         settings.r#type = SOCK_TCP;
         // SAFETY: the record just boxed, which the port frees with the state.

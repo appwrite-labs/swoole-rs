@@ -28,7 +28,10 @@ pub(crate) fn accept(serv: view::Server<'_>, reactor: Reactor, event: &Event) {
         return;
     };
     // A listening socket's object is its port.
-    let Some(port) = serv.state().listed_port(listener.read(|l| l.object)) else {
+    let Some(port) = serv
+        .state()
+        .listed_port(listener.read(swoole_rs_corebase::reactor::SocketFields::attached_object))
+    else {
         return;
     };
     for _ in 0..ACCEPT_MAX_COUNT {
@@ -175,7 +178,7 @@ pub fn add<'a>(
     let buffer_size = ls.socket_buffer_size.get().cast_unsigned();
     let socket = sock.socket();
     socket.edit(|s| {
-        s.object = conn.as_ptr().cast();
+        s.attach_object(conn.as_ptr());
         s.removed = true;
         s.limit_output(buffer_size);
         s.clear_io_timeouts();
@@ -564,8 +567,8 @@ mod tests {
             assert!(s.direct_send, "plain sockets send directly");
             assert_eq!(s.chunk_size, SW_SEND_BUFFER_SIZE, "chunked");
             assert_eq!(
-                s.object,
-                conn.as_ptr().cast(),
+                s.attached_object(),
+                conn.as_ptr(),
                 "the socket names its connection"
             );
         });

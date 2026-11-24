@@ -608,7 +608,7 @@ impl Handle<'_> {
 /// free is deferred past the call: as for the reactor handlers below, the socket's
 /// kind is what makes its object a client.
 fn on_package(_: *const Protocol, socket: Socket<'_>, mut package: Package<'_>) -> bool {
-    let client = Handle::raw(socket.read(|socket| socket.object).cast());
+    let client = Handle::raw(socket.read(SocketFields::attached_object));
     if let Some(listener) = client.listener(ClientEvent::Receive) {
         let payload = listener.payload(package.bytes());
         (listener.notify)(Notification::Receive(payload));
@@ -619,7 +619,7 @@ fn on_package(_: *const Protocol, socket: Socket<'_>, mut package: Package<'_>) 
 /// The client of the reactor event's socket, None without a socket.
 fn event_client(event: &Event) -> Option<Handle<'static>> {
     let socket = event.socket()?;
-    Some(Handle::raw(socket.read(|socket| socket.object).cast()))
+    Some(Handle::raw(socket.read(SocketFields::attached_object)))
 }
 
 fn on_stream_read(_: Running<'_>, event: &mut Event) -> bool {
@@ -755,7 +755,7 @@ fn create_with(kind: c_int, is_async: bool, socket_ops: &'static SocketOps) -> O
     let client = Rc::as_ptr(&own).cast_mut();
     Handle::raw(client)
         .socket()
-        .edit(|record| record.object = client.cast());
+        .edit(|record| record.attach_object(client));
     Some(Owner {
         client,
         own: Cell::new(Some(own)),
@@ -810,8 +810,7 @@ impl Drop for Owner {
         let is_async = this.flag(Flag::Async);
         if is_async {
             // A cleared object tells a close in progress that the client is gone.
-            this.socket()
-                .edit(|socket| socket.object = core::ptr::null_mut());
+            this.socket().edit(SocketFields::detach_object);
         }
         drop(this.get().framing.length_owner.take());
         // Only the owner holds the client.
@@ -965,7 +964,7 @@ pub fn close(this: Handle<'_>) -> bool {
     }
     // The saved record's free is deferred past this call.
     saved
-        .edit(|socket| (!socket.object.is_null()).then(|| socket.close_descriptor()))
+        .edit(|socket| socket.has_object().then(|| socket.close_descriptor()))
         .unwrap_or(true)
 }
 
@@ -1840,7 +1839,7 @@ fn on_read(this: Handle<'_>) -> bool {
             crate::framing_recv::client_receive(client, socket, buffer, eof)
         });
         // A destroyed client cleared its object.
-        let released = socket.read(|socket| socket.object.is_null());
+        let released = !socket.read(SocketFields::has_object);
         if !received && !released && !this.flag(Flag::Closed) {
             close(this);
         }

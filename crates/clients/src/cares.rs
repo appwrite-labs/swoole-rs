@@ -16,7 +16,7 @@ use std::{
 use swoole_rs_cares_sys::{self as sdk, swrs_cares_metadata as metadata};
 use swoole_rs_corebase::constants::{FdType, SW_DNS_SERVER_PORT};
 use swoole_rs_corebase::log;
-use swoole_rs_corebase::reactor::{Event, Events, Running, SocketRecord, event_api};
+use swoole_rs_corebase::reactor::{Event, Events, Running, SocketFields, SocketRecord, event_api};
 use swoole_rs_corebase::sys::Text;
 use swoole_rs_corebase::tls::event_socket::EventSocket;
 use swoole_rs_corebase::{CCast, CellExt, Hostent};
@@ -155,7 +155,7 @@ fn process(event: &Event, write: bool) -> bool {
         return false;
     };
     // A wrapper's object is its query's id (`socket_state` sets it).
-    let Some(query) = registered(socket.read(|socket| socket.object)) else {
+    let Some(query) = registered(socket.read(SocketFields::attached_object)) else {
         return false;
     };
     // A wrapper is registered only by the channel's callback, so the channel is set.
@@ -219,7 +219,7 @@ extern "C" fn socket_state(data: *mut c_void, fd: i32, readable: i32, writable: 
             };
         } else {
             let wrapper = EventSocket::adopt(Box::new(SocketRecord::with_fd(fd, FD)));
-            wrapper.socket().edit(|wrapper| wrapper.object = data);
+            wrapper.socket().edit(|wrapper| wrapper.attach_object(data));
             _ = wrapper.add(events);
             sockets.push((fd, wrapper));
         }
