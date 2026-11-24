@@ -39,11 +39,11 @@ Deliberate fixes relative to upstream:
   that was never made. Upstream leaked the attribute and allocation.
 - Attribute init and shared-attribute setup return their first error instead of
   continuing into lock init. Failed setup releases the initialized attribute.
-- `Thread\Lock`'s mutex (`Lock::unowned_mutex`) is one futex word on Linux, not a
-  pthread mutex: it has no owner, so a thread may unlock what another locked, as the
-  thread lock tests do, and that unlock orders the threads for ThreadSanitizer. Lock,
-  try-lock (`EBUSY`), timed lock (`ETIMEDOUT`) and unlock results are a default
-  pthread mutex's. Other platforms keep the private pthread mutex.
+- `Thread\Lock` permits one thread to release a lock acquired by another.
+  Linux uses a single futex word. macOS guards a held flag with a Rust mutex
+  and wakes a waiting thread with a condition variable when the flag clears.
+  On both platforms a busy try-lock returns `EBUSY` and a timed-out wait
+  returns `ETIMEDOUT`.
 
 ## Barrier
 
