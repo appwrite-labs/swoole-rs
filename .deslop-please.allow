@@ -57,11 +57,8 @@ field-leak swoole_rs_corebase::reactor::reactor_state::ReactorState::handlers
 field-leak swoole_rs_corebase::reactor::reactor_state::ReactorState::registry
 field-leak swoole_rs_corebase::reactor::reactor_state::ReactorState::running_defer
 field-leak swoole_rs_corebase::reactor::socket::SocketMarks::reactor
-field-leak swoole_rs_corebase::reactor::socket_record::SocketFields::cloexec
 field-leak swoole_rs_corebase::reactor::socket_record::SocketFields::close_notified
-field-leak swoole_rs_corebase::reactor::socket_record::SocketFields::direct_send
 field-leak swoole_rs_corebase::reactor::socket_record::SocketFields::dont_restart
-field-leak swoole_rs_corebase::reactor::socket_record::SocketFields::enable_tcp_nodelay
 field-leak swoole_rs_corebase::reactor::socket_record::SocketFields::event_hup
 field-leak swoole_rs_corebase::reactor::socket_record::SocketFields::events
 field-leak swoole_rs_corebase::reactor::socket_record::SocketFields::fd
@@ -75,8 +72,6 @@ field-leak swoole_rs_corebase::reactor::socket_record::SocketFields::recv_wait
 field-leak swoole_rs_corebase::reactor::socket_record::SocketFields::removed
 field-leak swoole_rs_corebase::reactor::socket_record::SocketFields::silent_remove
 field-leak swoole_rs_corebase::reactor::socket_record::SocketFields::skip_recv
-field-leak swoole_rs_corebase::reactor::socket_record::SocketFields::tcp_nodelay
-field-leak swoole_rs_corebase::reactor::socket_record::SocketFields::tcp_nopush
 field-leak swoole_rs_corebase::reactor::socket_record::SocketFields::tls
 field-leak swoole_rs_corebase::reactor::socket_record::SocketRecord::fields
 field-leak swoole_rs_corebase::resolver_request::ResolverRequest::fields

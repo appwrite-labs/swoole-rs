@@ -92,6 +92,29 @@ impl SocketFields {
         self.output.out_buffer.is_some()
     }
 
+    /// Sends on a plaintext connection may skip the output queue when nothing waits in
+    /// it (`direct_send`).
+    #[inline]
+    pub const fn allow_direct_send(&mut self) {
+        self.direct_send = true;
+    }
+
+    /// Whether a send may go straight to the kernel: direct sends are allowed and
+    /// nothing is queued ahead.
+    #[inline]
+    #[must_use]
+    pub fn may_send_directly(&self) -> bool {
+        self.direct_send && self.output_drained()
+    }
+
+    /// Whether a write may go straight to the kernel before any queue exists: direct
+    /// sends are allowed, there is no TLS session and no output queue.
+    #[inline]
+    #[must_use]
+    pub fn may_write_directly(&self) -> bool {
+        self.direct_send && self.ssl().is_null() && !self.has_output_queue()
+    }
+
     /// `Buffer::empty(out_buffer)`: nothing is queued, with or without a queue.
     #[inline]
     #[must_use]
