@@ -963,6 +963,9 @@ fn headers(
         };
         block = kept;
     }
+    session
+        .remaining_headers
+        .set(Some(swoole_rs_http2::max_headers()));
     header_block(session, &stream, flags, block)
 }
 
@@ -982,6 +985,11 @@ fn header_block(session: &Session, stream: &Stream, flags: u32, payload: &[u8]) 
         return true;
     }
     session.header_stream_id.set(0);
+    if session.remaining_headers.get().is_none() {
+        const ENHANCE_YOUR_CALM: u32 = 11;
+        reset(stream.ctx(), stream.id, ENHANCE_YOUR_CALM);
+        return session.remove(stream.id);
+    }
     if !discard && !headers_complete(stream) {
         return false;
     }
@@ -1193,10 +1201,15 @@ fn parse_header(
         input = rest;
         let inflate_flags = step.flags();
         // Trailers are decoded for the HPACK table but never exposed or acted on.
-        if let Some((name, value)) = step.header.filter(|_| !discard)
-            && !request_header(session, stream, name, value)
-        {
-            continue;
+        if let Some((name, value)) = step.header {
+            let remaining = session
+                .remaining_headers
+                .get()
+                .and_then(|n| n.checked_sub(1));
+            session.remaining_headers.set(remaining);
+            if remaining.is_some() && !discard && !request_header(session, stream, name, value) {
+                continue;
+            }
         }
         let step = sw_rs_http2_inflate_step(inflate_flags, input.len(), false);
         if step.end_headers {

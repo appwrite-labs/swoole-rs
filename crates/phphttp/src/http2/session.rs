@@ -76,6 +76,7 @@ pub(crate) struct SessionState {
     /// The stream whose header block awaits CONTINUATION frames (0: none),
     /// and whether that block's HEADERS frame ended the stream.
     pub(crate) header_stream_id: Cell<u32>,
+    pub(crate) remaining_headers: Cell<Option<u32>>,
     pub(crate) header_end_stream: Cell<bool>,
     pub(crate) shutting_down: Cell<bool>,
     /// The connection's context: frames that belong to no stream go out on it.
@@ -148,6 +149,7 @@ impl SessionState {
             max_body_size,
             last_stream_id: Cell::new(0),
             header_stream_id: Cell::new(0),
+            remaining_headers: Cell::new(None),
             header_end_stream: Cell::new(false),
             shutting_down: Cell::new(false),
             default_ctx,
