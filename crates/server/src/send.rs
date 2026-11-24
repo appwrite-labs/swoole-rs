@@ -136,10 +136,8 @@ fn write_now(
         return None;
     }
     let socket = conn.socket()?;
-    let (fd, dont_restart) = socket.read(|s| {
-        (s.direct_send && s.ssl().is_null() && !s.has_output_queue())
-            .then_some((s.fd, s.dont_restart))
-    })?;
+    let (fd, dont_restart) =
+        socket.read(|s| s.may_write_directly().then_some((s.fd, s.dont_restart)))?;
     let sent = count_write(*socket, dont_restart, || write(fd), steady_ms);
     Some((conn, sent))
 }
@@ -276,8 +274,13 @@ fn to_connection(serv: Server<'_>, info: &DataHead, data: &[u8], first: Option<i
         };
     }
     let (mut data, file) = (data, kind == Some(ServerEvent::SendFile));
-    let (out_empty, unbuffered, direct) =
-        sock.read(|s| (s.output_drained(), !s.has_output_queue(), s.direct_send));
+    let (out_empty, unbuffered, direct) = sock.read(|s| {
+        (
+            s.output_drained(),
+            !s.has_output_queue(),
+            s.may_send_directly(),
+        )
+    });
     if out_empty {
         if close {
             crate::conn_io::close_connection(serv, reactor, Some(sock));

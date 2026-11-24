@@ -629,9 +629,16 @@ impl SocketFields {
     /// descriptor is nonblocking and close-on-exec as `flags` says.
     #[inline]
     pub fn open_as(&mut self, socket_type: c_int, flags: SocketFlag) {
+        self.note_fd_flags(flags);
+        self.socket_type = socket_type;
+    }
+
+    /// The descriptor was opened nonblocking and close-on-exec as `flags` says, as
+    /// `socket(2)` or `accept4(2)` opened it.
+    #[inline]
+    pub fn note_fd_flags(&mut self, flags: SocketFlag) {
         self.output.nonblock = flags.contains(SocketFlag::SW_SOCK_NONBLOCK);
         self.cloexec = flags.contains(SocketFlag::SW_SOCK_CLOEXEC);
-        self.socket_type = socket_type;
     }
 
     /// A socket of `kind`, and its address one of `kind` too, as a socket adopted
@@ -705,6 +712,14 @@ impl SocketFields {
         // Upstream's 1-bit field keeps the int's low bit.
         self.tcp_nodelay = nodelay & 1 != 0;
         true
+    }
+
+    /// A port's `open_tcp_nodelay`: `TCP_NODELAY` on, and kept on across corks, as
+    /// `uncork` restores it. False when setsockopt(2) failed; it is kept either way.
+    pub fn keep_tcp_nodelay(&mut self) -> bool {
+        let set = self.set_tcp_nodelay(1);
+        self.enable_tcp_nodelay = true;
+        set
     }
 
     /// `socket_free_defer`'s descriptor work: a bound Unix socket's path is unlinked

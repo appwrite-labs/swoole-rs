@@ -777,15 +777,7 @@ impl CoSocket {
 
 /// `Socket::set_nonblock`: the `fd_option` warnings, shifted for the result.
 fn set_nonblock(network: Socket<'_>) -> u32 {
-    let result =
-        swoole_rs_corebase::reactor::swr_v1_socket_fd_option(network.fd(), Some(true), None);
-    if result.ok {
-        network.edit(|record| {
-            record.note_nonblocking(true);
-            record.cloexec = true;
-        });
-    }
-    result.warnings << FD_WARNINGS_SHIFT
+    network.edit(SocketFields::set_nonblock).warnings << FD_WARNINGS_SHIFT
 }
 
 #[cfg(test)]

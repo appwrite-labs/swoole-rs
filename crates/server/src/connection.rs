@@ -9,7 +9,7 @@ use swoole_rs_corebase::constants::{
     SW_MAX_CONNECTION as MAX_CONNECTION, SW_SESSION_LIST_SIZE as SESSION_LIST_SIZE, SocketType,
     SocketTypeCode,
 };
-use swoole_rs_corebase::reactor::{Event, Heap, OwnedSocket};
+use swoole_rs_corebase::reactor::{Event, Heap, OwnedSocket, SocketFields};
 use swoole_rs_corebase::{CCast, log};
 use swoole_rs_error::ErrorCode as E;
 
@@ -186,14 +186,11 @@ pub fn add<'a>(
 
     let listener = ls.listening_socket();
     let tcp = listener.is_some_and(|l| l.read(swoole_rs_corebase::reactor::SocketFields::is_tcp));
-    if ls.open_tcp_nodelay.get() && tcp {
-        if !socket.edit(|s| s.set_tcp_nodelay(1)) {
-            log::sys_warning(
-                c"Server::add_connection",
-                format_args!("setsockopt(TCP_NODELAY) failed"),
-            );
-        }
-        socket.edit(|s| s.enable_tcp_nodelay = true);
+    if ls.open_tcp_nodelay.get() && tcp && !socket.edit(SocketFields::keep_tcp_nodelay) {
+        log::sys_warning(
+            c"Server::add_connection",
+            format_args!("setsockopt(TCP_NODELAY) failed"),
+        );
     }
     // Upstream sets the buffer sizes on the listening socket.
     let listen_fd = listener.map_or(-1, |listener| listener.fd());
@@ -218,7 +215,7 @@ pub fn add<'a>(
         }
     }
     if !ls.ssl {
-        socket.edit(|s| s.direct_send = true);
+        socket.edit(SocketFields::allow_direct_send);
     }
     init(serv, conn, ls, sock, server_fd, reactor_id);
 

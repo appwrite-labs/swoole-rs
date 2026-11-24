@@ -191,6 +191,12 @@ impl SocketFields {
         result
     }
 
+    /// `Socket::set_nonblock`: `set_fd_option(1, -1)`, which, as upstream, also
+    /// records close-on-exec when it succeeds.
+    pub fn set_nonblock(&mut self) -> crate::reactor::SocketOptionResult {
+        self.set_fd_option(1, -1)
+    }
+
     /// `_set_timeout`: `SO_SNDTIMEO` (`send`) or `SO_RCVTIMEO`, then the record's write
     /// or read timeout, when the kernel took it.
     pub fn set_kernel_timeout(&mut self, send: bool, timeout: f64) -> bool {
