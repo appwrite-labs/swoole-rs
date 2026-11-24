@@ -987,6 +987,10 @@ fn header_block(session: &Session, stream: &Stream, flags: u32, payload: &[u8]) 
     session.header_stream_id.set(0);
     if session.remaining_headers.get().is_none() {
         const ENHANCE_YOUR_CALM: u32 = 11;
+        let mut reset_ids = session.recently_reset.get();
+        reset_ids.rotate_right(1);
+        reset_ids[0] = stream.id;
+        session.recently_reset.set(reset_ids);
         reset(stream.ctx(), stream.id, ENHANCE_YOUR_CALM);
         return session.remove(stream.id);
     }
@@ -1116,6 +1120,10 @@ fn settings(session: &Session, payload: &[u8]) -> bool {
 /// request at the end of the stream.
 fn data(session: &Session, stream_id: u32, flags: u32, payload: &[u8]) -> bool {
     let Some(stream) = session.stream(stream_id, false) else {
+        if stream_id != 0 && session.recently_reset.get().contains(&stream_id) {
+            connection_flow(session, session.default_ctx(), payload.len());
+            return true;
+        }
         log(
             LOG_WARNING,
             STREAM_NOT_FOUND,
@@ -1148,19 +1156,24 @@ fn data(session: &Session, stream_id: u32, flags: u32, payload: &[u8]) -> bool {
 /// Flow control: debit both receive windows, and reopen each once a quarter
 /// remains.
 fn flow(session: &Session, stream: &Stream, ctx: Ctx, stream_id: u32, length: usize) {
+    connection_flow(session, ctx, length);
     let initial = session.local(INIT_WINDOW_SIZE);
-    let connection = window(session.local_window_size.get(), length, initial, false);
-    session.local_window_size.set(connection.value);
     let debited = window(stream.local_window_size.get(), length, 0, false).value;
     stream.local_window_size.set(debited);
-    if connection.increment != 0 {
-        window_update(ctx, 0, connection.increment);
-        session.local_window_size.set(initial);
-    }
     let reopen = window(debited, 0, initial, false);
     if reopen.increment != 0 {
         window_update(ctx, stream_id, reopen.increment);
         stream.local_window_size.set(initial);
+    }
+}
+
+fn connection_flow(session: &Session, ctx: Ctx, length: usize) {
+    let initial = session.local(INIT_WINDOW_SIZE);
+    let connection = window(session.local_window_size.get(), length, initial, false);
+    session.local_window_size.set(connection.value);
+    if connection.increment != 0 {
+        window_update(ctx, 0, connection.increment);
+        session.local_window_size.set(initial);
     }
 }
 
