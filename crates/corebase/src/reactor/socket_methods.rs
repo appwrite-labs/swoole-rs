@@ -296,18 +296,9 @@ impl SocketFields {
 }
 
 /// An idle timer taken off a socket ([`SocketFields::disarm_recv_timer`]), deleted
-/// once the socket's borrow has ended.
+/// once the socket's borrow has ended (`delete`, with the timers).
 #[must_use]
-pub struct DisarmedTimer(Option<crate::timer_key::Held>);
-
-impl DisarmedTimer {
-    /// Deletes the timer, if the socket had one.
-    pub fn delete(self) {
-        if let Some(timer) = self.0 {
-            crate::timer::del_id(timer);
-        }
-    }
-}
+pub struct DisarmedTimer(pub(crate) Option<crate::timer_key::Held>);
 
 /// The receive side between readable events: the reader's buffer, the receive idle
 /// timer, and the framing loop's wait and skip.
