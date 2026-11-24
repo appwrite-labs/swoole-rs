@@ -661,7 +661,7 @@ impl Default for ClientWebSocket {
             frames: Cell::new(0),
             mask: Cell::new(true),
             compression: Cell::new(false),
-            message: Cell::new(None),
+            message: Cell::new(Assembly::Idle),
         }
     }
 }
@@ -740,7 +740,13 @@ pub struct Message {
 
 /// Where a message being assembled lives: a context's `ws_buffer`, or a
 /// client's `continue_frame_buffer` (null when none).
-pub type Assembly = Option<Box<Message>>;
+#[derive(Default)]
+pub enum Assembly {
+    #[default]
+    Idle,
+    Collecting(Box<Message>),
+    Discarding,
+}
 
 /// `websocket::send_frame`: answer a control frame the user did not ask for.
 fn reply(settings: u8, socket: co::Co, opcode: u8, payload: &[u8]) {
@@ -841,14 +847,27 @@ fn receive(settings: u8, slot: &mut Assembly, socket: co::Co, packet: &mut [u8])
         let payload = Owned::string(ZString::new(payload));
         return Next::Done(deliver(opcode.code(), payload, FLAG_FIN));
     }
+    if opcode == Opcode::Continuation && matches!(slot, Assembly::Discarding) {
+        if frame.flags.is_final() {
+            *slot = Assembly::Idle;
+        }
+        return Next::Recv;
+    }
     if opcode == Opcode::Continuation || !frame.flags.is_final() {
         let limit = socket.edit_protocol(|protocol| protocol.package_max_length as usize);
-        let assembled = slot.as_ref().map_or(0, |message| message.data.len());
+        let assembled = match slot {
+            Assembly::Collecting(message) => message.data.len(),
+            _ => 0,
+        };
         if assembled
             .checked_add(payload.len())
             .is_none_or(|len| len > limit)
         {
-            *slot = None;
+            *slot = if frame.flags.is_final() {
+                Assembly::Idle
+            } else {
+                Assembly::Discarding
+            };
             log::set_last_error(
                 swoole_rs_error::ErrorCode::SW_ERROR_PACKAGE_LENGTH_TOO_LARGE as c_int,
             );
@@ -856,7 +875,7 @@ fn receive(settings: u8, slot: &mut Assembly, socket: co::Co, packet: &mut [u8])
         }
     }
     if opcode == Opcode::Continuation {
-        let Some(message) = slot.as_mut() else {
+        let Assembly::Collecting(message) = slot else {
             warning(
                 func,
                 "A continuation frame cannot stand alone and MUST be preceded by an initial frame whose \
@@ -869,7 +888,7 @@ fn receive(settings: u8, slot: &mut Assembly, socket: co::Co, packet: &mut [u8])
             return Next::Recv;
         }
         // The whole message is assembled: release its memory once delivered.
-        let Some(message) = slot.take() else {
+        let Assembly::Collecting(message) = std::mem::take(slot) else {
             return Next::Done(Owned::null());
         };
         let complete = message.metadata;
@@ -879,7 +898,7 @@ fn receive(settings: u8, slot: &mut Assembly, socket: co::Co, packet: &mut [u8])
         let flags = complete.flags.with_final().bits();
         return Next::Done(deliver(complete.opcode.code(), payload, flags));
     }
-    if slot.is_some() {
+    if !matches!(slot, Assembly::Idle) {
         warning(
             func,
             "All fragments of a message, except for the initial frame, must use the continuation \
@@ -893,7 +912,7 @@ fn receive(settings: u8, slot: &mut Assembly, socket: co::Co, packet: &mut [u8])
         };
         return Next::Done(deliver(opcode.code(), payload, frame.flags.bits()));
     }
-    *slot = Some(Box::new(Message {
+    *slot = Assembly::Collecting(Box::new(Message {
         data: payload.to_vec(),
         metadata: FrameMetadata {
             opcode,
