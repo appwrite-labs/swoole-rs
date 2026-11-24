@@ -236,7 +236,7 @@ fn create() -> *mut AsyncThreads {
         return ptr::null_mut();
     };
     for end in [read, write] {
-        end.edit(|end| end.fd_type = FD_AIO);
+        end.edit(|end| end.dispatch_to(FD_AIO));
     }
     // The pipe owns its read end, which stays registered until `destroyed` frees the
     // pipe with the reactor.

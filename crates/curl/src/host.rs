@@ -161,7 +161,7 @@ impl ReactorSocket {
             return;
         };
         if !socket.events().is_empty() && (self.ops.event_available)() {
-            socket.socket().edit(|socket| socket.silent_remove = true);
+            socket.socket().edit(SocketFields::quiet_next_removal);
             _ = (self.ops.socket_del)(&socket);
         }
         socket.socket().edit(SocketFields::forget_descriptor);

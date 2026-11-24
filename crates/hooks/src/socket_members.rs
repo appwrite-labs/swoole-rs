@@ -58,7 +58,7 @@ fn on_ready(event: &Event, kind: Events) {
         return;
     };
     set_err(socket, 0);
-    let hup = source.read(|record| record.event_hup);
+    let hup = source.read(SocketFields::hung_up);
     if let Some(event) = ready(socket, kind, hup) {
         (ops().resume)(socket, event);
     }

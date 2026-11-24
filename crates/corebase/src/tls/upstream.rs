@@ -593,7 +593,7 @@ fn sync<S: ReadSlot>(socket: Socket<'_>, io: Io<'_, '_, S>, flags: c_int) -> Opt
     let (timeout, dont_restart) = socket.read(|record| {
         (
             record.io_timeout(event == Events::WRITE),
-            record.dont_restart,
+            record.io().dont_restart(),
         )
     });
     let mut call = Call {

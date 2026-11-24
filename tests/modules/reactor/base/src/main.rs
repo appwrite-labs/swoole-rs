@@ -730,7 +730,7 @@ unsafe fn reactor_test_func(reactor: Running<'_>) {
         let write_count: *mut c_int = Box::into_raw(Box::new(0));
         let sock2 = sock(&unsock, false);
         (*sock2).fields.attach_object(write_count);
-        (*sock2).fields.fd_type = SW_FD_STREAM;
+        (*sock2).fields.dispatch_to(SW_FD_STREAM);
 
         reactor_upstream::set_handlers(
             reactor,
@@ -841,7 +841,7 @@ unsafe fn poll_readiness_after_fd_reuse() {
             replacement_count: 0,
         }));
         for &socket in &(*state).sockets {
-            (*socket).fields.fd_type = SW_FD_STREAM;
+            (*socket).fields.dispatch_to(SW_FD_STREAM);
             (*socket).fields.attach_object(state);
         }
 

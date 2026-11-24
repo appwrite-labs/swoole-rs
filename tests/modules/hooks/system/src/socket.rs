@@ -1169,7 +1169,7 @@ fn event_hup() {
         let n = sock.recv_all(at, n);
         assert_eq!(
             sock.co()
-                .with_network(|network| network.read(|fields| fields.event_hup)),
+                .with_network(|network| network.read(swoole_rs_ffi::SocketFields::hung_up)),
             Some(true)
         );
         assert_eq!(n, 0);

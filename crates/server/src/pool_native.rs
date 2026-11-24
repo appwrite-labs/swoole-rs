@@ -40,7 +40,7 @@ use swoole_rs_corebase::memory::members::pool as mem_pool;
 use swoole_rs_corebase::reactor::event_api::{
     event_write, set_handlers, swoole_event_is_available,
 };
-use swoole_rs_corebase::reactor::{Event, Heap, Running, Socket};
+use swoole_rs_corebase::reactor::{Event, Heap, Running, Socket, SocketFields};
 use swoole_rs_corebase::timer::{
     swoole_timer_create, swoole_timer_free, swoole_timer_get_next_msec, swoole_timer_is_available,
     swoole_timer_select,
@@ -360,7 +360,7 @@ fn worker_ops(pool: Pool<'_>, worker: Record<'_>, op: Op, arg: u64) -> bool {
         }
         Op::DontRestart => {
             if let Some(pipe) = worker_pipe(worker, false) {
-                pipe.edit(|pipe| pipe.dont_restart = true);
+                pipe.edit(SocketFields::let_signals_interrupt);
             }
         }
         Op::WorkerError => {

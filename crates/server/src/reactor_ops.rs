@@ -45,7 +45,7 @@ pub(crate) fn valid(conn: Option<Connection<'_>>) -> bool {
         return false;
     };
     conn.socket()
-        .is_some_and(|socket| socket.read(|s| s.fd_type == FD_SESSION))
+        .is_some_and(|socket| socket.read(|s| s.dispatches_to(FD_SESSION)))
 }
 
 /// `ReactorThread`. Its own thread writes it, so the fields it sets are cells behind a

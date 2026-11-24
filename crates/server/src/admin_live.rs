@@ -71,11 +71,12 @@ fn socket(handle: swoole_rs_corebase::reactor::Heap<'_>) -> Socket {
     let fd = handle.fd().into();
     handle.read(|s| {
         let traffic = s.traffic();
+        let (events, fd_type) = s.registration();
         Socket {
             fd,
-            events: s.events.bits().into(),
+            events: events.bits().into(),
             socket_type: s.type_code().0.into(),
-            fd_type: s.fd_type.into(),
+            fd_type: fd_type.into(),
             port: s.port().into(),
             total_recv_bytes: traffic.received,
             total_send_bytes: traffic.sent,
@@ -202,7 +203,7 @@ impl Facts for Live<'_> {
             };
             let owner = i64::from(conn.reactor_id());
             let other_worker = || worker.is_some_and(|id| owner != i64::from(id));
-            if socket.read(|s| s.fd_type) != FD_SESSION
+            if !socket.read(|s| s.dispatches_to(FD_SESSION))
                 || (mode == Mode::Process && owner != reactor_id)
                 || (mode == Mode::Base && other_worker())
             {

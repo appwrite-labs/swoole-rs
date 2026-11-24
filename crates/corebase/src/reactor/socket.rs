@@ -636,7 +636,7 @@ fn deregister(socket: Socket<'_>, mark: u32) {
     let (key, removed) = socket.read(|record| (record.registry_key(), record.removed));
     let registered = reactor.registry(|registry| registry.entry(key));
     if !removed && registered.is_some_and(|entry| entry.as_ptr() == socket.as_ptr()) {
-        socket.edit(|record| record.silent_remove = true);
+        socket.edit(SocketFields::quiet_next_removal);
         _ = crate::reactor::reactor_upstream::reactor_del(reactor, socket);
     }
     if socket.mark().load(Ordering::Relaxed) != 0 {
