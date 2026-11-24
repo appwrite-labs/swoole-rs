@@ -141,12 +141,10 @@ pub fn del_id(held: Held) {
     _ = delete_held(Some(held));
 }
 
-impl crate::reactor::DisarmedTimer {
-    /// Deletes the timer, if the socket had one.
-    pub fn delete(self) {
-        if let Some(timer) = self.0 {
-            del_id(timer);
-        }
+/// [`del_id`] of the timer a socket disarmed, if it had one.
+pub fn del_disarmed(disarmed: crate::reactor::DisarmedTimer) {
+    if let Some(timer) = disarmed.0 {
+        del_id(timer);
     }
 }
 

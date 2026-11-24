@@ -1872,7 +1872,7 @@ fn send_timeout_receive(serv: view::Server<'_>, req: &mut RecvData<'_>) -> c_int
         .socket()
         .expect("a live socket");
 
-    socket.edit(|fields| fields.disarm_recv_timer()).delete();
+    swoole_rs_ffi::del_disarmed(socket.edit(|fields| fields.disarm_recv_timer()));
     set_buffer_size(socket.fd(), 65536);
 
     check(

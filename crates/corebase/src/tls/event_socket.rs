@@ -122,7 +122,7 @@ impl EventSocket {
                     record.take_output_queue(),
                 )
             });
-            recv_timer.delete();
+            crate::timer::del_disarmed(recv_timer);
             if let Some(timer) = send_timer {
                 crate::timer::del_id(timer);
             }
