@@ -12,7 +12,7 @@ use swoole_rs_corebase::constants::{
     SW_HTTP_REQUEST_ENTITY_TOO_LARGE_PACKET, SW_HTTP_SERVICE_UNAVAILABLE_PACKET,
 };
 use swoole_rs_corebase::reactor::reactor_upstream::trigger_close_event;
-use swoole_rs_corebase::reactor::{Caught, Event, Running, Socket};
+use swoole_rs_corebase::reactor::{Caught, Event, Running, Socket, SocketFields};
 use swoole_rs_corebase::tls::upstream::{recv_append, send};
 use swoole_rs_corebase::{DataHead, WebSocketStatus, log};
 use swoole_rs_framing::recv::{Mode, Status};
@@ -31,7 +31,7 @@ struct Read<'a> {
     /// The socket's receive buffer, initialized before reading.
     recv: Box<OwnedString>,
     /// Flags read with the buffer for a port that enters framing immediately.
-    framing_flags: Option<(u32, bool)>,
+    framing_flags: Option<u32>,
     /// The connection's request once made current, taken out of its slot until a
     /// dispatch or the read's end.
     request: Option<Box<HttpRequest>>,
@@ -68,13 +68,9 @@ pub(crate) fn on_read(
     };
     let port = port.config();
     let (recv, framing_flags) = socket.edit(|s| {
-        let flags = matches!(kind, Readable::Length | Readable::Eof).then(|| {
-            (
-                framing_recv::socket_flags(s, || crate::framing_recv::paused(conn)),
-                s.skip_recv,
-            )
-        });
-        (s.recv_buffer.take(), flags)
+        let flags = matches!(kind, Readable::Length | Readable::Eof)
+            .then(|| s.framing_entry_flags(|| crate::framing_recv::paused(conn)));
+        (s.take_recv_buffer(), flags)
     });
     let recv = recv.unwrap_or_else(|| {
         let mut recv = Box::<OwnedString>::default();
@@ -111,9 +107,7 @@ pub(crate) fn on_read(
         }
     }
     if read.recv.size() > 0 {
-        read.socket.edit(|s| {
-            s.recv_buffer.get_or_insert(read.recv);
-        });
+        read.socket.edit(|s| s.keep_recv_buffer(read.recv));
     }
     *event = read.event.get();
     ok
@@ -355,7 +349,7 @@ impl Connection for Read<'_> {
     }
 
     fn skip_recv(&mut self) {
-        self.socket.edit(|s| s.skip_recv = true);
+        self.socket.edit(SocketFields::skip_next_recv);
     }
 
     #[inline]

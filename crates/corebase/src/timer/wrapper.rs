@@ -141,6 +141,13 @@ pub fn del_id(held: Held) {
     _ = delete_held(Some(held));
 }
 
+/// [`del_id`] of the timer a socket disarmed, if it had one.
+pub fn del_disarmed(disarmed: crate::reactor::DisarmedTimer) {
+    if let Some(timer) = disarmed.0 {
+        del_id(timer);
+    }
+}
+
 /// [`del_id`] without the warning when the thread has no timer.
 pub fn cancel_held(held: Held) {
     if let Some((timer, id)) = issuer(current(), held) {

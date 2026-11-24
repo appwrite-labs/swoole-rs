@@ -117,8 +117,6 @@ pub struct SocketFields {
     pub timeouts: SocketTimeouts,
     pub last_received_time: f64,
     pub last_sent_time: f64,
-    /// `Buffer *in_buffer`: owned as `output.out_buffer` is.
-    pub in_buffer: Option<Box<crate::buffer::cpp::OutputQueue>>,
     /// The session's receive buffer between readable events.
     pub recv_buffer: Option<Box<crate::buffer::string::OwnedString>>,
     /// `TimerNode *recv_timer`, held by id.
@@ -266,7 +264,6 @@ impl SocketRecord {
                 timeouts: SOCKET_DEFAULTS.timeouts(),
                 last_received_time: 0.0,
                 last_sent_time: 0.0,
-                in_buffer: None,
                 recv_buffer: None,
                 recv_timer: None,
                 total_recv_bytes: 0,
@@ -814,7 +811,6 @@ impl SocketFields {
             fields: Self {
                 output,
                 ssl: None,
-                in_buffer: None,
                 recv_buffer: None,
                 owner: None,
                 shared_owner: None,
