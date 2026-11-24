@@ -220,7 +220,10 @@ static int pdo_sqlite_stmt_get_attribute(pdo_stmt_t *stmt, zend_long attr, zval 
 static int pdo_sqlite_stmt_set_attribute(pdo_stmt_t *stmt, zend_long attr, zval *value)
 {
 	pdo_sqlite_stmt *S = stmt->driver_data;
-	return attr == PDO_SQLITE_ATTR_EXPLAIN_STATEMENT && sqlite_stmt_explain(S->stmt, value, true);
+	/* PDO passes a null pointer for a PHP null attribute. */
+	zval null_value;
+	ZVAL_NULL(&null_value);
+	return attr == PDO_SQLITE_ATTR_EXPLAIN_STATEMENT && sqlite_stmt_explain(S->stmt, value ? value : &null_value, true);
 }
 
 const struct pdo_stmt_methods swoole_sqlite_stmt_methods = {
