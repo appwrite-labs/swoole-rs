@@ -286,7 +286,11 @@ fn raw_scenario(s: &mut Script, k: usize) -> Seed {
 fn run(scenario: usize) -> String {
     let mut socket = TestSocket::new();
     let record = &mut *socket.0;
-    unsafe { (*record.socket_ptr()).fields.timeouts.read = 1.0 };
+    unsafe {
+        (*record.socket_ptr())
+            .fields
+            .set_timeout(1.0, swoole_rs_corebase::reactor::TimeoutKind::READ);
+    }
     let p = record.protocol.get_mut();
     (p.package_length_offset, p.package_length_size) = (0, 2);
     (p.package_max_length, p.package_length_type) = (16, b'N');
