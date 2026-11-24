@@ -137,7 +137,7 @@ Optional parts are build switches. Each of upstream's `configure` switches goes 
 
 | | Upstream Swoole | swoole-rs |
 | --- | --- | --- |
-| Language | C and C++ | Rust, with C glue over PHP's C API |
+| Language | C and C++ | Rust, with C and C++ glue over PHP's C API |
 | Build | `phpize`, `configure`, `make` | Cargo, through `tools/build_ext.py` |
 | PHP API | the reference | the same, generated from upstream's stubs (`tools/arginfo.py`) |
 | Upstream PHPTs | the reference | [![Upstream PHPTs passing](https://img.shields.io/endpoint?url=https%3A%2F%2Fraw.githubusercontent.com%2Fappwrite-labs%2Fswoole-rs%2Fbadges%2Fphpt.json)](https://github.com/appwrite-labs/swoole-rs/actions/workflows/merge.yml?query=branch%3Amain) |
