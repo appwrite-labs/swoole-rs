@@ -423,7 +423,7 @@ impl Co {
 
     /// Transfer the descriptor to an external owner, leaving the socket closed.
     pub fn move_fd(self) {
-        self.net(|record| record.fd = -1);
+        self.net(SocketFields::forget_descriptor);
     }
 
     pub(crate) fn descriptor(self) -> Descriptor {
@@ -816,7 +816,7 @@ fn domain_and_type(socket_type: c_int, domain: &mut c_int, kind: &mut c_int) {
 }
 
 fn release_descriptor(network: Socket<'_>) {
-    let fd = network.read(|record| record.fd);
+    let fd = network.fd();
     if fd < 0 {
         return;
     }

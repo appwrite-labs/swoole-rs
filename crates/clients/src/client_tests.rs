@@ -58,7 +58,7 @@ pub(super) mod ops {
         }
         let mut record = SocketRecord::new();
         record.socket_type = kind;
-        record.fd = -1;
+        record.forget_descriptor();
         let socket = swoole_rs_corebase::reactor::OwnedSocket::new(Box::new(record));
         mock(|m| m.socket = core::ptr::NonNull::new(socket.socket().as_ptr()));
         Some(socket)
@@ -809,7 +809,7 @@ fn public_record_defaults_and_direct_framing_writes_drive_reads() {
         peer.write_all(b"ok\n").unwrap();
         assert!(on_read(Handle::raw(client)));
         assert!(taken().contains(&"call Receive 3".to_owned()));
-        sock().fd = -1;
+        sock().forget_descriptor();
     }
     free(client);
 }

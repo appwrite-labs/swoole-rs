@@ -184,7 +184,7 @@ impl Co {
     /// failure.
     #[must_use]
     pub fn set_option(self, level: c_int, name: c_int, value: &[u8]) -> bool {
-        let fd = self.net(|record| record.fd).unwrap_or(-1);
+        let fd = self.sock_fd();
         if setsockopt(fd, level, name, value).is_err() {
             log::sys_warning(
                 c"Socket::set_option",
@@ -208,7 +208,7 @@ impl Co {
     /// `Socket::get_option(level, optname, optval)` into an `int`: `getsockopt`,
     /// warning on failure.
     pub fn get_int_option(self, level: c_int, name: c_int, value: &mut c_int) -> bool {
-        let fd = self.net(|record| record.fd).unwrap_or(-1);
+        let fd = self.sock_fd();
         if swoole_rs_corebase::sys::getsockopt(fd, level, name, value).is_err() {
             log::sys_warning(
                 c"Socket::get_option",

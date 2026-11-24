@@ -164,7 +164,7 @@ impl ReactorSocket {
             socket.socket().edit(|socket| socket.silent_remove = true);
             _ = (self.ops.socket_del)(&socket);
         }
-        socket.socket().edit(|socket| socket.fd = -1);
+        socket.socket().edit(SocketFields::forget_descriptor);
         (self.ops.socket_release)(socket);
     }
 }

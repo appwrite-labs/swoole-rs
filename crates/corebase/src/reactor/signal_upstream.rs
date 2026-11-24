@@ -141,7 +141,9 @@ mod descriptor {
         let Some(socket) = SOCKET.take() else {
             return;
         };
-        socket.socket().edit(|record| record.fd = -1);
+        socket
+            .socket()
+            .edit(crate::reactor::SocketFields::forget_descriptor);
         crate::tls::upstream::socket_free(Some(socket));
     }
 

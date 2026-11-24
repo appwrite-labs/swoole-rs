@@ -547,7 +547,20 @@ impl SocketFields {
                 _ = sys::unlink(path);
             }
         }
+        self.close_descriptor()
+    }
+
+    /// close(2) of the descriptor, once: -1 then marks it closed. False when close(2)
+    /// failed, with errno set.
+    pub fn close_descriptor(&mut self) -> bool {
         sys::close(std::mem::replace(&mut self.fd, -1)).is_ok()
+    }
+
+    /// `move_fd()` whose descriptor someone else now owns: the record lets go of it
+    /// (-1), so freeing the record leaves it open.
+    #[inline]
+    pub const fn forget_descriptor(&mut self) {
+        self.fd = -1;
     }
 
     /// `Socket::dup`: a copy of every field but the buffers and the SSL, which stay this

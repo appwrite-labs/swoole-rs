@@ -259,7 +259,10 @@ pub(crate) fn apply(cli: Cli<'_>, settings: &Array) -> Option<bool> {
     if options.truthy("open_tcp_nodelay").unwrap_or(true)
         && let Some(socket) = cli.net()
     {
-        let (tcp, fd) = socket.read(|record| (record.is_tcp(), record.fd));
+        let (tcp, fd) = (
+            socket.read(swoole_rs_corebase::reactor::SocketFields::is_tcp),
+            socket.fd(),
+        );
         if tcp && !socket.edit(|record| record.set_tcp_nodelay(1)) {
             let error = net::errno();
             warn_sys(&format!("setsockopt({fd}, TCP_NODELAY) failed"), error);
