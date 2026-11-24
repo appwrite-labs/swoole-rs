@@ -414,7 +414,7 @@ extern "C" void swr_ssh2_listener_open(zval *zsession,
 extern "C" LIBSSH2_LISTENER *swr_ssh2_listener(zval *zlistener) {
     php_ssh2_listener_data *data = (php_ssh2_listener_data *) zend_fetch_resource(
         Z_RES_P(zlistener), PHP_SSH2_LISTENER_RES_NAME, le_ssh2_listener);
-    return data ? data->listener : NULL;
+    return data && data->session_rsrc->ptr ? data->listener : NULL;
 }
 
 extern "C" LIBSSH2_SESSION *swr_ssh2_listener_session(zval *zlistener) {
@@ -452,8 +452,7 @@ extern "C" void swr_ssh2_accepted_stream(zval *zlistener, LIBSSH2_CHANNEL *chann
  * Module Housekeeping *
  *********************** */
 
-static void php_ssh2_session_dtor(zend_resource *rsrc) {
-    LIBSSH2_SESSION *session = (LIBSSH2_SESSION *) rsrc->ptr;
+static void destroy_session(LIBSSH2_SESSION *session) {
     php_ssh2_session_data **data = (php_ssh2_session_data **) libssh2_session_abstract(session);
 
     libssh2_session_disconnect(session, "swoole_ssh2 (https://github.com/swoole/swoole-src)");
@@ -480,12 +479,46 @@ static void php_ssh2_session_dtor(zend_resource *rsrc) {
     libssh2_session_free(session);
 }
 
+static php_ssh2_session_data *session_data(LIBSSH2_SESSION *session) {
+    return static_cast<php_ssh2_session_data *>(*libssh2_session_abstract(session));
+}
+
+extern "C" void swr_ssh2_forward_enter(LIBSSH2_SESSION *session) {
+    ++session_data(session)->forwarding;
+}
+
+extern "C" void swr_ssh2_forward_leave(LIBSSH2_SESSION *session) {
+    auto data = session_data(session);
+    if (--data->forwarding == 0 && data->close_pending) {
+        destroy_session(session);
+    }
+}
+
+extern "C" bool swr_ssh2_forward_closed(LIBSSH2_SESSION *session) {
+    return session_data(session)->close_pending;
+}
+
+static void php_ssh2_session_dtor(zend_resource *rsrc) {
+    auto session = static_cast<LIBSSH2_SESSION *>(rsrc->ptr);
+    auto data = session_data(session);
+    if (data->forwarding) {
+        data->close_pending = true;
+        shutdown(data->socket->get_fd(), SHUT_RDWR);
+        return;
+    }
+    destroy_session(session);
+}
+
 static void php_ssh2_listener_dtor(zend_resource *rsrc) {
     php_ssh2_listener_data *data = (php_ssh2_listener_data *) rsrc->ptr;
     LIBSSH2_LISTENER *listener = data->listener;
     auto session = data->session;
 
-    libssh2_channel_forward_cancel(listener);
+    if (data->session_rsrc->ptr) {
+        swr_ssh2_forward_enter(session);
+        libssh2_channel_forward_cancel(listener);
+        swr_ssh2_forward_leave(session);
+    }
     zend_list_delete(data->session_rsrc);
     efree(data);
 }

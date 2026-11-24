@@ -113,13 +113,17 @@ struct php_ssh2_session_data {
     zval *macerror_cb;
     zval *disconnect_cb;
     SocketImpl *socket;
+    size_t forwarding;
+    bool close_pending;
 };
 static_assert(offsetof(php_ssh2_session_data, ignore_cb) == 0 &&
               offsetof(php_ssh2_session_data, debug_cb) == sizeof(void *) &&
               offsetof(php_ssh2_session_data, macerror_cb) == 2 * sizeof(void *) &&
               offsetof(php_ssh2_session_data, disconnect_cb) == 3 * sizeof(void *) &&
               offsetof(php_ssh2_session_data, socket) == 4 * sizeof(void *) &&
-              sizeof(php_ssh2_session_data) == 5 * sizeof(void *) &&
+              offsetof(php_ssh2_session_data, forwarding) == 5 * sizeof(void *) &&
+              offsetof(php_ssh2_session_data, close_pending) == 6 * sizeof(void *) &&
+              sizeof(php_ssh2_session_data) == 7 * sizeof(void *) &&
               alignof(php_ssh2_session_data) == alignof(void *), "hooks::ssh2::SessionData layout");
 #endif
 #endif

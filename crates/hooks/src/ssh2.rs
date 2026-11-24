@@ -14,6 +14,8 @@ use swoole_rs_ssh2_sys::LIBSSH2_SESSION;
 struct SessionData {
     callbacks: [*mut c_void; 4],
     socket: Co,
+    forwarding: usize,
+    close_pending: bool,
 }
 
 const _: () = {
@@ -21,7 +23,9 @@ const _: () = {
     assert!(
         core::mem::offset_of!(SessionData, callbacks) == 0
             && core::mem::offset_of!(SessionData, socket) == 4 * pointer
-            && size_of::<SessionData>() == 5 * pointer
+            && core::mem::offset_of!(SessionData, forwarding) == 5 * pointer
+            && core::mem::offset_of!(SessionData, close_pending) == 6 * pointer
+            && size_of::<SessionData>() == 7 * pointer
             && align_of::<SessionData>() == align_of::<*mut c_void>(),
         "php_ssh2_session_data layout"
     );
