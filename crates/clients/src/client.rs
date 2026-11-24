@@ -585,9 +585,7 @@ impl Handle<'_> {
 
     fn set_timeout(self, timeout: f64) {
         self.socket().edit(|socket| {
-            socket
-                .timeouts
-                .set(timeout, swoole_rs_corebase::reactor::TimeoutKind::ALL);
+            socket.set_timeout(timeout, swoole_rs_corebase::reactor::TimeoutKind::ALL);
         });
     }
 
@@ -2046,7 +2044,7 @@ fn resolved(this: Handle<'_>, error: c_int, address: &CStr) {
     this.set(Flag::DnsCompleted, true);
     if error == 0 {
         // The application can't see connect's result here, so onError reports it.
-        let timeout = this.socket().read(|socket| socket.timeouts.connect);
+        let timeout = this.socket().read(SocketFields::connect_timeout);
         let (port, flags) = (this.get().server_port.get(), this.get().sock_flags.get());
         if connect(this, address, port, timeout, flags) || this.flag(Flag::OnerrorCalled) {
             return;

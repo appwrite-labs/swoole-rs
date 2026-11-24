@@ -6,7 +6,7 @@ use crate::constants::{
 };
 use crate::reactor::SocketOutput;
 use crate::reactor::socket::SocketMarks;
-use crate::reactor::socket_timeouts::SocketTimeouts;
+use crate::reactor::socket_timeouts::{SocketTimeouts, TimeoutKind};
 use crate::sys;
 use std::ffi::{c_int, c_void};
 use std::mem::offset_of;
@@ -355,6 +355,62 @@ impl SocketRecord {
             return None;
         };
         Self::opened(socket_type, fd_type, domain, kind, 0, flags)
+    }
+}
+
+/// The socket's timeouts, as its callers arm, read and clear them.
+impl SocketFields {
+    /// `Socket::set_timeout`: `timeout` for every kind `kind` names; zero changes
+    /// nothing, and a negative timeout waits without limit.
+    #[inline]
+    pub fn set_timeout(&mut self, timeout: f64, kind: TimeoutKind) {
+        self.timeouts.set(timeout, kind);
+    }
+
+    /// `Socket::get_timeout`: the timeout `kind` names, unless it names other than one.
+    #[inline]
+    #[must_use]
+    pub fn timeout(&self, kind: TimeoutKind) -> Option<f64> {
+        self.timeouts.get(kind)
+    }
+
+    /// How long a connect waits.
+    #[inline]
+    #[must_use]
+    pub const fn connect_timeout(&self) -> f64 {
+        self.timeouts.connect
+    }
+
+    /// How long name resolution waits.
+    #[inline]
+    #[must_use]
+    pub const fn dns_timeout(&self) -> f64 {
+        self.timeouts.dns
+    }
+
+    /// How long a write (`writing`) or a read waits.
+    #[inline]
+    #[must_use]
+    pub const fn io_timeout(&self, writing: bool) -> f64 {
+        if writing {
+            self.timeouts.write
+        } else {
+            self.timeouts.read
+        }
+    }
+
+    /// Read and write timeouts of zero: a socket the reactor waits on, whose own
+    /// operations never wait.
+    #[inline]
+    pub const fn clear_io_timeouts(&mut self) {
+        self.timeouts.read = 0.0;
+        self.timeouts.write = 0.0;
+    }
+
+    /// Every timeout of `from`, as an accepted socket takes its server's.
+    #[inline]
+    pub const fn inherit_timeouts(&mut self, from: &Self) {
+        self.timeouts = from.timeouts;
     }
 }
 

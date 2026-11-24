@@ -56,10 +56,10 @@ impl TimeoutScope {
             socket.net(|network| {
                 for (original, bit) in original.iter_mut().zip(TimeoutKind::EACH) {
                     if kind.intersects(bit) {
-                        let value = network.timeouts.get(bit).unwrap_or_default();
+                        let value = network.timeout(bit).unwrap_or_default();
                         *original = value;
                         if timeout != value {
-                            network.timeouts.set(timeout, bit);
+                            network.set_timeout(timeout, bit);
                         }
                     }
                 }
@@ -94,7 +94,7 @@ impl Drop for TimeoutScope {
         self.socket.net(|network| {
             for (original, bit) in self.original.into_iter().zip(TimeoutKind::EACH) {
                 if self.kind.intersects(bit) && self.timeout != original {
-                    network.timeouts.set(original, bit);
+                    network.set_timeout(original, bit);
                 }
             }
         });

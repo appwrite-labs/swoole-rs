@@ -133,7 +133,7 @@ pub fn unix_socket_set_buffer_size(this: &SocketPair, size: usize) -> bool {
 pub fn set_timeout(this: &SocketPair, timeout: f64) {
     this.timeout.set(timeout);
     for socket in ends(this).into_iter().flatten() {
-        socket.edit(|record| record.timeouts.set(timeout, TimeoutKind::ALL));
+        socket.edit(|record| record.set_timeout(timeout, TimeoutKind::ALL));
     }
 }
 

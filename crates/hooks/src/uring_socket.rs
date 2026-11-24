@@ -74,8 +74,12 @@ impl TlsSocket for Co {
 pub(crate) fn with<T>(socket: Co, f: impl FnOnce(&UringSocketOps<'_>) -> T) -> Option<T> {
     let uring = socket.with_extra(|extra| extra.uring)??;
     socket.with_network(|network| {
-        let read = |record: &SocketFields| (record.fd, record.timeouts);
-        let (ssl, (fd, timeouts)) = Ssl::of_reading(network, read);
+        let read = |record: &SocketFields| {
+            let timeouts = [false, true].map(|writing| record.io_timeout(writing));
+            (record.fd, timeouts, record.connect_timeout())
+        };
+        let (ssl, (fd, [read_timeout, write_timeout], connect_timeout)) =
+            Ssl::of_reading(network, read);
         let tls = Tls {
             uring,
             socket,
@@ -83,13 +87,13 @@ pub(crate) fn with<T>(socket: Co, f: impl FnOnce(&UringSocketOps<'_>) -> T) -> O
             rbio: None,
             wbio: None,
             fd,
-            read_timeout: timeouts.read,
-            write_timeout: timeouts.write,
+            read_timeout,
+            write_timeout,
         };
         f(&UringSocketOps {
             socket,
             tls: tls.with_session(ssl.as_ref().map(swoole_rs_corebase::tls::HeldSsl::get)),
-            connect_timeout: timeouts.connect,
+            connect_timeout,
             available,
             check,
             set_err,

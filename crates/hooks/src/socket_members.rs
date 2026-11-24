@@ -395,7 +395,7 @@ impl Co {
         }
         let (kind, domain) = (self.kind(), self.sock_domain());
         let (socket_type, timeout) = self
-            .net(|network| (network.socket_type, network.timeouts.dns))
+            .net(|network| (network.socket_type, network.dns_timeout()))
             .unwrap_or_default();
         if !SocketType::from_raw(socket_type).is_some_and(SocketType::is_dgram) {
             set_err(self, libc::EPROTONOSUPPORT);
