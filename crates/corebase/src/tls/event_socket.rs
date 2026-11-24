@@ -1,6 +1,6 @@
 //! A `Socket` record this owns, on the thread's reactor: `Swoole\Event`'s user
 //! sockets, a pipe's ends and an event waiter's watch.
-use crate::reactor::{Heap, OwnedSocket, Socket, SocketRecord, event_api};
+use crate::reactor::{Heap, OwnedSocket, Socket, SocketFields, SocketRecord, event_api};
 use std::ffi::c_int;
 
 /// A heap record this owns until [`EventSocket::free`], lending it only for a borrow
@@ -127,7 +127,7 @@ impl EventSocket {
             // `delete in_buffer; delete out_buffer`.
             drop(buffers);
             if event_api::swoole_event_is_available() {
-                if record.read(|record| record.fd != -1 && !record.removed) {
+                if record.read(SocketFields::is_registered) {
                     // `swoole_event_del(this)` on the thread's reactor, which logs a
                     // failure.
                     _ = event_api::event_del(record);

@@ -580,10 +580,10 @@ impl<'a> Server<'a> {
     #[must_use]
     pub fn server_socket(self, fd: c_long) -> Option<(c_int, c_int)> {
         let conn = self.state().connection(fd, Lookup::ByFd)?;
-        let read = |s: &swoole_rs_corebase::reactor::SocketFields| (s.fd, s.socket_type);
+        let read = |s: Heap<'_>| (s.fd(), s.read(|s| s.socket_type));
         match conn.port() {
-            Some(port) => port.with_socket(|s| s.read(read)),
-            None => Some(conn.socket()?.read(read)),
+            Some(port) => port.with_socket(read),
+            None => Some(read(conn.socket()?)),
         }
     }
 
@@ -600,7 +600,7 @@ impl<'a> Server<'a> {
             _ => 6,
         };
         let port = self.find_last_port(|config| config.r#type == socket_type)?;
-        port.with_socket(|s| s.read(|s| (s.fd, s.socket_type)))
+        port.with_socket(|s| (s.fd(), s.read(|s| s.socket_type)))
     }
 
     /// The last of `serv->ports` whose settings `wanted` accepts.

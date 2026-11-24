@@ -231,11 +231,11 @@ fn ev_socket(event: &Event) -> Sock {
 }
 
 unsafe fn sock_read(socket: Sock, buf: &mut [u8]) -> isize {
-    unsafe { read((*socket).fields.fd, buf.as_mut_ptr().cast(), buf.len()) }
+    unsafe { read(handle(socket).fd(), buf.as_mut_ptr().cast(), buf.len()) }
 }
 
 unsafe fn sock_write(socket: Sock, data: &[u8]) -> isize {
-    unsafe { write((*socket).fields.fd, data.as_ptr().cast(), data.len()) }
+    unsafe { write(handle(socket).fd(), data.as_ptr().cast(), data.len()) }
 }
 
 /// `new UnixSocket(blocking, protocol)`.
@@ -440,7 +440,7 @@ unsafe fn wait() {
 
         let ret = event_api::event_add(handle(sock(&p, false)), Events::READ);
         assert_eq!(
-            event_api::swoole_event_get_socket((*sock(&p, false)).fields.fd),
+            event_api::swoole_event_get_socket(handle(sock(&p, false)).fd()),
             sock(&p, false).cast()
         );
         assert!(ret);
@@ -460,7 +460,7 @@ unsafe fn get_missing_socket() {
         assert_eq!(swoole_rs_ffi::swoole_event_init(0), Ok(()));
 
         let socket = sock(&p, false);
-        let fd = (*socket).fields.fd;
+        let fd = handle(socket).fd();
 
         expect_eq!(event_api::swoole_event_get_socket(fd), null_mut());
         expect_eq!(!get_socket(tg(), fd).is_null(), false);
@@ -538,13 +538,12 @@ unsafe fn wait_error() {
 
 unsafe fn writev() {
     unsafe {
-        // `network::Socket fake_sock{}`: a record on upstream's stack, never freed.
-        let fake_sock = SocketRecord::new().into_raw();
-
         let p = unix_socket(true, SOCK_DGRAM);
         assert!(ready(&p));
 
-        (*fake_sock).fields.fd = (*sock(&p, true)).fields.fd;
+        // `network::Socket fake_sock{}` over the pair's master descriptor: a record on
+        // upstream's stack, never freed.
+        let fake_sock = SocketRecord::over_fd(handle(sock(&p, true)).fd()).into_raw();
 
         let _ = swoole_rs_ffi::swoole_event_init(SW_EVENTLOOP_WAIT_EXIT);
 
@@ -582,7 +581,7 @@ fn read_2m(reactor: Running<'_>, event: &mut Event) -> bool {
         let tg_buf = swoole_rs_ffi::thread_buffer().cast::<StringBuffer>();
         let socket = ev_socket(event);
         let n = read(
-            (*socket).fields.fd,
+            handle(socket).fd(),
             (*tg_buf).str.add((*tg_buf).length).cast(),
             (*tg_buf).size - (*tg_buf).length,
         );
@@ -800,7 +799,8 @@ fn reuse_read(reactor: Running<'_>, event: &mut Event) -> bool {
         };
         expect_eq!(del(reactor, other_socket), SW_OK);
         // `other_socket->move_fd()`.
-        let fd = std::mem::replace(&mut (*other_socket).fields.fd, -1);
+        let fd = handle(other_socket).fd();
+        (*other_socket).fields.forget_descriptor();
         expect_eq!(dup2(state.source_fd, fd), fd);
 
         state.replacement_socket = SocketRecord::with_fd(fd, SW_FD_USER).into_raw();
@@ -887,9 +887,7 @@ unsafe fn poll_readiness_after_fd_reuse() {
 
 /// `network::Socket s{}; s.fd = fd;`: records on upstream's stack, never freed.
 fn fake_socket(fd: c_int) -> Sock {
-    let mut socket = SocketRecord::new();
-    socket.fields.fd = fd;
-    socket.into_raw()
+    SocketRecord::over_fd(fd).into_raw()
 }
 
 unsafe fn poll_extra() {
@@ -1199,15 +1197,12 @@ unsafe fn error_case() {
         assert_eq!(errno(), EEXIST);
 
         // `network::Socket bad_sock;`: a record on upstream's stack, never freed.
-        let bad_sock = SocketRecord::new().into_raw();
-        (*bad_sock).fields.removed = true;
-        (*bad_sock).fields.fd_type = SW_FD_PIPE;
-        (*bad_sock).fields.fd = dup((*worker).fields.fd);
+        let bad_sock = SocketRecord::with_fd(dup(handle(worker).fd()), SW_FD_PIPE).into_raw();
         assert_eq!(del(reactor, bad_sock), SW_ERR);
         assert_eq!(last_error(), error(ErrorCode::SW_ERROR_EVENT_REMOVE_FAILED));
 
         assert_eq!(add(reactor, bad_sock, SW_EVENT_READ), SW_OK);
-        close((*bad_sock).fields.fd);
+        close(handle(bad_sock).fd());
 
         #[expect(clippy::eq_op, reason = "upstream's input, base.cpp line 721")]
         let events = SW_EVENT_READ | SW_EVENT_READ;

@@ -56,11 +56,11 @@ impl TlsSocket for Co {
     fn ssl_error(self, function: &CStr, error: c_int, code: c_ulong) {
         let message = swoole_rs_corebase::tls::error_string(code);
         let function = function.to_string_lossy();
+        let fd = self.sock_fd();
         self.net(|network| {
             let (host, port) = network.peer_text();
             log::notice(format_args!(
-                "{function}(fd={}) to server[{host}:{port}] failed. Error: {message}[{error}|{}]",
-                network.fd,
+                "{function}(fd={fd}) to server[{host}:{port}] failed. Error: {message}[{error}|{}]",
                 swoole_rs_corebase::tls::error_reason(code)
             ));
         });
@@ -76,9 +76,10 @@ pub(crate) fn with<T>(socket: Co, f: impl FnOnce(&UringSocketOps<'_>) -> T) -> O
     socket.with_network(|network| {
         let read = |record: &SocketFields| {
             let timeouts = [false, true].map(|writing| record.io_timeout(writing));
-            (record.fd, timeouts, record.connect_timeout())
+            (timeouts, record.connect_timeout())
         };
-        let (ssl, (fd, [read_timeout, write_timeout], connect_timeout)) =
+        let fd = network.fd();
+        let (ssl, ([read_timeout, write_timeout], connect_timeout)) =
             Ssl::of_reading(network, read);
         let tls = Tls {
             uring,

@@ -9,11 +9,9 @@ use crate::log;
 use crate::reactor::reactor_upstream::{interest, trigger_close_event};
 use crate::reactor::{
     Drain, Event, FlushEffects, Heap, Interest, OwnedSocket, Running, SOCKET_DEFAULTS,
-    WriteEffects, WriteError, WritePayload,
+    SocketFields, WriteEffects, WriteError, WritePayload,
 };
-use crate::tls::upstream::{
-    send_drain, socket_free, socket_handle_send, socket_handle_sendfile, writev,
-};
+use crate::tls::upstream::{send_drain, socket_free, socket_handle_send, socket_handle_sendfile};
 use std::cell::Cell;
 use std::ffi::c_int;
 use std::io::IoSlice;
@@ -97,7 +95,7 @@ fn write(
             format_args!("data packet is too large, cannot exceed the socket buffer size"),
         ),
         Err(WriteError::Overflow(queued)) => {
-            let (fd, size) = socket.read(|record| (record.fd, record.output_limit()));
+            let (fd, size) = (socket.fd(), socket.read(SocketFields::output_limit));
             log::error_log(
                 log::LogLevel::SW_LOG_WARNING,
                 SW_ERROR_OUTPUT_BUFFER_OVERFLOW,
@@ -129,7 +127,7 @@ pub fn reactor_writev(
     socket: Heap<'_>,
     vectors: &[IoSlice<'_>],
 ) -> Option<usize> {
-    let Some(fd) = socket.read(|s| s.ssl().is_null().then_some(s.fd)) else {
+    if !socket.read(SocketFields::ssl).is_null() {
         log::error_log(
             log::LogLevel::SW_LOG_WARNING,
             SW_ERROR_OPERATION_NOT_SUPPORT,
@@ -137,9 +135,9 @@ pub fn reactor_writev(
             format_args!("does not support SSL"),
         );
         return None;
-    };
+    }
     write(reactor, socket, WritePayload::Vectors(vectors), || {
-        writev(fd, vectors)
+        socket.read(|record| record.writev(vectors))
     })
 }
 

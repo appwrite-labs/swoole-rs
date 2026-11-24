@@ -2,7 +2,7 @@
 use core::ffi::{CStr, c_int};
 use swoole_rs_corebase::log::LogLevel::SW_LOG_WARNING as LOG_WARNING;
 use swoole_rs_corebase::reactor::event_api::{Deferred, swoole_event_defer_value};
-use swoole_rs_corebase::reactor::{OwnedSocket, SocketRecord, socket_type};
+use swoole_rs_corebase::reactor::{OwnedSocket, SocketFields, SocketRecord, socket_type};
 use swoole_rs_corebase::{log, sys};
 use swoole_rs_server::port_config::PortConfig;
 pub use swoole_rs_server::port_tls::{context_dup, sni_add, ssl_init};
@@ -71,7 +71,8 @@ pub(crate) fn close(config: &PortConfig) {
     }
     // Retired first, so nothing finds the record once its descriptor closes.
     if let Some(socket) = config.retire_socket() {
-        let fd = socket.edit(|record| core::mem::replace(&mut record.fd, -1));
+        let fd = socket.fd();
+        socket.edit(SocketFields::forget_descriptor);
         // `socket_free_defer`'s close: after the reactor's pass while one runs.
         if let Err(close) = swoole_event_defer_value(CloseLater(fd)) {
             close.run();

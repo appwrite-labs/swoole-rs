@@ -200,6 +200,26 @@ const _: () = assert!(
     "native socket callers read the descriptor at offset zero"
 );
 
+/// Where a socket's descriptor stands, from [`SocketFields::descriptor`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Descriptor {
+    Open(std::os::fd::RawFd),
+    /// Open, but the socket waits to close once its output drains.
+    Closing(std::os::fd::RawFd),
+    Closed,
+}
+
+impl Descriptor {
+    /// The descriptor, open or closing; -1 once closed.
+    #[must_use]
+    pub const fn raw_fd(self) -> std::os::fd::RawFd {
+        match self {
+            Self::Open(fd) | Self::Closing(fd) => fd,
+            Self::Closed => -1,
+        }
+    }
+}
+
 impl SocketRecord {
     /// A socket as `new Socket()` makes it: all zero but the default timeouts, and
     /// not borrowed.
@@ -260,11 +280,19 @@ impl SocketRecord {
         }
     }
 
+    /// `network::Socket s{}; s.fd = fd;`: a record as [`Self::new`] makes it, over a
+    /// descriptor the caller hands it.
+    #[must_use]
+    pub fn over_fd(fd: c_int) -> Self {
+        let mut socket = Self::new();
+        socket.fd = fd;
+        socket
+    }
+
     /// `make_socket(fd, fd_type)`'s fields.
     #[must_use]
     pub fn with_fd(fd: c_int, fd_type: c_int) -> Self {
-        let mut socket = Self::new();
-        socket.fd = fd;
+        let mut socket = Self::over_fd(fd);
         socket.fd_type = fd_type;
         socket.removed = true;
         socket
@@ -554,6 +582,52 @@ impl SocketFields {
     /// failed, with errno set.
     pub fn close_descriptor(&mut self) -> bool {
         sys::close(std::mem::replace(&mut self.fd, -1)).is_ok()
+    }
+
+    /// Where the descriptor stands: open, open but waiting to close, or closed (-1).
+    #[inline]
+    #[must_use]
+    pub fn descriptor(&self) -> Descriptor {
+        match self.fd {
+            -1 => Descriptor::Closed,
+            fd if self.close_deferred() => Descriptor::Closing(fd),
+            fd => Descriptor::Open(fd),
+        }
+    }
+
+    /// Open and not taken off a reactor: upstream's test before `swoole_event_del`.
+    #[inline]
+    #[must_use]
+    pub const fn is_registered(&self) -> bool {
+        self.fd != -1 && !self.removed
+    }
+
+    /// setsockopt(2) of `value` as option `name` at `level`, without logging a failure.
+    /// # Errors
+    /// The syscall's.
+    #[inline]
+    pub fn set_option<T: sys::Pod>(
+        &self,
+        level: c_int,
+        name: c_int,
+        value: &T,
+    ) -> std::io::Result<()> {
+        sys::setsockopt(self.fd, level, name, value)
+    }
+
+    /// `SO_RCVBUF` and/or `SO_SNDBUF` set to `size`.
+    /// # Errors
+    /// The first setsockopt(2) that failed.
+    #[inline]
+    pub fn set_kernel_buffer_size(&self, recv: bool, send: bool, size: u32) -> std::io::Result<()> {
+        crate::reactor::set_socket_buffer_size(self.fd, recv, send, size)
+    }
+
+    /// writev(2) of `vectors`: the bytes written, or None with errno set.
+    #[inline]
+    #[must_use]
+    pub fn writev(&self, vectors: &[std::io::IoSlice<'_>]) -> Option<usize> {
+        sys::writev(self.fd, vectors)
     }
 
     /// `move_fd()` whose descriptor someone else now owns: the record lets go of it
