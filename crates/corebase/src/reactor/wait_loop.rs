@@ -486,7 +486,7 @@ fn registered(socket: Socket<'_>) -> bool {
 
 fn oneshot(ops: &Loop<'_>, socket: Socket<'_>) {
     if socket.read(|record| {
-        !record.has_left_reactor() && record.events.intersects(crate::reactor::Events::ONCE)
+        !record.has_left_reactor() && record.registered_for(crate::reactor::Events::ONCE)
     }) {
         if ops.backend == BackendKind::Epoll {
             // epoll's oneshot entry is already disarmed, so only the registry forgets it.

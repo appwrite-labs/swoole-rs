@@ -369,36 +369,38 @@ pub(crate) fn apply(
     done
 }
 
-/// What a `Reactor` interest helper asks of [`apply`], as upstream decides
-/// from the socket's events: the op and its events, or `None` when nothing changes.
-pub(crate) fn interest_change(
-    record: Socket<'_>,
-    kind: Interest,
-    event: Events,
-) -> Option<(ChangeOp, Events)> {
-    use Interest::{AddEvent, AddRead, AddWrite, DelEvent, RemoveRead, RemoveWrite};
-    let events = record.read(|record| record.events);
-    let (other, own) = if matches!(kind, AddRead | RemoveRead) {
-        (Events::WRITE, Events::READ)
-    } else {
-        (Events::READ, Events::WRITE)
-    };
-    let (op, events) = match kind {
-        AddEvent if !events.intersects(event) => (ChangeOp::Set, events | event),
-        DelEvent if events.intersects(event) => (ChangeOp::Set, events.without(event)),
-        AddEvent | DelEvent => return None,
-        AddRead | AddWrite if events.intersects(other) => (ChangeOp::Set, events | own),
-        AddRead | AddWrite => (ChangeOp::Add, own),
-        RemoveRead | RemoveWrite if events.intersects(other) => {
-            (ChangeOp::Set, events.without(own))
+impl SocketFields {
+    /// What a `Reactor` interest helper asks of [`apply`], as upstream decides
+    /// from the socket's events: the op and its events, or `None` when nothing changes.
+    pub(crate) fn interest_change(
+        &mut self,
+        kind: Interest,
+        event: Events,
+    ) -> Option<(ChangeOp, Events)> {
+        use Interest::{AddEvent, AddRead, AddWrite, DelEvent, RemoveRead, RemoveWrite};
+        let events = self.events;
+        let (other, own) = if matches!(kind, AddRead | RemoveRead) {
+            (Events::WRITE, Events::READ)
+        } else {
+            (Events::READ, Events::WRITE)
+        };
+        let (op, events) = match kind {
+            AddEvent if !events.intersects(event) => (ChangeOp::Set, events | event),
+            DelEvent if events.intersects(event) => (ChangeOp::Set, events.without(event)),
+            AddEvent | DelEvent => return None,
+            AddRead | AddWrite if events.intersects(other) => (ChangeOp::Set, events | own),
+            AddRead | AddWrite => (ChangeOp::Add, own),
+            RemoveRead | RemoveWrite if events.intersects(other) => {
+                (ChangeOp::Set, events.without(own))
+            }
+            RemoveRead | RemoveWrite => (ChangeOp::Del, Events::NONE),
+        };
+        if op == ChangeOp::Set && !matches!(kind, AddEvent | DelEvent) {
+            // Upstream writes the socket's events before the set, so they stay when it fails.
+            self.events = events;
         }
-        RemoveRead | RemoveWrite => (ChangeOp::Del, Events::NONE),
-    };
-    if op == ChangeOp::Set && !matches!(kind, AddEvent | DelEvent) {
-        // Upstream writes the socket's events before the set, so they stay when it fails.
-        record.edit(|record| record.events = events);
+        Some((op, events))
     }
-    Some((op, events))
 }
 
 #[cfg(test)]
@@ -578,9 +580,11 @@ mod tests {
             let mut socket = SocketRecord::with_fd(20, 5);
             let interest = |socket: &mut SocketRecord, kind, event| {
                 let record = Socket::from_ptr(socket).unwrap();
-                interest_change(record, kind, event).map_or(0, |(op, events)| {
-                    swr_v1_reactor_change(state.owner, socket, op.code(), events, log)
-                })
+                record
+                    .edit(|record| record.interest_change(kind, event))
+                    .map_or(0, |(op, events)| {
+                        swr_v1_reactor_change(state.owner, socket, op.code(), events, log)
+                    })
             };
             // add_write_event on a new socket adds it for writing; add_read_event sets both.
             assert_eq!(interest(&mut socket, Interest::AddWrite, Events::NONE), 0);

@@ -56,8 +56,7 @@ impl<F: Fn() -> Option<usize>> WriteEffects for Write<'_, F> {
     fn watch_writable(&self) {
         if !self
             .socket
-            .read(|record| record.events)
-            .intersects(crate::reactor::Events::WRITE)
+            .read(|record| record.registered_for(crate::reactor::Events::WRITE))
         {
             // `reactor->add_write_event(socket)`, which logs a failure.
             _ = interest(

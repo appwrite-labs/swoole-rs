@@ -644,8 +644,7 @@ impl ReactorState {
                     self.registry.set(key, events);
                 }
                 Request::Del(deleted) => {
-                    record.events = crate::reactor::Events::NONE;
-                    record.note_left_reactor();
+                    record.note_deregistered();
                     self.registry.remove(key);
                     unmark(deleted, serial);
                 }
@@ -666,10 +665,7 @@ impl ReactorState {
         for fd in named {
             self.registry.remove(crate::reactor::RegistryKey::new(fd));
         }
-        socket.edit(|record| {
-            record.events = crate::reactor::Events::NONE;
-            record.note_left_reactor();
-        });
+        socket.edit(crate::reactor::SocketFields::note_deregistered);
         unmark(socket, self.serial);
     }
 
