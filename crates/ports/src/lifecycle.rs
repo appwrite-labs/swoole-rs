@@ -41,17 +41,17 @@ pub(crate) fn import(config: &mut PortConfig, fd: c_int) -> bool {
         log::error_log(LOG_WARNING, libc::EINVAL, origin, message);
         return false;
     }
-    let family = c_int::from(socket.info.addr.family());
+    let family = socket.with_address(|info| c_int::from(info.addr.family()));
     let kind = socket_type(family, so_type);
     socket.socket_type = kind.raw();
-    socket.info.kind = kind.raw();
+    socket.type_address(kind.raw());
     socket.fd_type = if kind.is_dgram() {
         FD_DGRAM_SERVER
     } else {
         FD_STREAM_SERVER
     };
     socket.removed = true;
-    let info = socket.info;
+    let info = socket.with_address(|info| *info);
     config.set_listening_socket(OwnedSocket::new(Box::new(socket)));
     config.r#type = kind.raw();
     if !with_host(&info, |host| config.host.set(host.to_bytes())) {

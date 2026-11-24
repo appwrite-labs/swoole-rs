@@ -575,7 +575,12 @@ fn sendto(sock: &Sock, to: &Address, data: &[u8]) -> isize {
 fn recvfrom(sock: &Sock, buf: &mut [u8], from: Option<&mut Address>) -> isize {
     let result = lend_spare(buf, |out| recvfrom_peer(&sock.ops(), out)).0;
     let result = result.map_or(-1, usize::cast_signed);
-    if let (Some(from), Some(info)) = (from, sock.ops().socket.net(|record| record.info)) {
+    if let (Some(from), Some(info)) = (
+        from,
+        sock.ops()
+            .socket
+            .net(|record| record.with_address(|info| *info)),
+    ) {
         from.len = info.len;
         unsafe {
             ptr::copy_nonoverlapping(

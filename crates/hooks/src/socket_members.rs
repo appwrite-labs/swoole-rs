@@ -639,7 +639,7 @@ impl Co {
             }
             let fd = self.sock_fd();
             self.receive(RETRY_INTERRUPTED, out, |s, out| {
-                s.edit(|network| out.recvfrom_one(fd, 0, &mut network.info))
+                s.edit(|network| network.receive_from(out, fd, 0))
             })
         };
         crate::transfer::recvfrom_peer(self, receive)

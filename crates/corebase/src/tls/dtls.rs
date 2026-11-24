@@ -387,7 +387,7 @@ pub fn dtls_open(socket: Socket<'_>, context: &std::sync::Arc<crate::tls::TlsSet
     let Some(bio) = methods().and_then(|table| crate::tls::handle::BIO_new(table)) else {
         return false;
     };
-    let (fd, peer) = socket.read(|record| (record.fd, record.info.addr));
+    let (fd, peer) = socket.read(|record| (record.fd, record.with_address(|info| info.addr)));
     let session = Box::new(DtlsSession::new(fd, peer, Some(context.clone())));
     // The fresh BIO of the table takes the session: its destroy hook frees it.
     BIO_set_data(FreshBio(bio.bio()), session);
@@ -422,7 +422,7 @@ pub fn dtls_session_listen(socket: Socket<'_>) -> bool {
         return true;
     }
     let reason = crate::tls::swr_v1_socket_ssl_peek_reason();
-    let (host, port) = socket.read(|record| crate::tls::upstream::peer(&record.info));
+    let (host, port) = socket.read(|record| record.with_address(crate::tls::upstream::peer));
     let error = crate::tls::error_line();
     log::warning(
         c"Session::listen",

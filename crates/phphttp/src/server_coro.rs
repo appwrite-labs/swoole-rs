@@ -267,9 +267,10 @@ fn socket_error(socket: Co) -> (c_int, CString) {
 fn address(socket: Co) -> (ZString, c_int) {
     let address = socket.with_network(|network| {
         network.read(|record| {
-            let info = &record.info;
-            let host = with_host(info, |host| ZString::new(host.to_bytes()));
-            (host, address_port(info).into())
+            record.with_address(|info| {
+                let host = with_host(info, |host| ZString::new(host.to_bytes()));
+                (host, address_port(info).into())
+            })
         })
     });
     address.unwrap_or_else(|| (ZString::new(b""), 0))

@@ -277,9 +277,10 @@ mod native {
                 use swoole_rs_clients::address::{address_port, with_host};
                 let (addr, port) = socket
                     .net(|record| {
-                        let peer = &record.info;
-                        let addr = with_host(peer, |addr| addr.to_string_lossy().into_owned());
-                        (addr, address_port(peer))
+                        record.with_address(|peer| {
+                            let addr = with_host(peer, |addr| addr.to_string_lossy().into_owned());
+                            (addr, address_port(peer))
+                        })
                     })
                     .unwrap_or_default();
                 swoole_rs_corebase::log::error_log(

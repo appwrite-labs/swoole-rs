@@ -217,8 +217,7 @@ pub(crate) fn create_socket(config: &PortConfig, reuse_port: bool) -> bool {
     if !made.bind(&address) || !made.get_name() {
         return fail(made);
     }
-    let info = made.info;
-    config.port.set(address_port(&info).into());
+    config.port.set(made.with_address(address_port).into());
     // Only a bound record: each failure above frees its own, which the port's
     // delete would otherwise free again.
     config.set_listening_socket(OwnedSocket::new(made));

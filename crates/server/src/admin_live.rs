@@ -73,11 +73,11 @@ fn socket(s: &SocketFields) -> Socket {
         events: s.events.bits().into(),
         socket_type: s.socket_type.into(),
         fd_type: s.fd_type.into(),
-        port: port(&s.info),
+        port: s.with_address(port),
         total_recv_bytes: s.total_recv_bytes as u64,
         total_send_bytes: s.total_send_bytes as u64,
         out_buffer_size: out_buffer_length(s),
-        address: address(&s.info),
+        address: s.with_address(address),
     }
 }
 
@@ -227,7 +227,7 @@ impl Facts for Live<'_> {
         let listener = config
             .listening_socket()
             .unwrap_or_else(dead)
-            .read(|s| s.info);
+            .read(|s| s.with_address(|info| *info));
         let (received, sent) =
             (conn.socket().unwrap_or_else(dead)).read(|s| (s.total_recv_bytes, s.total_send_bytes));
         Connection {

@@ -657,7 +657,7 @@ pub(crate) fn peer_cert(socket: Net<'_>) -> Option<ZString> {
 
 /// [`address`] of `socket`'s `info`, copied out of the record.
 pub(crate) fn net_address(socket: Net<'_>) -> (CString, c_int) {
-    socket.read(|record| address(&record.info))
+    socket.read(|record| record.with_address(address))
 }
 
 /// The address and port of `address`: `get_addr()` and `get_port()`.

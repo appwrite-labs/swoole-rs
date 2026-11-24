@@ -266,19 +266,20 @@ fn init(
 ) {
     let state = serv.state();
     let (ssl, local_port, local_addr_index) = sock.socket().edit(|sock| {
-        conn.set_info(sock.info);
+        sock.with_address(|peer| conn.set_info(*peer));
         sock.get_name();
-        let info = &sock.info;
-        let port = swoole_rs_clients::address::address_port(info);
-        let v6 = info.kind != SocketType::SW_SOCK_TCP.raw();
-        // The family's address bytes, as they are stored.
-        let (inet_v6, inet_v4) = (
-            info.addr.v6().sin6_addr.s6_addr,
-            info.addr.v4().sin_addr.s_addr,
-        );
-        let inet_v4 = inet_v4.to_ne_bytes();
-        let addr: &[u8] = if v6 { &inet_v6 } else { &inet_v4 };
-        let index = crate::local_addr::index(state, v6, addr);
+        let (port, index) = sock.with_address(|info| {
+            let port = swoole_rs_clients::address::address_port(info);
+            let v6 = info.kind != SocketType::SW_SOCK_TCP.raw();
+            // The family's address bytes, as they are stored.
+            let (inet_v6, inet_v4) = (
+                info.addr.v6().sin6_addr.s6_addr,
+                info.addr.v4().sin_addr.s_addr,
+            );
+            let inet_v4 = inet_v4.to_ne_bytes();
+            let addr: &[u8] = if v6 { &inet_v6 } else { &inet_v4 };
+            (port, crate::local_addr::index(state, v6, addr))
+        });
         (!sock.ssl().is_null(), port, index)
     });
     conn.set_fd(sock.socket().fd());

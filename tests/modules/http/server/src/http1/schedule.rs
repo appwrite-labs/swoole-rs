@@ -36,7 +36,9 @@ fn assign(address: &mut Address, kind: c_int, host: &str, port: c_int) {
 fn fake_sock(fd: c_int, address: Option<(c_int, &str, c_int)>) -> *mut c_void {
     let mut sock = swoole_rs_corebase::reactor::SocketRecord::with_fd(fd, 0);
     if let Some((kind, host, port)) = address {
-        assign(&mut sock.info, kind, host, port);
+        let mut address = Address::default();
+        assign(&mut address, kind, host, port);
+        sock.set_address(address);
     }
     sock.into_raw().cast()
 }

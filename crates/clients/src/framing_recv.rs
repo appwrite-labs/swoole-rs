@@ -133,11 +133,13 @@ pub fn socket_flags(socket: &SocketFields, paused: impl FnOnce() -> bool) -> u32
 /// `getpeername` fails) appended as `<host:port>`.
 fn proto_error(socket: Socket<'_>, code: ErrorCode, origin: &CStr, message: &str) {
     let address = socket.read(|socket| {
-        let mut address = socket.info;
-        if !socket.get_peer_name(&mut address) {
-            address = socket.info;
-        }
-        address
+        socket.with_address(|own| {
+            let mut address = *own;
+            if !socket.get_peer_name(&mut address) {
+                address = *own;
+            }
+            address
+        })
     });
     let (host, port) = crate::address::host_port(&address);
     log::error_log(
