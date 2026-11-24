@@ -62,6 +62,8 @@ field-leak swoole_rs_corebase::reactor::socket_record::SocketFields::event_hup
 field-leak swoole_rs_corebase::reactor::socket_record::SocketFields::events
 field-leak swoole_rs_corebase::reactor::socket_record::SocketFields::fd
 field-leak swoole_rs_corebase::reactor::socket_record::SocketFields::fd_type
+field-leak swoole_rs_corebase::reactor::socket_record::SocketFields::kernel_nobufs
+field-leak swoole_rs_corebase::reactor::socket_record::SocketFields::owner
 field-leak swoole_rs_corebase::reactor::socket_record::SocketFields::recv_buffer
 field-leak swoole_rs_corebase::reactor::socket_record::SocketFields::removed
 field-leak swoole_rs_corebase::reactor::socket_record::SocketFields::silent_remove
