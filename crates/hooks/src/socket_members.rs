@@ -352,18 +352,14 @@ impl Co {
             return false;
         }
         log::set_last_error(0);
-        let Some((fd, kind)) = self.net(|network| (network.fd, network.socket_type)) else {
+        let enable: c_int = 1;
+        let Some((kind, reuse)) = self.net(|network| {
+            let reuse = network.set_option(libc::SOL_SOCKET, libc::SO_REUSEADDR, &enable);
+            (network.socket_type, reuse)
+        }) else {
             return false;
         };
-        let enable: c_int = 1;
-        if setsockopt(
-            fd,
-            libc::SOL_SOCKET,
-            libc::SO_REUSEADDR,
-            &enable.to_ne_bytes(),
-        )
-        .is_err()
-        {
+        if reuse.is_err() {
             log::sys_warning(
                 c"bind",
                 format_args!("setsockopt({}, SO_REUSEADDR) failed", self.sock_fd()),

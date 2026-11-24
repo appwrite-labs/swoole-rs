@@ -223,7 +223,7 @@ impl Socket {
             let _logged = self.co().set_int_option(level, name, value);
         } else {
             self.with_record(false, |record| {
-                swoole_rs_corebase::reactor::swr_v1_socket_set_int(record.fd, level, name, value)
+                record.set_option(level, name, &value).is_ok()
             });
         }
     }

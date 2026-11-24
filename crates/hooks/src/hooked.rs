@@ -426,8 +426,7 @@ pub fn write(fd: c_int, buf: &[u8]) -> Result<usize, IoError> {
 
 /// The pool's `network::Socket` over `fd`: nonblocking, waiting without limit.
 fn blocking(fd: c_int, write: bool) -> SocketRecord {
-    let mut socket = SocketRecord::new();
-    socket.fd = fd;
+    let mut socket = SocketRecord::over_fd(fd);
     socket.note_nonblocking(true);
     let kind = if write {
         swoole_rs_corebase::reactor::TimeoutKind::WRITE

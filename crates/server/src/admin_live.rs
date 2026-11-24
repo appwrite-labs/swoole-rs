@@ -67,9 +67,10 @@ fn out_buffer_length(socket: &SocketFields) -> u64 {
     socket.queued_bytes().into()
 }
 
-fn socket(s: &SocketFields) -> Socket {
-    Socket {
-        fd: s.fd.into(),
+fn socket(handle: swoole_rs_corebase::reactor::Heap<'_>) -> Socket {
+    let fd = handle.fd().into();
+    handle.read(|s| Socket {
+        fd,
         events: s.events.bits().into(),
         socket_type: s.socket_type.into(),
         fd_type: s.fd_type.into(),
@@ -78,7 +79,7 @@ fn socket(s: &SocketFields) -> Socket {
         total_send_bytes: s.total_send_bytes as u64,
         out_buffer_size: out_buffer_length(s),
         address: s.with_host(|host| Json::utf8(host.to_bytes())),
-    }
+    })
 }
 
 /// The collected item `index`; `run` asks only below the count it was given.
@@ -143,11 +144,10 @@ impl Facts for Live<'_> {
         let worker = worker.unwrap_or_else(|| {
             swoole_rs_corebase::fatal("an admin command index past the pool's workers")
         });
-        crate::view::worker_pipe(worker, master)
-            .unwrap_or_else(|| {
-                swoole_rs_corebase::fatal("an admin command on a worker without a pipe")
-            })
-            .read(socket)
+        let pipe = crate::view::worker_pipe(worker, master).unwrap_or_else(|| {
+            swoole_rs_corebase::fatal("an admin command on a worker without a pipe")
+        });
+        socket(pipe)
     }
 
     fn has_reactor(&mut self) -> bool {
@@ -160,7 +160,7 @@ impl Facts for Live<'_> {
     }
 
     fn socket(&mut self, index: u64) -> Socket {
-        nth(&self.sockets, index).read(socket)
+        socket(nth(&self.sockets, index))
     }
 
     fn socket_name(&mut self, index: u64) {

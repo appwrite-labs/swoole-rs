@@ -10,7 +10,7 @@ use swoole_rs_corebase::constants::{SW_DATA_EOF_MAXLEN, SocketFlag};
 use swoole_rs_corebase::log;
 use swoole_rs_corebase::net_types::SocketAddress;
 use swoole_rs_corebase::reactor::socket_upstream::make_typed;
-use swoole_rs_corebase::reactor::{OwnedSocket, Running, SocketRecord};
+use swoole_rs_corebase::reactor::{OwnedSocket, Running, Socket, SocketFields, SocketRecord};
 use swoole_rs_http2::FRAME_HEADER_SIZE as HTTP2_FRAME_HEADER_SIZE;
 use swoole_rs_websocket::MAX_HEADER_LEN as WEBSOCKET_FRAME_HEADER_SIZE;
 
@@ -128,9 +128,9 @@ fn host_text(config: &PortConfig) -> std::borrow::Cow<'_, str> {
     config.host_c_str().to_string_lossy()
 }
 
-/// An int option set to 1, or the syscall error.
-fn set_option(fd: c_int, level: c_int, option: c_int) -> std::io::Result<()> {
-    swoole_rs_corebase::sys::setsockopt::<c_int>(fd, level, option, &1)
+/// A `SOL_SOCKET` int option set to 1, or the syscall error.
+fn enable(socket: &SocketFields, option: c_int) -> std::io::Result<()> {
+    socket.set_option::<c_int>(libc::SOL_SOCKET, option, &1)
 }
 
 /// `ListenPort::create_socket()`: keeps the port's socket unless the server
@@ -161,7 +161,6 @@ pub(crate) fn create_socket(config: &PortConfig, reuse_port: bool) -> bool {
         log::set_last_error(errno());
         return false;
     };
-    let fd = made.fd;
     let kqueue = cfg!(any(
         target_os = "macos",
         target_os = "freebsd",
@@ -170,7 +169,7 @@ pub(crate) fn create_socket(config: &PortConfig, reuse_port: bool) -> bool {
         target_os = "dragonfly"
     ));
     if kqueue && config.is_dtls() {
-        drop(set_option(fd, libc::SOL_SOCKET, libc::SO_REUSEPORT));
+        drop(enable(&made, libc::SO_REUSEPORT));
     }
     // The record just made, closed and freed on a failure path.
     let fail = |made: Box<SocketRecord>| {
@@ -178,7 +177,7 @@ pub(crate) fn create_socket(config: &PortConfig, reuse_port: bool) -> bool {
         made.close_and_free();
         false
     };
-    if reuse_port && set_option(fd, libc::SOL_SOCKET, libc::SO_REUSEPORT).is_err() {
+    if reuse_port && enable(&made, libc::SO_REUSEPORT).is_err() {
         return fail(made);
     }
     let mut address = SocketAddress {
@@ -208,7 +207,8 @@ pub(crate) fn create_socket(config: &PortConfig, reuse_port: bool) -> bool {
         );
         return fail(made);
     }
-    if set_option(fd, libc::SOL_SOCKET, libc::SO_REUSEADDR).is_err() {
+    if enable(&made, libc::SO_REUSEADDR).is_err() {
+        let fd = Socket::new(&mut made).fd();
         log::sys_warning(
             c"ListenPort::create_socket",
             format_args!("setsockopt({fd}, SO_REUSEADDR) failed"),
@@ -233,8 +233,8 @@ pub(crate) fn close_socket(config: &PortConfig) {
     let Some(socket) = config.retire_socket() else {
         return;
     };
-    let fd = socket.edit(|record| core::mem::replace(&mut record.fd, -1));
-    if swoole_rs_corebase::sys::close(fd).is_err() {
+    let fd = socket.fd();
+    if !socket.edit(SocketFields::close_descriptor) {
         log::sys_warning(
             c"ListenPort::close_socket",
             format_args!("close({fd}) failed"),

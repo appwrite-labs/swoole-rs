@@ -53,6 +53,18 @@ impl SocketFields {
     pub fn peer_text(&self) -> (String, c_int) {
         peer(&self.info)
     }
+
+    /// `swoole_sendfile` (src/os/sendfile.cc): the platform's sendfile of `length` bytes
+    /// of `fd` from `offset` to this socket's descriptor.
+    #[inline]
+    pub fn sendfile_from(
+        &self,
+        fd: c_int,
+        offset: &mut libc::off_t,
+        length: usize,
+    ) -> crate::ossupport::Sendfile {
+        crate::ossupport::swr_v1_os_sendfile(self.fd, fd, Some(offset), length)
+    }
 }
 
 /// `Address::get_addr()` and `get_port()` of the socket's own address, as its logs print them.
@@ -721,12 +733,10 @@ pub fn sendfile(
     offset: &mut libc::off_t,
     length: usize,
 ) -> Option<usize> {
-    let (out, ssl) = socket.read(|record| (record.fd, record.ssl()));
-    if !ssl.is_null() {
+    if !socket.read(SocketFields::ssl).is_null() {
         return ssl_sendfile(socket, fd, offset, length);
     }
-    // `swoole_sendfile` (src/os/sendfile.cc): the platform's sendfile.
-    let sent = crate::ossupport::swr_v1_os_sendfile(out, fd, Some(offset), length);
+    let sent = socket.read(|record| record.sendfile_from(fd, offset, length));
     if cfg!(not(target_os = "linux")) && sent.warn {
         log::sys_warning(c"swoole_sendfile", format_args!("sendfile failed"));
     }

@@ -202,11 +202,13 @@ impl Socket {
     }
 
     fn get_fd(&self) -> c_int {
-        self.record().fd
+        self.handle().fd()
     }
 
     fn move_fd(&self) -> c_int {
-        std::mem::replace(&mut self.record().fd, -1)
+        let fd = self.get_fd();
+        self.record().forget_descriptor();
+        fd
     }
 
     fn get_port(&self) -> c_int {
@@ -1281,23 +1283,21 @@ fn misc() {
     // SAFETY: two writable descriptors.
     assert_eq!(unsafe { pipe(fds.as_mut_ptr()) }, 0);
 
-    let mut sock1 = Box::new(Record::new());
-    sock1.fd = fds[1];
-
-    let mut sock2 = Box::new(Record::new());
-    sock2.fd = fds[0];
+    let mut sock1 = Record::over_fd(fds[1]);
+    let mut sock2 = Record::over_fd(fds[0]);
+    let fd = |sock| swoole_rs_corebase::reactor::Socket::new(sock).fd();
 
     let data = test_data();
     // SAFETY: `write` on the record's fd, readable `data`.
     assert_eq!(
-        unsafe { write(sock1.fd, data.as_ptr().cast(), data.len()) },
+        unsafe { write(fd(&mut sock1), data.as_ptr().cast(), data.len()) },
         data.len() as isize
     );
 
     let mut rbuf = [0_u8; 128];
     // SAFETY: `read` on the record's fd into a writable buffer.
     assert_eq!(
-        unsafe { read(sock2.fd, rbuf.as_mut_ptr().cast(), rbuf.len()) },
+        unsafe { read(fd(&mut sock2), rbuf.as_mut_ptr().cast(), rbuf.len()) },
         data.len() as isize
     );
     assert_eq!(data, &rbuf[..data.len()]);

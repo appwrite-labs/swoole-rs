@@ -140,20 +140,7 @@ pub const FD_WARNINGS_SHIFT: u32 = 8;
 
 /// The reactor transport is the only descriptor owner. A waiter keeps the
 /// descriptor until cancellation has completed and close can be retried.
-pub(crate) enum Descriptor {
-    Open(RawFd),
-    Closing(RawFd),
-    Closed,
-}
-
-impl Descriptor {
-    pub(crate) fn raw_fd(self) -> RawFd {
-        match self {
-            Self::Open(fd) | Self::Closing(fd) => fd,
-            Self::Closed => -1,
-        }
-    }
-}
+pub(crate) use swoole_rs_corebase::reactor::Descriptor;
 
 /// A live coroutine socket record: the only way to reach one's fields. The handle is
 /// `Copy`, and a coroutine parked in one member shares the record with another
@@ -611,13 +598,7 @@ impl CoSocket {
     pub(crate) fn descriptor(&self) -> Descriptor {
         let network = self.state.as_deref().map(|bound| &bound.network);
         network
-            .and_then(|network| {
-                network.read(|record| match record.fd {
-                    -1 => Descriptor::Closed,
-                    fd if record.close_deferred() => Descriptor::Closing(fd),
-                    fd => Descriptor::Open(fd),
-                })
-            })
+            .and_then(|network| network.read(SocketFields::descriptor))
             .unwrap_or(Descriptor::Closed)
     }
 
@@ -767,19 +748,20 @@ impl CoSocket {
     /// `init_options`: `TCP_NODELAY` for TCP, the default buffer size for UDP, and
     /// the default length protocol.
     fn init_options(&self, record: &SocketFields) -> u32 {
-        let (tcp, fd, socket_type) = (record.is_tcp(), record.fd, record.socket_type);
+        let (tcp, socket_type) = (record.is_tcp(), record.socket_type);
         let mut result = 0;
         if tcp {
             let on: c_int = 1;
-            let set =
-                swoole_rs_corebase::sys::setsockopt(fd, libc::IPPROTO_TCP, libc::TCP_NODELAY, &on);
-            if set.is_err() {
+            if record
+                .set_option(libc::IPPROTO_TCP, libc::TCP_NODELAY, &on)
+                .is_err()
+            {
                 result |= NODELAY_FAILED;
             }
         }
         if matches!(socket_type, 2 | 4) {
             let size = swoole_rs_corebase::reactor::SOCKET_DEFAULTS.buffer_size();
-            _ = swoole_rs_corebase::reactor::set_socket_buffer_size(fd, true, true, size);
+            _ = record.set_kernel_buffer_size(true, true, size);
         }
         let mut protocol = self.protocol.get();
         protocol.package_length_type = b'N';
