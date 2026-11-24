@@ -487,7 +487,7 @@ pub(crate) fn close_connection(
     if ssl {
         tls::socket_ssl_close_quietly(*sock, conn.peer_closed());
     }
-    drop(sock.edit(|s| s.recv_buffer.take()));
+    drop(sock.edit(SocketFields::take_recv_buffer));
     if let Some(port) = port
         && port.open_http_protocol.get()
     {

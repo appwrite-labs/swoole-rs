@@ -341,10 +341,7 @@ pub(crate) fn incoming(
     let idle = port.config().max_idle_time.get();
     if idle > 0.0 {
         let timer = idle_timer(conn, idle);
-        sock.edit(|s| {
-            s.set_timeout(idle, swoole_rs_corebase::reactor::TimeoutKind::READ);
-            s.recv_timer = timer;
-        });
+        sock.edit(|s| s.watch_recv_idle(idle, timer));
     }
     if !sock.read(|s| s.ssl().is_null()) {
         return reactor.add(sock, Events::READ);

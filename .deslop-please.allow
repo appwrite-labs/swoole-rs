@@ -63,15 +63,10 @@ field-leak swoole_rs_corebase::reactor::socket_record::SocketFields::event_hup
 field-leak swoole_rs_corebase::reactor::socket_record::SocketFields::events
 field-leak swoole_rs_corebase::reactor::socket_record::SocketFields::fd
 field-leak swoole_rs_corebase::reactor::socket_record::SocketFields::fd_type
-field-leak swoole_rs_corebase::reactor::socket_record::SocketFields::in_buffer
 field-leak swoole_rs_corebase::reactor::socket_record::SocketFields::kernel_nobufs
 field-leak swoole_rs_corebase::reactor::socket_record::SocketFields::owner
-field-leak swoole_rs_corebase::reactor::socket_record::SocketFields::recv_buffer
-field-leak swoole_rs_corebase::reactor::socket_record::SocketFields::recv_timer
-field-leak swoole_rs_corebase::reactor::socket_record::SocketFields::recv_wait
 field-leak swoole_rs_corebase::reactor::socket_record::SocketFields::removed
 field-leak swoole_rs_corebase::reactor::socket_record::SocketFields::silent_remove
-field-leak swoole_rs_corebase::reactor::socket_record::SocketFields::skip_recv
 field-leak swoole_rs_corebase::reactor::socket_record::SocketFields::tls
 field-leak swoole_rs_corebase::reactor::socket_record::SocketRecord::fields
 field-leak swoole_rs_corebase::resolver_request::ResolverRequest::fields

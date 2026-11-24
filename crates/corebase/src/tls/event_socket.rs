@@ -110,22 +110,22 @@ impl EventSocket {
         let owned = self.0;
         let owned = {
             let record = owned.socket();
-            // The buffers leave the record here and go below, after the timers and
-            // outside the record's borrow: an entry's disposer runs as its buffer goes.
-            let (timers, buffers) = record.edit(|record| {
+            // The output queue leaves the record here and goes below, after the timers
+            // and outside the record's borrow: an entry's disposer runs as it goes.
+            let (timers, queue) = record.edit(|record| {
                 if keep_fd {
                     record.forget_descriptor();
                 }
                 (
-                    [record.recv_timer, record.take_send_timer()],
-                    [record.in_buffer.take(), record.take_output_queue()],
+                    [record.take_recv_timer(), record.take_send_timer()],
+                    record.take_output_queue(),
                 )
             });
             for timer in timers.into_iter().flatten() {
                 crate::timer::del_id(timer);
             }
-            // `delete in_buffer; delete out_buffer`.
-            drop(buffers);
+            // `delete out_buffer`.
+            drop(queue);
             if event_api::swoole_event_is_available() {
                 if record.read(SocketFields::is_registered) {
                     // `swoole_event_del(this)` on the thread's reactor, which logs a

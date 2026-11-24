@@ -295,6 +295,90 @@ impl SocketFields {
     }
 }
 
+/// The receive side between readable events: the reader's buffer, the receive idle
+/// timer, and the framing loop's wait and skip.
+impl SocketFields {
+    /// The bytes kept from the last readable event, out of the socket for this read;
+    /// none when it kept none.
+    #[inline]
+    #[must_use]
+    pub fn take_recv_buffer(&mut self) -> Option<Box<crate::buffer::string::OwnedString>> {
+        self.recv_buffer.take()
+    }
+
+    /// Keeps `recv`'s bytes for the next readable event, unless the socket kept a buffer
+    /// meanwhile, which stays.
+    #[inline]
+    pub fn keep_recv_buffer(&mut self, recv: Box<crate::buffer::string::OwnedString>) {
+        self.recv_buffer.get_or_insert(recv);
+    }
+
+    /// Watches the socket's receives for `idle` seconds of quiet: the read timeout and
+    /// `timer` as the receive idle timer.
+    #[inline]
+    pub fn watch_recv_idle(&mut self, idle: f64, timer: Option<crate::timer_key::Held>) {
+        self.set_timeout(idle, crate::reactor::TimeoutKind::READ);
+        self.recv_timer = timer;
+    }
+
+    /// The receive idle timer, disarmed, for the caller to delete.
+    #[inline]
+    #[must_use]
+    pub fn take_recv_timer(&mut self) -> Option<crate::timer_key::Held> {
+        self.recv_timer.take()
+    }
+
+    /// Whether the socket's reader waits for more data before it can go on: the rest
+    /// of a package, or a request (`recv_wait`).
+    #[inline]
+    pub fn await_recv(&mut self, waiting: bool) {
+        self.recv_wait = waiting;
+    }
+
+    /// Whether the socket's reader waits for more data ([`Self::await_recv`]).
+    #[inline]
+    #[must_use]
+    pub fn awaits_recv(&self) -> bool {
+        self.recv_wait
+    }
+
+    /// The next framing read starts over the package length it already has
+    /// (`skip_recv`).
+    #[inline]
+    pub fn skip_next_recv(&mut self) {
+        self.skip_recv = true;
+    }
+
+    /// The pending skip is spent.
+    #[inline]
+    pub fn clear_recv_skip(&mut self) {
+        self.skip_recv = false;
+    }
+
+    /// The framing loop's flags from the socket: removed, waiting, TLS, and paused,
+    /// which `paused` is asked only of a removed socket.
+    #[inline(always)]
+    pub fn framing_flags(&self, paused: impl FnOnce() -> bool) -> u32 {
+        use swoole_rs_framing::recv::{FLAG_PAUSED, FLAG_REMOVED, FLAG_TLS, FLAG_WAIT};
+        (if self.removed { FLAG_REMOVED } else { 0 })
+            | (if self.recv_wait { FLAG_WAIT } else { 0 })
+            | (if self.ssl().is_null() { 0 } else { FLAG_TLS })
+            | (if self.removed && paused() {
+                FLAG_PAUSED
+            } else {
+                0
+            })
+    }
+
+    /// [`Self::framing_flags`] at a read's start, with `FLAG_SKIP` while a skip is
+    /// pending.
+    #[inline(always)]
+    pub fn framing_entry_flags(&self, paused: impl FnOnce() -> bool) -> u32 {
+        use swoole_rs_framing::recv::FLAG_SKIP;
+        self.framing_flags(paused) | if self.skip_recv { FLAG_SKIP } else { 0 }
+    }
+}
+
 /// `Socket::recv`: recv(2), or `tls` reads until `buffer` is full when the socket is
 /// nonblocking or `MSG_WAITALL` is set, retried on EINTR unless `dont_restart`. Counted
 /// into `total_recv_bytes` and, with a receive timer, `last_received_time`. A read that

@@ -15,9 +15,7 @@ use swoole_rs_corebase::reactor::{Caught, Socket, SocketFields, swr_v1_socket_re
 use swoole_rs_corebase::{log, swr_v1_core_pagesize};
 use swoole_rs_error::ErrorCode;
 use swoole_rs_framing::recv::{self, Buffer, Effects, Received, Status, recv};
-use swoole_rs_framing::recv::{
-    FLAG_DYNAMIC, FLAG_PAUSED, FLAG_REMOVED, FLAG_SKIP, FLAG_TLS, FLAG_WAIT, Mode, Op,
-};
+use swoole_rs_framing::recv::{FLAG_DYNAMIC, FLAG_SKIP, FLAG_WAIT, Mode, Op};
 use swoole_rs_framing::{DefaultLength, default_length};
 
 /// One receive: the protocol and socket each effect acts on, live for the receive.
@@ -96,7 +94,7 @@ impl<S: Source, K: Packages> With<'_, S, K> {
         let wait = flags & FLAG_WAIT != 0;
         if wait != self.1 {
             self.1 = wait;
-            self.0.socket.edit(|s| s.recv_wait = wait);
+            self.0.socket.edit(|s| s.await_recv(wait));
         }
     }
 
@@ -104,7 +102,7 @@ impl<S: Source, K: Packages> With<'_, S, K> {
     /// closed it.
     #[inline(always)]
     fn refresh(&mut self, flags: &mut u32) {
-        *flags = self.0.socket.read(|s| socket_flags(s, || self.2.paused()));
+        *flags = self.0.socket.read(|s| s.framing_flags(|| self.2.paused()));
         self.1 = *flags & FLAG_WAIT != 0;
     }
 
@@ -116,17 +114,6 @@ impl<S: Source, K: Packages> With<'_, S, K> {
         self.refresh(flags);
         result
     }
-}
-
-pub fn socket_flags(socket: &SocketFields, paused: impl FnOnce() -> bool) -> u32 {
-    (if socket.removed { FLAG_REMOVED } else { 0 })
-        | (if socket.recv_wait { FLAG_WAIT } else { 0 })
-        | (if socket.ssl().is_null() { 0 } else { FLAG_TLS })
-        | (if socket.removed && paused() {
-            FLAG_PAUSED
-        } else {
-            0
-        })
 }
 
 /// `proto_error`: the warning, with the peer's address (or the socket's own when
@@ -299,7 +286,7 @@ fn rare(r: Recv<'_, impl Source>, b: &mut StringBuffer, op: Op, arg: usize) {
     match op {
         Op::Extend => b.extend(arg),
         Op::Reduce => b.reduce(i64::try_from(arg).unwrap_or(i64::MAX)),
-        Op::ClearSkip => s.edit(|s| s.skip_recv = false),
+        Op::ClearSkip => s.edit(SocketFields::clear_recv_skip),
         Op::LogMalformed => {
             let message = format!("received {} bytes of malformed data, remote_addr=", b.len());
             proto_error(
@@ -345,7 +332,7 @@ pub fn receive<'a, S: Source, K: Packages>(
     buffer: &'a mut StringBuffer,
     mode: Mode,
     packages: K,
-    initial: Option<(u32, bool)>,
+    initial: Option<u32>,
 ) -> Status {
     let mut r = With::<S, K>(
         Recv {
@@ -357,8 +344,8 @@ pub fn receive<'a, S: Source, K: Packages>(
         packages,
         buffer,
     );
-    let (mut flags, skip) =
-        initial.unwrap_or_else(|| socket.read(|s| (socket_flags(s, || r.2.paused()), s.skip_recv)));
+    let entry = initial.unwrap_or_else(|| socket.read(|s| s.framing_entry_flags(|| r.2.paused())));
+    let (mut flags, skip) = (entry & !FLAG_SKIP, entry & FLAG_SKIP != 0);
     r.1 = flags & FLAG_WAIT != 0;
     let mut head = 0;
     if let Some(fixed) = K::HEAD {
