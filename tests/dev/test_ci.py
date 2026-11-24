@@ -261,7 +261,7 @@ class Ci(unittest.TestCase):
 
     def test_runs_without_phases_show_their_failed_jobs_annotations(self):
         annotations = {'100': [{'title': 'build failed', 'message': 'exit 101, target/reports/dev/x/build.log'},
-                               {'title': None, 'message': 'Process completed with exit code 1.'}]}
+                               None, {'title': None, 'message': 'Process completed with exit code 1.'}]}
         code, result, _ = self.ci('status', runs={'c' * 40: ['failure']}, jobs={'7': [['rust', 'failure']]},
                                   annotations=annotations, flags=('--poll', '0'))
         self.assertIn('--- rust annotations\nbuild failed: exit 101, target/reports/dev/x/build.log\n'
