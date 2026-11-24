@@ -703,7 +703,7 @@ fn pipe_write(reactor: Running<'_>, event: &mut Event) -> bool {
 
 fn count_write(_: Running<'_>, event: &mut Event) -> bool {
     // SAFETY: the socket's object is reactor_test_func's write_count.
-    unsafe { *(*ev_socket(event)).fields.object.cast::<c_int>() += 1 };
+    unsafe { *(*ev_socket(event)).fields.attached_object::<c_int>() += 1 };
     true
 }
 
@@ -729,7 +729,7 @@ unsafe fn reactor_test_func(reactor: Running<'_>) {
 
         let write_count: *mut c_int = Box::into_raw(Box::new(0));
         let sock2 = sock(&unsock, false);
-        (*sock2).fields.object = write_count.cast();
+        (*sock2).fields.attach_object(write_count);
         (*sock2).fields.fd_type = SW_FD_STREAM;
 
         reactor_upstream::set_handlers(
@@ -787,7 +787,7 @@ fn reuse_read(reactor: Running<'_>, event: &mut Event) -> bool {
     // SAFETY: the socket's object is the case's PollSocketState.
     unsafe {
         let socket = ev_socket(event);
-        let state = &mut *(*socket).fields.object.cast::<PollSocketState>();
+        let state = &mut *(*socket).fields.attached_object::<PollSocketState>();
         let mut data = [0u8; 1];
         expect_eq!(sock_read(socket, &mut data), 1);
         state.dispatched_socket = socket;
@@ -804,7 +804,9 @@ fn reuse_read(reactor: Running<'_>, event: &mut Event) -> bool {
         expect_eq!(dup2(state.source_fd, fd), fd);
 
         state.replacement_socket = SocketRecord::with_fd(fd, SW_FD_USER).into_raw();
-        (*state.replacement_socket).fields.object = (&raw mut state.replacement_count).cast();
+        (*state.replacement_socket)
+            .fields
+            .attach_object(&raw mut state.replacement_count);
         expect_eq!(add(reactor, state.replacement_socket, SW_EVENT_READ), SW_OK);
     }
     true
@@ -812,7 +814,7 @@ fn reuse_read(reactor: Running<'_>, event: &mut Event) -> bool {
 
 fn count_user(_: Running<'_>, event: &mut Event) -> bool {
     // SAFETY: the socket's object is the state's replacement_count.
-    unsafe { *(*ev_socket(event)).fields.object.cast::<c_int>() += 1 };
+    unsafe { *(*ev_socket(event)).fields.attached_object::<c_int>() += 1 };
     true
 }
 
@@ -840,7 +842,7 @@ unsafe fn poll_readiness_after_fd_reuse() {
         }));
         for &socket in &(*state).sockets {
             (*socket).fields.fd_type = SW_FD_STREAM;
-            (*socket).fields.object = state.cast();
+            (*socket).fields.attach_object(state);
         }
 
         reactor_upstream::set_handlers(
@@ -1299,7 +1301,7 @@ fn fail_write(reactor: Running<'_>, event: &mut Event) -> bool {
     unsafe {
         let socket = ev_socket(event);
         expect_eq!(set(reactor, socket, SW_EVENT_READ), 0);
-        let pair = (*socket).fields.object;
+        let pair = (*socket).fields.attached_object::<c_void>();
         assert!(swoole_rs_ffi::add_fn(10, false, move || write_pkt(pair)).is_some());
     }
     false
@@ -1324,7 +1326,9 @@ unsafe fn handle_fail() {
         );
 
         let socket = sock(&p, false);
-        (*socket).fields.object = ptr::from_ref::<SocketPair>(&p).cast_mut().cast();
+        (*socket)
+            .fields
+            .attach_object(ptr::from_ref::<SocketPair>(&p).cast_mut());
 
         assert!(event_api::event_add(handle(socket), Events::RDWR));
 

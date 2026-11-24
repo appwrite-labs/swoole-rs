@@ -201,7 +201,7 @@ pub(crate) mod native {
                 Object::Waiter(waiter) => (FdType::SW_FD_CO_EVENT, waiter.as_ptr()),
             };
             let mut record = SocketRecord::with_fd(fd, fd_type as c_int);
-            record.object = object;
+            record.attach_object(object);
             // The record is this watch's until it drops, off the reactor by then.
             let socket = EventSocket::adopt(Box::new(record));
             if !reactor_upstream::change(reactor, socket.heap(), ChangeOp::Add, events) {

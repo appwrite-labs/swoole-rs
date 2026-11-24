@@ -465,7 +465,7 @@ pub(crate) fn store_listen_socket(serv: view::Server<'_>) {
         if let Err(error) = assigned {
             log::set_last_error(error);
         }
-        socket.edit(|socket| socket.object = ls);
+        socket.edit(|socket| socket.attach_object(ls));
         if let Some(gs) = crate::shared::server_counters(state) {
             let bounds = state.fd_bounds(gs);
             bounds.min_fd.store(fd, Relaxed);
@@ -910,7 +910,11 @@ mod tests {
         assert_eq!(conn.socket_type().0, 1, "TCP");
         assert_eq!(conn.info().kind, 1, "its address");
         assert_eq!(
-            live.port_socket().read(|s| s.object).addr(),
+            live.port_socket()
+                .read(
+                    swoole_rs_corebase::reactor::SocketFields::attached_object::<core::ffi::c_void>
+                )
+                .addr(),
             port,
             "the socket's port"
         );

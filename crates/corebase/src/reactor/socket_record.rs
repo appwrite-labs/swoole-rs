@@ -107,7 +107,9 @@ pub struct SocketFields {
     pub close_notified: bool,
     pub chunk_size: u32,
     pub output: SocketOutput,
-    pub object: *mut c_void,
+    /// The native owner (`network::Socket::object`) the readiness handlers reach:
+    /// a client, port, connection, query or wait, null without one.
+    object: *mut c_void,
     /// The `SSL` the record owns, freed with it: pointer-sized, null without one.
     ssl: Option<SocketSsl>,
     pub tls: SocketTlsState,
@@ -518,6 +520,35 @@ impl SocketFields {
         self.shared_owner = Some(owner);
     }
 
+    /// Attaches `object`, the native owner this socket's readiness handlers reach,
+    /// in place of what was attached.
+    #[inline]
+    pub fn attach_object<T>(&mut self, object: *mut T) {
+        self.object = object.cast();
+    }
+
+    /// The native owner [`Self::attach_object`] attached, as the `T` its attacher
+    /// made it; null when none is.
+    #[inline]
+    #[must_use]
+    pub fn attached_object<T>(&self) -> *mut T {
+        self.object.cast()
+    }
+
+    /// Detaches the native owner, as one that is going away does so a close in
+    /// progress knows it is gone.
+    #[inline]
+    pub fn detach_object(&mut self) {
+        self.object = ptr::null_mut();
+    }
+
+    /// Whether a native owner is attached.
+    #[inline]
+    #[must_use]
+    pub fn has_object(&self) -> bool {
+        !self.object.is_null()
+    }
+
     /// The socket's type, `None` for a code no `SW_SOCK_*` names.
     #[must_use]
     pub fn kind(&self) -> Option<SocketType> {
@@ -734,7 +765,7 @@ mod tests {
         assert_eq!(socket.timeouts.connect, 10.0);
         assert_eq!(socket.timeouts.read, 60.0);
         assert_eq!(socket.fd, 0);
-        assert!(socket.object.is_null() && socket.output.out_buffer.is_none());
+        assert!(!socket.has_object() && socket.output.out_buffer.is_none());
     }
 
     #[test]

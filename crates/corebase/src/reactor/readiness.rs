@@ -81,7 +81,7 @@ pub(crate) fn init_reactor(reactor: Running<'_>) {
 /// The fired socket's object and fd.
 fn fired(event: &Event) -> (*mut c_void, c_int) {
     let object = event.socket().map_or(core::ptr::null_mut(), |socket| {
-        socket.read(|record| record.object)
+        socket.read(crate::reactor::SocketFields::attached_object)
     });
     (object, event.fd())
 }
@@ -206,7 +206,7 @@ mod tests {
 
     fn add(fd: i32, _: Events, waiter: Registered) -> Result<Socket, i32> {
         let socket = SocketRecord::with_fd(fd, FdType::SW_FD_CO_EVENT as c_int).into_raw();
-        unsafe { (*socket).fields.object = waiter.as_ptr() };
+        unsafe { (*socket).fields.attach_object(waiter.as_ptr()) };
         SOCKET.set(socket);
         Ok(Socket(socket))
     }

@@ -229,7 +229,7 @@ fn listener(notification: Notification) {
     };
     log(format!("call {event:?} {length}"));
     if mock(|m| m.releases) == Some(event) {
-        sock().object = core::ptr::null_mut();
+        sock().detach_object();
     }
 }
 /// The connect timer: logs, adds nothing.
