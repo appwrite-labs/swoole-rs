@@ -987,12 +987,7 @@ fn header_block(session: &Session, stream: &Stream, flags: u32, payload: &[u8]) 
     session.header_stream_id.set(0);
     if session.remaining_headers.get().is_none() {
         const ENHANCE_YOUR_CALM: u32 = 11;
-        let mut reset_ids = session.recently_reset.get();
-        reset_ids.rotate_right(1);
-        reset_ids[0] = stream.id;
-        session.recently_reset.set(reset_ids);
-        reset(stream.ctx(), stream.id, ENHANCE_YOUR_CALM);
-        return session.remove(stream.id);
+        return reset_stream(session, stream, ENHANCE_YOUR_CALM);
     }
     if !discard && !headers_complete(stream) {
         return false;
@@ -1116,6 +1111,15 @@ fn settings(session: &Session, payload: &[u8]) -> bool {
     true
 }
 
+fn reset_stream(session: &Session, stream: &Stream, code: u32) -> bool {
+    let mut ids = session.recently_reset.get();
+    ids.rotate_right(1);
+    ids[0] = stream.id;
+    session.recently_reset.set(ids);
+    reset(stream.ctx(), stream.id, code);
+    session.remove(stream.id)
+}
+
 /// A DATA frame: buffer the body, keep the windows open and dispatch the
 /// request at the end of the stream.
 fn data(session: &Session, stream_id: u32, flags: u32, payload: &[u8]) -> bool {
@@ -1141,8 +1145,8 @@ fn data(session: &Session, stream_id: u32, flags: u32, payload: &[u8]) -> bool {
         let buffered = ctx.data_start();
         let ended = get(ctx, Field::End) != 0;
         if sw_rs_http2_data_rejected(buffered, length, session.max_body_size, ended) {
-            reset(ctx, stream_id, 0);
-            return session.remove(stream_id);
+            connection_flow(session, ctx, length);
+            return reset_stream(session, &stream, 0);
         }
         ctx.data_append(payload);
         flow(session, &stream, ctx, stream_id, length);

@@ -15,7 +15,7 @@ def test_body_over_the_limit_resets_its_stream(engine):
     with server(engine, Path(__file__).with_name('body_limit_server.php')) as (port, _):
         with socket.create_connection(('127.0.0.1', port), timeout=10) as conn:
             conn.sendall(PREFACE + frame(4, 0, 0) + frame(1, 4, 1, REQUEST) +
-                         frame(0, 0, 1, b'a' * 16000) * 5)
+                         frame(0, 0, 1, b'a' * 16000) * 5 + frame(0, 1, 1, b'last'))
             while True:
                 head = read(conn, 9)
                 payload = read(conn, int.from_bytes(head[:3], 'big'))
