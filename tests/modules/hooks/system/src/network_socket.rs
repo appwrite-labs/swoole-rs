@@ -215,7 +215,7 @@ impl Socket {
 
     fn set_timeout(&self, timeout: f64, kind: c_int) {
         self.handle().edit(|record| {
-            record.timeouts.set(
+            record.set_timeout(
                 timeout,
                 swoole_rs_corebase::reactor::TimeoutKind::from_bits(kind),
             )

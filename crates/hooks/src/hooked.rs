@@ -430,11 +430,12 @@ fn blocking(fd: c_int, write: bool) -> SocketRecord {
     let mut socket = SocketRecord::new();
     socket.fd = fd;
     socket.note_nonblocking(true);
-    if write {
-        socket.timeouts.write = -1.0;
+    let kind = if write {
+        swoole_rs_corebase::reactor::TimeoutKind::WRITE
     } else {
-        socket.timeouts.read = -1.0;
-    }
+        swoole_rs_corebase::reactor::TimeoutKind::READ
+    };
+    socket.set_timeout(-1.0, kind);
     socket
 }
 

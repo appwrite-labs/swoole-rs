@@ -195,9 +195,7 @@ pub(crate) fn pipe_close(slot: &Slot, worker: Worker<'_>, which: i64) -> bool {
 pub(crate) fn pipe_timeout(worker: Worker<'_>, seconds: f64) -> bool {
     pipe(worker).is_some_and(|socket| {
         socket.edit(|record| {
-            record
-                .timeouts
-                .set(seconds, swoole_rs_corebase::reactor::TimeoutKind::ALL);
+            record.set_timeout(seconds, swoole_rs_corebase::reactor::TimeoutKind::ALL);
             socket_set_kernel_read_timeout(record, seconds)
                 && socket_set_kernel_write_timeout(record, seconds)
         })

@@ -401,7 +401,7 @@ impl Connecting for Live<'_> {
         let domain = self.socket.sock_domain();
         let timeout = self
             .socket
-            .net(|network| network.timeouts.dns)
+            .net(|network| network.dns_timeout())
             .unwrap_or(0.0);
         let mut address = Vec::<u8>::new();
         let co = (ops().current)();

@@ -615,8 +615,7 @@ impl PoolNative for Native {
             let next = swoole_timer_get_next_msec();
             let timeout = next.c_cast::<f64>() / 1000.0;
             pipe.edit(|pipe| {
-                pipe.timeouts
-                    .set(timeout, swoole_rs_corebase::reactor::TimeoutKind::READ);
+                pipe.set_timeout(timeout, swoole_rs_corebase::reactor::TimeoutKind::READ);
             });
             upstream::read_sync(*pipe, c.connection_buffer().1).map_or(-1, usize::cast_signed)
         });

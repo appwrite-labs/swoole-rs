@@ -578,13 +578,10 @@ fn sync<S: ReadSlot>(socket: Socket<'_>, io: Io<'_, '_, S>, flags: c_int) -> Opt
         Io::Write(_) | Io::Writev(_) | Io::SendTo(..) => (SyncMode::Once, Events::WRITE),
     };
     let (timeout, dont_restart) = socket.read(|record| {
-        let timeouts = record.timeouts;
-        let timeout = if event == Events::WRITE {
-            timeouts.write
-        } else {
-            timeouts.read
-        };
-        (timeout, record.dont_restart)
+        (
+            record.io_timeout(event == Events::WRITE),
+            record.dont_restart,
+        )
     });
     let mut call = Call {
         socket,

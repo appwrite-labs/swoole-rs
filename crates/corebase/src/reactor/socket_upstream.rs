@@ -91,7 +91,7 @@ pub fn connect_sync(
         Connect::Ready => return Ok(()),
         Connect::Error => return Err(IoError::Failed(log::last_error())),
     }
-    let timeout = socket.read(|record| record.timeouts.connect);
+    let timeout = socket.read(SocketFields::connect_timeout);
     // Upstream's `timeout > 0 ? sec2msec(timeout) : timeout` is a double.
     let timeout_ms = if timeout > 0.0 {
         (timeout * 1000.0).c_cast::<i64>().c_cast::<c_int>()

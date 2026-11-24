@@ -174,7 +174,7 @@ impl Co {
 
     /// The `network::Socket`'s read timeout, or 0 without one.
     pub(crate) fn read_timeout(self) -> f64 {
-        self.net(|record| record.timeouts.read).unwrap_or(0.0)
+        self.net(|record| record.io_timeout(false)).unwrap_or(0.0)
     }
 
     /// `Socket::ssl_handshake()`: Rust's sequence ([`crate::connect::ssl_handshake`]) over

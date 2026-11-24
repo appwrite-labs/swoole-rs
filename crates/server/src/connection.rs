@@ -178,8 +178,7 @@ pub fn add<'a>(
         s.object = conn.as_ptr().cast();
         s.removed = true;
         s.limit_output(buffer_size);
-        s.timeouts.write = 0.0;
-        s.timeouts.read = 0.0;
+        s.clear_io_timeouts();
     });
 
     let listener = ls.listening_socket();
@@ -343,7 +342,7 @@ pub(crate) fn incoming(
     if idle > 0.0 {
         let timer = idle_timer(conn, idle);
         sock.edit(|s| {
-            s.timeouts.read = idle;
+            s.set_timeout(idle, swoole_rs_corebase::reactor::TimeoutKind::READ);
             s.recv_timer = timer;
         });
     }

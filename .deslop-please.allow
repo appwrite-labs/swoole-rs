@@ -88,7 +88,6 @@ field-leak swoole_rs_corebase::reactor::socket_record::SocketFields::ssl_quiet_s
 field-leak swoole_rs_corebase::reactor::socket_record::SocketFields::ssl_renegotiation
 field-leak swoole_rs_corebase::reactor::socket_record::SocketFields::tcp_nodelay
 field-leak swoole_rs_corebase::reactor::socket_record::SocketFields::tcp_nopush
-field-leak swoole_rs_corebase::reactor::socket_record::SocketFields::timeouts
 field-leak swoole_rs_corebase::reactor::socket_record::SocketFields::tls
 field-leak swoole_rs_corebase::reactor::socket_record::SocketFields::total_recv_bytes
 field-leak swoole_rs_corebase::reactor::socket_record::SocketFields::total_send_bytes

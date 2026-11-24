@@ -159,7 +159,7 @@ fn close(socket: Co, sys: Sys) -> bool {
 /// socket's error code while the timer still runs: true once connected. The
 /// socket is open.
 fn settle(socket: Co, sys: Sys) -> bool {
-    let timeout = socket.net(|record| record.timeouts.connect).unwrap_or(0.0);
+    let timeout = socket.net(|record| record.connect_timeout()).unwrap_or(0.0);
     let mut timer = Timer::new(socket, Events::WRITE, timeout);
     let woke = timer.start() && wait_for(socket, Events::WRITE);
     let connected = if woke {

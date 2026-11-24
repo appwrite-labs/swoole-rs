@@ -596,14 +596,14 @@ impl Co {
     /// The socket's timeout of `kind`, or -1 when it has none.
     #[must_use]
     pub fn timeout(self, kind: swoole_rs_corebase::reactor::TimeoutKind) -> f64 {
-        self.net(|record| record.timeouts.get(kind))
+        self.net(|record| record.timeout(kind))
             .flatten()
             .unwrap_or(-1.0)
     }
 
     /// Sets the socket's timeouts selected by `kind`.
     pub fn set_timeout(self, timeout: f64, kind: swoole_rs_corebase::reactor::TimeoutKind) {
-        self.net(|record| record.timeouts.set(timeout, kind));
+        self.net(|record| record.set_timeout(timeout, kind));
     }
 }
 
@@ -1121,7 +1121,6 @@ pub(crate) fn accepted(server: Co, mut conn: Box<SocketRecord>) -> OwnedCo {
     let owned = Box::new(CoSocket::new()).into_owned();
     let owner = owned.co();
     let socket = owner.record();
-    let timeouts = server.net(|record| record.timeouts);
     let kind = server.kind();
     socket.kind.set(kind);
     socket.sock_domain.set(server.sock_domain());
@@ -1132,9 +1131,7 @@ pub(crate) fn accepted(server: Co, mut conn: Box<SocketRecord>) -> OwnedCo {
     conn.socket_type = kind;
     conn.fd_type = FD_CO_SOCKET;
     let result = OPENED | socket.init_options(&conn);
-    if let Some(timeouts) = timeouts {
-        conn.timeouts = timeouts;
-    }
+    server.net(|record| conn.inherit_timeouts(record));
     socket.put_socket(OwnedSocket::new(conn));
     socket.open_length_check.set(server.open_length_check());
     socket.open_eof_check.set(server.open_eof_check());
