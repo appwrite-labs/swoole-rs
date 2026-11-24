@@ -12,9 +12,7 @@ use crate::{
 };
 use libc::c_int;
 use std::{ffi::CStr, rc::Rc};
-use swoole_rs_clients::client::{
-    self as state, ClientEvent, Handle, Notification, SSL_STATE_WAIT_STREAM,
-};
+use swoole_rs_clients::client::{self as state, ClientEvent, Handle, Notification};
 use swoole_rs_clients::valid_port;
 use swoole_rs_corebase::constants::SocketType;
 use swoole_rs_corebase::{CCast, CellExt};
@@ -548,7 +546,7 @@ fn enable_ssl(call: &Call) {
     replace(object, Slot::SslReady, callable);
     conn.ssl_wait.set(true);
     if let Some(socket) = conn.cli().net() {
-        socket.edit(|record| record.tls.state = SSL_STATE_WAIT_STREAM);
+        socket.edit(swoole_rs_corebase::reactor::SocketFields::await_tls_stream);
     }
     call.set_bool(true);
 }

@@ -6,10 +6,10 @@ use swoole_rs_corebase::reactor::Events;
 
 use swoole_rs_corebase::constants::{
     SW_ACCEPT_MAX_COUNT as ACCEPT_MAX_COUNT, SW_ACCEPT_RETRY_TIME,
-    SW_MAX_CONNECTION as MAX_CONNECTION, SW_SEND_BUFFER_SIZE,
-    SW_SESSION_LIST_SIZE as SESSION_LIST_SIZE, SocketType, SocketTypeCode,
+    SW_MAX_CONNECTION as MAX_CONNECTION, SW_SESSION_LIST_SIZE as SESSION_LIST_SIZE, SocketType,
+    SocketTypeCode,
 };
-use swoole_rs_corebase::reactor::{Event, Heap, OwnedSocket};
+use swoole_rs_corebase::reactor::{Event, Heap, OwnedSocket, SocketFields};
 use swoole_rs_corebase::{CCast, log};
 use swoole_rs_error::ErrorCode as E;
 
@@ -28,7 +28,10 @@ pub(crate) fn accept(serv: view::Server<'_>, reactor: Reactor, event: &Event) {
         return;
     };
     // A listening socket's object is its port.
-    let Some(port) = serv.state().listed_port(listener.read(|l| l.object)) else {
+    let Some(port) = serv
+        .state()
+        .listed_port(listener.read(swoole_rs_corebase::reactor::SocketFields::attached_object))
+    else {
         return;
     };
     for _ in 0..ACCEPT_MAX_COUNT {
@@ -68,7 +71,7 @@ pub(crate) fn accept(serv: view::Server<'_>, reactor: Reactor, event: &Event) {
         let Some(sock) = conn.socket() else {
             return;
         };
-        sock.edit(|s| s.chunk_size = SW_SEND_BUFFER_SIZE);
+        sock.edit(swoole_rs_corebase::reactor::SocketFields::send_in_chunks);
         let started = if serv.config().single_thread.get() {
             incoming(serv, reactor, port, conn)
         } else {
@@ -175,7 +178,7 @@ pub fn add<'a>(
     let buffer_size = ls.socket_buffer_size.get().cast_unsigned();
     let socket = sock.socket();
     socket.edit(|s| {
-        s.object = conn.as_ptr().cast();
+        s.attach_object(conn.as_ptr());
         s.removed = true;
         s.limit_output(buffer_size);
         s.clear_io_timeouts();
@@ -183,14 +186,11 @@ pub fn add<'a>(
 
     let listener = ls.listening_socket();
     let tcp = listener.is_some_and(|l| l.read(swoole_rs_corebase::reactor::SocketFields::is_tcp));
-    if ls.open_tcp_nodelay.get() && tcp {
-        if !socket.edit(|s| s.set_tcp_nodelay(1)) {
-            log::sys_warning(
-                c"Server::add_connection",
-                format_args!("setsockopt(TCP_NODELAY) failed"),
-            );
-        }
-        socket.edit(|s| s.enable_tcp_nodelay = true);
+    if ls.open_tcp_nodelay.get() && tcp && !socket.edit(SocketFields::keep_tcp_nodelay) {
+        log::sys_warning(
+            c"Server::add_connection",
+            format_args!("setsockopt(TCP_NODELAY) failed"),
+        );
     }
     // Upstream sets the buffer sizes on the listening socket.
     let listen_fd = listener.map_or(-1, |listener| listener.fd());
@@ -215,7 +215,7 @@ pub fn add<'a>(
         }
     }
     if !ls.ssl {
-        socket.edit(|s| s.direct_send = true);
+        socket.edit(SocketFields::allow_direct_send);
     }
     init(serv, conn, ls, sock, server_fd, reactor_id);
 
@@ -341,10 +341,7 @@ pub(crate) fn incoming(
     let idle = port.config().max_idle_time.get();
     if idle > 0.0 {
         let timer = idle_timer(conn, idle);
-        sock.edit(|s| {
-            s.set_timeout(idle, swoole_rs_corebase::reactor::TimeoutKind::READ);
-            s.recv_timer = timer;
-        });
+        sock.edit(|s| s.watch_recv_idle(idle, timer));
     }
     if !sock.read(|s| s.ssl().is_null()) {
         return reactor.add(sock, Events::READ);
@@ -394,10 +391,10 @@ pub(crate) fn idle_timeout(serv: view::Server<'_>, reactor: Reactor, conn: Conne
         .port_by_server_fd(conn.server_fd())
         .map_or(0.0, |port| port.config().max_idle_time.get());
     let now = swoole_rs_corebase::reactor::steady_ms();
-    let (received, sent) = conn
+    let active = conn
         .socket()
-        .map_or_default(|s| s.read(|s| (s.last_received_time, s.last_sent_time)));
-    if now - received < idle && now - sent < idle {
+        .map_or_default(|s| s.read(|s| s.active_within(now, idle)));
+    if active {
         return;
     }
     if serv.config().disable_notify.get() || conn.closed().load(Relaxed) != 0 || conn.close_force()
@@ -562,10 +559,14 @@ mod tests {
         assert!(conn.is_active(), "active");
         conn.socket().unwrap().read(|s| {
             assert!(s.direct_send, "plain sockets send directly");
-            assert_eq!(s.chunk_size, SW_SEND_BUFFER_SIZE, "chunked");
             assert_eq!(
-                s.object,
-                conn.as_ptr().cast(),
+                s.chunk_size,
+                swoole_rs_corebase::constants::SW_SEND_BUFFER_SIZE,
+                "chunked"
+            );
+            assert_eq!(
+                s.attached_object(),
+                conn.as_ptr(),
                 "the socket names its connection"
             );
         });

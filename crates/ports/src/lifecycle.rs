@@ -42,8 +42,7 @@ pub(crate) fn import(config: &mut PortConfig, fd: c_int) -> bool {
     }
     let family = c_int::from(socket.address_family());
     let kind = socket_type(family, so_type);
-    socket.socket_type = kind.raw();
-    socket.type_address(kind.raw());
+    socket.type_as(kind);
     socket.fd_type = if kind.is_dgram() {
         FD_DGRAM_SERVER
     } else {

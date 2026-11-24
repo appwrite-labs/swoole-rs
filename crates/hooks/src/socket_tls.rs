@@ -14,7 +14,7 @@ use swoole_rs_corebase::tls::upstream::{
     socket_ssl_accept, socket_ssl_check_host, socket_ssl_connect, socket_ssl_verify,
 };
 use swoole_rs_corebase::tls::{
-    Accept, OwnedTlsContext, SocketContextError, SslNewError, SslState, TlsContext, TlsSettings,
+    Accept, OwnedTlsContext, SocketContextError, SslNewError, TlsContext, TlsSettings,
     freeze_socket_context, socket_session,
 };
 
@@ -283,11 +283,17 @@ impl Handshaking for Handshake {
             None | Some(Ok(Accept::Error) | Err(false)) => Step::Failed,
             Some(Ok(Accept::Ready)) => Step::Ready,
             Some(Ok(Accept::Wait)) => Step::Wait,
-            Some(Err(true)) => match socket.net(|record| record.tls.state) {
-                Some(SslState::SW_SSL_STATE_READY) => Step::Ready,
-                Some(SslState::SW_SSL_STATE_WAIT_STREAM) => Step::Wait,
-                _ => Step::Again,
-            },
+            Some(Err(true)) => socket
+                .net(|record| {
+                    if record.tls_ready() {
+                        Step::Ready
+                    } else if record.tls_awaits_stream() {
+                        Step::Wait
+                    } else {
+                        Step::Again
+                    }
+                })
+                .unwrap_or(Step::Again),
         }
     }
 

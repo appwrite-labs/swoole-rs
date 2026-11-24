@@ -54,12 +54,65 @@ impl SocketFields {
         }
     }
 
+    /// [`Self::open_output_queue`] in the socket's own chunks.
+    #[inline]
+    pub fn open_chunked_output_queue(&mut self) {
+        self.open_output_queue(self.chunk_size);
+    }
+
+    /// A stream's sends go out in `SW_SEND_BUFFER_SIZE` chunks.
+    #[inline]
+    pub const fn send_in_chunks(&mut self) {
+        self.chunk_size = crate::constants::SW_SEND_BUFFER_SIZE;
+    }
+
+    /// A DTLS socket's sends go out one `SW_SSL_BUFFER_SIZE` record at a time.
+    #[inline]
+    pub const fn send_in_dtls_records(&mut self) {
+        self.chunk_size = crate::constants::SW_SSL_BUFFER_SIZE;
+    }
+
+    /// The most one TLS send writes: a DTLS socket's chunk, unbounded otherwise.
+    #[inline]
+    #[must_use]
+    pub fn tls_send_limit(&self) -> usize {
+        let chunk = self.chunk_size as usize;
+        if self.is_dtls() && chunk != 0 {
+            chunk
+        } else {
+            usize::MAX
+        }
+    }
+
     /// Whether the socket has an output queue, empty or not: a send that may bypass the
     /// queue can't once it exists.
     #[inline]
     #[must_use]
     pub fn has_output_queue(&self) -> bool {
         self.output.out_buffer.is_some()
+    }
+
+    /// Sends on a plaintext connection may skip the output queue when nothing waits in
+    /// it (`direct_send`).
+    #[inline]
+    pub const fn allow_direct_send(&mut self) {
+        self.direct_send = true;
+    }
+
+    /// Whether a send may go straight to the kernel: direct sends are allowed and
+    /// nothing is queued ahead.
+    #[inline]
+    #[must_use]
+    pub fn may_send_directly(&self) -> bool {
+        self.direct_send && self.output_drained()
+    }
+
+    /// Whether a write may go straight to the kernel before any queue exists: direct
+    /// sends are allowed, there is no TLS session and no output queue.
+    #[inline]
+    #[must_use]
+    pub fn may_write_directly(&self) -> bool {
+        self.direct_send && self.ssl().is_null() && !self.has_output_queue()
     }
 
     /// `Buffer::empty(out_buffer)`: nothing is queued, with or without a queue.
@@ -196,10 +249,15 @@ impl SocketFields {
         self.output.send_timer
     }
 
-    /// Arms `timer` as the idle timer watching the socket's sends.
+    /// Watches the socket's sends for `idle` seconds of quiet from `now`: the write
+    /// timeout, the idle clock and, when given, `timer` as the send idle timer.
     #[inline]
-    pub fn arm_send_timer(&mut self, timer: crate::timer_key::Held) {
-        self.output.send_timer = Some(timer);
+    pub fn watch_send_idle(&mut self, idle: f64, timer: Option<crate::timer_key::Held>, now: f64) {
+        self.set_timeout(idle, crate::reactor::TimeoutKind::WRITE);
+        self.last_sent_time = now;
+        if let Some(timer) = timer {
+            self.output.send_timer = Some(timer);
+        }
     }
 
     /// The send idle timer, disarmed, for the caller to delete.

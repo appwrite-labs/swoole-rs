@@ -254,27 +254,44 @@ impl<'a> Socket<'a> {
         edit(unsafe { &mut (*self.record.as_ptr()).fields })
     }
 
+    /// `fd`.
+    #[must_use]
+    #[track_caller]
+    pub fn fd(self) -> c_int {
+        self.read(|record| record.fd)
+    }
+
     /// `Socket::catch_error(error)`. It edits only on `ENOBUFS`, the one error that sets
     /// `kernel_nobufs`, so threads that share a record (a pipe) and hit `EAGAIN` only read it.
     #[track_caller]
     pub fn catch_error(self, error: c_int) -> crate::reactor::Caught {
-        self.catch(crate::reactor::catch_error, error)
+        self.catch(
+            SocketFields::catch_error,
+            crate::reactor::catch_error,
+            error,
+        )
     }
 
     /// `Socket::catch_write_pipe_error(error)`, editing as [`Self::catch_error`] does.
     #[track_caller]
     pub fn catch_pipe_error(self, error: c_int) -> crate::reactor::Caught {
-        self.catch(crate::reactor::catch_pipe_error, error)
+        self.catch(
+            SocketFields::catch_pipe_error,
+            crate::reactor::catch_pipe_error,
+            error,
+        )
     }
 
+    /// `on_record` over the record on `ENOBUFS`; otherwise `catch`, which sets nothing.
     #[track_caller]
     fn catch(
         self,
+        on_record: fn(&mut SocketFields, c_int) -> crate::reactor::Caught,
         catch: fn(c_int, &mut bool) -> crate::reactor::Caught,
         error: c_int,
     ) -> crate::reactor::Caught {
         if error == libc::ENOBUFS {
-            self.edit(|record| catch(error, &mut record.kernel_nobufs))
+            self.edit(|record| on_record(record, error))
         } else {
             catch(error, &mut false)
         }
@@ -285,8 +302,7 @@ impl<'a> Socket<'a> {
     #[must_use]
     #[track_caller]
     pub fn take_kernel_nobufs(self) -> bool {
-        self.read(|record| record.kernel_nobufs)
-            && self.edit(|record| std::mem::take(&mut record.kernel_nobufs))
+        self.read(SocketFields::kernel_nobufs_pending) && self.edit(SocketFields::has_kernel_nobufs)
     }
 
     /// `Socket::wait_event`: whether an event came. It waits outside any borrow, since the

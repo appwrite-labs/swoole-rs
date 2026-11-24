@@ -268,18 +268,9 @@ pub fn ssl_recv_spare(socket: Socket<'_>, spare: &mut Spare<'_>) -> Option<usize
 /// DTLS socket sends at most `chunk_size`; None on error or without an SSL.
 #[must_use]
 pub fn ssl_send_drain(socket: Socket<'_>, data: Drain<'_>) -> Option<usize> {
-    let result = with_tls(
-        socket,
-        |record| {
-            let chunk = record.chunk_size as usize;
-            if record.dtls && chunk != 0 {
-                chunk
-            } else {
-                usize::MAX
-            }
-        },
-        |tls, ssl, limit| swr_v1_socket_ssl_send(tls, ssl, data.first(limit).bytes()),
-    );
+    let result = with_tls(socket, SocketFields::tls_send_limit, |tls, ssl, limit| {
+        swr_v1_socket_ssl_send(tls, ssl, data.first(limit).bytes())
+    });
     ssl_io(socket, result)
 }
 
@@ -310,7 +301,11 @@ fn error_reason_text() -> (c_int, String) {
 /// `ReturnCode Socket::ssl_accept()`: `SW_ERROR` without an SSL.
 #[must_use]
 pub fn socket_ssl_accept(socket: Socket<'_>) -> Accept {
-    let Some(result) = with_tls(socket, |record| record.dtls, swr_v1_socket_ssl_accept) else {
+    let Some(result) = with_tls(
+        socket,
+        |_| (),
+        |tls, ssl, ()| swr_v1_socket_ssl_accept(tls, ssl),
+    ) else {
         return Accept::Error;
     };
     handshake(result.last_error);
@@ -713,7 +708,7 @@ fn ssl_sendfile(
     let send = |data: &[u8]| ssl_send_drain(socket, Drain::new(data));
     let result = ssl_sendfile_fd(fd, offset, size, send, &mut nobufs);
     if nobufs {
-        socket.edit(|record| record.kernel_nobufs = true);
+        socket.edit(crate::reactor::SocketFields::note_kernel_nobufs);
     }
     if let Some(warning) = result.warn {
         let call = match warning {
@@ -965,18 +960,19 @@ pub fn send_async(socket: crate::reactor::Heap<'_>, data: &[u8]) -> Option<usize
     reason = "ssl_close ignores the result, as upstream does"
 )]
 pub fn socket_ssl_shutdown(socket: Socket<'_>) -> bool {
+    shutdown(socket, false)
+}
+
+/// [`socket_ssl_shutdown`], quiet when `quiet` (upstream's `ssl_quiet_shutdown`).
+fn shutdown(socket: Socket<'_>, quiet: bool) -> bool {
     let repaired = HALFCLOSE_REPAIRS;
-    let Some((result, closed)) = with_tls(
+    let Some(result) = with_tls(
         socket,
-        |record| (record.ssl_quiet_shutdown, record.ssl_closed),
-        |tls, ssl, (quiet, mut closed)| {
-            let result = ssl_shutdown(tls, ssl, &mut closed, quiet, repaired);
-            (result, closed)
-        },
+        |_| (),
+        |tls, ssl, ()| ssl_shutdown(tls, ssl, quiet, repaired),
     ) else {
         return false;
     };
-    socket.edit(|record| record.ssl_closed = closed);
     if let Err(error) = result {
         let (reason, error) = error.reason();
         let error = match error {
@@ -1006,8 +1002,14 @@ pub fn socket_ssl_set_host_name(socket: Socket<'_>, name: &CStr) -> bool {
 /// complains about `SSL_shutdown` during a handshake), then frees the SSL.
 /// Pending operations retain their own SSL references until their handles expire.
 pub fn socket_ssl_close(socket: Socket<'_>) {
-    if !socket.read(|record| record.ssl_closed) {
-        socket_ssl_shutdown(socket);
+    socket_ssl_close_quietly(socket, false);
+}
+
+/// [`socket_ssl_close`] whose shutdown sends no `close_notify` when `quiet`: a peer
+/// that has gone would answer one with a reset.
+pub fn socket_ssl_close_quietly(socket: Socket<'_>, quiet: bool) {
+    if !socket.read(SocketFields::tls_closed) {
+        shutdown(socket, quiet);
     }
     socket.edit(SocketFields::close_ssl);
 }

@@ -59,7 +59,7 @@ pub(super) mod ops {
             return None;
         }
         let mut record = SocketRecord::over_fd(mock(|m| m.socket_fd).unwrap_or(-1));
-        record.socket_type = kind;
+        record.open_as(kind, swoole_rs_corebase::constants::SocketFlag::default());
         let socket = swoole_rs_corebase::reactor::OwnedSocket::new(Box::new(record));
         mock(|m| m.socket = core::ptr::NonNull::new(socket.socket().as_ptr()));
         Some(socket)
@@ -230,7 +230,7 @@ fn listener(notification: Notification) {
     };
     log(format!("call {event:?} {length}"));
     if mock(|m| m.releases) == Some(event) {
-        sock().object = core::ptr::null_mut();
+        sock().detach_object();
     }
 }
 /// The connect timer: logs, adds nothing.
@@ -397,7 +397,10 @@ fn construction_makes_a_cloexec_socket_nonblocking_when_async() {
     let client = new_client(1, true);
     assert_eq!(taken(), ["make 1 17 12"]);
     assert!(flag(client, Flag::Async) && flag(client, Flag::Stream));
-    assert_eq!(sock().chunk_size, SEND_BUFFER_SIZE);
+    assert_eq!(
+        sock().chunk_size,
+        swoole_rs_corebase::constants::SW_SEND_BUFFER_SIZE
+    );
     free(client);
     assert_eq!(taken(), ["event Del 0", "free"]);
     let client = new_client(2, false);
@@ -776,7 +779,10 @@ fn datagram_sends_fail_with_sendto_and_dtls_sends_as_a_stream() {
     assert_eq!(send(Handle::raw(client), b"data", 0), None);
     assert_eq!(errno(), libc::EBADF);
     assert!(enable_ssl(Handle::raw(client)).is_some());
-    assert_eq!(sock().chunk_size, SSL_BUFFER_SIZE);
+    assert_eq!(
+        sock().chunk_size,
+        swoole_rs_corebase::constants::SW_SSL_BUFFER_SIZE
+    );
     taken();
     assert_eq!(send(Handle::raw(client), b"data", 0), Some(4));
     assert_eq!(taken(), ["send_sync 4"]);

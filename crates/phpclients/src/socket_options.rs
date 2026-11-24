@@ -299,13 +299,8 @@ fn set(s: &Array, socket: Co) -> Result<bool, Stop> {
         // Upstream's test: every type but TCP6.
         && (kind == swoole_rs_corebase::constants::SocketType::SW_SOCK_TCP.raw() || kind != swoole_rs_corebase::constants::SocketType::SW_SOCK_TCP6.raw())
     {
-        let on = v.truthy();
-        let nodelay = c_int::from(on);
-        socket.with_net(|net| {
-            if swoole_rs_corebase::reactor::swr_v1_socket_tcp_nodelay(net.fd(), nodelay) {
-                net.edit(|record| record.tcp_nodelay = on);
-            }
-        });
+        let nodelay = c_int::from(v.truthy());
+        socket.with_net(|net| net.edit(|record| record.set_tcp_nodelay(nodelay)));
     }
     if !set_protocol(s, socket)? {
         ret = false;

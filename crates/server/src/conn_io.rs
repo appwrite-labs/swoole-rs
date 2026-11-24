@@ -14,7 +14,7 @@ use swoole_rs_corebase::reactor::Events;
 
 use swoole_rs_corebase::buffer::EntryKind;
 use swoole_rs_corebase::buffer::string::with_thread_buffer;
-use swoole_rs_corebase::constants::{SW_SEND_BUFFER_SIZE, SocketType};
+use swoole_rs_corebase::constants::SW_SEND_BUFFER_SIZE;
 use swoole_rs_corebase::reactor::{Event, Heap, SendStall, Socket, SocketFields, what_event_want};
 use swoole_rs_corebase::timer::{del_id, delay_held};
 use swoole_rs_corebase::tls::Accept;
@@ -59,10 +59,14 @@ fn read_as(prequeue: bool, serv: view::Server<'_>, reactor: Reactor, event: &mut
         return true;
     };
     if prequeue {
-        let Some((notified, want_read)) = event
-            .socket()
-            .map(|s| s.read(|s| (s.close_notified, !s.ssl().is_null() && s.tls.want_read)))
-        else {
+        let Some((notified, want_read)) = event.socket().map(|s| {
+            s.read(|s| {
+                (
+                    s.close_reported(),
+                    !s.ssl().is_null() && s.tls_wants().contains(Events::READ),
+                )
+            })
+        }) else {
             return true;
         };
         if notified {
@@ -80,14 +84,9 @@ fn read_as(prequeue: bool, serv: view::Server<'_>, reactor: Reactor, event: &mut
     let port = serv.port_by_server_fd(conn.server_fd());
     // A plain stream goes straight to its port reader. Only a datagram handler
     // or a TLS handshake can run before it and change the receive count.
-    let (datagram, secure, received) = sock.read(|s| {
-        (
-            SocketType::from_raw(s.socket_type).is_some_and(SocketType::is_dgram),
-            !s.ssl().is_null(),
-            s.total_recv_bytes,
-        )
-    });
-    let last_recv_bytes = if datagram || secure {
+    let (datagram, secure, mark) =
+        sock.read(|s| (s.is_dgram(), !s.ssl().is_null(), s.receive_mark()));
+    let before = if datagram || secure {
         if let Some(config) = port.map(view::Port::config)
             && datagram
             && hybrid().dtls_read(config, *sock, fd)
@@ -100,13 +99,13 @@ fn read_as(prequeue: bool, serv: view::Server<'_>, reactor: Reactor, event: &mut
                 crate::connection::abort(serv, reactor, port, sock);
                 return true;
             }
-            Handshake::Ready if sock.read(|s| s.dtls) => return true,
+            Handshake::Ready if sock.read(SocketFields::is_dtls) => return true,
             Handshake::Wait => return true,
             Handshake::Ready | Handshake::Continue => {}
         }
-        sock.read(|s| s.total_recv_bytes)
+        sock.read(SocketFields::receive_mark)
     } else {
-        received
+        mark
     };
     let Some(port) = port else {
         return false;
@@ -118,8 +117,7 @@ fn read_as(prequeue: bool, serv: view::Server<'_>, reactor: Reactor, event: &mut
     // A readable event on the live connection of `fd`, of this server's port `port`.
     let retval = on_read(reactor.handle(), port, ReadEvent::new(serv, event, conn));
     // Upstream reads the socket after the read too.
-    let (total_recv_bytes, notified) = sock.read(|s| (s.total_recv_bytes, s.close_notified));
-    let received = total_recv_bytes.wrapping_sub(last_recv_bytes);
+    let (received, notified) = sock.read(|s| (s.received_since(before), s.close_reported()));
     if received.cast_signed() > 0 {
         let received = received as u64;
         if let Some(gs) = port.config().counters() {
@@ -152,7 +150,7 @@ fn verify_ssl(
     port: Option<view::Port<'_>>,
     sock: Socket<'_>,
 ) -> Handshake {
-    if !handshaking(sock) {
+    if !sock.read(SocketFields::tls_handshaking) {
         return Handshake::Continue;
     }
     match tls::socket_ssl_accept(sock) {
@@ -292,13 +290,6 @@ const ERR: c_int = swoole_rs_corebase::constants::ResultCode::SW_ERR as c_int;
 pub(crate) const fn status(ok: bool) -> c_int {
     if ok { OK } else { ERR }
 }
-/// `SW_EVENT_READ`, `SW_EVENT_WRITE` and `SW_SSL_STATE_READY`.
-use swoole_rs_corebase::tls::SslState::SW_SSL_STATE_READY as SSL_READY;
-
-/// Whether the socket has TLS whose handshake is not finished.
-fn handshaking(sock: Socket<'_>) -> bool {
-    sock.read(|s| !s.ssl().is_null() && s.tls.state != SSL_READY)
-}
 
 /// `ReactorThread_onWrite`: notify a pending close, or flush the output buffer, then
 /// report the drained buffer and stop watching for writes once it is empty.
@@ -323,7 +314,7 @@ pub(crate) fn write(serv: view::Server<'_>, reactor: Reactor, event: &mut Event)
         return false;
     };
     if conn.close_notify() {
-        if handshaking(*sock) {
+        if sock.read(SocketFields::tls_handshaking) {
             return close_connection(serv, reactor, Some(sock));
         }
         crate::server_methods::notify(serv, conn, ServerEvent::Close);
@@ -409,7 +400,7 @@ pub(crate) fn peer_close(serv: view::Server<'_>, reactor: Reactor, event: &Event
     if conn.close_queued() {
         return close_connection(serv, reactor, Some(sock));
     }
-    if sock.read(|s| s.close_notified) {
+    if !sock.edit(SocketFields::claim_close_report) {
         return true;
     }
     let mut head = DataHead {
@@ -420,7 +411,6 @@ pub(crate) fn peer_close(serv: view::Server<'_>, reactor: Reactor, event: &Event
     };
     // The connection is no longer available.
     conn.set_peer_closed(fin_ends(BUILT_PREQUEUE, state, conn));
-    sock.edit(|s| s.close_notified = true);
     crate::hybrid::hybrid().factory_notify(serv, &mut head)
 }
 
@@ -494,10 +484,9 @@ pub(crate) fn close_connection(
     count_close(state, port, reactor);
     let ssl = sock.read(|s| !s.ssl().is_null());
     if ssl {
-        sock.edit(|s| s.ssl_quiet_shutdown = conn.peer_closed());
-        tls::socket_ssl_close(*sock);
+        tls::socket_ssl_close_quietly(*sock, conn.peer_closed());
     }
-    drop(sock.edit(|s| s.recv_buffer.take()));
+    sock.edit(SocketFields::free_recv_buffer);
     if let Some(port) = port
         && port.open_http_protocol.get()
     {
@@ -519,16 +508,16 @@ pub(crate) fn close_connection(
 /// shutdown could not send now.
 fn owes_close_notify(conn: Connection<'_>, sock: Socket<'_>) -> bool {
     let (ready_stream, ssl_closed) = sock.read(|s| {
-        let stream = matches!(s.socket_type, 1 | 3 | 5);
+        let stream = s.is_stream();
         (
-            !s.ssl().is_null() && s.tls.state == SSL_READY && stream,
-            s.ssl_closed,
+            !s.ssl().is_null() && s.tls_ready() && stream,
+            s.tls_closed(),
         )
     });
     ready_stream
         && !(conn.peer_closed() || conn.close_force() || conn.close_reset() || ssl_closed)
         && !tls::socket_ssl_shutdown(sock)
-        && sock.read(|s| s.tls.want_read || s.tls.want_write)
+        && sock.read(SocketFields::tls_wants) != Events::NONE
 }
 
 /// Queues a close behind the socket's output.

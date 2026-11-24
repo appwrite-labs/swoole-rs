@@ -1,9 +1,9 @@
 //! Rust owns the socket record. The native SSH2 hook reads its leading descriptor.
-use crate::constants::SocketType;
 use crate::constants::{
     SW_SOCKET_BUFFER_SIZE, SW_SOCKET_DEFAULT_CONNECT_TIMEOUT, SW_SOCKET_DEFAULT_DNS_TIMEOUT,
     SW_SOCKET_DEFAULT_READ_TIMEOUT, SW_SOCKET_DEFAULT_WRITE_TIMEOUT,
 };
+use crate::constants::{SocketFlag, SocketType};
 use crate::reactor::SocketOutput;
 use crate::reactor::socket::SocketMarks;
 use crate::reactor::socket_timeouts::{SocketTimeouts, TimeoutKind};
@@ -20,6 +20,11 @@ pub struct SocketTlsState {
     pub state: crate::constants::SslState,
     pub want_read: bool,
     pub want_write: bool,
+    /// The session is DTLS: datagram records, not a stream.
+    pub dtls: bool,
+    /// The session is shut down (upstream's `ssl_closed`), so closing it needs no
+    /// `SSL_shutdown`.
+    pub closed: bool,
 }
 
 pub use crate::net_types::{AddressStorage, SocketAddress};
@@ -93,11 +98,7 @@ pub struct SocketFields {
     pub direct_send: bool,
     pub bound: bool,
     pub listened: bool,
-    pub ssl_renegotiation: bool,
     pub ssl_handshake_buffer_set: bool,
-    pub ssl_quiet_shutdown: bool,
-    pub ssl_closed: bool,
-    pub dtls: bool,
     pub tcp_nopush: bool,
     pub tcp_nodelay: bool,
     pub skip_recv: bool,
@@ -107,15 +108,15 @@ pub struct SocketFields {
     pub close_notified: bool,
     pub chunk_size: u32,
     pub output: SocketOutput,
-    pub object: *mut c_void,
+    /// The native owner (`network::Socket::object`) the readiness handlers reach:
+    /// a client, port, connection, query or wait, null without one.
+    object: *mut c_void,
     /// The `SSL` the record owns, freed with it: pointer-sized, null without one.
     ssl: Option<SocketSsl>,
     pub tls: SocketTlsState,
     pub timeouts: SocketTimeouts,
     pub last_received_time: f64,
     pub last_sent_time: f64,
-    /// `Buffer *in_buffer`: owned as `output.out_buffer` is.
-    pub in_buffer: Option<Box<crate::buffer::cpp::OutputQueue>>,
     /// The session's receive buffer between readable events.
     pub recv_buffer: Option<Box<crate::buffer::string::OwnedString>>,
     /// `TimerNode *recv_timer`, held by id.
@@ -220,15 +221,6 @@ impl Descriptor {
     }
 }
 
-impl crate::reactor::Socket<'_> {
-    /// `fd`: the descriptor's number, for the logs, stats and callers that pass it on.
-    #[must_use]
-    #[track_caller]
-    pub fn fd(self) -> c_int {
-        self.read(|record| record.fd)
-    }
-}
-
 impl SocketRecord {
     /// A socket as `new Socket()` makes it: all zero but the default timeouts, and
     /// not borrowed.
@@ -248,11 +240,7 @@ impl SocketRecord {
                 direct_send: false,
                 bound: false,
                 listened: false,
-                ssl_renegotiation: false,
                 ssl_handshake_buffer_set: false,
-                ssl_quiet_shutdown: false,
-                ssl_closed: false,
-                dtls: false,
                 tcp_nopush: false,
                 tcp_nodelay: false,
                 skip_recv: false,
@@ -276,7 +264,6 @@ impl SocketRecord {
                 timeouts: SOCKET_DEFAULTS.timeouts(),
                 last_received_time: 0.0,
                 last_sent_time: 0.0,
-                in_buffer: None,
                 recv_buffer: None,
                 recv_timer: None,
                 total_recv_bytes: 0,
@@ -360,9 +347,7 @@ impl SocketRecord {
     ) -> Option<Box<Self>> {
         let fd = crate::reactor::swr_v1_socket_open(domain, kind, protocol, flags).ok()?;
         let mut socket = Self::with_fd(fd, fd_type);
-        socket.output.nonblock = flags & crate::reactor::socket_types::NONBLOCK != 0;
-        socket.cloexec = flags & crate::reactor::socket_types::CLOEXEC != 0;
-        socket.socket_type = socket_type;
+        socket.open_as(socket_type, SocketFlag::from_bits(flags));
         Some(Box::new(socket))
     }
 
@@ -483,6 +468,81 @@ impl SocketFields {
         self.ssl.take()
     }
 
+    /// Whether the session's handshake is done.
+    #[inline]
+    #[must_use]
+    pub fn tls_ready(&self) -> bool {
+        self.tls.state == crate::constants::SslState::SW_SSL_STATE_READY
+    }
+
+    /// Whether a client's handshake waits for the stream it connected.
+    #[inline]
+    #[must_use]
+    pub fn tls_awaits_stream(&self) -> bool {
+        self.tls.state == crate::constants::SslState::SW_SSL_STATE_WAIT_STREAM
+    }
+
+    /// A client's handshake now waits for the stream it connected.
+    #[inline]
+    pub const fn await_tls_stream(&mut self) {
+        self.tls.state = crate::constants::SslState::SW_SSL_STATE_WAIT_STREAM;
+    }
+
+    /// Whether the socket has an `SSL` whose handshake is not done.
+    #[inline]
+    #[must_use]
+    pub fn tls_handshaking(&self) -> bool {
+        !self.ssl().is_null() && !self.tls_ready()
+    }
+
+    /// The events the session's last read or write waits for: `READ`, `WRITE`, both
+    /// or none.
+    #[inline]
+    #[must_use]
+    pub const fn tls_wants(&self) -> crate::reactor::Events {
+        let read = if self.tls.want_read {
+            crate::reactor::Events::READ.bits()
+        } else {
+            0
+        };
+        let write = if self.tls.want_write {
+            crate::reactor::Events::WRITE.bits()
+        } else {
+            0
+        };
+        crate::reactor::Events::from_bits(read | write)
+    }
+
+    /// Whether the session over the socket is DTLS.
+    #[inline]
+    #[must_use]
+    pub const fn is_dtls(&self) -> bool {
+        self.tls.dtls
+    }
+
+    /// The session over the socket is DTLS: datagram records, not a stream.
+    #[inline]
+    pub const fn become_dtls(&mut self) {
+        self.tls.dtls = true;
+    }
+
+    /// Whether the session is shut down, so closing it needs no `SSL_shutdown`.
+    #[inline]
+    #[must_use]
+    pub const fn tls_closed(&self) -> bool {
+        self.tls.closed
+    }
+
+    /// Claims the session's one sizing of its handshake write buffer, which the info
+    /// callback does when it writes through a BIO of its own: true the first time.
+    #[inline]
+    #[must_use]
+    pub const fn claim_handshake_buffer(&mut self) -> bool {
+        let first = !self.ssl_handshake_buffer_set;
+        self.ssl_handshake_buffer_set = true;
+        first
+    }
+
     /// A copy of the owner [`Self::set_owner`] attached, when it is a `T`.
     #[inline]
     #[must_use]
@@ -527,10 +587,94 @@ impl SocketFields {
         self.shared_owner = Some(owner);
     }
 
+    /// Attaches `object`, the native owner this socket's readiness handlers reach,
+    /// in place of what was attached.
+    #[inline]
+    pub fn attach_object<T>(&mut self, object: *mut T) {
+        self.object = object.cast();
+    }
+
+    /// The native owner [`Self::attach_object`] attached, as the `T` its attacher
+    /// made it; null when none is.
+    #[inline]
+    #[must_use]
+    pub fn attached_object<T>(&self) -> *mut T {
+        self.object.cast()
+    }
+
+    /// Detaches the native owner, as one that is going away does so a close in
+    /// progress knows it is gone.
+    #[inline]
+    pub fn detach_object(&mut self) {
+        self.object = ptr::null_mut();
+    }
+
+    /// Whether a native owner is attached.
+    #[inline]
+    #[must_use]
+    pub fn has_object(&self) -> bool {
+        !self.object.is_null()
+    }
+
     /// The socket's type, `None` for a code no `SW_SOCK_*` names.
     #[must_use]
     pub fn kind(&self) -> Option<SocketType> {
         SocketType::from_raw(self.socket_type)
+    }
+
+    /// `make_socket`'s record: a socket of `socket_type` (an `SW_SOCK_*`) whose
+    /// descriptor is nonblocking and close-on-exec as `flags` says.
+    #[inline]
+    pub fn open_as(&mut self, socket_type: c_int, flags: SocketFlag) {
+        self.note_fd_flags(flags);
+        self.socket_type = socket_type;
+    }
+
+    /// The descriptor was opened nonblocking and close-on-exec as `flags` says, as
+    /// `socket(2)` or `accept4(2)` opened it.
+    #[inline]
+    pub fn note_fd_flags(&mut self, flags: SocketFlag) {
+        self.output.nonblock = flags.contains(SocketFlag::SW_SOCK_NONBLOCK);
+        self.cloexec = flags.contains(SocketFlag::SW_SOCK_CLOEXEC);
+    }
+
+    /// A socket of `kind`, and its address one of `kind` too, as a socket adopted
+    /// from a descriptor learns what it is.
+    #[inline]
+    pub const fn type_as(&mut self, kind: SocketType) {
+        self.socket_type = kind.raw();
+        self.info.kind = kind.raw();
+    }
+
+    /// `socket->object = this; socket_type = type; fd_type = ...`: the record now
+    /// serves `owner`, as a socket of `kind` (an `SW_SOCK_*`) on `fd_type`'s handlers.
+    #[inline]
+    pub fn serve<T: core::any::Any>(&mut self, owner: T, kind: c_int, fd_type: c_int) {
+        self.set_owner(Some(owner));
+        self.socket_type = kind;
+        self.fd_type = fd_type;
+    }
+
+    /// The socket's `SW_SOCK_*` type as a connection records and the server's stats
+    /// report it, known to `SocketType` or not.
+    #[inline]
+    #[must_use]
+    pub const fn type_code(&self) -> crate::constants::SocketTypeCode {
+        crate::constants::SocketTypeCode(self.socket_type)
+    }
+
+    /// `Socket::is_stream`: TCP, TCP6 or a Unix stream.
+    #[inline]
+    #[must_use]
+    pub fn is_stream(&self) -> bool {
+        self.kind().is_some_and(SocketType::is_stream)
+    }
+
+    /// `Socket::is_dgram`: UDP, UDP6 or a Unix datagram socket.
+    #[inline]
+    #[must_use]
+    pub fn is_dgram(&self) -> bool {
+        self.kind().is_some_and(SocketType::is_dgram)
     }
 
     /// `Socket::is_tcp`: a TCP stream over IPv4 or IPv6.
@@ -565,6 +709,14 @@ impl SocketFields {
         // Upstream's 1-bit field keeps the int's low bit.
         self.tcp_nodelay = nodelay & 1 != 0;
         true
+    }
+
+    /// A port's `open_tcp_nodelay`: `TCP_NODELAY` on, and kept on across corks, as
+    /// `uncork` restores it. False when setsockopt(2) failed; it is kept either way.
+    pub fn keep_tcp_nodelay(&mut self) -> bool {
+        let set = self.set_tcp_nodelay(1);
+        self.enable_tcp_nodelay = true;
+        set
     }
 
     /// `socket_free_defer`'s descriptor work: a bound Unix socket's path is unlinked
@@ -666,7 +818,6 @@ impl SocketFields {
             fields: Self {
                 output,
                 ssl: None,
-                in_buffer: None,
                 recv_buffer: None,
                 owner: None,
                 shared_owner: None,
@@ -750,7 +901,7 @@ mod tests {
         assert_eq!(socket.timeouts.connect, 10.0);
         assert_eq!(socket.timeouts.read, 60.0);
         assert_eq!(socket.fd, 0);
-        assert!(socket.object.is_null() && socket.output.out_buffer.is_none());
+        assert!(!socket.has_object() && socket.output.out_buffer.is_none());
     }
 
     #[test]

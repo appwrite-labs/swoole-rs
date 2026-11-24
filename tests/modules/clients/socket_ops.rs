@@ -181,8 +181,12 @@ fn native_tls_effects_keep_the_session_and_settings_while_the_peer_is_pending() 
         .socket()
         .read(swoole_rs_corebase::reactor::SocketFields::ssl);
     assert!(!session.is_null());
-    assert_eq!(this.tls_state(), SSL_STATE_WAIT_STREAM);
-    assert!(this.socket().read(|record| record.tls.want_read));
+    assert!(this.tls_awaits_stream());
+    assert!(
+        this.socket()
+            .read(swoole_rs_corebase::reactor::SocketFields::tls_wants)
+            .contains(Events::READ)
+    );
     assert_eq!(
         this.get().tls_settings.get().unwrap().host_name(),
         c"first.test"
@@ -202,7 +206,7 @@ fn native_tls_effects_keep_the_session_and_settings_while_the_peer_is_pending() 
         this.get().tls_settings.get().unwrap().host_name(),
         c"first.test"
     );
-    assert_eq!(this.tls_state(), SSL_STATE_WAIT_STREAM);
+    assert!(this.tls_awaits_stream());
     assert!(close(this));
     assert!(this.socket().read(|record| record.ssl().is_null()));
     assert!(!close(this));

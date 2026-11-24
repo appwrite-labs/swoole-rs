@@ -14,28 +14,19 @@ unsafe extern "C" {
 /// The info callback of every context `ssl_context_create` makes: `ssl` is
 /// OpenSSL's live SSL for the call.
 pub(crate) extern "C" fn info(ssl: Ssl<'_>, where_: c_int, _result: c_int) {
-    let renegotiating = where_ & 0x10 != 0;
-    let handshake_done = where_ & 0x2001 == 0x2001;
-    if !renegotiating && !handshake_done {
+    // Upstream's renegotiation mark (`SSL_CB_HANDSHAKE_START` once ready) is read
+    // nowhere, so only a done handshake matters.
+    if where_ & 0x2001 != 0x2001 {
         return;
     }
     let Some(socket) = ssl.socket() else {
         return;
     };
-    if renegotiating {
-        socket.edit(|record| {
-            if record.tls.state == crate::tls::constants::SslState::SW_SSL_STATE_READY {
-                record.ssl_renegotiation = true;
-            }
-        });
-    }
-    if handshake_done && !socket.read(|record| record.ssl_handshake_buffer_set) {
-        let write = ssl.write_bio();
-        if ssl.read_bio() != write {
-            if let Some(write) = write {
-                write.set_write_buffer_size(16384);
-            }
-            socket.edit(|record| record.ssl_handshake_buffer_set = true);
-        }
+    let write = ssl.write_bio();
+    if ssl.read_bio() != write
+        && socket.edit(crate::reactor::SocketFields::claim_handshake_buffer)
+        && let Some(write) = write
+    {
+        write.set_write_buffer_size(16384);
     }
 }

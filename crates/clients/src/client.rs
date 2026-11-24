@@ -22,8 +22,7 @@ use std::rc::Rc;
 use std::sync::Arc;
 use swoole_rs_corebase::buffer::string::{OwnedString, StringBuffer};
 use swoole_rs_corebase::constants::{
-    FdType, SW_BUFFER_SIZE_UDP, SW_CLIENT_BUFFER_SIZE, SW_SEND_BUFFER_SIZE, SW_SSL_BUFFER_SIZE,
-    SocketFlag, SocketType,
+    FdType, SW_BUFFER_SIZE_UDP, SW_CLIENT_BUFFER_SIZE, SocketFlag, SocketType,
 };
 use swoole_rs_corebase::lent::{Spare, lend_spare};
 use swoole_rs_corebase::net_types::{PacketLength, SocketAddress};
@@ -155,8 +154,6 @@ enum EventOp {
 const SOCK_UNIX_DGRAM: c_int = SocketType::SW_SOCK_UNIX_DGRAM as c_int;
 const FD_STREAM_CLIENT: c_int = FdType::SW_FD_STREAM_CLIENT as c_int;
 const FD_DGRAM_CLIENT: c_int = FdType::SW_FD_DGRAM_CLIENT as c_int;
-const SEND_BUFFER_SIZE: u32 = SW_SEND_BUFFER_SIZE;
-const SSL_BUFFER_SIZE: u32 = SW_SSL_BUFFER_SIZE;
 const BUFFER_SIZE_UDP: usize = SW_BUFFER_SIZE_UDP as usize;
 const CLIENT_BUFFER_SIZE: usize = SW_CLIENT_BUFFER_SIZE as usize;
 /// `corebase::tls`'s `SW_SSL_STATE_READY`, `SW_SSL_STATE_WAIT_STREAM`, `SW_SSL_CLIENT`
@@ -376,8 +373,12 @@ impl Handle<'_> {
         self.socket().read(|socket| socket.socket_type)
     }
 
-    fn tls_state(self) -> SslState {
-        self.socket().read(|socket| socket.tls.state)
+    fn tls_ready(self) -> bool {
+        self.socket().read(SocketFields::tls_ready)
+    }
+
+    fn tls_awaits_stream(self) -> bool {
+        self.socket().read(SocketFields::tls_awaits_stream)
     }
 
     /// `socket->removed = 1`: close skips the reactor.
@@ -608,7 +609,7 @@ impl Handle<'_> {
 /// free is deferred past the call: as for the reactor handlers below, the socket's
 /// kind is what makes its object a client.
 fn on_package(_: *const Protocol, socket: Socket<'_>, mut package: Package<'_>) -> bool {
-    let client = Handle::raw(socket.read(|socket| socket.object).cast());
+    let client = Handle::raw(socket.read(SocketFields::attached_object));
     if let Some(listener) = client.listener(ClientEvent::Receive) {
         let payload = listener.payload(package.bytes());
         (listener.notify)(Notification::Receive(payload));
@@ -619,7 +620,7 @@ fn on_package(_: *const Protocol, socket: Socket<'_>, mut package: Package<'_>) 
 /// The client of the reactor event's socket, None without a socket.
 fn event_client(event: &Event) -> Option<Handle<'static>> {
     let socket = event.socket()?;
-    Some(Handle::raw(socket.read(|socket| socket.object).cast()))
+    Some(Handle::raw(socket.read(SocketFields::attached_object)))
 }
 
 fn on_stream_read(_: Running<'_>, event: &mut Event) -> bool {
@@ -702,7 +703,7 @@ fn create_with(kind: c_int, is_async: bool, socket_ops: &'static SocketOps) -> O
         return None;
     };
     let socket_type = socket.socket().edit(|record| {
-        record.chunk_size = SEND_BUFFER_SIZE;
+        record.send_in_chunks();
         record.socket_type
     });
     let mut client = Client {
@@ -755,7 +756,7 @@ fn create_with(kind: c_int, is_async: bool, socket_ops: &'static SocketOps) -> O
     let client = Rc::as_ptr(&own).cast_mut();
     Handle::raw(client)
         .socket()
-        .edit(|record| record.object = client.cast());
+        .edit(|record| record.attach_object(client));
     Some(Owner {
         client,
         own: Cell::new(Some(own)),
@@ -810,8 +811,7 @@ impl Drop for Owner {
         let is_async = this.flag(Flag::Async);
         if is_async {
             // A cleared object tells a close in progress that the client is gone.
-            this.socket()
-                .edit(|socket| socket.object = core::ptr::null_mut());
+            this.socket().edit(SocketFields::detach_object);
         }
         drop(this.get().framing.length_owner.take());
         // Only the owner holds the client.
@@ -965,7 +965,7 @@ pub fn close(this: Handle<'_>) -> bool {
     }
     // The saved record's free is deferred past this call.
     saved
-        .edit(|socket| (!socket.object.is_null()).then(|| socket.close_descriptor()))
+        .edit(|socket| socket.has_object().then(|| socket.close_descriptor()))
         .unwrap_or(true)
 }
 
@@ -1083,8 +1083,8 @@ pub fn set_proxy(
 fn enable_dtls(this: Handle<'_>) {
     this.edit_tls(|fields, _| fields.protocols = SSL_DTLS);
     this.socket().edit(|socket| {
-        socket.dtls = true;
-        socket.chunk_size = SSL_BUFFER_SIZE;
+        socket.become_dtls();
+        socket.send_in_dtls_records();
     });
     this.set(Flag::Dtls, true);
 }
@@ -1096,7 +1096,7 @@ fn tls_freeze(owner: &TlsContext) -> Option<TlsSettings> {
 /// `Client::ssl_handshake()`.
 #[must_use]
 pub fn ssl_handshake(this: Handle<'_>) -> bool {
-    if this.tls_state() == SSL_STATE_READY {
+    if this.tls_ready() {
         return false;
     }
     let settings =
@@ -1130,9 +1130,7 @@ pub fn ssl_handshake(this: Handle<'_>) -> bool {
     if !(this.get().socket_ops.tls_connect)(this.socket()) {
         return false;
     }
-    if this.tls_state() == SSL_STATE_READY
-        && settings.verify_peer()
-        && !ssl_verify(this, settings.allow_self_signed())
+    if this.tls_ready() && settings.verify_peer() && !ssl_verify(this, settings.allow_self_signed())
     {
         return false;
     }
@@ -1820,12 +1818,12 @@ fn on_read(this: Handle<'_>) -> bool {
             return true;
         }
     }
-    if this.flag(Flag::OpenSsl) && this.tls_state() != SSL_STATE_READY {
+    if this.flag(Flag::OpenSsl) && !this.tls_ready() {
         if !ssl_handshake(this) {
             log::set_last_error(ERROR_SSL_HANDSHAKE_FAILED);
             return connect_failed(this);
         }
-        if this.tls_state() == SSL_STATE_READY {
+        if this.tls_ready() {
             this.on_connect();
         }
         return true;
@@ -1840,7 +1838,7 @@ fn on_read(this: Handle<'_>) -> bool {
             crate::framing_recv::client_receive(client, socket, buffer, eof)
         });
         // A destroyed client cleared its object.
-        let released = socket.read(|socket| socket.object.is_null());
+        let released = !socket.read(SocketFields::has_object);
         if !received && !released && !this.flag(Flag::Closed) {
             close(this);
         }
@@ -1910,16 +1908,20 @@ fn on_datagram(this: Handle<'_>) -> bool {
 /// async stream client; `reactor` and `event` are the handler's.
 fn on_write(this: Handle<'_>, reactor: Running<'_>, event: &mut Event) -> bool {
     if this.flag(Flag::Active) {
-        if this.flag(Flag::OpenSsl) && this.tls_state() == SSL_STATE_WAIT_STREAM {
+        if this.flag(Flag::OpenSsl) && this.tls_awaits_stream() {
             if !ssl_handshake(this) {
                 log::set_last_error(ERROR_SSL_HANDSHAKE_FAILED);
                 return write_failed(this);
             }
-            if this.tls_state() == SSL_STATE_READY {
+            if this.tls_ready() {
                 this.on_connect();
                 return true;
             }
-            if this.socket().read(|socket| socket.tls.want_read) {
+            if this
+                .socket()
+                .read(SocketFields::tls_wants)
+                .contains(Events::READ)
+            {
                 this.event(EventOp::Set, Events::READ);
             }
             return true;
@@ -1967,8 +1969,7 @@ fn on_write(this: Handle<'_>, reactor: Running<'_>, event: &mut Event) -> bool {
             log::set_last_error(ERROR_SSL_HANDSHAKE_FAILED);
             return write_failed(this);
         }
-        this.socket()
-            .edit(|socket| socket.tls.state = SSL_STATE_WAIT_STREAM);
+        this.socket().edit(SocketFields::await_tls_stream);
         return true;
     }
     this.on_connect();
@@ -1996,7 +1997,7 @@ fn on_error(this: Handle<'_>, reactor: Running<'_>, event: &mut Event) -> bool {
 fn on_timeout(this: Handle<'_>) {
     log::set_last_error(libc::ETIMEDOUT);
     this.get().timer.set(None);
-    if this.flag(Flag::OpenSsl) && this.tls_state() != SSL_STATE_READY {
+    if this.flag(Flag::OpenSsl) && !this.tls_ready() {
         this.set(Flag::Active, false);
     }
     let socks5 = this.proxy_state(Proxy::Socks5);

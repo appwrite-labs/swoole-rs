@@ -136,8 +136,7 @@ fn write_now(
         return None;
     }
     let socket = conn.socket()?;
-    let io = socket
-        .read(|s| (s.direct_send && s.ssl().is_null() && !s.has_output_queue()).then(|| s.io()))?;
+    let io = socket.read(|s| s.may_write_directly().then(|| s.io()))?;
     let sent = count_write(*socket, io.dont_restart(), || write(io), steady_ms);
     Some((conn, sent))
 }
@@ -238,7 +237,7 @@ fn to_connection(serv: Server<'_>, info: &DataHead, data: &[u8], first: Option<i
     }
     let halfclose = cfg!(feature = "halfclose");
     if matches!(kind, Some(ServerEvent::PauseRecv | ServerEvent::ResumeRecv)) {
-        let (removed, notified, events) = sock.read(|s| (s.removed, s.close_notified, s.events));
+        let (removed, notified, events) = sock.read(|s| (s.removed, s.close_reported(), s.events));
         let (reading, writing) = (
             events.intersects(Events::READ),
             events.intersects(Events::WRITE),
@@ -274,8 +273,13 @@ fn to_connection(serv: Server<'_>, info: &DataHead, data: &[u8], first: Option<i
         };
     }
     let (mut data, file) = (data, kind == Some(ServerEvent::SendFile));
-    let (out_empty, unbuffered, direct) =
-        sock.read(|s| (s.output_drained(), !s.has_output_queue(), s.direct_send));
+    let (out_empty, unbuffered, direct) = sock.read(|s| {
+        (
+            s.output_drained(),
+            !s.has_output_queue(),
+            s.may_send_directly(),
+        )
+    });
     if out_empty {
         if close {
             crate::conn_io::close_connection(serv, reactor, Some(sock));
@@ -402,13 +406,7 @@ fn send_file(sock: Socket<'_>, task: &[u8]) -> bool {
 fn idle_timer(conn: Connection<'_>, sock: Socket<'_>, idle: f64) {
     let timer = crate::connection::idle_timer(conn, idle);
     let now = steady_ms();
-    sock.edit(|sock| {
-        sock.set_timeout(idle, swoole_rs_corebase::reactor::TimeoutKind::WRITE);
-        sock.last_sent_time = now;
-        if let Some(timer) = timer {
-            sock.arm_send_timer(timer);
-        }
-    });
+    sock.edit(|sock| sock.watch_send_idle(idle, timer, now));
 }
 #[cfg(test)]
 mod tests {

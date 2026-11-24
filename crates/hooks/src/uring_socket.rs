@@ -16,6 +16,7 @@ use core::ffi::{CStr, c_int, c_ulong};
 use core::mem::MaybeUninit;
 use std::io::IoSlice;
 use swoole_rs_corebase::CCast;
+use swoole_rs_corebase::constants::SocketFlag;
 use swoole_rs_corebase::lent::{ReadVec, Ring, Spare};
 use swoole_rs_corebase::log;
 use swoole_rs_corebase::net_types::SocketAddress;
@@ -446,8 +447,7 @@ pub(crate) fn accept(socket: Co, ops: &UringSocketOps<'_>) -> Option<OwnedCo> {
         .net(|listener| listener.socket_type)
         .unwrap_or_default();
     conn.record_address(address.addr, address.len, address.kind);
-    conn.note_nonblocking(true);
-    conn.cloexec = true;
+    conn.note_fd_flags(SocketFlag::SW_SOCK_NONBLOCK | SocketFlag::SW_SOCK_CLOEXEC);
     // A `UringSocket` before it shares the server's TLS, so its session is over the
     // ring's memory BIOs.
     let client = crate::co_socket::accepted(socket, Box::new(conn));
@@ -496,10 +496,12 @@ pub(crate) fn sendfile(
 
 /// The socket's `ssl_want_read` (bit 0) and `ssl_want_write` (bit 1).
 fn want(socket: Co) -> c_int {
-    let tls = socket.net(|network| network.tls);
-    tls.map_or(0, |tls| {
-        c_int::from(tls.want_read) | (c_int::from(tls.want_write) << 1)
-    })
+    socket
+        .net(|network| network.tls_wants())
+        .map_or(0, |wants| {
+            c_int::from(wants.contains(Events::READ))
+                | (c_int::from(wants.contains(Events::WRITE)) << 1)
+        })
 }
 
 /// `UringSocket::send_once` or `recv_once`: `io`, the open socket's one attempt on

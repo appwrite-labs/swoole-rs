@@ -453,8 +453,8 @@ pub fn freeze_socket_context(
     });
     if dtls {
         socket.edit(|record| {
-            record.dtls = true;
-            record.chunk_size = crate::constants::SW_SSL_BUFFER_SIZE;
+            record.become_dtls();
+            record.send_in_dtls_records();
         });
     }
     let settings = owner.freeze(None).ok_or(SocketContextError::Create)?;

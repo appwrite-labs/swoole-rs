@@ -301,7 +301,7 @@ fn http2_begin(socket: Co) {
 
 /// `recv_wait`: the socket waits for a request.
 fn set_recv_wait(socket: Co, waiting: bool) {
-    socket.with_network(|network| network.edit(|record| record.recv_wait = waiting));
+    socket.with_network(|network| network.edit(|record| record.await_recv(waiting)));
 }
 
 method_table! {
@@ -732,8 +732,9 @@ fn shutdown(call: &Call) {
             let Some(socket) = get_socket(connection).map(swoole_rs_phpclients::Co::handle) else {
                 return;
             };
-            let waiting_now =
-                socket.with_network(|network| network.read(|record| record.recv_wait));
+            let waiting_now = socket.with_network(|network| {
+                network.read(swoole_rs_corebase::reactor::SocketFields::awaits_recv)
+            });
             if waiting_now == Some(true) {
                 waiting.push((index, socket));
             }

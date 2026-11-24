@@ -191,6 +191,12 @@ impl SocketFields {
         result
     }
 
+    /// `Socket::set_nonblock`: `set_fd_option(1, -1)`, which, as upstream, also
+    /// records close-on-exec when it succeeds.
+    pub fn set_nonblock(&mut self) -> crate::reactor::SocketOptionResult {
+        self.set_fd_option(1, -1)
+    }
+
     /// `_set_timeout`: `SO_SNDTIMEO` (`send`) or `SO_RCVTIMEO`, then the record's write
     /// or read timeout, when the kernel took it.
     pub fn set_kernel_timeout(&mut self, send: bool, timeout: f64) -> bool {
@@ -210,6 +216,54 @@ impl SocketFields {
     pub fn has_kernel_nobufs(&mut self) -> bool {
         std::mem::take(&mut self.kernel_nobufs)
     }
+
+    /// Whether a send hit `ENOBUFS` since [`Self::has_kernel_nobufs`] last cleared it,
+    /// leaving it set.
+    #[inline]
+    #[must_use]
+    pub const fn kernel_nobufs_pending(&self) -> bool {
+        self.kernel_nobufs
+    }
+
+    /// A send or receive on the socket hit `ENOBUFS`, as [`Self::has_kernel_nobufs`]
+    /// reports next. It writes only that flag.
+    #[inline]
+    pub const fn note_kernel_nobufs(&mut self) {
+        self.kernel_nobufs = true;
+    }
+
+    /// `Socket::catch_write_pipe_error`, setting the socket's `kernel_nobufs` as
+    /// [`crate::reactor::catch_pipe_error`] does.
+    #[inline]
+    pub fn catch_pipe_error(&mut self, error: c_int) -> crate::reactor::Caught {
+        crate::reactor::catch_pipe_error(error, &mut self.kernel_nobufs)
+    }
+
+    /// Whether the worker was told the peer closed (`close_notified`): the
+    /// connection's reads are over.
+    #[inline]
+    #[must_use]
+    pub const fn close_reported(&self) -> bool {
+        self.close_notified
+    }
+
+    /// The worker is told the peer closed, once: true the first time, false when it
+    /// already was.
+    #[inline]
+    pub const fn claim_close_report(&mut self) -> bool {
+        !std::mem::replace(&mut self.close_notified, true)
+    }
+}
+
+/// A point in a socket's receive count ([`SocketFields::receive_mark`]).
+#[derive(Clone, Copy)]
+pub struct ReceiveMark(usize);
+
+/// A socket's byte counts ([`SocketFields::traffic`]).
+#[derive(Clone, Copy)]
+pub struct Traffic {
+    pub received: u64,
+    pub sent: u64,
 }
 
 impl SocketFields {
@@ -225,6 +279,162 @@ impl SocketFields {
         )
     }
 
+    /// Counts `bytes` received and, while an idle timer watches receives, restarts its
+    /// clock at `now()`.
+    #[inline(always)]
+    fn count_received(&mut self, bytes: usize, now: SteadyMs) {
+        self.total_recv_bytes += bytes;
+        if self.recv_timer.is_some() {
+            self.last_received_time = now();
+        }
+    }
+
+    /// Counts `bytes` sent and, while an idle timer watches sends, restarts its clock
+    /// at `now()`.
+    #[inline(always)]
+    fn count_sent(&mut self, bytes: usize, now: SteadyMs) {
+        self.total_send_bytes += bytes;
+        if self.send_timer().is_some() {
+            self.last_sent_time = now();
+        }
+    }
+
+    /// Where the receive count stands, for [`Self::received_since`] to measure from.
+    #[inline]
+    #[must_use]
+    pub const fn receive_mark(&self) -> ReceiveMark {
+        ReceiveMark(self.total_recv_bytes)
+    }
+
+    /// The bytes received since `mark` was taken.
+    #[inline]
+    #[must_use]
+    pub const fn received_since(&self, mark: ReceiveMark) -> usize {
+        self.total_recv_bytes.wrapping_sub(mark.0)
+    }
+
+    /// The bytes received and sent over the socket's life.
+    #[inline]
+    #[must_use]
+    pub const fn traffic(&self) -> Traffic {
+        Traffic {
+            received: self.total_recv_bytes as u64,
+            sent: self.total_send_bytes as u64,
+        }
+    }
+
+    /// Whether the socket received and sent within the `idle` milliseconds before
+    /// `now`.
+    #[inline]
+    #[must_use]
+    pub fn active_within(&self, now: f64, idle: f64) -> bool {
+        now - self.last_received_time < idle && now - self.last_sent_time < idle
+    }
+}
+
+/// An idle timer taken off a socket ([`SocketFields::disarm_recv_timer`]), deleted
+/// once the socket's borrow has ended ([`crate::timer::del_disarmed`]).
+#[must_use]
+#[derive(Clone, Copy)]
+pub struct DisarmedTimer(pub(crate) Option<crate::timer_key::Held>);
+
+/// The receive side between readable events: the reader's buffer, the receive idle
+/// timer, and the framing loop's wait and skip.
+impl SocketFields {
+    /// The bytes kept from the last readable event, out of the socket for this read;
+    /// none when it kept none.
+    #[inline]
+    #[must_use]
+    pub fn take_recv_buffer(&mut self) -> Option<Box<crate::buffer::string::OwnedString>> {
+        self.recv_buffer.take()
+    }
+
+    /// Frees the bytes kept for the next readable event: the connection closed.
+    #[inline]
+    pub fn free_recv_buffer(&mut self) {
+        self.recv_buffer = None;
+    }
+
+    /// Keeps `recv`'s bytes for the next readable event, unless the socket kept a buffer
+    /// meanwhile, which stays.
+    #[inline]
+    pub fn keep_recv_buffer(&mut self, recv: Box<crate::buffer::string::OwnedString>) {
+        self.recv_buffer.get_or_insert(recv);
+    }
+
+    /// Watches the socket's receives for `idle` seconds of quiet: the read timeout and
+    /// `timer` as the receive idle timer.
+    #[inline]
+    pub fn watch_recv_idle(&mut self, idle: f64, timer: Option<crate::timer_key::Held>) {
+        self.set_timeout(idle, crate::reactor::TimeoutKind::READ);
+        self.recv_timer = timer;
+    }
+
+    /// The receive idle timer, disarmed, to delete outside the socket's borrow.
+    #[inline]
+    pub fn disarm_recv_timer(&mut self) -> DisarmedTimer {
+        DisarmedTimer(self.recv_timer.take())
+    }
+
+    /// Whether the socket's reader waits for more data before it can go on: the rest
+    /// of a package, or a request (`recv_wait`).
+    #[inline]
+    pub fn await_recv(&mut self, waiting: bool) {
+        self.recv_wait = waiting;
+    }
+
+    /// Whether the socket's reader waits for more data ([`Self::await_recv`]).
+    #[inline]
+    #[must_use]
+    pub fn awaits_recv(&self) -> bool {
+        self.recv_wait
+    }
+
+    /// Applies the framing loop's `FLAG_WAIT` from `flags`: whether it waits for the
+    /// rest of a package.
+    #[inline]
+    pub fn apply_framing_wait(&mut self, flags: u32) {
+        self.recv_wait = flags & swoole_rs_framing::recv::FLAG_WAIT != 0;
+    }
+
+    /// The next framing read starts over the package length it already has
+    /// (`skip_recv`).
+    #[inline]
+    pub fn skip_next_recv(&mut self) {
+        self.skip_recv = true;
+    }
+
+    /// The pending skip is spent.
+    #[inline]
+    pub fn clear_recv_skip(&mut self) {
+        self.skip_recv = false;
+    }
+
+    /// The framing loop's flags from the socket: removed, waiting, TLS, and paused,
+    /// which `paused` is asked only of a removed socket.
+    #[inline(always)]
+    pub fn framing_flags(&self, paused: impl FnOnce() -> bool) -> u32 {
+        use swoole_rs_framing::recv::{FLAG_PAUSED, FLAG_REMOVED, FLAG_TLS, FLAG_WAIT};
+        (if self.removed { FLAG_REMOVED } else { 0 })
+            | (if self.recv_wait { FLAG_WAIT } else { 0 })
+            | (if self.ssl().is_null() { 0 } else { FLAG_TLS })
+            | (if self.removed && paused() {
+                FLAG_PAUSED
+            } else {
+                0
+            })
+    }
+
+    /// [`Self::framing_flags`] at a read's start, with `FLAG_SKIP` while a skip is
+    /// pending.
+    #[inline(always)]
+    pub fn framing_entry_flags(&self, paused: impl FnOnce() -> bool) -> u32 {
+        use swoole_rs_framing::recv::FLAG_SKIP;
+        self.framing_flags(paused) | if self.skip_recv { FLAG_SKIP } else { 0 }
+    }
+}
+
+impl SocketFields {
     /// The descriptor and its retry policy, for I/O that runs once the record's borrow
     /// ends: a wait that may run signal handlers, or a direct write whose count edits it.
     #[inline(always)]
@@ -324,14 +534,8 @@ pub fn record_recv(
             && socket.read(|record| record.event_hup))
         .then_some(0);
     };
-    if total != 0
-        && socket.edit(|record| {
-            record.total_recv_bytes += total;
-            record.recv_timer.is_some()
-        })
-    {
-        let time = now();
-        socket.edit(|record| record.last_received_time = time);
+    if total != 0 {
+        socket.edit(|record| record.count_received(total, now));
     }
     Some(total)
 }
@@ -382,14 +586,8 @@ pub fn count_write(
             break sent;
         }
     };
-    if let Some(sent @ 1..) = sent
-        && socket.edit(|record| {
-            record.total_send_bytes += sent;
-            record.send_timer().is_some()
-        })
-    {
-        let time = now();
-        socket.edit(|record| record.last_sent_time = time);
+    if let Some(sent @ 1..) = sent {
+        socket.edit(|record| record.count_sent(sent, now));
     }
     sent
 }
@@ -422,9 +620,9 @@ pub fn what_event_want(
     socket: &SocketFields,
     default: crate::reactor::Events,
 ) -> crate::reactor::Events {
-    let tls = socket.tls;
-    if !socket.ssl().is_null() && (tls.want_read || tls.want_write) {
-        if tls.want_write {
+    let wants = socket.tls_wants();
+    if !socket.ssl().is_null() && !wants.is_empty() {
+        if wants.contains(crate::reactor::Events::WRITE) {
             crate::reactor::Events::WRITE
         } else {
             crate::reactor::Events::READ

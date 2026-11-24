@@ -69,16 +69,19 @@ fn out_buffer_length(socket: &SocketFields) -> u64 {
 
 fn socket(handle: swoole_rs_corebase::reactor::Heap<'_>) -> Socket {
     let fd = handle.fd().into();
-    handle.read(|s| Socket {
-        fd,
-        events: s.events.bits().into(),
-        socket_type: s.socket_type.into(),
-        fd_type: s.fd_type.into(),
-        port: s.port().into(),
-        total_recv_bytes: s.total_recv_bytes as u64,
-        total_send_bytes: s.total_send_bytes as u64,
-        out_buffer_size: out_buffer_length(s),
-        address: s.with_host(|host| Json::utf8(host.to_bytes())),
+    handle.read(|s| {
+        let traffic = s.traffic();
+        Socket {
+            fd,
+            events: s.events.bits().into(),
+            socket_type: s.type_code().0.into(),
+            fd_type: s.fd_type.into(),
+            port: s.port().into(),
+            total_recv_bytes: traffic.received,
+            total_send_bytes: traffic.sent,
+            out_buffer_size: out_buffer_length(s),
+            address: s.with_host(|host| Json::utf8(host.to_bytes())),
+        }
     })
 }
 
@@ -231,8 +234,7 @@ impl Facts for Live<'_> {
                     s.with_host(|host| Json::utf8(host.to_bytes())),
                 )
             });
-        let (received, sent) =
-            (conn.socket().unwrap_or_else(dead)).read(|s| (s.total_recv_bytes, s.total_send_bytes));
+        let traffic = (conn.socket().unwrap_or_else(dead)).read(SocketFields::traffic);
         Connection {
             session_id: conn.session_id(),
             reactor_id: conn.reactor_id().into(),
@@ -242,8 +244,8 @@ impl Facts for Live<'_> {
             overflow: conn.overflow().into(),
             recv_queued_bytes: conn.recv_queued_bytes().load(Relaxed).into(),
             send_queued_bytes: conn.send_queued_bytes().into(),
-            total_recv_bytes: received as u64,
-            total_send_bytes: sent as u64,
+            total_recv_bytes: traffic.received,
+            total_send_bytes: traffic.sent,
             uid: conn.uid().into(),
             connect_time: conn.connect_time(),
             last_recv_time: conn.last_recv_time(),
