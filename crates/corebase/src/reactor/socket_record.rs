@@ -20,6 +20,11 @@ pub struct SocketTlsState {
     pub state: crate::constants::SslState,
     pub want_read: bool,
     pub want_write: bool,
+    /// The session is DTLS: datagram records, not a stream.
+    pub dtls: bool,
+    /// The session is shut down (upstream's `ssl_closed`), so closing it needs no
+    /// `SSL_shutdown`.
+    pub closed: bool,
 }
 
 pub use crate::net_types::{AddressStorage, SocketAddress};
@@ -93,11 +98,7 @@ pub struct SocketFields {
     pub direct_send: bool,
     pub bound: bool,
     pub listened: bool,
-    pub ssl_renegotiation: bool,
     pub ssl_handshake_buffer_set: bool,
-    pub ssl_quiet_shutdown: bool,
-    pub ssl_closed: bool,
-    pub dtls: bool,
     pub tcp_nopush: bool,
     pub tcp_nodelay: bool,
     pub skip_recv: bool,
@@ -241,11 +242,7 @@ impl SocketRecord {
                 direct_send: false,
                 bound: false,
                 listened: false,
-                ssl_renegotiation: false,
                 ssl_handshake_buffer_set: false,
-                ssl_quiet_shutdown: false,
-                ssl_closed: false,
-                dtls: false,
                 tcp_nopush: false,
                 tcp_nodelay: false,
                 skip_recv: false,
@@ -472,6 +469,81 @@ impl SocketFields {
     /// record takes the owner (the `SSL`'s ex data may name this one).
     pub unsafe fn take_ssl(&mut self) -> Option<SocketSsl> {
         self.ssl.take()
+    }
+
+    /// Whether the session's handshake is done.
+    #[inline]
+    #[must_use]
+    pub fn tls_ready(&self) -> bool {
+        self.tls.state == crate::constants::SslState::SW_SSL_STATE_READY
+    }
+
+    /// Whether a client's handshake waits for the stream it connected.
+    #[inline]
+    #[must_use]
+    pub fn tls_awaits_stream(&self) -> bool {
+        self.tls.state == crate::constants::SslState::SW_SSL_STATE_WAIT_STREAM
+    }
+
+    /// A client's handshake now waits for the stream it connected.
+    #[inline]
+    pub const fn await_tls_stream(&mut self) {
+        self.tls.state = crate::constants::SslState::SW_SSL_STATE_WAIT_STREAM;
+    }
+
+    /// Whether the socket has an `SSL` whose handshake is not done.
+    #[inline]
+    #[must_use]
+    pub fn tls_handshaking(&self) -> bool {
+        !self.ssl().is_null() && !self.tls_ready()
+    }
+
+    /// The events the session's last read or write waits for: `READ`, `WRITE`, both
+    /// or none.
+    #[inline]
+    #[must_use]
+    pub const fn tls_wants(&self) -> crate::reactor::Events {
+        let read = if self.tls.want_read {
+            crate::reactor::Events::READ.bits()
+        } else {
+            0
+        };
+        let write = if self.tls.want_write {
+            crate::reactor::Events::WRITE.bits()
+        } else {
+            0
+        };
+        crate::reactor::Events::from_bits(read | write)
+    }
+
+    /// Whether the session over the socket is DTLS.
+    #[inline]
+    #[must_use]
+    pub const fn is_dtls(&self) -> bool {
+        self.tls.dtls
+    }
+
+    /// The session over the socket is DTLS: datagram records, not a stream.
+    #[inline]
+    pub const fn become_dtls(&mut self) {
+        self.tls.dtls = true;
+    }
+
+    /// Whether the session is shut down, so closing it needs no `SSL_shutdown`.
+    #[inline]
+    #[must_use]
+    pub const fn tls_closed(&self) -> bool {
+        self.tls.closed
+    }
+
+    /// Claims the session's one sizing of its handshake write buffer, which the info
+    /// callback does when it writes through a BIO of its own: true the first time.
+    #[inline]
+    #[must_use]
+    pub const fn claim_handshake_buffer(&mut self) -> bool {
+        let first = !self.ssl_handshake_buffer_set;
+        self.ssl_handshake_buffer_set = true;
+        first
     }
 
     /// A copy of the owner [`Self::set_owner`] attached, when it is a `T`.

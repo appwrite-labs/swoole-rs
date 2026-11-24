@@ -77,7 +77,7 @@ impl SocketFields {
     #[must_use]
     pub fn tls_send_limit(&self) -> usize {
         let chunk = self.chunk_size as usize;
-        if self.dtls && chunk != 0 {
+        if self.is_dtls() && chunk != 0 {
             chunk
         } else {
             usize::MAX

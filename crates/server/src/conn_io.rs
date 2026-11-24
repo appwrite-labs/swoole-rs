@@ -59,10 +59,14 @@ fn read_as(prequeue: bool, serv: view::Server<'_>, reactor: Reactor, event: &mut
         return true;
     };
     if prequeue {
-        let Some((notified, want_read)) = event
-            .socket()
-            .map(|s| s.read(|s| (s.close_notified, !s.ssl().is_null() && s.tls.want_read)))
-        else {
+        let Some((notified, want_read)) = event.socket().map(|s| {
+            s.read(|s| {
+                (
+                    s.close_notified,
+                    !s.ssl().is_null() && s.tls_wants().contains(Events::READ),
+                )
+            })
+        }) else {
             return true;
         };
         if notified {
@@ -95,7 +99,7 @@ fn read_as(prequeue: bool, serv: view::Server<'_>, reactor: Reactor, event: &mut
                 crate::connection::abort(serv, reactor, port, sock);
                 return true;
             }
-            Handshake::Ready if sock.read(|s| s.dtls) => return true,
+            Handshake::Ready if sock.read(SocketFields::is_dtls) => return true,
             Handshake::Wait => return true,
             Handshake::Ready | Handshake::Continue => {}
         }
@@ -147,7 +151,7 @@ fn verify_ssl(
     port: Option<view::Port<'_>>,
     sock: Socket<'_>,
 ) -> Handshake {
-    if !handshaking(sock) {
+    if !sock.read(SocketFields::tls_handshaking) {
         return Handshake::Continue;
     }
     match tls::socket_ssl_accept(sock) {
@@ -287,13 +291,6 @@ const ERR: c_int = swoole_rs_corebase::constants::ResultCode::SW_ERR as c_int;
 pub(crate) const fn status(ok: bool) -> c_int {
     if ok { OK } else { ERR }
 }
-/// `SW_EVENT_READ`, `SW_EVENT_WRITE` and `SW_SSL_STATE_READY`.
-use swoole_rs_corebase::tls::SslState::SW_SSL_STATE_READY as SSL_READY;
-
-/// Whether the socket has TLS whose handshake is not finished.
-fn handshaking(sock: Socket<'_>) -> bool {
-    sock.read(|s| !s.ssl().is_null() && s.tls.state != SSL_READY)
-}
 
 /// `ReactorThread_onWrite`: notify a pending close, or flush the output buffer, then
 /// report the drained buffer and stop watching for writes once it is empty.
@@ -318,7 +315,7 @@ pub(crate) fn write(serv: view::Server<'_>, reactor: Reactor, event: &mut Event)
         return false;
     };
     if conn.close_notify() {
-        if handshaking(*sock) {
+        if sock.read(SocketFields::tls_handshaking) {
             return close_connection(serv, reactor, Some(sock));
         }
         crate::server_methods::notify(serv, conn, ServerEvent::Close);
@@ -489,8 +486,7 @@ pub(crate) fn close_connection(
     count_close(state, port, reactor);
     let ssl = sock.read(|s| !s.ssl().is_null());
     if ssl {
-        sock.edit(|s| s.ssl_quiet_shutdown = conn.peer_closed());
-        tls::socket_ssl_close(*sock);
+        tls::socket_ssl_close_quietly(*sock, conn.peer_closed());
     }
     drop(sock.edit(|s| s.recv_buffer.take()));
     if let Some(port) = port
@@ -516,14 +512,14 @@ fn owes_close_notify(conn: Connection<'_>, sock: Socket<'_>) -> bool {
     let (ready_stream, ssl_closed) = sock.read(|s| {
         let stream = s.is_stream();
         (
-            !s.ssl().is_null() && s.tls.state == SSL_READY && stream,
-            s.ssl_closed,
+            !s.ssl().is_null() && s.tls_ready() && stream,
+            s.tls_closed(),
         )
     });
     ready_stream
         && !(conn.peer_closed() || conn.close_force() || conn.close_reset() || ssl_closed)
         && !tls::socket_ssl_shutdown(sock)
-        && sock.read(|s| s.tls.want_read || s.tls.want_write)
+        && sock.read(SocketFields::tls_wants) != Events::NONE
 }
 
 /// Queues a close behind the socket's output.

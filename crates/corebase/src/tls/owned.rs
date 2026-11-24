@@ -453,7 +453,7 @@ pub fn freeze_socket_context(
     });
     if dtls {
         socket.edit(|record| {
-            record.dtls = true;
+            record.become_dtls();
             record.send_in_dtls_records();
         });
     }
