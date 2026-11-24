@@ -43,11 +43,11 @@ pub(crate) fn import(config: &mut PortConfig, fd: c_int) -> bool {
     let family = c_int::from(socket.address_family());
     let kind = socket_type(family, so_type);
     socket.type_as(kind);
-    socket.dispatch_to(if kind.is_dgram() {
+    socket.fd_type = if kind.is_dgram() {
         FD_DGRAM_SERVER
     } else {
         FD_STREAM_SERVER
-    });
+    };
     socket.removed = true;
     let port = socket.port();
     let host_set = socket.with_host(|host| config.host.set(host.to_bytes()));

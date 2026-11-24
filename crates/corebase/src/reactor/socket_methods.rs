@@ -283,12 +283,6 @@ impl SocketFields {
         self.dont_restart = true;
     }
 
-    /// The socket's readiness goes to `fd_type`'s handlers (an `swFdType`).
-    #[inline]
-    pub const fn dispatch_to(&mut self, fd_type: c_int) {
-        self.fd_type = fd_type;
-    }
-
     /// Whether the socket's readiness goes to `fd_type`'s handlers.
     #[inline]
     #[must_use]
