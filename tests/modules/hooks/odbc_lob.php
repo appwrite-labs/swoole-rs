@@ -40,8 +40,12 @@ Swoole\Coroutine\run(function () use ($driver) {
         if ($insert->execute()) {
             throw new RuntimeException("Failed read from $path was accepted");
         }
+        if ($insert->errorCode() !== 'HY000') {
+            throw new RuntimeException('Missing read failure diagnostic');
+        }
     }
-    foreach (['', 'abc'] as $bytes) {
+    $large = str_repeat('page', 600000);
+    foreach (['', 'abc', $large] as $bytes) {
         $lob = fopen('php://memory', 'w+b');
         fwrite($lob, $bytes);
         rewind($lob);
@@ -50,7 +54,7 @@ Swoole\Coroutine\run(function () use ($driver) {
         }
     }
     $lengths = $db->query('SELECT length(val) FROM lob_test ORDER BY length(val)')->fetchAll(PDO::FETCH_COLUMN);
-    if (array_map('intval', $lengths) !== [0, 3]) {
+    if (array_map('intval', $lengths) !== [0, 3, strlen($large)]) {
         throw new RuntimeException('Unexpected stored LOBs');
     }
 });
