@@ -253,6 +253,50 @@ impl SocketFields {
     pub const fn claim_close_report(&mut self) -> bool {
         !std::mem::replace(&mut self.close_notified, true)
     }
+
+    /// Poll reported a hangup with the socket's readiness (`event_hup`), as
+    /// [`Self::hung_up`] tells its handlers.
+    #[inline]
+    pub const fn note_hangup(&mut self) {
+        self.event_hup = true;
+    }
+
+    /// Whether poll reported a hangup with the socket's readiness: a read that would
+    /// wait reads as the end of the stream.
+    #[inline]
+    #[must_use]
+    pub const fn hung_up(&self) -> bool {
+        self.event_hup
+    }
+
+    /// The next removal from the reactor reports no failure (`silent_remove`): the
+    /// descriptor may be closed, or owned elsewhere, already.
+    #[inline]
+    pub const fn quiet_next_removal(&mut self) {
+        self.silent_remove = true;
+    }
+
+    /// A signal fails the socket's blocking calls with `EINTR` instead of restarting
+    /// them (`dont_restart`).
+    #[inline]
+    pub const fn let_signals_interrupt(&mut self) {
+        self.dont_restart = true;
+    }
+
+    /// Whether the socket's readiness goes to `fd_type`'s handlers.
+    #[inline]
+    #[must_use]
+    pub const fn dispatches_to(&self, fd_type: c_int) -> bool {
+        self.fd_type == fd_type
+    }
+
+    /// What the socket is registered for and whose handlers (`swFdType`) its
+    /// readiness goes to, as a status report shows them.
+    #[inline]
+    #[must_use]
+    pub const fn registration(&self) -> (crate::reactor::Events, c_int) {
+        (self.events, self.fd_type)
+    }
 }
 
 /// A point in a socket's receive count ([`SocketFields::receive_mark`]).
@@ -531,7 +575,7 @@ pub fn record_recv(
             continue;
         }
         return (socket.catch_error(error) == crate::reactor::Caught::Wait
-            && socket.read(|record| record.event_hup))
+            && socket.read(SocketFields::hung_up))
         .then_some(0);
     };
     if total != 0 {

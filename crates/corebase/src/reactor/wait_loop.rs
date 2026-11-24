@@ -469,7 +469,7 @@ fn prepare(
     let ready = socket.read(|record| record.ready(fd));
     let event = Event::of(ready.fd, ops.reactor_id, ready.fd_type, Some(socket));
     if hangup {
-        socket.edit(|record| record.event_hup = true);
+        socket.edit(crate::reactor::SocketFields::note_hangup);
     }
     event
 }
