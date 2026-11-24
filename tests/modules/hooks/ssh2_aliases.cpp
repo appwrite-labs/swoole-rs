@@ -4,6 +4,8 @@
 #include <cstdio>
 #include <cstring>
 #include <functional>
+#include <poll.h>
+#include <unistd.h>
 #include <libssh2.h>
 #include <libssh2_sftp.h>
 
@@ -14,7 +16,14 @@ static void text(const char *actual, const char *expected) { assert(std::strcmp(
 
 extern "C" {
 int libssh2_session_block_directions(LIBSSH2_SESSION *) { return 0; }
-int libssh2_session_last_errno(LIBSSH2_SESSION *) { return 0; }
+static int last_errno;
+int libssh2_session_last_errno(LIBSSH2_SESSION *) { return last_errno; }
+#ifdef SWR_HYBRID
+LIBSSH2_CHANNEL *libssh2_channel_forward_accept(LIBSSH2_LISTENER *) {
+    last_errno = LIBSSH2_ERROR_EAGAIN;
+    return nullptr;
+}
+#endif
 int libssh2_session_disconnect_ex(LIBSSH2_SESSION *, int reason, const char *description, const char *lang) {
     assert(reason == SSH_DISCONNECT_BY_APPLICATION); text(description, "bye"); text(lang, ""); ++calls; return 7;
 }
@@ -87,6 +96,31 @@ int libssh2_userauth_keyboard_interactive_ex(LIBSSH2_SESSION *, const char *user
 
 #ifdef SWR_HYBRID
 #include "swoole_rs_ssh2.h"
+// Drive the real accept retry through its wait callback using a local socket.
+static void check_forward_disconnect() {
+    struct Fixture {
+        ssh2_forwarding forwarding;
+        int sockets[2];
+    };
+    Fixture fixture{};
+    assert(socketpair(AF_UNIX, SOCK_STREAM, 0, fixture.sockets) == 0);
+    ++fixture.forwarding.active;
+    const swr_v1_ssh2_ops parked = {[](LIBSSH2_SESSION *opaque, int) {
+        auto &f = *reinterpret_cast<Fixture *>(opaque);
+        pollfd pending{f.sockets[0], POLLIN, 0};
+        assert(poll(&pending, 1, 0) == 0);
+        assert(!f.forwarding.request_close(f.sockets[0]));
+        assert(poll(&pending, 1, 1000) == 1);
+        char byte;
+        assert(read(f.sockets[0], &byte, 1) == 0);
+        return false;
+    }};
+    assert(!swoole_libssh2_channel_forward_accept(&parked, reinterpret_cast<LIBSSH2_SESSION *>(&fixture), nullptr));
+    assert(fixture.forwarding.close_pending && fixture.forwarding.leave());
+    close(fixture.sockets[0]);
+    close(fixture.sockets[1]);
+    last_errno = 0;
+}
 static bool wait(LIBSSH2_SESSION *, int) { assert(false && "no EAGAIN in alias argument probe"); return false; }
 static const swr_v1_ssh2_ops ops = {wait};
 static const swr_v1_ssh2_ops *ssh2_bound(LIBSSH2_SESSION *) { return &ops; }
@@ -97,6 +131,9 @@ template <typename T> static T *ssh2_async_call_ex(LIBSSH2_SESSION *, const std:
 #include "php_swoole_ssh2_hook.h"
 
 int main() {
+#ifdef SWR_HYBRID
+    check_forward_disconnect();
+#endif
     auto *session = reinterpret_cast<LIBSSH2_SESSION *>(0x3000);
     auto *sftp = reinterpret_cast<LIBSSH2_SFTP *>(0x4000);
     char buffer[64] = {};
