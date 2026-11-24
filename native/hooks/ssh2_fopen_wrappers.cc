@@ -1014,20 +1014,18 @@ extern "C" void swr_ssh2_fetch_substream(zval *zparent, zend_long streamid, zval
         RETURN_FALSE;
     }
 
-    (*(data->refcount))++;
-
     stream_data = (php_ssh2_channel_data *) emalloc(sizeof(php_ssh2_channel_data));
     memcpy(stream_data, data, sizeof(php_ssh2_channel_data));
     stream_data->streamid = streamid;
 
     stream = php_stream_alloc(&php_ssh2_channel_stream_ops, stream_data, 0, "r+");
     if (!stream) {
-        php_error_docref(NULL, E_WARNING, "Error opening substream");
         efree(stream_data);
-        (data->refcount)--;
+        php_error_docref(NULL, E_WARNING, "Error opening substream");
         RETURN_FALSE;
     }
 
+    ++*stream_data->refcount;
     php_stream_to_zval(stream, return_value);
 }
 
