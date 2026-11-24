@@ -216,6 +216,43 @@ impl SocketFields {
     pub fn has_kernel_nobufs(&mut self) -> bool {
         std::mem::take(&mut self.kernel_nobufs)
     }
+
+    /// Whether a send hit `ENOBUFS` since [`Self::has_kernel_nobufs`] last cleared it,
+    /// leaving it set.
+    #[inline]
+    #[must_use]
+    pub const fn kernel_nobufs_pending(&self) -> bool {
+        self.kernel_nobufs
+    }
+
+    /// A send or receive on the socket hit `ENOBUFS`, as [`Self::has_kernel_nobufs`]
+    /// reports next. It writes only that flag.
+    #[inline]
+    pub const fn note_kernel_nobufs(&mut self) {
+        self.kernel_nobufs = true;
+    }
+
+    /// `Socket::catch_write_pipe_error`, setting the socket's `kernel_nobufs` as
+    /// [`crate::reactor::catch_pipe_error`] does.
+    #[inline]
+    pub fn catch_pipe_error(&mut self, error: c_int) -> crate::reactor::Caught {
+        crate::reactor::catch_pipe_error(error, &mut self.kernel_nobufs)
+    }
+
+    /// Whether the worker was told the peer closed (`close_notified`): the
+    /// connection's reads are over.
+    #[inline]
+    #[must_use]
+    pub const fn close_reported(&self) -> bool {
+        self.close_notified
+    }
+
+    /// The worker is told the peer closed, once: true the first time, false when it
+    /// already was.
+    #[inline]
+    pub const fn claim_close_report(&mut self) -> bool {
+        !std::mem::replace(&mut self.close_notified, true)
+    }
 }
 
 /// A point in a socket's receive count ([`SocketFields::receive_mark`]).

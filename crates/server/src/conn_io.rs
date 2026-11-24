@@ -62,7 +62,7 @@ fn read_as(prequeue: bool, serv: view::Server<'_>, reactor: Reactor, event: &mut
         let Some((notified, want_read)) = event.socket().map(|s| {
             s.read(|s| {
                 (
-                    s.close_notified,
+                    s.close_reported(),
                     !s.ssl().is_null() && s.tls_wants().contains(Events::READ),
                 )
             })
@@ -117,7 +117,7 @@ fn read_as(prequeue: bool, serv: view::Server<'_>, reactor: Reactor, event: &mut
     // A readable event on the live connection of `fd`, of this server's port `port`.
     let retval = on_read(reactor.handle(), port, ReadEvent::new(serv, event, conn));
     // Upstream reads the socket after the read too.
-    let (received, notified) = sock.read(|s| (s.received_since(before), s.close_notified));
+    let (received, notified) = sock.read(|s| (s.received_since(before), s.close_reported()));
     if received.cast_signed() > 0 {
         let received = received as u64;
         if let Some(gs) = port.config().counters() {
@@ -400,7 +400,7 @@ pub(crate) fn peer_close(serv: view::Server<'_>, reactor: Reactor, event: &Event
     if conn.close_queued() {
         return close_connection(serv, reactor, Some(sock));
     }
-    if sock.read(|s| s.close_notified) {
+    if !sock.edit(SocketFields::claim_close_report) {
         return true;
     }
     let mut head = DataHead {
@@ -411,7 +411,6 @@ pub(crate) fn peer_close(serv: view::Server<'_>, reactor: Reactor, event: &Event
     };
     // The connection is no longer available.
     conn.set_peer_closed(fin_ends(BUILT_PREQUEUE, state, conn));
-    sock.edit(|s| s.close_notified = true);
     crate::hybrid::hybrid().factory_notify(serv, &mut head)
 }
 

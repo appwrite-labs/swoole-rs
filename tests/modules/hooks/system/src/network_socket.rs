@@ -1258,10 +1258,10 @@ fn misc() {
     assert_eq!(sock.get_fd(), -1);
 
     assert_eq!(sock.catch_write_pipe_error(EMSGSIZE), SW_REDUCE_SIZE);
-    assert!(!sock.record().kernel_nobufs);
+    assert!(!sock.record().kernel_nobufs_pending());
 
     assert_eq!(sock.catch_write_pipe_error(ENOBUFS), SW_REDUCE_SIZE);
-    assert!(sock.record().kernel_nobufs);
+    assert!(sock.record().kernel_nobufs_pending());
 
     assert_eq!(
         sock.catch_write_error(EAGAIN),

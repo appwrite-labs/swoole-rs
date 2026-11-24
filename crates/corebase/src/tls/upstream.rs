@@ -708,7 +708,7 @@ fn ssl_sendfile(
     let send = |data: &[u8]| ssl_send_drain(socket, Drain::new(data));
     let result = ssl_sendfile_fd(fd, offset, size, send, &mut nobufs);
     if nobufs {
-        socket.edit(|record| record.kernel_nobufs = true);
+        socket.edit(crate::reactor::SocketFields::note_kernel_nobufs);
     }
     if let Some(warning) = result.warn {
         let call = match warning {
