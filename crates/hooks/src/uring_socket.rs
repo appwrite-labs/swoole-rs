@@ -57,7 +57,7 @@ impl TlsSocket for Co {
         let message = swoole_rs_corebase::tls::error_string(code);
         let function = function.to_string_lossy();
         self.net(|network| {
-            let (host, port) = network.with_address(swoole_rs_corebase::tls::upstream::peer);
+            let (host, port) = network.peer_text();
             log::notice(format_args!(
                 "{function}(fd={}) to server[{host}:{port}] failed. Error: {message}[{error}|{}]",
                 network.fd,

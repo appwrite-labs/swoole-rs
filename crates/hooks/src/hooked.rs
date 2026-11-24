@@ -177,10 +177,7 @@ pub fn accept(fd: c_int, peer: &mut SocketAddress) -> io::Result<c_int> {
     };
     let conn = socket.accept(0.0).ok_or_else(io::Error::last_os_error)?;
     conn.co().net(|accepted| {
-        accepted.with_address(|address| {
-            peer.addr = address.addr;
-            peer.len = address.len;
-        });
+        (peer.addr, peer.len) = accepted.address_storage();
     });
     let conn_fd = conn.co().sock_fd();
     keep(conn_fd, conn, false);

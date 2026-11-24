@@ -73,11 +73,11 @@ fn socket(s: &SocketFields) -> Socket {
         events: s.events.bits().into(),
         socket_type: s.socket_type.into(),
         fd_type: s.fd_type.into(),
-        port: s.with_address(port),
+        port: s.port().into(),
         total_recv_bytes: s.total_recv_bytes as u64,
         total_send_bytes: s.total_send_bytes as u64,
         out_buffer_size: out_buffer_length(s),
-        address: s.with_address(address),
+        address: s.with_host(|host| Json::utf8(host.to_bytes())),
     }
 }
 
@@ -224,17 +224,20 @@ impl Facts for Live<'_> {
             swoole_rs_corebase::fatal("an admin command on a connection without a port")
         });
         let dead = || swoole_rs_corebase::fatal("an admin command on a dead socket");
-        let listener = config
-            .listening_socket()
-            .unwrap_or_else(dead)
-            .read(|s| s.with_address(|info| *info));
+        let (server_port, server_address) =
+            config.listening_socket().unwrap_or_else(dead).read(|s| {
+                (
+                    s.port().into(),
+                    s.with_host(|host| Json::utf8(host.to_bytes())),
+                )
+            });
         let (received, sent) =
             (conn.socket().unwrap_or_else(dead)).read(|s| (s.total_recv_bytes, s.total_send_bytes));
         Connection {
             session_id: conn.session_id(),
             reactor_id: conn.reactor_id().into(),
             fd: conn.fd().into(),
-            server_port: port(&listener),
+            server_port,
             port: port(&conn.info()),
             overflow: conn.overflow().into(),
             recv_queued_bytes: conn.recv_queued_bytes().load(Relaxed).into(),
@@ -246,7 +249,7 @@ impl Facts for Live<'_> {
             last_recv_time: conn.last_recv_time(),
             last_send_time: conn.last_send_time(),
             last_dispatch_time: conn.last_dispatch_time(),
-            server_address: address(&listener),
+            server_address,
             address: address(&conn.info()),
         }
     }

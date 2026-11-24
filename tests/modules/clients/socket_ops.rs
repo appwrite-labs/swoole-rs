@@ -42,7 +42,7 @@ fn native_async_datagram_receive_records_the_sender_for_both_buffer_kinds() {
     );
     let port = this
         .socket()
-        .read(|socket| socket.with_address(|info| u16::from_be(info.addr.v4().sin_port)));
+        .read(swoole_rs_corebase::reactor::SocketFields::port);
     peer.send_to(b"A\0B", (std::net::Ipv4Addr::LOCALHOST, port))
         .unwrap();
     let mut initialized = [0xa5; 6];

@@ -49,6 +49,14 @@ const BAD_PROTOCOL: c_int = ErrorCode::SW_ERROR_SSL_BAD_PROTOCOL as c_int;
 
 use crate::sys::errno;
 
+impl SocketFields {
+    /// [`peer`] of the socket's address: its host and port as the TLS logs print them.
+    #[must_use]
+    pub fn peer_text(&self) -> (String, c_int) {
+        peer(&self.info)
+    }
+}
+
 /// `Address::get_addr()` and `get_port()` of the socket's own address, as its logs print them.
 #[must_use]
 pub fn peer(info: &SocketAddress) -> (String, c_int) {
@@ -200,7 +208,7 @@ pub fn socket_ssl_verify(socket: Socket<'_>, allow_self_signed: bool) -> bool {
 #[cold]
 #[inline(never)]
 fn ssl_catch_error(socket: Socket<'_>) {
-    let ((host, port), fd) = socket.read(|record| (record.with_address(peer), record.fd));
+    let ((host, port), fd) = socket.read(|record| (record.peer_text(), record.fd));
     let reason = swr_v1_socket_ssl_peek_reason();
     log::error_log(
         LOG_NOTICE,
@@ -298,7 +306,7 @@ pub fn socket_ssl_accept(socket: Socket<'_>) -> Accept {
     handshake(result.last_error);
     if result.log == HandshakeLog::BadClient {
         let (reason, error) = error_reason_text();
-        let (host, port) = socket.read(|record| record.with_address(peer));
+        let (host, port) = socket.read(SocketFields::peer_text);
         log::warning(
             c"Socket::ssl_accept",
             format_args!("bad SSL client[{host}:{port}], reason={reason}, error_string={error}"),
@@ -328,7 +336,7 @@ pub fn socket_ssl_connect(socket: Socket<'_>) -> bool {
     if let HandshakeLog::Failed(ssl_error) = result.log {
         let error = crate::tls::pop_error();
         let message = crate::tls::error_string(error);
-        let ((host, port), fd) = socket.read(|record| (record.with_address(peer), record.fd));
+        let ((host, port), fd) = socket.read(|record| (record.peer_text(), record.fd));
         log::notice(format_args!(
             "ssl_connect(fd={fd}) to server[{host}:{port}] failed. Error: {message}[{ssl_error}|{}]",
             crate::tls::socket::error_reason(error)

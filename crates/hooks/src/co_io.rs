@@ -274,13 +274,10 @@ mod native {
         let (error, message) = match kind {
             Failure::LengthNotFound => (NOT_FOUND, Message::Static(c"get package length failed")),
             Failure::TooLarge(length) => {
-                use swoole_rs_clients::address::{address_port, with_host};
                 let (addr, port) = socket
                     .net(|record| {
-                        record.with_address(|peer| {
-                            let addr = with_host(peer, |addr| addr.to_string_lossy().into_owned());
-                            (addr, address_port(peer))
-                        })
+                        let addr = record.with_host(|addr| addr.to_string_lossy().into_owned());
+                        (addr, record.port())
                     })
                     .unwrap_or_default();
                 swoole_rs_corebase::log::error_log(

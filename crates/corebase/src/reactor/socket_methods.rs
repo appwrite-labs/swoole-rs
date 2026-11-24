@@ -5,9 +5,10 @@
 use crate::CCast;
 use crate::constants::SW_BACKLOG;
 use crate::lent::Spare;
+use crate::net_types::AddressStorage;
 use crate::reactor::socket_rw::interrupted;
 use crate::reactor::{Drain, Socket, SocketAddress, SocketFields};
-use std::ffi::c_int;
+use std::ffi::{CStr, c_int};
 
 /// `time<std::chrono::milliseconds>(true)`, from native code so the clock is the
 /// one its timers read.
@@ -41,12 +42,32 @@ impl SocketFields {
         address.peer_name(self.fd).is_ok()
     }
 
-    /// `f` over the socket's address (`info`): the peer an accept, connect or
-    /// recvfrom left there, or the socket's own name after [`Self::get_name`], to
-    /// print, hash or copy out.
+    /// `Address::get_port` of the socket's address (the peer an accept, connect or
+    /// recvfrom left there, or the socket's own name after [`Self::get_name`]): 0
+    /// for an address that is not IP.
     #[inline]
-    pub fn with_address<R>(&self, f: impl FnOnce(&SocketAddress) -> R) -> R {
-        f(&self.info)
+    #[must_use]
+    pub fn port(&self) -> u16 {
+        self.info.port()
+    }
+
+    /// `Address::get_addr` of the socket's address, as [`SocketAddress::with_host`].
+    pub fn with_host<R>(&self, f: impl FnOnce(&CStr) -> R) -> R {
+        self.info.with_host(f)
+    }
+
+    /// The address family its storage holds.
+    #[inline]
+    #[must_use]
+    pub const fn address_family(&self) -> libc::sa_family_t {
+        self.info.addr.family()
+    }
+
+    /// The address's storage and length, to copy into a native address.
+    #[inline]
+    #[must_use]
+    pub const fn address_storage(&self) -> (AddressStorage, libc::socklen_t) {
+        (self.info.addr, self.info.len)
     }
 
     /// The socket's address becomes `address`: the peer it connected to or accepted.
