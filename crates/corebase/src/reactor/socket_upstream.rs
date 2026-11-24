@@ -11,28 +11,118 @@ use std::ffi::{CStr, c_int};
 
 use crate::sys::errno;
 
-/// `void Socket::clean() const`.
-pub fn socket_clean(socket: &SocketFields) {
-    crate::reactor::fd_clean(socket.fd);
+/// `socket.cc`'s methods that warn or record the last error as they go.
+impl SocketFields {
+    /// `void Socket::clean() const`.
+    pub fn clean(&self) {
+        crate::reactor::fd_clean(self.fd);
+    }
+
+    /// `int Socket::wait_event(int timeout_ms, int events) const`.
+    /// # Errors
+    /// The timeout or poll error, also recorded for the caller.
+    pub fn wait_event(&self, timeout_ms: c_int, events: c_int) -> Result<(), IoError> {
+        wait_event(
+            self.fd,
+            self.dont_restart,
+            timeout_ms,
+            crate::reactor::Events::from_bits(events),
+        )
+    }
+
+    /// `swReturnCode Socket::connect_async(const Address &sa)`.
+    pub fn connect_async(&mut self, address: &SocketAddress) -> Connect {
+        self.set_fd_option_or_warn(1, -1);
+        match crate::reactor::fd_connect(self.fd, address) {
+            Ok(()) => Connect::Ready,
+            Err(error) => {
+                log::set_last_error(error.errno());
+                set_errno(error.errno());
+                if error == crate::reactor::IoError::InProgress {
+                    Connect::Wait
+                } else {
+                    Connect::Error
+                }
+            }
+        }
+    }
+
+    /// `bool Socket::set_fd_option(int nonblock, int cloexec)`, warning as
+    /// `_fcntl_set_option`.
+    pub fn set_fd_option_or_warn(&mut self, nonblock: c_int, cloexec: c_int) -> bool {
+        let result = self.set_fd_option(nonblock, cloexec);
+        let fd = self.fd;
+        for (bit, call) in [
+            (1, "GETFL"),
+            (2, "SETFL, opts"),
+            (4, "GETFL"),
+            (8, "SETFD, opts"),
+        ] {
+            if result.warnings & bit != 0 {
+                log::sys_warning(
+                    c"network::_fcntl_set_option",
+                    format_args!("fcntl({fd}, {call}) failed"),
+                );
+            }
+        }
+        result.ok
+    }
+
+    /// `if (!nonblock) set_fd_option(1, -1)`: the descriptor made nonblocking unless the
+    /// socket knows it is, warning as [`Self::set_fd_option_or_warn`] does when that fails.
+    #[inline]
+    pub fn make_nonblocking(&mut self) {
+        if !self.is_nonblocking() {
+            self.set_fd_option_or_warn(1, -1);
+        }
+    }
+
+    /// `bool Socket::cork()`.
+    pub fn cork(&mut self) -> bool {
+        self.cork_as(true)
+    }
+
+    /// `bool Socket::uncork()`.
+    pub fn uncork(&mut self) -> bool {
+        self.cork_as(false)
+    }
+
+    /// `cork` or `uncork`: the TCP flags in and out of the record, and the warnings.
+    fn cork_as(&mut self, cork: bool) -> bool {
+        let mut state = crate::reactor::CorkState {
+            tcp_nopush: self.tcp_nopush,
+            tcp_nodelay: self.tcp_nodelay,
+        };
+        let result = if cork {
+            crate::reactor::swr_v1_socket_cork(self.fd, &mut state)
+        } else {
+            crate::reactor::swr_v1_socket_uncork(self.fd, self.enable_tcp_nodelay, &mut state)
+        };
+        self.tcp_nopush = state.tcp_nopush;
+        self.tcp_nodelay = state.tcp_nodelay;
+        let (origin, nopush, nodelay): (&CStr, _, _) = if cork {
+            (c"Socket::cork", "ON", "OFF")
+        } else {
+            (c"Socket::uncork", "OFF", "ON")
+        };
+        let fd = self.fd;
+        if result.warnings & 1 != 0 {
+            log::sys_warning(
+                origin,
+                format_args!("set_tcp_nopush(fd={fd}, {nopush}) failed"),
+            );
+        }
+        if result.warnings & 2 != 0 {
+            log::sys_warning(
+                origin,
+                format_args!("set_tcp_nodelay(fd={fd}, {nodelay}) failed"),
+            );
+        }
+        result.ok
+    }
 }
 
-/// `int Socket::wait_event(int timeout_ms, int events) const`.
-/// # Errors
-/// The timeout or poll error, also recorded for the caller.
-pub fn socket_wait_event(
-    socket: &SocketFields,
-    timeout_ms: c_int,
-    events: c_int,
-) -> Result<(), IoError> {
-    wait_event(
-        socket.fd,
-        socket.dont_restart,
-        timeout_ms,
-        crate::reactor::Events::from_bits(events),
-    )
-}
-
-/// [`socket_wait_event`] over a socket's `fd` and `dont_restart`: whether an event
+/// [`SocketFields::wait_event`] over a socket's `fd` and `dont_restart`: whether an event
 /// came, else the last error and errno say why not.
 pub(crate) fn wait_event(
     fd: c_int,
@@ -61,23 +151,6 @@ pub enum Connect {
     Error,
 }
 
-/// `swReturnCode Socket::connect_async(const Address &sa)`.
-pub fn socket_connect_async(socket: &mut SocketFields, address: &SocketAddress) -> Connect {
-    socket_set_fd_option(socket, 1, -1);
-    match crate::reactor::fd_connect(socket.fd, address) {
-        Ok(()) => Connect::Ready,
-        Err(error) => {
-            log::set_last_error(error.errno());
-            set_errno(error.errno());
-            if error == crate::reactor::IoError::InProgress {
-                Connect::Wait
-            } else {
-                Connect::Error
-            }
-        }
-    }
-}
-
 /// `int Socket::connect_sync(const Address &sa)` of `this`, a live socket on this
 /// thread; it waits outside any borrow.
 /// # Errors
@@ -86,7 +159,7 @@ pub fn connect_sync(
     socket: crate::reactor::Socket<'_>,
     address: &SocketAddress,
 ) -> Result<(), IoError> {
-    match socket.edit(|record| socket_connect_async(record, address)) {
+    match socket.edit(|record| record.connect_async(address)) {
         Connect::Wait => {}
         Connect::Ready => return Ok(()),
         Connect::Error => return Err(IoError::Failed(log::last_error())),
@@ -106,7 +179,7 @@ pub fn connect_sync(
         log::set_last_error(error);
         return Err(IoError::Failed(error));
     }
-    socket.edit(|record| socket_set_fd_option(record, 0, -1));
+    socket.edit(|record| record.set_fd_option_or_warn(0, -1));
     Ok(())
 }
 
@@ -117,36 +190,6 @@ pub fn socket_has_timedout() -> bool {
     error == libc::EAGAIN
         || error == libc::ETIMEDOUT
         || log::last_error() == crate::reactor::socket_io::POLL_TIMEOUT
-}
-
-/// `bool Socket::set_fd_option(int nonblock, int cloexec)`, warning as
-/// `_fcntl_set_option`.
-pub fn socket_set_fd_option(socket: &mut SocketFields, nonblock: c_int, cloexec: c_int) -> bool {
-    let result = socket.set_fd_option(nonblock, cloexec);
-    let fd = socket.fd;
-    for (bit, call) in [
-        (1, "GETFL"),
-        (2, "SETFL, opts"),
-        (4, "GETFL"),
-        (8, "SETFD, opts"),
-    ] {
-        if result.warnings & bit != 0 {
-            log::sys_warning(
-                c"network::_fcntl_set_option",
-                format_args!("fcntl({fd}, {call}) failed"),
-            );
-        }
-    }
-    result.ok
-}
-
-/// `if (!nonblock) set_fd_option(1, -1)`: the descriptor made nonblocking unless the
-/// socket knows it is, warning as [`socket_set_fd_option`] does when that fails.
-#[inline]
-pub fn socket_make_nonblocking(socket: &mut SocketFields) {
-    if !socket.is_nonblocking() {
-        socket_set_fd_option(socket, 1, -1);
-    }
 }
 
 /// `_set_timeout` and the timeout it records: `SO_SNDTIMEO` (`send`) or `SO_RCVTIMEO`.
@@ -170,50 +213,6 @@ pub fn socket_set_kernel_read_timeout(socket: &mut SocketFields, timeout: f64) -
 /// `bool Socket::set_kernel_write_timeout(double)`: upstream sets `SO_RCVTIMEO`.
 pub fn socket_set_kernel_write_timeout(socket: &mut SocketFields, timeout: f64) -> bool {
     set_kernel_timeout(socket, false, timeout)
-}
-
-/// `cork` or `uncork`: the TCP flags in and out of the record, and the warnings.
-fn cork_as(socket: &mut SocketFields, cork: bool) -> bool {
-    let mut state = crate::reactor::CorkState {
-        tcp_nopush: socket.tcp_nopush,
-        tcp_nodelay: socket.tcp_nodelay,
-    };
-    let result = if cork {
-        crate::reactor::swr_v1_socket_cork(socket.fd, &mut state)
-    } else {
-        crate::reactor::swr_v1_socket_uncork(socket.fd, socket.enable_tcp_nodelay, &mut state)
-    };
-    socket.tcp_nopush = state.tcp_nopush;
-    socket.tcp_nodelay = state.tcp_nodelay;
-    let (origin, nopush, nodelay): (&CStr, _, _) = if cork {
-        (c"Socket::cork", "ON", "OFF")
-    } else {
-        (c"Socket::uncork", "OFF", "ON")
-    };
-    let fd = socket.fd;
-    if result.warnings & 1 != 0 {
-        log::sys_warning(
-            origin,
-            format_args!("set_tcp_nopush(fd={fd}, {nopush}) failed"),
-        );
-    }
-    if result.warnings & 2 != 0 {
-        log::sys_warning(
-            origin,
-            format_args!("set_tcp_nodelay(fd={fd}, {nodelay}) failed"),
-        );
-    }
-    result.ok
-}
-
-/// `bool Socket::cork()`.
-pub fn socket_cork(socket: &mut SocketFields) -> bool {
-    cork_as(socket, true)
-}
-
-/// `bool Socket::uncork()`.
-pub fn socket_uncork(socket: &mut SocketFields) -> bool {
-    cork_as(socket, false)
 }
 
 /// Opens a socket, recording the last error on failure and warning on unknown types.
@@ -295,7 +294,7 @@ mod tests {
         let mut fds = [0; 2];
         assert_eq!(unsafe { libc::pipe(fds.as_mut_ptr()) }, 0);
         let socket = SocketRecord::with_fd(fds[0], 0);
-        assert_eq!(socket_wait_event(&socket, 0, 0), Err(IoError::TimedOut));
+        assert_eq!(socket.wait_event(0, 0), Err(IoError::TimedOut));
         assert_eq!(log::last_error(), crate::reactor::socket_io::POLL_TIMEOUT);
         assert!(socket_has_timedout());
         unsafe {

@@ -796,8 +796,7 @@ pub fn pool_ipc_listener(
 
 /// `sock->set_nonblock()`.
 pub(crate) fn set_nonblock(sock: Socket<'_>) {
-    let set = swoole_rs_corebase::reactor::socket_upstream::socket_set_fd_option;
-    let _ = sock.edit(|sock| set(sock, 1, -1));
+    let _ = sock.edit(|sock| sock.set_fd_option_or_warn(1, -1));
 }
 
 #[cfg(test)]

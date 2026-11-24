@@ -23,7 +23,6 @@ use std::{
 };
 use swoole_rs_corebase::reactor::Heap;
 use swoole_rs_corebase::reactor::signal_upstream::Handler as SignalHandler;
-use swoole_rs_corebase::reactor::socket_upstream::socket_set_fd_option;
 use swoole_rs_corebase::{CCast, CellExt};
 use swoole_rs_corebase::{ossupport::QueueRecord, process};
 use swoole_rs_phpstubs::process_pool;
@@ -727,7 +726,7 @@ fn listen(call: &Call) {
     if let Some(listener) = swoole_rs_server::view::pool_ipc_listener(view) {
         _ = listener
             .socket()
-            .edit(|record| socket_set_fd_option(record, 0, 1));
+            .edit(|record| record.set_fd_option_or_warn(0, 1));
     }
     call.set_bool(listened);
 }

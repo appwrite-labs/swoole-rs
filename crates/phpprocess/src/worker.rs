@@ -9,9 +9,7 @@ use swoole_rs_corebase::process::{
 };
 use swoole_rs_corebase::reactor::{
     event_api,
-    socket_upstream::{
-        socket_set_fd_option, socket_set_kernel_read_timeout, socket_set_kernel_write_timeout,
-    },
+    socket_upstream::{socket_set_kernel_read_timeout, socket_set_kernel_write_timeout},
 };
 use swoole_rs_corebase::tls::upstream::{read_sync, send_sync};
 use swoole_rs_server::view;
@@ -205,7 +203,7 @@ pub(crate) fn pipe_timeout(worker: Worker<'_>, seconds: f64) -> bool {
 /// The pipe's `O_NONBLOCK`; false without a pipe.
 pub(crate) fn pipe_blocking(worker: Worker<'_>, blocking: bool) -> bool {
     pipe(worker).is_some_and(|socket| {
-        socket.edit(|record| socket_set_fd_option(record, c_int::from(!blocking), -1))
+        socket.edit(|record| record.set_fd_option_or_warn(c_int::from(!blocking), -1))
     })
 }
 

@@ -5,7 +5,7 @@
 use crate::reactor::reactor_state::{Backend, ReactorState};
 use crate::reactor::registration;
 use crate::reactor::socket_sync::set_errno;
-use crate::reactor::{Events, Heap, Socket};
+use crate::reactor::{Events, Heap, Socket, SocketFields};
 use std::ffi::{CStr, c_int};
 
 /// Logs `message` as from `origin`: `code` 0 is `swoole_sys_warning`, with errno as the
@@ -80,6 +80,20 @@ struct Seen {
     events: Events,
     removed: bool,
     silent_remove: bool,
+}
+
+impl SocketFields {
+    /// What a change reads of the socket before it applies.
+    #[inline]
+    const fn seen(&self) -> Seen {
+        Seen {
+            fd: self.fd,
+            fd_type: self.fd_type,
+            events: self.events,
+            removed: self.removed,
+            silent_remove: self.silent_remove,
+        }
+    }
 }
 
 struct Change {
@@ -330,13 +344,7 @@ pub(crate) fn apply(
     };
     let change = Change {
         log,
-        socket: socket.read(|record| Seen {
-            fd: record.fd,
-            fd_type: record.fd_type,
-            events: record.events,
-            removed: record.removed,
-            silent_remove: record.silent_remove,
-        }),
+        socket: socket.read(SocketFields::seen),
         id: state.fields.id,
         op,
         events,

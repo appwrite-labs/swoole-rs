@@ -1608,8 +1608,7 @@ mod ops {
     /// `connect_async` of the socket to `server_addr`; errno is the call's.
     pub(super) fn connect_async(this: Handle<'_>) -> Connect {
         let address = &this.record().server_addr;
-        this.socket()
-            .edit(|socket| socket_upstream::socket_connect_async(socket, address))
+        this.socket().edit(|socket| socket.connect_async(address))
     }
 
     /// Connects the socket to `server_addr`, by `mode`: whether it connected, else

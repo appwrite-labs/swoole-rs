@@ -224,12 +224,12 @@ impl Socket {
 
     fn set_block(&self) -> bool {
         self.handle()
-            .edit(|record| socket_upstream::socket_set_fd_option(record, 0, -1))
+            .edit(|record| record.set_fd_option_or_warn(0, -1))
     }
 
     fn set_nonblock(&self) -> bool {
         self.handle()
-            .edit(|record| socket_upstream::socket_set_fd_option(record, 1, -1))
+            .edit(|record| record.set_fd_option_or_warn(1, -1))
     }
 
     fn connect_sync(&self, address: &Address) -> c_int {
@@ -362,7 +362,7 @@ impl Socket {
     }
 
     fn clean(&self) {
-        self.handle().read(socket_upstream::socket_clean);
+        self.handle().read(SocketFields::clean);
     }
 
     fn check_liveness(&self) -> bool {
@@ -471,8 +471,8 @@ fn fail() {
     assert!(swoole_rs_corebase::reactor::set_socket_buffer_size(fd, false, true, 1).is_err());
 
     assert!(!sock.handle().edit(|record| record.set_tcp_nodelay(1)));
-    assert!(!sock.handle().edit(socket_upstream::socket_cork));
-    assert!(!sock.handle().edit(socket_upstream::socket_uncork));
+    assert!(!sock.handle().edit(SocketFields::cork));
+    assert!(!sock.handle().edit(SocketFields::uncork));
 
     assert!(
         !sock
