@@ -404,13 +404,7 @@ fn send_file(sock: Socket<'_>, task: &[u8]) -> bool {
 fn idle_timer(conn: Connection<'_>, sock: Socket<'_>, idle: f64) {
     let timer = crate::connection::idle_timer(conn, idle);
     let now = steady_ms();
-    sock.edit(|sock| {
-        sock.set_timeout(idle, swoole_rs_corebase::reactor::TimeoutKind::WRITE);
-        sock.last_sent_time = now;
-        if let Some(timer) = timer {
-            sock.arm_send_timer(timer);
-        }
-    });
+    sock.edit(|sock| sock.watch_send_idle(idle, timer, now));
 }
 #[cfg(test)]
 mod tests {
