@@ -988,8 +988,17 @@ impl Forwarding {
         Self(session)
     }
 
-    fn closed(&self) -> bool {
-        swr_ssh2_forward_closed(self.0)
+    fn open<T>(&self, mut open: impl FnMut() -> Option<T>) -> Option<T> {
+        // A disconnect can wake a successful socket poll. End the retry before
+        // it calls libssh2 again, even if the last native error is still EAGAIN.
+        hooked(self.0, || {
+            if swr_ssh2_forward_closed(self.0) {
+                return Some(None);
+            }
+            open().map(Some)
+        })
+        .flatten()
+        .filter(|_| !swr_ssh2_forward_closed(self.0))
     }
 }
 
@@ -1035,17 +1044,13 @@ fn forward_listen(call: &Call<'_>) {
     let host = host.map(|host| text(host).0);
     // C passed the longs to libssh2's ints as they were.
     let (port, queue) = (port.c_cast(), queue.c_cast());
-    let Some(listener) = hooked(session, || {
-        libssh2_channel_forward_listen_ex(session, host, port, None, queue)
-    }) else {
+    let Some(listener) =
+        forwarding.open(|| libssh2_channel_forward_listen_ex(session, host, port, None, queue))
+    else {
         warn("Failure listening on remote port");
         call.set_bool(false);
         return;
     };
-    if forwarding.closed() {
-        call.set_bool(false);
-        return;
-    }
     swr_ssh2_listener_open(resource, session, listener, call.return_slot());
 }
 
@@ -1064,14 +1069,10 @@ fn forward_accept(call: &Call<'_>) {
     };
     let session = swr_ssh2_listener_session(resource);
     let forwarding = Forwarding::new(session);
-    let Some(channel) = hooked(session, || libssh2_channel_forward_accept(listener)) else {
+    let Some(channel) = forwarding.open(|| libssh2_channel_forward_accept(listener)) else {
         call.set_bool(false);
         return;
     };
-    if forwarding.closed() {
-        call.set_bool(false);
-        return;
-    }
     swr_ssh2_accepted_stream(resource, channel, call.return_slot());
 }
 

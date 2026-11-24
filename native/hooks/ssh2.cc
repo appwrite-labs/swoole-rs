@@ -484,29 +484,26 @@ static php_ssh2_session_data *session_data(LIBSSH2_SESSION *session) {
 }
 
 extern "C" void swr_ssh2_forward_enter(LIBSSH2_SESSION *session) {
-    ++session_data(session)->forwarding;
+    ++session_data(session)->forwarding.active;
 }
 
 extern "C" void swr_ssh2_forward_leave(LIBSSH2_SESSION *session) {
     auto data = session_data(session);
-    if (--data->forwarding == 0 && data->close_pending) {
+    if (data->forwarding.leave()) {
         destroy_session(session);
     }
 }
 
 extern "C" bool swr_ssh2_forward_closed(LIBSSH2_SESSION *session) {
-    return session_data(session)->close_pending;
+    return session_data(session)->forwarding.close_pending;
 }
 
 static void php_ssh2_session_dtor(zend_resource *rsrc) {
     auto session = static_cast<LIBSSH2_SESSION *>(rsrc->ptr);
     auto data = session_data(session);
-    if (data->forwarding) {
-        data->close_pending = true;
-        shutdown(data->socket->get_fd(), SHUT_RDWR);
-        return;
+    if (data->forwarding.request_close(data->socket->get_fd())) {
+        destroy_session(session);
     }
-    destroy_session(session);
 }
 
 static void php_ssh2_listener_dtor(zend_resource *rsrc) {

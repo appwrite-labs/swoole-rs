@@ -105,6 +105,27 @@ void swr_v1_ssh2_set_socket_timeout(swr_v1_ssh2_session session, int timeout_ms)
 #ifdef __cplusplus
 }
 #endif
+#ifdef __cplusplus
+#include <sys/socket.h>
+
+struct ssh2_forwarding {
+    size_t active;
+    bool close_pending;
+
+    bool request_close(int fd) {
+        if (active == 0) {
+            return true;
+        }
+        close_pending = true;
+        shutdown(fd, SHUT_RDWR);
+        return false;
+    }
+
+    bool leave() {
+        return --active == 0 && close_pending;
+    }
+};
+#endif
 #if defined(__cplusplus) && defined(PHP_FUNCTION)
 /* An ext/ssh2 session's abstract: its userspace callbacks and its socket. */
 struct php_ssh2_session_data {
@@ -113,8 +134,7 @@ struct php_ssh2_session_data {
     zval *macerror_cb;
     zval *disconnect_cb;
     SocketImpl *socket;
-    size_t forwarding;
-    bool close_pending;
+    ssh2_forwarding forwarding;
 };
 static_assert(offsetof(php_ssh2_session_data, ignore_cb) == 0 &&
               offsetof(php_ssh2_session_data, debug_cb) == sizeof(void *) &&
@@ -122,7 +142,7 @@ static_assert(offsetof(php_ssh2_session_data, ignore_cb) == 0 &&
               offsetof(php_ssh2_session_data, disconnect_cb) == 3 * sizeof(void *) &&
               offsetof(php_ssh2_session_data, socket) == 4 * sizeof(void *) &&
               offsetof(php_ssh2_session_data, forwarding) == 5 * sizeof(void *) &&
-              offsetof(php_ssh2_session_data, close_pending) == 6 * sizeof(void *) &&
+              offsetof(ssh2_forwarding, active) == 0 && offsetof(ssh2_forwarding, close_pending) == sizeof(void *) &&
               sizeof(php_ssh2_session_data) == 7 * sizeof(void *) &&
               alignof(php_ssh2_session_data) == alignof(void *), "hooks::ssh2::SessionData layout");
 #endif
