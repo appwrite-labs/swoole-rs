@@ -102,7 +102,7 @@ fn accept<'a>(
             break 'setup false;
         }
         socket.edit(|socket| {
-            socket.set_address(*sa);
+            socket.record_address(sa.addr, sa.len, sa.kind);
             socket.chunk_size = SW_SSL_BUFFER_SIZE;
         });
         true

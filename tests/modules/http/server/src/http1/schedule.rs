@@ -38,7 +38,7 @@ fn fake_sock(fd: c_int, address: Option<(c_int, &str, c_int)>) -> *mut c_void {
     if let Some((kind, host, port)) = address {
         let mut address = Address::default();
         assign(&mut address, kind, host, port);
-        sock.set_address(address);
+        sock.record_address(address.addr, address.len, address.kind);
     }
     sock.into_raw().cast()
 }

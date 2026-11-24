@@ -446,7 +446,7 @@ pub(crate) fn accept(socket: Co, ops: &UringSocketOps<'_>) -> Option<OwnedCo> {
     address.kind = socket
         .net(|listener| listener.socket_type)
         .unwrap_or_default();
-    conn.set_address(address);
+    conn.record_address(address.addr, address.len, address.kind);
     conn.note_nonblocking(true);
     conn.cloexec = true;
     // A `UringSocket` before it shares the server's TLS, so its session is over the

@@ -70,10 +70,18 @@ impl SocketFields {
         (self.info.addr, self.info.len)
     }
 
-    /// The socket's address becomes `address`: the peer it connected to or accepted.
+    /// The socket's address becomes the peer it connected to or accepted: `len`
+    /// bytes of `addr`, of socket type `kind`.
     #[inline]
-    pub const fn set_address(&mut self, address: SocketAddress) {
-        self.info = address;
+    pub const fn record_address(
+        &mut self,
+        addr: AddressStorage,
+        len: libc::socklen_t,
+        kind: c_int,
+    ) {
+        self.info.addr = addr;
+        self.info.len = len;
+        self.info.kind = kind;
     }
 
     /// The socket's address takes the socket type `kind` (`info.type = type`).
