@@ -3,7 +3,7 @@
 //! `swoole_init`: register hooks and client adapters, then initialize corebase.
 /// `void swoole_init()`.
 pub fn swoole_init() {
-    swoole_rs_corebase::reactor::readiness::set_init_reactor(
+    swoole_rs_corebase::waits::readiness::set_init_reactor(
         swoole_rs_hooks::reactor_handlers::SOCKET,
         swoole_rs_hooks::reactor_handlers::IOURING,
         swoole_rs_clients::client::init_reactor,

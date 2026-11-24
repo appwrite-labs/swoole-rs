@@ -49,7 +49,7 @@ operation's context and answers its ops. Decisions it keeps from upstream:
   the reactor `Socket` around the descriptor, its handler, exit condition and
   destroy callback, `SwooleG.signal_fd`, the warnings and the handler call.
 - Coroutine waitpid (upstream `src/os/wait.cc`; facades in
-  `crates/corebase/src/reactor/wait_upstream.rs`, registry in `crates/corebase/src/process/wait.rs`) is Rust: the children
+  `crates/corebase/src/waits/wait_upstream.rs`, registry in `crates/corebase/src/process/wait.rs`) is Rust: the children
   reaped before anyone waited, the any-child FIFO and the per-PID waiters, the
   last WNOHANG try after SIGCHLD registration, the yield, and the SIGCHLD reaper
   that hands each child out and resumes its coroutine. The caller passes the

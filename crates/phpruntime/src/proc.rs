@@ -43,7 +43,7 @@ fn waitpid(pid: libc::pid_t, status: &mut c_int, options: c_int) -> libc::pid_t 
     if built_with(Switch::Thread) {
         swoole_rs_hooks::exec::system_waitpid_safe(pid, Some(status), options)
     } else {
-        swoole_rs_corebase::reactor::wait_upstream::system_waitpid(pid, status, options, -1.0)
+        swoole_rs_corebase::waits::wait_upstream::system_waitpid(pid, status, options, -1.0)
     }
 }
 

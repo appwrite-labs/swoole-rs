@@ -53,7 +53,7 @@ use std::panic::{AssertUnwindSafe, catch_unwind};
 use swoole_rs_corebase::log::last_error;
 use swoole_rs_corebase::random_bytes;
 use swoole_rs_corebase::reactor::Events;
-use swoole_rs_corebase::reactor::wait_upstream::system_waitpid as waitpid;
+use swoole_rs_corebase::waits::wait_upstream::system_waitpid as waitpid;
 use swoole_rs_ffi::swoole_init;
 use swoole_rs_hooks::poll::PollFd;
 
