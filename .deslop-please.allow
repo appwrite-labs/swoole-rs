@@ -57,7 +57,6 @@ field-leak swoole_rs_corebase::reactor::reactor_state::ReactorState::handlers
 field-leak swoole_rs_corebase::reactor::reactor_state::ReactorState::registry
 field-leak swoole_rs_corebase::reactor::reactor_state::ReactorState::running_defer
 field-leak swoole_rs_corebase::reactor::socket::SocketMarks::reactor
-field-leak swoole_rs_corebase::reactor::socket_record::SocketFields::chunk_size
 field-leak swoole_rs_corebase::reactor::socket_record::SocketFields::cloexec
 field-leak swoole_rs_corebase::reactor::socket_record::SocketFields::close_notified
 field-leak swoole_rs_corebase::reactor::socket_record::SocketFields::direct_send
@@ -79,7 +78,6 @@ field-leak swoole_rs_corebase::reactor::socket_record::SocketFields::recv_wait
 field-leak swoole_rs_corebase::reactor::socket_record::SocketFields::removed
 field-leak swoole_rs_corebase::reactor::socket_record::SocketFields::silent_remove
 field-leak swoole_rs_corebase::reactor::socket_record::SocketFields::skip_recv
-field-leak swoole_rs_corebase::reactor::socket_record::SocketFields::socket_type
 field-leak swoole_rs_corebase::reactor::socket_record::SocketFields::ssl_closed
 field-leak swoole_rs_corebase::reactor::socket_record::SocketFields::ssl_handshake_buffer_set
 field-leak swoole_rs_corebase::reactor::socket_record::SocketFields::ssl_quiet_shutdown

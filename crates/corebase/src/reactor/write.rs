@@ -54,6 +54,36 @@ impl SocketFields {
         }
     }
 
+    /// [`Self::open_output_queue`] in the socket's own chunks.
+    #[inline]
+    pub fn open_chunked_output_queue(&mut self) {
+        self.open_output_queue(self.chunk_size);
+    }
+
+    /// A stream's sends go out in `SW_SEND_BUFFER_SIZE` chunks.
+    #[inline]
+    pub const fn send_in_chunks(&mut self) {
+        self.chunk_size = crate::constants::SW_SEND_BUFFER_SIZE;
+    }
+
+    /// A DTLS socket's sends go out one `SW_SSL_BUFFER_SIZE` record at a time.
+    #[inline]
+    pub const fn send_in_dtls_records(&mut self) {
+        self.chunk_size = crate::constants::SW_SSL_BUFFER_SIZE;
+    }
+
+    /// The most one TLS send writes: a DTLS socket's chunk, unbounded otherwise.
+    #[inline]
+    #[must_use]
+    pub fn tls_send_limit(&self) -> usize {
+        let chunk = self.chunk_size as usize;
+        if self.dtls && chunk != 0 {
+            chunk
+        } else {
+            usize::MAX
+        }
+    }
+
     /// Whether the socket has an output queue, empty or not: a send that may bypass the
     /// queue can't once it exists.
     #[inline]

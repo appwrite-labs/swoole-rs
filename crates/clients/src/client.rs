@@ -22,8 +22,7 @@ use std::rc::Rc;
 use std::sync::Arc;
 use swoole_rs_corebase::buffer::string::{OwnedString, StringBuffer};
 use swoole_rs_corebase::constants::{
-    FdType, SW_BUFFER_SIZE_UDP, SW_CLIENT_BUFFER_SIZE, SW_SEND_BUFFER_SIZE, SW_SSL_BUFFER_SIZE,
-    SocketFlag, SocketType,
+    FdType, SW_BUFFER_SIZE_UDP, SW_CLIENT_BUFFER_SIZE, SocketFlag, SocketType,
 };
 use swoole_rs_corebase::lent::{Spare, lend_spare};
 use swoole_rs_corebase::net_types::{PacketLength, SocketAddress};
@@ -155,8 +154,6 @@ enum EventOp {
 const SOCK_UNIX_DGRAM: c_int = SocketType::SW_SOCK_UNIX_DGRAM as c_int;
 const FD_STREAM_CLIENT: c_int = FdType::SW_FD_STREAM_CLIENT as c_int;
 const FD_DGRAM_CLIENT: c_int = FdType::SW_FD_DGRAM_CLIENT as c_int;
-const SEND_BUFFER_SIZE: u32 = SW_SEND_BUFFER_SIZE;
-const SSL_BUFFER_SIZE: u32 = SW_SSL_BUFFER_SIZE;
 const BUFFER_SIZE_UDP: usize = SW_BUFFER_SIZE_UDP as usize;
 const CLIENT_BUFFER_SIZE: usize = SW_CLIENT_BUFFER_SIZE as usize;
 /// `corebase::tls`'s `SW_SSL_STATE_READY`, `SW_SSL_STATE_WAIT_STREAM`, `SW_SSL_CLIENT`
@@ -702,7 +699,7 @@ fn create_with(kind: c_int, is_async: bool, socket_ops: &'static SocketOps) -> O
         return None;
     };
     let socket_type = socket.socket().edit(|record| {
-        record.chunk_size = SEND_BUFFER_SIZE;
+        record.send_in_chunks();
         record.socket_type
     });
     let mut client = Client {
@@ -1083,7 +1080,7 @@ fn enable_dtls(this: Handle<'_>) {
     this.edit_tls(|fields, _| fields.protocols = SSL_DTLS);
     this.socket().edit(|socket| {
         socket.dtls = true;
-        socket.chunk_size = SSL_BUFFER_SIZE;
+        socket.send_in_dtls_records();
     });
     this.set(Flag::Dtls, true);
 }

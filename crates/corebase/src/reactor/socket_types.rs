@@ -67,10 +67,6 @@ pub fn host_type(host: &[u8]) -> HostType {
     }
 }
 
-/// `SW_SOCK_NONBLOCK` and `SW_SOCK_CLOEXEC`.
-pub(crate) const NONBLOCK: c_int = crate::constants::SocketFlag::SW_SOCK_NONBLOCK.bits();
-pub(crate) const CLOEXEC: c_int = crate::constants::SocketFlag::SW_SOCK_CLOEXEC.bits();
-
 /// `swoole::socket`: socket(2) with `SW_SOCK_NONBLOCK`/`SW_SOCK_CLOEXEC` applied,
 /// atomically where the platform has `SOCK_NONBLOCK`/`SOCK_CLOEXEC`, else by fcntl.
 /// As upstream, a failed fcntl closes the socket but still returns its number.
@@ -128,8 +124,13 @@ mod tests {
     #[test]
     #[cfg_attr(miri, ignore = "Miri aborts on an unsupported socket domain")]
     fn open_applies_the_flags() {
-        let fd = swr_v1_socket_open(libc::AF_INET, libc::SOCK_STREAM, 0, NONBLOCK | CLOEXEC)
-            .expect("a socket");
+        let fd = swr_v1_socket_open(
+            libc::AF_INET,
+            libc::SOCK_STREAM,
+            0,
+            (SocketFlag::SW_SOCK_NONBLOCK | SocketFlag::SW_SOCK_CLOEXEC).bits(),
+        )
+        .expect("a socket");
         // SAFETY: fcntl(F_GETFL/F_GETFD) on a socket this test opened.
         unsafe {
             assert_ne!(
