@@ -987,8 +987,7 @@ fn header_block(session: &Session, stream: &Stream, flags: u32, payload: &[u8]) 
     session.header_stream_id.set(0);
     if session.remaining_headers.get().is_none() {
         const ENHANCE_YOUR_CALM: u32 = 11;
-        reset(stream.ctx(), stream.id, ENHANCE_YOUR_CALM);
-        return session.remove(stream.id);
+        return reset_stream(session, stream, ENHANCE_YOUR_CALM);
     }
     if !discard && !headers_complete(stream) {
         return false;
@@ -1112,10 +1111,23 @@ fn settings(session: &Session, payload: &[u8]) -> bool {
     true
 }
 
+fn reset_stream(session: &Session, stream: &Stream, code: u32) -> bool {
+    let mut ids = session.recently_reset.get();
+    ids.rotate_right(1);
+    ids[0] = stream.id;
+    session.recently_reset.set(ids);
+    reset(stream.ctx(), stream.id, code);
+    session.remove(stream.id)
+}
+
 /// A DATA frame: buffer the body, keep the windows open and dispatch the
 /// request at the end of the stream.
 fn data(session: &Session, stream_id: u32, flags: u32, payload: &[u8]) -> bool {
     let Some(stream) = session.stream(stream_id, false) else {
+        if stream_id != 0 && session.recently_reset.get().contains(&stream_id) {
+            connection_flow(session, session.default_ctx(), payload.len());
+            return true;
+        }
         log(
             LOG_WARNING,
             STREAM_NOT_FOUND,
@@ -1133,8 +1145,8 @@ fn data(session: &Session, stream_id: u32, flags: u32, payload: &[u8]) -> bool {
         let buffered = ctx.data_start();
         let ended = get(ctx, Field::End) != 0;
         if sw_rs_http2_data_rejected(buffered, length, session.max_body_size, ended) {
-            reset(ctx, stream_id, 0);
-            return session.remove(stream_id);
+            connection_flow(session, ctx, length);
+            return reset_stream(session, &stream, 0);
         }
         ctx.data_append(payload);
         flow(session, &stream, ctx, stream_id, length);
@@ -1148,19 +1160,24 @@ fn data(session: &Session, stream_id: u32, flags: u32, payload: &[u8]) -> bool {
 /// Flow control: debit both receive windows, and reopen each once a quarter
 /// remains.
 fn flow(session: &Session, stream: &Stream, ctx: Ctx, stream_id: u32, length: usize) {
+    connection_flow(session, ctx, length);
     let initial = session.local(INIT_WINDOW_SIZE);
-    let connection = window(session.local_window_size.get(), length, initial, false);
-    session.local_window_size.set(connection.value);
     let debited = window(stream.local_window_size.get(), length, 0, false).value;
     stream.local_window_size.set(debited);
-    if connection.increment != 0 {
-        window_update(ctx, 0, connection.increment);
-        session.local_window_size.set(initial);
-    }
     let reopen = window(debited, 0, initial, false);
     if reopen.increment != 0 {
         window_update(ctx, stream_id, reopen.increment);
         stream.local_window_size.set(initial);
+    }
+}
+
+fn connection_flow(session: &Session, ctx: Ctx, length: usize) {
+    let initial = session.local(INIT_WINDOW_SIZE);
+    let connection = window(session.local_window_size.get(), length, initial, false);
+    session.local_window_size.set(connection.value);
+    if connection.increment != 0 {
+        window_update(ctx, 0, connection.increment);
+        session.local_window_size.set(initial);
     }
 }
 

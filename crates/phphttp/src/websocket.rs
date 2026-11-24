@@ -23,13 +23,13 @@ use swoole_rs_zend::{
 };
 
 pub use swoole_rs_phpclients::websocket::FrameObject;
+pub(crate) use swoole_rs_phpclients::websocket::{
+    Assembly, FLAG_FIN, IN_SERVER, OPEN_CLOSE_FRAME, OPEN_PING_FRAME, OPEN_PONG_FRAME,
+    SETTING_COMPRESSION, encode, has_zlib, recv,
+};
 use swoole_rs_phpclients::websocket::{
     CLOSE_NORMAL, FLAG_RSV1, close_frame, deliver, pack, register_frames, uncompress,
     zim_swoole_websocket_server_pack, zim_swoole_websocket_server_unpack,
-};
-pub(crate) use swoole_rs_phpclients::websocket::{
-    FLAG_FIN, IN_SERVER, Message, OPEN_CLOSE_FRAME, OPEN_PING_FRAME, OPEN_PONG_FRAME,
-    SETTING_COMPRESSION, encode, has_zlib, recv,
 };
 static SERVER: Class = Class::new();
 /// Swoole error codes and log levels (`include/swoole_error.h`, `swoole_log.h`).
