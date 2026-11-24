@@ -5,7 +5,7 @@
 //! lifetime, from its constructor and `swoole_event_init` to its destructor and
 //! `swoole_event_free`.
 use crate::reactor::wait_loop::BackendKind;
-use crate::reactor::{PollSnapshot, handlers::Handlers, registry::Registry};
+use crate::reactor::{PollSnapshot, SocketFields, handlers::Handlers, registry::Registry};
 use libc::{c_int, c_void};
 use std::ptr;
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -609,6 +609,59 @@ pub(crate) const fn before_wait(fields: &mut ReactorFields) {
     }
 }
 
+impl SocketFields {
+    /// [`ReactorState::record`]'s step: the registry entry under this socket's
+    /// descriptor and the socket's flags together. False when add cannot allocate,
+    /// leaving the flags alone.
+    #[inline]
+    fn enter(
+        &mut self,
+        registry: &mut Registry,
+        request: crate::reactor::change::Request<'_>,
+        events: crate::reactor::Events,
+        serial: u32,
+    ) -> bool {
+        use crate::reactor::change::Request;
+        match request {
+            Request::Add(added) => {
+                let replaced = registry.get(self.fd);
+                if !registry.put(self.fd, added, events) {
+                    return false;
+                }
+                // A socket whose fd closed unremoved is no longer this registry's.
+                if let Some(replaced) = replaced.filter(|old| old.as_ptr() != added.as_ptr()) {
+                    unmark(*replaced, serial);
+                }
+                added.mark().store(serial, Ordering::Relaxed);
+                self.events = events;
+                self.removed = false;
+            }
+            Request::Set(_) => {
+                self.events = events;
+                registry.set(self.fd, events);
+            }
+            Request::Del(deleted) => {
+                self.events = crate::reactor::Events::NONE;
+                self.removed = true;
+                registry.remove(self.fd);
+                unmark(deleted, serial);
+            }
+        }
+        true
+    }
+
+    /// The socket `registry` holds under this socket's descriptor, if any: this one
+    /// while it is registered, or one that took the descriptor over.
+    #[inline]
+    #[must_use]
+    pub(crate) fn registry_entry(
+        &self,
+        registry: &Registry,
+    ) -> Option<crate::reactor::Heap<'static>> {
+        registry.get(self.fd)
+    }
+}
+
 impl ReactorState {
     /// `Reactor::_add`, `_set` and `_del`: the registry and the socket's flags
     /// together. False when add cannot allocate, leaving the flags alone.
@@ -623,34 +676,8 @@ impl ReactorState {
             Request::Del(socket) => socket,
         };
         let serial = self.serial;
-        socket.edit(|record| {
-            match request {
-                Request::Add(added) => {
-                    let replaced = self.registry.get(record.fd);
-                    if !self.registry.put(record.fd, added, events) {
-                        return false;
-                    }
-                    // A socket whose fd closed unremoved is no longer this registry's.
-                    if let Some(replaced) = replaced.filter(|old| old.as_ptr() != added.as_ptr()) {
-                        unmark(*replaced, serial);
-                    }
-                    added.mark().store(serial, Ordering::Relaxed);
-                    record.events = events;
-                    record.removed = false;
-                }
-                Request::Set(_) => {
-                    record.events = events;
-                    self.registry.set(record.fd, events);
-                }
-                Request::Del(deleted) => {
-                    record.events = crate::reactor::Events::NONE;
-                    record.removed = true;
-                    self.registry.remove(record.fd);
-                    unmark(deleted, serial);
-                }
-            }
-            true
-        })
+        let registry = &mut self.registry;
+        socket.edit(|record| record.enter(registry, request, events, serial))
     }
 
     /// Forgets `socket` wherever the registry names it, the kernel left alone: for a

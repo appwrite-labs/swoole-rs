@@ -220,6 +220,15 @@ impl Descriptor {
     }
 }
 
+impl crate::reactor::Socket<'_> {
+    /// `fd`: the descriptor's number, for the logs, stats and callers that pass it on.
+    #[must_use]
+    #[track_caller]
+    pub fn fd(self) -> c_int {
+        self.read(|record| record.fd)
+    }
+}
+
 impl SocketRecord {
     /// A socket as `new Socket()` makes it: all zero but the default timeouts, and
     /// not borrowed.

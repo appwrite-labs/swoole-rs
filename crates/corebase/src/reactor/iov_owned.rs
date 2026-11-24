@@ -175,6 +175,15 @@ pub enum Plain<'a> {
     Ring(&'a mut dyn Ring),
 }
 
+impl crate::reactor::SocketFields {
+    /// readv(2) and writev(2) on this socket's own descriptor.
+    #[inline(always)]
+    #[must_use]
+    pub const fn plain(&self) -> Plain<'static> {
+        Plain::Fd(self.fd)
+    }
+}
+
 /// `Socket::readv`/`writev` through an owned `IOVector`, in the direction it was made
 /// for: `plain`'s readv/writev over the remaining iovecs, or `tls` (its read and its
 /// write) one iovec at a time until one comes up short, advancing the cursor by what
