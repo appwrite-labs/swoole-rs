@@ -187,6 +187,10 @@ static int pdo_firebird_stmt_describe(pdo_stmt_t *stmt, int colno) /* {{{ */
 static int pdo_firebird_stmt_get_column_meta(pdo_stmt_t *stmt, zend_long colno, zval *return_value)
 {
 	pdo_firebird_stmt *S = (pdo_firebird_stmt *) stmt->driver_data;
+	if (!stmt->columns || colno < 0 || colno >= stmt->column_count || colno >= S->out_sqlda.sqld) {
+		pdo_raise_impl_error(stmt->dbh, stmt, "07009", "invalid column index");
+		return FAILURE;
+	}
 	swr_firebird_column_meta(&S->out_sqlda.sqlvar[colno], return_value);
 	return 1;
 }
