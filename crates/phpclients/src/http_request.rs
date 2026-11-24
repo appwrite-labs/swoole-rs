@@ -21,7 +21,7 @@ const FILE_OVERHEAD: usize =
 const PART_BUFFER: usize = 2048;
 const LENGTH_BUFFER: usize = 64;
 /// `SW_STACK_BUFFER_SIZE`, the bound of `swoole_http_token_list_contains_value`.
-const TOKEN_LIST_LIMIT: usize = 8192;
+const TOKEN_LIST_LIMIT: usize = swoole_rs_corebase::constants::SW_STACK_BUFFER_SIZE as usize;
 
 /// `sw_snprintf` into a `capacity`-byte buffer, appended to `out`.
 fn format(out: &mut Vec<u8>, kind: Format, spans: [&[u8]; 4], number: usize, capacity: usize) {
@@ -176,14 +176,10 @@ pub(crate) fn multipart_length(parts: usize) -> usize {
     parts + BOUNDARY_SIZE + 6
 }
 
-/// `swoole_http_token_list_contains_value` as its callers read it: a list too long
-/// to check (-1 upstream) counts as found.
+/// Whether a complete token matches within the HTTP token-list scan limit.
 pub(crate) fn token_list_contains(list: &[u8], value: &[u8]) -> bool {
-    if list.is_empty() {
+    if list.is_empty() || list.len() >= TOKEN_LIST_LIMIT {
         return false;
-    }
-    if list.len() >= TOKEN_LIST_LIMIT || list.eq_ignore_ascii_case(value) {
-        return true;
     }
     // strtok over a NUL-terminated copy: the list stops at its first NUL.
     list.split(|&b| b == 0)
@@ -386,10 +382,11 @@ mod tests {
         );
         assert!(!token_list_contains(b"a\0, b", b"b"), "stops at a NUL");
         assert!(!token_list_contains(b"close", b"Upgrade"), "absent");
-        assert!(
-            token_list_contains(&[b'a'; TOKEN_LIST_LIMIT], b"b"),
-            "too long to check counts as found"
-        );
+        let mut list = vec![b'a'; TOKEN_LIST_LIMIT - 3];
+        list.extend_from_slice(b",b");
+        assert!(token_list_contains(&list, b"b"), "last supported byte");
+        list.push(b' ');
+        assert!(!token_list_contains(&list, b"b"), "at the scan limit");
     }
 
     #[test]
