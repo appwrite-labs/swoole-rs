@@ -87,7 +87,7 @@ pub fn fd_clean(fd: c_int) {
 /// accept4 (macOS) it accepts, then makes upstream's `set_fd_option(nonblock, 1)`
 /// call, which applies to the listening socket, not the new one.
 #[must_use]
-pub fn fd_accept(fd: c_int, address: &mut SocketAddress, nonblock: bool) -> (c_int, bool) {
+pub(super) fn fd_accept(fd: c_int, address: &mut SocketAddress, nonblock: bool) -> (c_int, bool) {
     #[cfg(target_os = "linux")]
     {
         let flags = libc::SOCK_CLOEXEC | if nonblock { libc::SOCK_NONBLOCK } else { 0 };
@@ -112,7 +112,7 @@ pub fn fd_accept(fd: c_int, address: &mut SocketAddress, nonblock: bool) -> (c_i
 ///
 /// # Errors
 /// [`IoError::InProgress`] on `EINPROGRESS`, else connect's failure.
-pub fn fd_connect(fd: c_int, address: &SocketAddress) -> Result<(), IoError> {
+pub(super) fn fd_connect(fd: c_int, address: &SocketAddress) -> Result<(), IoError> {
     loop {
         if address.connect(fd) {
             return Ok(());
@@ -129,7 +129,7 @@ pub fn fd_connect(fd: c_int, address: &SocketAddress) -> Result<(), IoError> {
 ///
 /// # Errors
 /// The pending error, or getsockopt's own errno.
-pub fn fd_pending_error(fd: c_int) -> Result<(), c_int> {
+pub(super) fn fd_pending_error(fd: c_int) -> Result<(), c_int> {
     match socket_error(fd) {
         Ok(0) => Ok(()),
         Ok(error) | Err(error) => Err(error),
@@ -165,7 +165,7 @@ pub enum RangeError {
 /// `*end` is set for a range, inside the file or not.
 /// # Errors
 /// [`RangeError::Stat`], [`RangeError::Empty`] or [`RangeError::Outside`].
-pub fn sendfile_range(
+pub(super) fn sendfile_range(
     file_fd: c_int,
     begin: libc::off_t,
     length: libc::size_t,

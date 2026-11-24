@@ -104,13 +104,13 @@ fn push(slot: &mut Option<ReactorDeferred>, task: Task) {
 }
 
 /// Appends `value` to the reactor's `defer_tasks`.
-pub(crate) fn defer_value(fields: &mut ReactorFields, value: impl Deferred) {
+pub(super) fn defer_value(fields: &mut ReactorFields, value: impl Deferred) {
     push(&mut fields.defer_tasks, Task::Value(Box::new(value)));
 }
 
 /// Frees the queue in `slot`, disposing of the tasks that never ran, and empties the
 /// slot. The slot owns its queue, so nothing runs it meanwhile.
-pub(crate) fn deferred_free(slot: &mut Option<ReactorDeferred>) {
+pub(super) fn deferred_free(slot: &mut Option<ReactorDeferred>) {
     if let Some(owner) = slot.take() {
         match owner.0 {
             Queue::Empty => {}
@@ -123,7 +123,7 @@ pub(crate) fn deferred_free(slot: &mut Option<ReactorDeferred>) {
 /// Runs the reactor's `destroy_callbacks` in order, each popped before it is called,
 /// until there are none; callbacks a call adds run in this pass too. No borrow of the
 /// reactor spans a call.
-pub(crate) fn run_destroy(reactor: Running<'_>) {
+pub(super) fn run_destroy(reactor: Running<'_>) {
     let next = |state: &mut crate::reactor::ReactorState| {
         let queue = state.fields.destroy_callbacks.as_mut()?;
         queue.pop()
@@ -156,7 +156,7 @@ pub fn defer_destroy_value(reactor: crate::reactor::Running<'_>, value: impl Def
 }
 
 /// `Reactor::add_destroy_callback(fn, nullptr)` of a `call` that takes the reactor.
-pub(crate) fn defer_destroy_call(fields: &mut ReactorFields, call: fn(Running<'_>)) {
+pub(super) fn defer_destroy_call(fields: &mut ReactorFields, call: fn(Running<'_>)) {
     push(&mut fields.destroy_callbacks, Task::Call(call));
 }
 
@@ -164,7 +164,7 @@ pub(crate) fn defer_destroy_call(fields: &mut ReactorFields, call: fn(Running<'_
 /// detached first, so tasks it defers run on the next pass, then run and freed. While it
 /// runs, the reactor's `running_defer` holds any remaining tasks. A callback escape stops the pass,
 /// leaving the rest of the queue for the reactor's drop.
-pub(crate) fn run_defer(reactor: Running<'_>) {
+pub(super) fn run_defer(reactor: Running<'_>) {
     if reactor.with(|state| state.fields.defer_tasks.is_some()) {
         run_queue(reactor);
     }

@@ -82,7 +82,7 @@ pub fn handle_send(hooks: &impl OutputEffects, data: &[u8], offset: u32) -> Outp
 
 /// `Socket::handle_sendfile` before its send: cork once, when more than `cork_min`
 /// bytes of `[begin, end)` remain. `corked` is the request's 0 unset / 1 / -1.
-pub fn sendfile_cork(
+pub(super) fn sendfile_cork(
     hooks: &impl OutputEffects,
     corked: &mut i8,
     begin: libc::off_t,
@@ -102,7 +102,7 @@ pub fn sendfile_cork(
 /// `sent`, leaving the request at `[begin, end)`: classify a failure, record the
 /// send time, and uncork and pop once the request is done.
 #[must_use]
-pub fn sendfile_sent(
+pub(super) fn sendfile_sent(
     hooks: &impl OutputEffects,
     sent: Option<usize>,
     requested: usize,

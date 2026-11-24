@@ -365,7 +365,7 @@ impl SocketRecord {
     }
 
     /// [`Self::open_typed`]'s record, still its maker's own; none where that is null.
-    pub fn opened_typed(
+    pub(super) fn opened_typed(
         socket_type: c_int,
         fd_type: c_int,
         flags: c_int,
@@ -759,7 +759,7 @@ impl SocketFields {
     /// Where a registry keeps this socket: under its descriptor.
     #[inline(always)]
     #[must_use]
-    pub(crate) const fn registry_key(&self) -> crate::reactor::RegistryKey {
+    pub(super) const fn registry_key(&self) -> crate::reactor::RegistryKey {
         crate::reactor::RegistryKey::new(self.fd)
     }
 
