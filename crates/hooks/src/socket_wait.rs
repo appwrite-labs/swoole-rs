@@ -47,7 +47,7 @@ impl Wait {
                 let wants = record.tls_wants();
                 Some(WaitState {
                     events: record.events & (Events::READ | Events::WRITE),
-                    nobufs: core::mem::take(&mut record.kernel_nobufs),
+                    nobufs: record.has_kernel_nobufs(),
                     want_read: tls && wants.contains(Events::READ),
                     want_write: tls && wants.contains(Events::WRITE),
                     removed: record.removed,

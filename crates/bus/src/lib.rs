@@ -792,7 +792,7 @@ impl Bus {
             let mut nobufs = false;
             let n = self.receive(sock.fd(), dgram, &mut nobufs, &mut state);
             if nobufs {
-                sock.edit(|sock| sock.kernel_nobufs = true);
+                sock.edit(swoole_rs_corebase::reactor::SocketFields::note_kernel_nobufs);
             }
             if state.event != Some(Event::Allocate) {
                 return n;
