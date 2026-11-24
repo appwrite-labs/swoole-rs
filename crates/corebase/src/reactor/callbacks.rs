@@ -141,7 +141,7 @@ pub(crate) fn install_builtins(callbacks: &mut Callbacks) {
 
 /// `Reactor::execute_end_callbacks(timed_out)`. A callback may change the reactor, which
 /// no reference to its state is held across.
-pub(super) fn execute_end(reactor: Running<'_>, timed_out: bool) {
+pub(crate) fn execute_end(reactor: Running<'_>, timed_out: bool) {
     let bailed = reactor.with(|state| {
         state.fields.timed_out = timed_out;
         state.fields.bailout

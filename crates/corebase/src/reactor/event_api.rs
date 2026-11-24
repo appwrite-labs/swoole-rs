@@ -322,7 +322,7 @@ pub fn swoole_event_cycle(before: bool, task: Option<Rc<dyn CycleTask>>) {
 /// The reactor is being freed: its cycle tasks, taken out of it for the caller to
 /// drop once it no longer borrows the reactor. No pass of a reactor is under way while
 /// it is freed, so no `run` holds a reference to them.
-pub(super) fn take_cycle_tasks(fields: &mut crate::reactor::ReactorFields) -> impl Sized + use<> {
+pub(crate) fn take_cycle_tasks(fields: &mut crate::reactor::ReactorFields) -> impl Sized + use<> {
     [fields.idle_task.take(), fields.future_task.take()]
 }
 

@@ -257,7 +257,7 @@ impl SocketFields {
     /// Poll reported a hangup with the socket's readiness (`event_hup`), as
     /// [`Self::hung_up`] tells its handlers.
     #[inline]
-    pub(super) const fn note_hangup(&mut self) {
+    pub const fn note_hangup(&mut self) {
         self.event_hup = true;
     }
 

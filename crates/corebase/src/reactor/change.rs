@@ -372,7 +372,7 @@ pub(crate) fn apply(
 impl SocketFields {
     /// What a `Reactor` interest helper asks of [`apply`], as upstream decides
     /// from the socket's events: the op and its events, or `None` when nothing changes.
-    pub(super) fn interest_change(
+    pub(crate) fn interest_change(
         &mut self,
         kind: Interest,
         event: Events,

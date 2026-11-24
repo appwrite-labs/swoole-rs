@@ -462,7 +462,7 @@ pub fn swoole_event_free() -> bool {
 }
 impl ReactorState {
     /// Which kernel wait the backend runs.
-    pub(super) fn backend_kind(&self) -> BackendKind {
+    pub(crate) fn backend_kind(&self) -> BackendKind {
         match self.backend {
             Backend::None | Backend::Poll(_) => BackendKind::Poll,
             #[cfg(target_os = "linux")]
@@ -481,7 +481,7 @@ impl ReactorState {
     /// poll's entry `index` and the socket it was built from; none past its end or
     /// for another backend.
     #[inline]
-    pub(super) fn poll_entry(
+    pub(crate) fn poll_entry(
         &self,
         index: usize,
     ) -> Option<(libc::pollfd, crate::reactor::Heap<'static>)> {
@@ -494,7 +494,7 @@ impl ReactorState {
     /// epoll's entry `index`; none past its end or for another backend.
     #[cfg(target_os = "linux")]
     #[inline]
-    pub(super) fn epoll_entry(&self, index: usize) -> Option<libc::epoll_event> {
+    pub(crate) fn epoll_entry(&self, index: usize) -> Option<libc::epoll_event> {
         match &self.backend {
             Backend::Epoll(array) => array.get(index).copied(),
             _ => None,
@@ -510,7 +510,7 @@ impl ReactorState {
         target_os = "dragonfly"
     ))]
     #[inline]
-    pub(super) fn kqueue_entry(&self, index: usize) -> Option<libc::kevent> {
+    pub(crate) fn kqueue_entry(&self, index: usize) -> Option<libc::kevent> {
         match &self.backend {
             Backend::Kqueue(array) => array.get(index).copied(),
             _ => None,
@@ -540,7 +540,7 @@ impl ReactorState {
 /// wait's error, errno still set for the warning. No native callbacks run.
 // Its one caller, the wait loop, runs it once per iteration (#1435).
 #[inline(always)]
-pub(super) fn kernel_wait(
+pub(crate) fn kernel_wait(
     reactor: crate::reactor::Running<'_>,
     deferred: bool,
     entries: &mut usize,
@@ -676,7 +676,7 @@ impl ReactorState {
         }
     }
 
-    pub(super) fn close_backend(&mut self) {
+    pub(crate) fn close_backend(&mut self) {
         if self.backend_fd >= 0 {
             _ = crate::sys::close(self.backend_fd);
             self.backend_fd = -1;

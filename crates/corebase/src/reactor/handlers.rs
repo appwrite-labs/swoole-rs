@@ -143,7 +143,7 @@ impl Running<'_> {
     /// Whether the reactor has deferred tasks waiting (`defer_tasks`).
     #[cfg(unix)]
     #[inline]
-    pub(super) fn has_deferred(self) -> bool {
+    pub(crate) fn has_deferred(self) -> bool {
         self.with(|state| state.fields.defer_tasks.is_some())
     }
 
@@ -293,7 +293,7 @@ impl Handlers {
 
     /// `Reactor::get_handler(fd_type, event)`; none for an `event` that is not exactly
     /// `SW_EVENT_READ`, `SW_EVENT_WRITE` or `SW_EVENT_ERROR`, where upstream aborts.
-    pub(super) fn of_event(&self, fd_type: c_int, event: Events) -> Option<Handler> {
+    pub(crate) fn of_event(&self, fd_type: c_int, event: Events) -> Option<Handler> {
         let kind = match event {
             Events::READ => Table::Read,
             Events::WRITE => Table::Write,

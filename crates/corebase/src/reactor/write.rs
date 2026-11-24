@@ -308,7 +308,7 @@ impl SocketFields {
     /// flags of the output block, so pointers to the socket's other fields, such as the
     /// hooks' `kernel_nobufs`, stay usable.
     #[inline]
-    pub(super) const fn note_send_stall(&mut self, close_wait: bool, send_wait: bool) {
+    pub const fn note_send_stall(&mut self, close_wait: bool, send_wait: bool) {
         if close_wait {
             self.output.close_wait = true;
         }
