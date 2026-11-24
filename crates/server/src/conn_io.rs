@@ -14,7 +14,7 @@ use swoole_rs_corebase::reactor::Events;
 
 use swoole_rs_corebase::buffer::EntryKind;
 use swoole_rs_corebase::buffer::string::with_thread_buffer;
-use swoole_rs_corebase::constants::{SW_SEND_BUFFER_SIZE, SocketType};
+use swoole_rs_corebase::constants::SW_SEND_BUFFER_SIZE;
 use swoole_rs_corebase::reactor::{Event, Heap, SendStall, Socket, SocketFields, what_event_want};
 use swoole_rs_corebase::timer::{del_id, delay_held};
 use swoole_rs_corebase::tls::Accept;
@@ -80,13 +80,8 @@ fn read_as(prequeue: bool, serv: view::Server<'_>, reactor: Reactor, event: &mut
     let port = serv.port_by_server_fd(conn.server_fd());
     // A plain stream goes straight to its port reader. Only a datagram handler
     // or a TLS handshake can run before it and change the receive count.
-    let (datagram, secure, received) = sock.read(|s| {
-        (
-            SocketType::from_raw(s.socket_type).is_some_and(SocketType::is_dgram),
-            !s.ssl().is_null(),
-            s.total_recv_bytes,
-        )
-    });
+    let (datagram, secure, received) =
+        sock.read(|s| (s.is_dgram(), !s.ssl().is_null(), s.total_recv_bytes));
     let last_recv_bytes = if datagram || secure {
         if let Some(config) = port.map(view::Port::config)
             && datagram
@@ -519,7 +514,7 @@ pub(crate) fn close_connection(
 /// shutdown could not send now.
 fn owes_close_notify(conn: Connection<'_>, sock: Socket<'_>) -> bool {
     let (ready_stream, ssl_closed) = sock.read(|s| {
-        let stream = matches!(s.socket_type, 1 | 3 | 5);
+        let stream = s.is_stream();
         (
             !s.ssl().is_null() && s.tls.state == SSL_READY && stream,
             s.ssl_closed,

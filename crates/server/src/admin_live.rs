@@ -72,7 +72,7 @@ fn socket(handle: swoole_rs_corebase::reactor::Heap<'_>) -> Socket {
     handle.read(|s| Socket {
         fd,
         events: s.events.bits().into(),
-        socket_type: s.socket_type.into(),
+        socket_type: s.type_code().0.into(),
         fd_type: s.fd_type.into(),
         port: s.port().into(),
         total_recv_bytes: s.total_recv_bytes as u64,

@@ -739,9 +739,10 @@ impl CoSocket {
     /// `init_reactor_socket`: wrap `fd`, which the caller made nonblocking.
     fn adopt(&self, fd: c_int, owner: Co) -> bool {
         let mut record = SocketRecord::with_fd(fd, FD_CO_SOCKET);
-        record.socket_type = self.kind.get();
-        record.note_nonblocking(true);
-        record.cloexec = true;
+        record.open_as(
+            self.kind.get(),
+            SocketFlag::SW_SOCK_NONBLOCK | SocketFlag::SW_SOCK_CLOEXEC,
+        );
         self.attach(Some(Box::new(record)), owner)
     }
 
@@ -1109,9 +1110,7 @@ pub(crate) fn accepted(server: Co, mut conn: Box<SocketRecord>) -> OwnedCo {
     socket.sock_type.set(server.sock_type());
     socket.sock_protocol.set(server.sock_protocol());
     // The accepted record, still this function's own: the new socket owns it below.
-    conn.set_owner(Some(owner));
-    conn.socket_type = kind;
-    conn.fd_type = FD_CO_SOCKET;
+    conn.serve(owner, kind, FD_CO_SOCKET);
     let result = OPENED | socket.init_options(&conn);
     server.net(|record| conn.inherit_timeouts(record));
     socket.put_socket(OwnedSocket::new(conn));

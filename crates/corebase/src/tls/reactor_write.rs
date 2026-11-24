@@ -50,7 +50,7 @@ impl<F: Fn() -> Option<usize>> WriteEffects for Write<'_, F> {
 
     fn create_buffer(&self) {
         self.socket
-            .edit(|record| record.open_output_queue(record.chunk_size));
+            .edit(crate::reactor::SocketFields::open_chunked_output_queue);
     }
 
     fn watch_writable(&self) {

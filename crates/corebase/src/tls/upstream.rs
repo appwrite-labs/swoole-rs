@@ -268,18 +268,9 @@ pub fn ssl_recv_spare(socket: Socket<'_>, spare: &mut Spare<'_>) -> Option<usize
 /// DTLS socket sends at most `chunk_size`; None on error or without an SSL.
 #[must_use]
 pub fn ssl_send_drain(socket: Socket<'_>, data: Drain<'_>) -> Option<usize> {
-    let result = with_tls(
-        socket,
-        |record| {
-            let chunk = record.chunk_size as usize;
-            if record.dtls && chunk != 0 {
-                chunk
-            } else {
-                usize::MAX
-            }
-        },
-        |tls, ssl, limit| swr_v1_socket_ssl_send(tls, ssl, data.first(limit).bytes()),
-    );
+    let result = with_tls(socket, SocketFields::tls_send_limit, |tls, ssl, limit| {
+        swr_v1_socket_ssl_send(tls, ssl, data.first(limit).bytes())
+    });
     ssl_io(socket, result)
 }
 

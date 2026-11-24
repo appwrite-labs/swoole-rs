@@ -133,7 +133,7 @@ impl Conn {
 
     fn socket_type(&self) -> Option<SocketType> {
         let net = self.cli().net()?;
-        SocketType::from_raw(net.read(|record| record.socket_type))
+        net.read(SocketFields::kind)
     }
 
     pub(crate) fn is_stream(&self) -> bool {

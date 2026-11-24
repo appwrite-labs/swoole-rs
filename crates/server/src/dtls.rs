@@ -4,9 +4,7 @@
 use core::ffi::{CStr, c_int};
 use std::ffi::CString;
 use swoole_rs_corebase::ServerEvent;
-use swoole_rs_corebase::constants::{
-    SW_BUFFER_SIZE_UDP, SW_SSL_BUFFER_SIZE, SocketFlag, SocketType,
-};
+use swoole_rs_corebase::constants::{SW_BUFFER_SIZE_UDP, SocketFlag, SocketType};
 use swoole_rs_corebase::net_types::SocketAddress;
 use swoole_rs_corebase::reactor::socket_upstream::make_typed;
 use swoole_rs_corebase::reactor::{Heap, Socket};
@@ -103,7 +101,7 @@ fn accept<'a>(
         }
         socket.edit(|socket| {
             socket.record_address(sa.addr, sa.len, sa.kind);
-            socket.chunk_size = SW_SSL_BUFFER_SIZE;
+            socket.send_in_dtls_records();
         });
         true
     };

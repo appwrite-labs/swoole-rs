@@ -1,9 +1,9 @@
 //! Rust owns the socket record. The native SSH2 hook reads its leading descriptor.
-use crate::constants::SocketType;
 use crate::constants::{
     SW_SOCKET_BUFFER_SIZE, SW_SOCKET_DEFAULT_CONNECT_TIMEOUT, SW_SOCKET_DEFAULT_DNS_TIMEOUT,
     SW_SOCKET_DEFAULT_READ_TIMEOUT, SW_SOCKET_DEFAULT_WRITE_TIMEOUT,
 };
+use crate::constants::{SocketFlag, SocketType};
 use crate::reactor::SocketOutput;
 use crate::reactor::socket::SocketMarks;
 use crate::reactor::socket_timeouts::{SocketTimeouts, TimeoutKind};
@@ -353,9 +353,7 @@ impl SocketRecord {
     ) -> Option<Box<Self>> {
         let fd = crate::reactor::swr_v1_socket_open(domain, kind, protocol, flags).ok()?;
         let mut socket = Self::with_fd(fd, fd_type);
-        socket.output.nonblock = flags & crate::reactor::socket_types::NONBLOCK != 0;
-        socket.cloexec = flags & crate::reactor::socket_types::CLOEXEC != 0;
-        socket.socket_type = socket_type;
+        socket.open_as(socket_type, SocketFlag::from_bits(flags));
         Some(Box::new(socket))
     }
 
@@ -553,6 +551,54 @@ impl SocketFields {
     #[must_use]
     pub fn kind(&self) -> Option<SocketType> {
         SocketType::from_raw(self.socket_type)
+    }
+
+    /// `make_socket`'s record: a socket of `socket_type` (an `SW_SOCK_*`) whose
+    /// descriptor is nonblocking and close-on-exec as `flags` says.
+    #[inline]
+    pub fn open_as(&mut self, socket_type: c_int, flags: SocketFlag) {
+        self.output.nonblock = flags.contains(SocketFlag::SW_SOCK_NONBLOCK);
+        self.cloexec = flags.contains(SocketFlag::SW_SOCK_CLOEXEC);
+        self.socket_type = socket_type;
+    }
+
+    /// A socket of `kind`, and its address one of `kind` too, as a socket adopted
+    /// from a descriptor learns what it is.
+    #[inline]
+    pub const fn type_as(&mut self, kind: SocketType) {
+        self.socket_type = kind.raw();
+        self.info.kind = kind.raw();
+    }
+
+    /// `socket->object = this; socket_type = type; fd_type = ...`: the record now
+    /// serves `owner`, as a socket of `kind` (an `SW_SOCK_*`) on `fd_type`'s handlers.
+    #[inline]
+    pub fn serve<T: core::any::Any>(&mut self, owner: T, kind: c_int, fd_type: c_int) {
+        self.set_owner(Some(owner));
+        self.socket_type = kind;
+        self.fd_type = fd_type;
+    }
+
+    /// The socket's `SW_SOCK_*` type as a connection records and the server's stats
+    /// report it, known to `SocketType` or not.
+    #[inline]
+    #[must_use]
+    pub const fn type_code(&self) -> crate::constants::SocketTypeCode {
+        crate::constants::SocketTypeCode(self.socket_type)
+    }
+
+    /// `Socket::is_stream`: TCP, TCP6 or a Unix stream.
+    #[inline]
+    #[must_use]
+    pub fn is_stream(&self) -> bool {
+        self.kind().is_some_and(SocketType::is_stream)
+    }
+
+    /// `Socket::is_dgram`: UDP, UDP6 or a Unix datagram socket.
+    #[inline]
+    #[must_use]
+    pub fn is_dgram(&self) -> bool {
+        self.kind().is_some_and(SocketType::is_dgram)
     }
 
     /// `Socket::is_tcp`: a TCP stream over IPv4 or IPv6.

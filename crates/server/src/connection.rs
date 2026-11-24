@@ -6,8 +6,8 @@ use swoole_rs_corebase::reactor::Events;
 
 use swoole_rs_corebase::constants::{
     SW_ACCEPT_MAX_COUNT as ACCEPT_MAX_COUNT, SW_ACCEPT_RETRY_TIME,
-    SW_MAX_CONNECTION as MAX_CONNECTION, SW_SEND_BUFFER_SIZE,
-    SW_SESSION_LIST_SIZE as SESSION_LIST_SIZE, SocketType, SocketTypeCode,
+    SW_MAX_CONNECTION as MAX_CONNECTION, SW_SESSION_LIST_SIZE as SESSION_LIST_SIZE, SocketType,
+    SocketTypeCode,
 };
 use swoole_rs_corebase::reactor::{Event, Heap, OwnedSocket};
 use swoole_rs_corebase::{CCast, log};
@@ -71,7 +71,7 @@ pub(crate) fn accept(serv: view::Server<'_>, reactor: Reactor, event: &Event) {
         let Some(sock) = conn.socket() else {
             return;
         };
-        sock.edit(|s| s.chunk_size = SW_SEND_BUFFER_SIZE);
+        sock.edit(swoole_rs_corebase::reactor::SocketFields::send_in_chunks);
         let started = if serv.config().single_thread.get() {
             incoming(serv, reactor, port, conn)
         } else {
@@ -565,7 +565,11 @@ mod tests {
         assert!(conn.is_active(), "active");
         conn.socket().unwrap().read(|s| {
             assert!(s.direct_send, "plain sockets send directly");
-            assert_eq!(s.chunk_size, SW_SEND_BUFFER_SIZE, "chunked");
+            assert_eq!(
+                s.chunk_size,
+                swoole_rs_corebase::constants::SW_SEND_BUFFER_SIZE,
+                "chunked"
+            );
             assert_eq!(
                 s.attached_object(),
                 conn.as_ptr(),
