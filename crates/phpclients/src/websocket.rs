@@ -730,8 +730,6 @@ pub const OPEN_PING_FRAME: u8 = 1 << 1;
 pub const OPEN_PONG_FRAME: u8 = 1 << 2;
 pub const OPEN_CLOSE_FRAME: u8 = 1 << 3;
 pub const SETTING_COMPRESSION: u8 = 1 << 4;
-/// `SW_WEBSOCKET_DEFAULT_BUFFER`.
-const DEFAULT_BUFFER: usize = 4096;
 
 /// A message being assembled from fragments: its payload so far, and the
 /// first frame's opcode and flags.
@@ -843,6 +841,20 @@ fn receive(settings: u8, slot: &mut Assembly, socket: co::Co, packet: &mut [u8])
         let payload = Owned::string(ZString::new(payload));
         return Next::Done(deliver(opcode.code(), payload, FLAG_FIN));
     }
+    if opcode == Opcode::Continuation || !frame.flags.is_final() {
+        let limit = socket.edit_protocol(|protocol| protocol.package_max_length as usize);
+        let assembled = slot.as_ref().map_or(0, |message| message.data.len());
+        if assembled
+            .checked_add(payload.len())
+            .is_none_or(|len| len > limit)
+        {
+            *slot = None;
+            log::set_last_error(
+                swoole_rs_error::ErrorCode::SW_ERROR_PACKAGE_LENGTH_TOO_LARGE as c_int,
+            );
+            return Next::Done(Owned::null());
+        }
+    }
     if opcode == Opcode::Continuation {
         let Some(message) = slot.as_mut() else {
             warning(
@@ -881,15 +893,8 @@ fn receive(settings: u8, slot: &mut Assembly, socket: co::Co, packet: &mut [u8])
         };
         return Next::Done(deliver(opcode.code(), payload, frame.flags.bits()));
     }
-    let size = if payload.is_empty() {
-        DEFAULT_BUFFER
-    } else {
-        payload.len()
-    };
-    let mut data = Vec::with_capacity(size);
-    data.extend_from_slice(payload);
     *slot = Some(Box::new(Message {
-        data,
+        data: payload.to_vec(),
         metadata: FrameMetadata {
             opcode,
             flags: frame.flags,
