@@ -18,9 +18,10 @@ fn take() -> Vec<String> {
 
 /// Recording effects on the same owned socket records used by the native host.
 mod recording {
-    use super::{Events, LOOP, Multi, log};
+    use super::{LOOP, Multi, log};
     use std::ffi::{c_long, c_void};
     use std::{cell::Cell, ptr};
+    use swoole_rs_corebase::reactor::SocketFields;
     use swoole_rs_corebase::tls::event_socket::EventSocket;
 
     pub(super) static OPS: crate::host::Ops = crate::host::Ops {
@@ -45,10 +46,7 @@ mod recording {
         },
         socket_del: |socket| {
             log("del".into());
-            socket.socket().edit(|record| {
-                record.events = Events::NONE;
-                record.note_left_reactor();
-            });
+            socket.socket().edit(SocketFields::note_deregistered);
             true
         },
         socket_release: |socket: EventSocket| {

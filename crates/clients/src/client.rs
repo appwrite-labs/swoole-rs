@@ -1001,8 +1001,7 @@ pub fn shutdown(this: Handle<'_>, how: c_int) -> bool {
 pub fn sleep(this: Handle<'_>) -> bool {
     if this
         .socket()
-        .read(|socket| socket.events)
-        .intersects(Events::WRITE)
+        .read(|socket| socket.registered_for(Events::WRITE))
     {
         this.event(EventOp::Set, Events::WRITE)
     } else {
@@ -1015,8 +1014,7 @@ pub fn sleep(this: Handle<'_>) -> bool {
 pub fn wakeup(this: Handle<'_>) -> bool {
     if this
         .socket()
-        .read(|socket| socket.events)
-        .intersects(Events::WRITE)
+        .read(|socket| socket.registered_for(Events::WRITE))
     {
         this.event(EventOp::Set, Events::READ | Events::WRITE)
     } else {

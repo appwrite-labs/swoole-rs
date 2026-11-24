@@ -744,7 +744,7 @@ mod tests {
 
     /// Whether the reactor reads `sock`.
     fn reading(sock: swoole_rs_corebase::reactor::Socket<'_>) -> bool {
-        sock.read(|s| !s.has_left_reactor() && s.events.intersects(Events::READ))
+        sock.read(|s| !s.has_left_reactor() && s.registered_for(Events::READ))
     }
 
     fn set_tables_max(live: &LiveServer, max: u32) {

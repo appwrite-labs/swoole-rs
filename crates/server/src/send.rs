@@ -237,12 +237,9 @@ fn to_connection(serv: Server<'_>, info: &DataHead, data: &[u8], first: Option<i
     }
     let halfclose = cfg!(feature = "halfclose");
     if matches!(kind, Some(ServerEvent::PauseRecv | ServerEvent::ResumeRecv)) {
-        let (removed, notified, events) =
-            sock.read(|s| (s.has_left_reactor(), s.close_reported(), s.events));
-        let (reading, writing) = (
-            events.intersects(Events::READ),
-            events.intersects(Events::WRITE),
-        );
+        let (removed, notified) = sock.read(|s| (s.has_left_reactor(), s.close_reported()));
+        let on = |events| sock.read(|s| s.registered_for(events));
+        let (reading, writing) = (on(Events::READ), on(Events::WRITE));
         if kind == Some(ServerEvent::PauseRecv) {
             if removed || !reading {
                 return true;
@@ -338,7 +335,7 @@ fn to_connection(serv: Server<'_>, info: &DataHead, data: &[u8], first: Option<i
     if idle > 0.0 && sock.read(|s| s.send_timer().is_none()) {
         idle_timer(conn, *sock, idle);
     }
-    if !sock.read(|s| s.events.intersects(Events::WRITE)) {
+    if !sock.read(|s| s.registered_for(Events::WRITE)) {
         reactor.interest(sock, Interest::AddWrite);
     }
     true
@@ -508,7 +505,7 @@ mod tests {
         let a = Accepted::new();
         let events = || {
             a.sock()
-                .read(|s| (s.has_left_reactor(), s.events.intersects(Events::READ)))
+                .read(|s| (s.has_left_reactor(), s.registered_for(Events::READ)))
         };
         assert_eq!(
             events(),

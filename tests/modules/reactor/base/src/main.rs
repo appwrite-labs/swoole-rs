@@ -1003,11 +1003,11 @@ unsafe fn add_or_update() {
 
         let socket = sock(&p, false);
         assert!(event_api::add_or_update(handle(socket), Events::READ));
-        assert!((*socket).fields.events.bits() & SW_EVENT_READ != 0);
+        assert!((*socket).fields.registered_for(Events::READ));
 
         assert!(event_api::add_or_update(handle(socket), Events::WRITE));
-        assert!((*socket).fields.events.bits() & SW_EVENT_READ != 0);
-        assert!((*socket).fields.events.bits() & SW_EVENT_WRITE != 0);
+        assert!((*socket).fields.registered_for(Events::READ));
+        assert!((*socket).fields.registered_for(Events::WRITE));
 
         let _ = swoole_rs_ffi::swoole_event_free();
         pair_delete(p);

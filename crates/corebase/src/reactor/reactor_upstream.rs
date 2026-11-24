@@ -43,7 +43,8 @@ pub fn interest(
     kind: crate::reactor::Interest,
     event: crate::reactor::Events,
 ) -> bool {
-    crate::reactor::change::interest_change(*socket, kind, event)
+    socket
+        .edit(|record| record.interest_change(kind, event))
         .is_none_or(|(op, events)| change(reactor, socket, op, events))
 }
 

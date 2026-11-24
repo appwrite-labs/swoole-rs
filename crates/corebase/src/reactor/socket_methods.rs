@@ -296,6 +296,14 @@ impl SocketFields {
         self.removed = true;
     }
 
+    /// The socket was deleted from its reactor: it is registered for nothing and out
+    /// of it.
+    #[inline]
+    pub const fn note_deregistered(&mut self) {
+        self.events = crate::reactor::Events::NONE;
+        self.removed = true;
+    }
+
     /// Whether the socket is out of its reactor (`removed`): never added, or deleted
     /// since.
     #[inline]
@@ -309,6 +317,13 @@ impl SocketFields {
     #[must_use]
     pub const fn dispatches_to(&self, fd_type: c_int) -> bool {
         self.fd_type == fd_type
+    }
+
+    /// Whether the socket is registered for any of `events`.
+    #[inline]
+    #[must_use]
+    pub const fn registered_for(&self, events: crate::reactor::Events) -> bool {
+        self.events.intersects(events)
     }
 
     /// What the socket is registered for and whose handlers (`swFdType`) its
