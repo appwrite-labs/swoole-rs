@@ -211,7 +211,7 @@ def status(workflow, sha, run=None):
             'jobs': [{'name': job['name'], 'id': job['databaseId'], 'state': (job['conclusion'] or job['status']).lower(),
                       'seconds': seconds(job),
                       'annotations': [f"{row['title']}: {row['message']}" if row.get('title') else row['message']
-                                      for row in job['annotations']['nodes']]}
+                                      for row in job['annotations']['nodes'] if row is not None]}
                      for job in suite['checkRuns']['nodes']]}
 
 
