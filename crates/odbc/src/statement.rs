@@ -205,7 +205,7 @@ extern "C" fn swr_odbc_stmt_get_attr(
 }
 
 unsafe extern "C" {
-    /// SQLParamData returns the opaque token passed to SQLBindParameter.
+    /// `SQLParamData` returns the opaque token passed to `SQLBindParameter`.
     #[link_name = "SQLParamData"]
     safe fn param_data(statement: Statement, token: &mut crate::Data) -> SQLRETURN;
     safe fn swr_odbc_has_columns(stmt: &Stmt) -> bool;

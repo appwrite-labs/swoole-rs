@@ -102,6 +102,9 @@ jobs:
           path: target/php-debug
           key: php-debug-${{ runner.os }}-${{ hashFiles('.devcontainer/php.sh', '.github/workflows/debug.yml') }}-${{ github.workspace }}
           fail-on-cache-miss: true
+      - name: Check binary ODBC input with MariaDB Connector/ODBC
+        if: matrix.engine == 'cargo' && matrix.index == 1
+        run: target/php-debug/bin/php -n -d "extension=$PWD/target/phpt/cargo.so" tests/modules/hooks/odbc_binary_lob.php
       - name: Plan shard
         run: python3 corpus/upstream/inventory.py --shard ${{ matrix.index }}/6 --output target/phpt/manifest.json
       # Exit 1 means some tests failed, which the gate judges; anything else fails the shard.
