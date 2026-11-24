@@ -295,6 +295,20 @@ impl SocketFields {
     }
 }
 
+/// An idle timer taken off a socket ([`SocketFields::disarm_recv_timer`]), deleted
+/// once the socket's borrow has ended.
+#[must_use]
+pub struct DisarmedTimer(Option<crate::timer_key::Held>);
+
+impl DisarmedTimer {
+    /// Deletes the timer, if the socket had one.
+    pub fn delete(self) {
+        if let Some(timer) = self.0 {
+            crate::timer::del_id(timer);
+        }
+    }
+}
+
 /// The receive side between readable events: the reader's buffer, the receive idle
 /// timer, and the framing loop's wait and skip.
 impl SocketFields {
@@ -304,6 +318,12 @@ impl SocketFields {
     #[must_use]
     pub fn take_recv_buffer(&mut self) -> Option<Box<crate::buffer::string::OwnedString>> {
         self.recv_buffer.take()
+    }
+
+    /// Frees the bytes kept for the next readable event: the connection closed.
+    #[inline]
+    pub fn free_recv_buffer(&mut self) {
+        self.recv_buffer = None;
     }
 
     /// Keeps `recv`'s bytes for the next readable event, unless the socket kept a buffer
@@ -321,11 +341,10 @@ impl SocketFields {
         self.recv_timer = timer;
     }
 
-    /// The receive idle timer, disarmed, for the caller to delete.
+    /// The receive idle timer, disarmed, to delete outside the socket's borrow.
     #[inline]
-    #[must_use]
-    pub fn take_recv_timer(&mut self) -> Option<crate::timer_key::Held> {
-        self.recv_timer.take()
+    pub fn disarm_recv_timer(&mut self) -> DisarmedTimer {
+        DisarmedTimer(self.recv_timer.take())
     }
 
     /// Whether the socket's reader waits for more data before it can go on: the rest
@@ -340,6 +359,13 @@ impl SocketFields {
     #[must_use]
     pub fn awaits_recv(&self) -> bool {
         self.recv_wait
+    }
+
+    /// Applies the framing loop's `FLAG_WAIT` from `flags`: whether it waits for the
+    /// rest of a package.
+    #[inline]
+    pub fn apply_framing_wait(&mut self, flags: u32) {
+        self.recv_wait = flags & swoole_rs_framing::recv::FLAG_WAIT != 0;
     }
 
     /// The next framing read starts over the package length it already has

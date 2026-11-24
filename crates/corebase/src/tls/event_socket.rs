@@ -112,16 +112,18 @@ impl EventSocket {
             let record = owned.socket();
             // The output queue leaves the record here and goes below, after the timers
             // and outside the record's borrow: an entry's disposer runs as it goes.
-            let (timers, queue) = record.edit(|record| {
+            let (recv_timer, send_timer, queue) = record.edit(|record| {
                 if keep_fd {
                     record.forget_descriptor();
                 }
                 (
-                    [record.take_recv_timer(), record.take_send_timer()],
+                    record.disarm_recv_timer(),
+                    record.take_send_timer(),
                     record.take_output_queue(),
                 )
             });
-            for timer in timers.into_iter().flatten() {
+            recv_timer.delete();
+            if let Some(timer) = send_timer {
                 crate::timer::del_id(timer);
             }
             // `delete out_buffer`.

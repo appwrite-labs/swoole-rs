@@ -94,7 +94,7 @@ impl<S: Source, K: Packages> With<'_, S, K> {
         let wait = flags & FLAG_WAIT != 0;
         if wait != self.1 {
             self.1 = wait;
-            self.0.socket.edit(|s| s.await_recv(wait));
+            self.0.socket.edit(|s| s.apply_framing_wait(flags));
         }
     }
 
