@@ -438,11 +438,9 @@ pub(crate) fn swr_v1_hook_uring_poll(
 /// not the caller's, as upstream) as a new `UringSocket`, or none with the error
 /// set. `socket` is available, in a coroutine, and `ops` is its view.
 pub(crate) fn accept(socket: Co, ops: &UringSocketOps<'_>) -> Option<OwnedCo> {
-    let mut conn = SocketRecord::new();
     let mut address = SocketAddress::default();
     let fd = accept_descriptor(ops, &mut address).ok()?;
-    conn.fd = fd;
-    conn.removed = true;
+    let mut conn = SocketRecord::with_fd(fd, 0);
     address.kind = socket
         .net(|listener| listener.socket_type)
         .unwrap_or_default();

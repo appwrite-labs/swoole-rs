@@ -674,7 +674,7 @@ unsafe fn bad_fd() {
         assert_eq!(last_error(), EBADF);
         let _ = swoole_rs_ffi::swoole_event_free();
         // `socket->move_fd()`.
-        (*socket).fields.fd = -1;
+        (*socket).fields.forget_descriptor();
         swoole_rs_ffi::upstream::socket_free(Some(OwnedSocket::from_socket(*handle(socket))));
     }
 }

@@ -114,7 +114,7 @@ impl EventSocket {
             // outside the record's borrow: an entry's disposer runs as its buffer goes.
             let (timers, buffers) = record.edit(|record| {
                 if keep_fd {
-                    record.fd = -1;
+                    record.forget_descriptor();
                 }
                 (
                     [record.recv_timer, record.take_send_timer()],

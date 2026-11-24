@@ -964,13 +964,9 @@ pub fn close(this: Handle<'_>) -> bool {
         this.set(Flag::Active, false);
     }
     // The saved record's free is deferred past this call.
-    let Some(fd) = saved
-        .edit(|socket| (!socket.object.is_null()).then(|| core::mem::replace(&mut socket.fd, -1)))
-    else {
-        return true;
-    };
-    // Once: -1 marks the client's descriptor closed.
-    swoole_rs_corebase::sys::close(fd).is_ok()
+    saved
+        .edit(|socket| (!socket.object.is_null()).then(|| socket.close_descriptor()))
+        .unwrap_or(true)
 }
 
 /// `Client::shutdown(how)`. Upstream's `SHUT_RDWR` records only a read shutdown.

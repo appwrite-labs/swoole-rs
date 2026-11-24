@@ -26,7 +26,7 @@ use swoole_rs_corebase::buffer::string::OwnedString;
 use swoole_rs_corebase::constants::{EventDataFlag, FdType, SW_WORKER_MAX_RECV_CHUNK_COUNT};
 use swoole_rs_corebase::memory::members::pool::PooledWord;
 use swoole_rs_corebase::process::process_pool::RecvData;
-use swoole_rs_corebase::reactor::{Caught, Heap, OwnedSocket, Socket, SocketRecord};
+use swoole_rs_corebase::reactor::{Caught, Heap, OwnedSocket, Socket, SocketFields, SocketRecord};
 use swoole_rs_corebase::sys::{self, errno};
 use swoole_rs_corebase::tls::upstream::{socket_free as free_socket, writev_sync};
 use swoole_rs_corebase::{BoxCellExt, CellExt};
@@ -198,7 +198,7 @@ impl Drop for Bus {
         // By descriptor, as `init_pipe_sockets` recorded them.
         let records = self.pipe_sockets.take().unwrap_or_default();
         for record in records.into_iter().flatten() {
-            record.socket().edit(|record| record.fd = -1);
+            record.socket().edit(SocketFields::forget_descriptor);
             free_socket(Some(record));
         }
     }

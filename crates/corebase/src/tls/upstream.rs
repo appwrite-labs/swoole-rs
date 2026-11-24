@@ -208,7 +208,7 @@ pub fn socket_ssl_verify(socket: Socket<'_>, allow_self_signed: bool) -> bool {
 #[cold]
 #[inline(never)]
 fn ssl_catch_error(socket: Socket<'_>) {
-    let ((host, port), fd) = socket.read(|record| (record.peer_text(), record.fd));
+    let ((host, port), fd) = (socket.read(SocketFields::peer_text), socket.fd());
     let reason = swr_v1_socket_ssl_peek_reason();
     log::error_log(
         LOG_NOTICE,
@@ -336,7 +336,7 @@ pub fn socket_ssl_connect(socket: Socket<'_>) -> bool {
     if let HandshakeLog::Failed(ssl_error) = result.log {
         let error = crate::tls::pop_error();
         let message = crate::tls::error_string(error);
-        let ((host, port), fd) = socket.read(|record| (record.peer_text(), record.fd));
+        let ((host, port), fd) = (socket.read(SocketFields::peer_text), socket.fd());
         log::notice(format_args!(
             "ssl_connect(fd={fd}) to server[{host}:{port}] failed. Error: {message}[{ssl_error}|{}]",
             crate::tls::socket::error_reason(error)
