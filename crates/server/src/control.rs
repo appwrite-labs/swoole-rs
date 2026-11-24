@@ -7,6 +7,7 @@ use core::ffi::{CStr, c_int};
 use core::sync::atomic::AtomicI64;
 use core::sync::atomic::Ordering::{Relaxed, Release};
 use swoole_rs_corebase::log;
+use swoole_rs_corebase::reactor::SocketFields;
 use swoole_rs_error::ErrorCode as E;
 
 fn mode(serv: Server<'_>) -> Mode {
@@ -211,7 +212,7 @@ pub(crate) fn stop_master_thread(serv: Server<'_>) {
         if matches!(port.config().r#type, 2 | 4 | 6) && mode != Mode::Base {
             continue;
         }
-        let removed = port.with_socket(|s| s.read(|s| s.removed));
+        let removed = port.with_socket(|s| s.read(SocketFields::has_left_reactor));
         if removed == Some(false)
             && let Some(sock) = serv.port_socket_at(index)
         {

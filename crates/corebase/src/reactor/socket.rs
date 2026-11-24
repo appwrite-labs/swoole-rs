@@ -633,7 +633,7 @@ fn deregister(socket: Socket<'_>, mark: u32) {
     let Some(reactor) = reactor.filter(|reactor| reactor.serial() == mark) else {
         crate::fatal("a socket was freed while registered with a reactor other than this thread's");
     };
-    let (key, removed) = socket.read(|record| (record.registry_key(), record.removed));
+    let (key, removed) = socket.read(|record| (record.registry_key(), record.has_left_reactor()));
     let registered = reactor.registry(|registry| registry.entry(key));
     if !removed && registered.is_some_and(|entry| entry.as_ptr() == socket.as_ptr()) {
         socket.edit(SocketFields::quiet_next_removal);

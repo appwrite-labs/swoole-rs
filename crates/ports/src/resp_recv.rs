@@ -4,7 +4,7 @@ use core::cell::Cell;
 use core::ffi::{c_int, c_long};
 use swoole_rs_clients::resp_recv::{Dispatched, ORIGIN, Received, RespConnection, RespRequest};
 use swoole_rs_corebase::buffer::string::StringBuffer;
-use swoole_rs_corebase::reactor::{Caught, Socket};
+use swoole_rs_corebase::reactor::{Caught, Socket, SocketFields};
 use swoole_rs_corebase::{CellExt, DataHead, log};
 use swoole_rs_server::SendData;
 
@@ -64,7 +64,7 @@ impl<D: FnMut(SendData<'_>) -> bool> RespConnection for Connection<'_, D> {
         if !(self.dispatch)(SendData::new(DataHead::default(), self.buffer.view())) {
             return Dispatched::Failed;
         }
-        if self.socket.read(|s| s.removed) {
+        if self.socket.read(SocketFields::has_left_reactor) {
             Dispatched::Removed
         } else {
             Dispatched::Kept

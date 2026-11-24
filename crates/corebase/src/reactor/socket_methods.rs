@@ -283,6 +283,27 @@ impl SocketFields {
         self.dont_restart = true;
     }
 
+    /// The socket joined its reactor's registry (`removed = 0`).
+    #[inline]
+    pub const fn note_joined_reactor(&mut self) {
+        self.removed = false;
+    }
+
+    /// The socket left its reactor, or is to be treated as never in one
+    /// (`removed = 1`): closing or freeing it skips the reactor.
+    #[inline]
+    pub const fn note_left_reactor(&mut self) {
+        self.removed = true;
+    }
+
+    /// Whether the socket is out of its reactor (`removed`): never added, or deleted
+    /// since.
+    #[inline]
+    #[must_use]
+    pub const fn has_left_reactor(&self) -> bool {
+        self.removed
+    }
+
     /// Whether the socket's readiness goes to `fd_type`'s handlers.
     #[inline]
     #[must_use]

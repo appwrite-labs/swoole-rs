@@ -358,7 +358,8 @@ pub(crate) fn write(serv: view::Server<'_>, reactor: Reactor, event: &mut Event)
         crate::server_methods::notify(serv, conn, ServerEvent::BufferEmpty);
     }
     // Read after the notification, which may queue more.
-    let (timer, removed, empty) = sock.read(|s| (s.send_timer(), s.removed, s.output_drained()));
+    let (timer, removed, empty) =
+        sock.read(|s| (s.send_timer(), s.has_left_reactor(), s.output_drained()));
     if let Some(timer) = timer {
         if empty {
             del_id(timer);
@@ -459,7 +460,7 @@ pub(crate) fn close_connection(
         del_id(timer);
         conn.set_timer(None);
     }
-    let removed = sock.read(|s| s.removed);
+    let removed = sock.read(SocketFields::has_left_reactor);
     // A TLS close notify that cannot be sent now goes behind the queued output.
     if BUILT_PREQUEUE && owes_close_notify(conn, *sock) {
         if !conn.close_queued() {

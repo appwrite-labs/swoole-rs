@@ -237,7 +237,8 @@ fn to_connection(serv: Server<'_>, info: &DataHead, data: &[u8], first: Option<i
     }
     let halfclose = cfg!(feature = "halfclose");
     if matches!(kind, Some(ServerEvent::PauseRecv | ServerEvent::ResumeRecv)) {
-        let (removed, notified, events) = sock.read(|s| (s.removed, s.close_reported(), s.events));
+        let (removed, notified, events) =
+            sock.read(|s| (s.has_left_reactor(), s.close_reported(), s.events));
         let (reading, writing) = (
             events.intersects(Events::READ),
             events.intersects(Events::WRITE),
@@ -507,7 +508,7 @@ mod tests {
         let a = Accepted::new();
         let events = || {
             a.sock()
-                .read(|s| (s.removed, s.events.intersects(Events::READ)))
+                .read(|s| (s.has_left_reactor(), s.events.intersects(Events::READ)))
         };
         assert_eq!(
             events(),

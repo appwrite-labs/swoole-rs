@@ -179,7 +179,7 @@ pub fn add<'a>(
     let socket = sock.socket();
     socket.edit(|s| {
         s.attach_object(conn.as_ptr());
-        s.removed = true;
+        s.note_left_reactor();
         s.limit_output(buffer_size);
         s.clear_io_timeouts();
     });
@@ -744,7 +744,7 @@ mod tests {
 
     /// Whether the reactor reads `sock`.
     fn reading(sock: swoole_rs_corebase::reactor::Socket<'_>) -> bool {
-        sock.read(|s| !s.removed && s.events.intersects(Events::READ))
+        sock.read(|s| !s.has_left_reactor() && s.events.intersects(Events::READ))
     }
 
     fn set_tables_max(live: &LiveServer, max: u32) {

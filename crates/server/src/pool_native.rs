@@ -345,7 +345,7 @@ fn worker_ops(pool: Pool<'_>, worker: Record<'_>, op: Op, arg: u64) -> bool {
         Op::RemovePipe => {
             // arg: only when the pipe is still in the reactor.
             if let Some(pipe) = worker_pipe(worker, false)
-                && (arg == 0 || pipe.read(|pipe| !pipe.removed))
+                && (arg == 0 || pipe.read(|pipe| !pipe.has_left_reactor()))
             {
                 Reactor::thread().del(*pipe);
             }

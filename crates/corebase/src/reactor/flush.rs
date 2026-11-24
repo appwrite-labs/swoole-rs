@@ -68,7 +68,7 @@ pub fn swr_v1_reactor_drain(socket: Socket<'_>, ops: &impl FlushEffects) {
             break;
         }
         swr_v1_reactor_flush(socket, ops);
-        if socket.read(|record| record.close_deferred() || record.removed) {
+        if socket.read(|record| record.close_deferred() || record.has_left_reactor()) {
             break;
         }
     }
