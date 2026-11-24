@@ -481,13 +481,13 @@ fn registered_at(ops: &Loop<'_>, fd: c_int) -> Option<crate::reactor::Heap<'stat
 
 /// Whether `socket` is still registered (`!socket->removed`).
 fn registered(socket: Socket<'_>) -> bool {
-    socket.read(|record| !record.removed)
+    socket.read(|record| !record.has_left_reactor())
 }
 
 fn oneshot(ops: &Loop<'_>, socket: Socket<'_>) {
-    if socket
-        .read(|record| !record.removed && record.events.intersects(crate::reactor::Events::ONCE))
-    {
+    if socket.read(|record| {
+        !record.has_left_reactor() && record.events.intersects(crate::reactor::Events::ONCE)
+    }) {
         if ops.backend == BackendKind::Epoll {
             // epoll's oneshot entry is already disarmed, so only the registry forgets it.
             ops.reactor.with(|state| {

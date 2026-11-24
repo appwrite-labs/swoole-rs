@@ -56,7 +56,7 @@ impl EventSocket {
 
     #[must_use]
     pub fn removed(&self) -> bool {
-        self.socket().read(|record| record.removed)
+        self.socket().read(SocketFields::has_left_reactor)
     }
 
     /// `swoole_event_add(socket, events)`: whether it worked.

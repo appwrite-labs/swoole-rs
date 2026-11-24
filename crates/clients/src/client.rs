@@ -383,7 +383,7 @@ impl Handle<'_> {
 
     /// `socket->removed = 1`: close skips the reactor.
     fn mark_removed(self) {
-        self.socket().edit(|socket| socket.removed = true);
+        self.socket().edit(SocketFields::note_left_reactor);
     }
 
     fn has(self, event: ClientEvent) -> bool {
@@ -951,7 +951,7 @@ pub fn close(this: Handle<'_>) -> bool {
         saved.read(SocketFields::unlink_unix_path);
     }
     if this.flag(Flag::Async) {
-        if !saved.read(|socket| socket.removed) {
+        if !saved.read(SocketFields::has_left_reactor) {
             _ = this.event(EventOp::Del, Events::NONE);
         }
         this.timer_clear();

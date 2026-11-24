@@ -50,7 +50,7 @@ impl Wait {
                     nobufs: record.has_kernel_nobufs(),
                     want_read: tls && wants.contains(Events::READ),
                     want_write: tls && wants.contains(Events::WRITE),
-                    removed: record.removed,
+                    removed: record.has_left_reactor(),
                 })
             })
             .flatten()
@@ -269,7 +269,8 @@ pub(crate) fn poll(socket: Co, event: Events, timeout: f64) -> bool {
 /// A resumed coroutine may free the record but not `event_socket`.
 pub(crate) fn error_event(socket: Co, event_socket: swoole_rs_corebase::reactor::Socket<'_>) {
     for event in [Events::WRITE, Events::READ] {
-        let (owner, removed) = event_socket.read(|record| (record.owner::<Co>(), record.removed));
+        let (owner, removed) =
+            event_socket.read(|record| (record.owner::<Co>(), record.has_left_reactor()));
         if event == Events::READ && (owner != Some(socket) || removed) {
             return;
         }

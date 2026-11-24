@@ -637,7 +637,7 @@ impl ReactorState {
                     }
                     added.mark().store(serial, Ordering::Relaxed);
                     record.events = events;
-                    record.removed = false;
+                    record.note_joined_reactor();
                 }
                 Request::Set(_) => {
                     record.events = events;
@@ -645,7 +645,7 @@ impl ReactorState {
                 }
                 Request::Del(deleted) => {
                     record.events = crate::reactor::Events::NONE;
-                    record.removed = true;
+                    record.note_left_reactor();
                     self.registry.remove(key);
                     unmark(deleted, serial);
                 }
@@ -668,7 +668,7 @@ impl ReactorState {
         }
         socket.edit(|record| {
             record.events = crate::reactor::Events::NONE;
-            record.removed = true;
+            record.note_left_reactor();
         });
         unmark(socket, self.serial);
     }

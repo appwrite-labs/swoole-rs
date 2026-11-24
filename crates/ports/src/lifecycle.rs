@@ -48,7 +48,6 @@ pub(crate) fn import(config: &mut PortConfig, fd: c_int) -> bool {
     } else {
         FD_STREAM_SERVER
     };
-    socket.removed = true;
     let port = socket.port();
     let host_set = socket.with_host(|host| config.host.set(host.to_bytes()));
     config.set_listening_socket(OwnedSocket::new(Box::new(socket)));

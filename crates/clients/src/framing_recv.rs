@@ -272,7 +272,8 @@ fn split<S: Source, K: Packages>(with: &mut With<'_, S, K>) -> Option<usize> {
     // The protocol's settings bound the length by the array.
     let eof = eof.get(..usize::from(eof_len))?;
     buffer.split_with(eof, |b, start, length| {
-        packages.dispatch(r, Package::of(b, start, length)) && !r.socket.read(|s| s.removed)
+        packages.dispatch(r, Package::of(b, start, length))
+            && !r.socket.read(SocketFields::has_left_reactor)
     })
 }
 

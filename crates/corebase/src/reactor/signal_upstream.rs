@@ -159,7 +159,7 @@ mod descriptor {
     pub(super) fn del(reactor: crate::reactor::Running<'_>) {
         with(|socket| {
             let socket = socket.socket();
-            if !socket.read(|record| record.removed) {
+            if !socket.read(crate::reactor::SocketFields::has_left_reactor) {
                 _ = crate::reactor::reactor_upstream::reactor_del(reactor, socket);
             }
         });

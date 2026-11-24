@@ -795,7 +795,7 @@ fn release_descriptor(network: Socket<'_>) {
     if fd < 0 {
         return;
     }
-    if !network.read(|record| record.removed) {
+    if !network.read(SocketFields::has_left_reactor) {
         _ = swoole_rs_corebase::reactor::event_api::event_del(network);
     }
     if !network.edit(SocketFields::release) {

@@ -7,6 +7,7 @@ use swoole_rs_corebase::ServerEvent;
 use swoole_rs_corebase::process::worker_record::{Worker, WorkerType};
 use swoole_rs_corebase::reactor::ErrorHandler::ConnectionDefault;
 use swoole_rs_corebase::reactor::Events;
+use swoole_rs_corebase::reactor::SocketFields;
 use swoole_rs_corebase::reactor::{Event, Running};
 
 use crate::callbacks::{CallbackKind, ServerSlot};
@@ -206,7 +207,7 @@ pub(crate) fn close(serv: view::Server<'_>, reactor: Reactor, event: &Event) -> 
     let Some(socket) = event.socket() else {
         return false;
     };
-    if socket.read(|s| s.removed) {
+    if socket.read(SocketFields::has_left_reactor) {
         return crate::conn_io::close_connection(serv, reactor, Some(socket));
     }
     if !reactor.del(*socket) {

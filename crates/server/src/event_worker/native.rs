@@ -9,6 +9,7 @@ use swoole_rs_corebase::process;
 use swoole_rs_corebase::process::pool::PIPE_MASTER;
 use swoole_rs_corebase::reactor::ErrorHandler::ConnectionDefault;
 use swoole_rs_corebase::reactor::Events;
+use swoole_rs_corebase::reactor::SocketFields;
 
 use process::methods::{
     ExitStatus, push_stop, set_worker_type, swoole_get_worker_id, swoole_set_worker_id, worker_type,
@@ -57,7 +58,7 @@ fn all_core_workers(config: &crate::ServerConfig) -> u32 {
 
 /// `reactor->remove_read_event(pipe)` when `pipe` is still in the loop.
 fn unread(reactor: Reactor, pipe: Option<Heap<'_>>) {
-    if let Some(sock) = pipe.filter(|s| s.read(|s| !s.removed)) {
+    if let Some(sock) = pipe.filter(|s| s.read(|s| !s.has_left_reactor())) {
         reactor.unread(sock);
     }
 }
@@ -72,7 +73,9 @@ fn unread_in_bus(serv: view::Server<'_>, reactor: Reactor, pipe: Option<Heap<'_>
 /// Whether a connection's socket is still read: its peer hasn't closed and it is in
 /// the loop.
 fn readable(conn: crate::Connection<'_>) -> bool {
-    let removed = conn.socket().is_none_or(|s| s.read(|s| s.removed));
+    let removed = conn
+        .socket()
+        .is_none_or(|s| s.read(SocketFields::has_left_reactor));
     !conn.peer_closed() && !removed
 }
 

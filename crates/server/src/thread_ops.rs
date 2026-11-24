@@ -12,6 +12,7 @@ use swoole_rs_corebase::ServerEvent;
 use swoole_rs_corebase::constants::SocketTypeCode;
 use swoole_rs_corebase::reactor::ErrorHandler::ConnectionDefault;
 use swoole_rs_corebase::reactor::Events;
+use swoole_rs_corebase::reactor::SocketFields;
 
 use crate::objects::worker_pipe;
 use crate::reactor_handle::Reactor;
@@ -415,7 +416,7 @@ pub(crate) fn shutdown(ctx: &ReactorContext<'_>) -> Option<()> {
             }
             if let Some(socket) = serv
                 .port_socket_at(index)
-                .filter(|s| !s.read(|s| s.removed))
+                .filter(|s| !s.read(SocketFields::has_left_reactor))
             {
                 reactor.del(*socket);
             }
@@ -440,7 +441,7 @@ pub(crate) fn shutdown(ctx: &ReactorContext<'_>) -> Option<()> {
         let Some(sock) = conn.socket() else {
             return;
         };
-        let reading = !conn.peer_closed() && !sock.read(|s| s.removed);
+        let reading = !conn.peer_closed() && !sock.read(SocketFields::has_left_reactor);
         if reading && owns(i64::from(conn.fd()), reactors, id) {
             reactor.interest(sock, swoole_rs_corebase::reactor::Interest::RemoveRead);
         }

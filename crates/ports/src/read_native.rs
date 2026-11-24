@@ -144,7 +144,7 @@ impl<'a> Read<'a> {
 
     /// `socket->removed`: out of the reactor, as a close leaves it.
     fn removed(&self) -> bool {
-        self.socket.read(|s| s.removed)
+        self.socket.read(SocketFields::has_left_reactor)
     }
 
     fn config(&self) -> &ServerConfig {

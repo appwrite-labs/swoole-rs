@@ -34,7 +34,7 @@ mod recording {
             log(format!("add {events}"));
             socket.socket().edit(|record| {
                 record.events = events;
-                record.removed = false;
+                record.note_joined_reactor();
             });
             true
         },
@@ -47,7 +47,7 @@ mod recording {
             log("del".into());
             socket.socket().edit(|record| {
                 record.events = Events::NONE;
-                record.removed = true;
+                record.note_left_reactor();
             });
             true
         },
