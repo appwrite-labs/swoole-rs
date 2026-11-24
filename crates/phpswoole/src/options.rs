@@ -213,6 +213,13 @@ fn apply(options: &Array) -> Result<(), (&ZStr, ZString)> {
         defaults.read.set(both);
         defaults.write.set(both);
     }
+    if let Some(value) = get(options, c"http2_max_headers") {
+        let limit = long(value);
+        if bailout::pending() {
+            return Ok(());
+        }
+        swoole_rs_http2::set_max_headers(limit.clamp(0, i64::from(u32::MAX)).c_cast::<u32>());
+    }
     // [HTTP2]: (key, setting, parsed as a size).
     let http2 = [
         (

@@ -106,6 +106,20 @@ pub fn get_default_setting(id: u32) -> u32 {
     default_slot(id).load(Ordering::Relaxed)
 }
 
+// This local decode limit is independent of the settings advertised to peers.
+static MAX_HEADERS: AtomicU32 = AtomicU32::new(1000);
+
+#[must_use]
+pub fn max_headers() -> u32 {
+    MAX_HEADERS.load(Ordering::Relaxed)
+}
+
+pub fn set_max_headers(limit: u32) {
+    if limit != 0 {
+        MAX_HEADERS.store(limit, Ordering::Relaxed);
+    }
+}
+
 /// All defaults, for the server's SETTINGS frame.
 #[must_use]
 pub fn sw_rs_http2_default_settings() -> Http2Settings {
