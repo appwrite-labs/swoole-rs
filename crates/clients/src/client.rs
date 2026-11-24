@@ -14,7 +14,7 @@ use crate::framing_recv::Source;
 use crate::owned_proxy::SocksConfig;
 use crate::protocol::{Package, Protocol};
 use core::cell::{Cell, OnceCell};
-use core::ffi::{c_char, c_int, c_void};
+use core::ffi::{c_int, c_void};
 use core::marker::PhantomData;
 use core::ptr::NonNull;
 use std::ffi::{CStr, CString};
@@ -935,10 +935,6 @@ pub fn package_length(this: Handle<'_>, data: &[u8]) -> Option<usize> {
 
 /// `Client::close()`: false when already closed or when `close(2)` fails; true when
 /// it closed or `onClose` released the client.
-#[expect(
-    clippy::must_use_candidate,
-    reason = "most callers close for the effect"
-)]
 pub fn close(this: Handle<'_>) -> bool {
     if this.flag(Flag::Closed) {
         return false;
@@ -952,11 +948,7 @@ pub fn close(this: Handle<'_>) -> bool {
         (this.get().socket_ops.close_tls)(saved);
     }
     if this.socket_type() == SOCK_UNIX_DGRAM {
-        let path = saved.read(|socket| socket.info.addr.unix().sun_path);
-        let path = path.map(|byte| byte.to_ne_bytes()[0]);
-        if let Ok(path) = CStr::from_bytes_until_nul(&path) {
-            _ = swoole_rs_corebase::sys::unlink(path);
-        }
+        saved.read(SocketFields::unlink_unix_path);
     }
     if this.flag(Flag::Async) {
         if !saved.read(|socket| socket.removed) {
@@ -1502,20 +1494,8 @@ fn bind_unix(this: Handle<'_>) -> bool {
     let pid = std::process::id();
     let path = format!("/tmp/swoole-client.{pid}.{}.sock", socket.fd());
     let bound = std::ffi::CString::new(path.as_str()).unwrap_or_default();
-    let bound_ok = socket.edit(|socket| {
-        socket.info.addr.edit_unix(|address| {
-            for (slot, byte) in address.sun_path.iter_mut().zip(path.bytes().chain([0])) {
-                *slot = c_char::from_ne_bytes([byte]);
-            }
-            address.sun_family = libc::AF_UNIX.c_cast::<libc::sa_family_t>();
-        });
-        _ = swoole_rs_corebase::sys::unlink(&bound);
-        // The address just written, bound at `sizeof(sockaddr_un)`; the record keeps
-        // its own length.
-        let mut local = socket.info;
-        local.len = swoole_rs_corebase::sys::socklen::<libc::sockaddr_un>();
-        local.bind(socket.fd)
-    });
+    _ = swoole_rs_corebase::sys::unlink(&bound);
+    let bound_ok = socket.edit(|socket| socket.bind_unix_path(path.as_bytes()));
     if !bound_ok {
         log::sys_warning(c"Client_udp_connect", format_args!("bind({path}) failed"));
     }

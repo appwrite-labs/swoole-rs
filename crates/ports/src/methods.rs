@@ -3,7 +3,7 @@
 //! in [`crate::read_native`].
 
 use std::ffi::{CStr, c_char, c_int};
-use swoole_rs_clients::address::{address_port, assign, type_name};
+use swoole_rs_clients::address::{assign, type_name};
 use swoole_rs_clients::protocol::{GetPackageLength, GetPackageLengthSize, OnPackage};
 use swoole_rs_corebase::CCast;
 use swoole_rs_corebase::constants::{SW_DATA_EOF_MAXLEN, SocketFlag};
@@ -217,8 +217,7 @@ pub(crate) fn create_socket(config: &PortConfig, reuse_port: bool) -> bool {
     if !made.bind(&address) || !made.get_name() {
         return fail(made);
     }
-    let info = made.info;
-    config.port.set(address_port(&info).into());
+    config.port.set(made.port().into());
     // Only a bound record: each failure above frees its own, which the port's
     // delete would otherwise free again.
     config.set_listening_socket(OwnedSocket::new(made));
@@ -692,7 +691,7 @@ mod tests {
         assert!(socket.read(|s| s.bound), "bound");
         assert_ne!(config.port.get(), 0, "the kernel's port");
         assert_eq!(
-            c_int::from(socket.read(|s| address_port(&s.info))),
+            c_int::from(socket.read(swoole_rs_corebase::reactor::SocketFields::port)),
             config.port.get(),
             "getsockname's port"
         );

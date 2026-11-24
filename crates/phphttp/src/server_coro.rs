@@ -15,7 +15,6 @@ use std::{
     ffi::{CString, c_int},
     rc::Rc,
 };
-use swoole_rs_clients::address::{address_port, with_host};
 use swoole_rs_corebase::buffer::string::StringBuffer as Buffer;
 use swoole_rs_corebase::constants::{
     HTTP2_PREFACE, SW_COMPRESSION_MIN_LENGTH_DEFAULT, SW_HTTP_100_CONTINUE_PACKET, SW_Z_BEST_SPEED,
@@ -267,9 +266,8 @@ fn socket_error(socket: Co) -> (c_int, CString) {
 fn address(socket: Co) -> (ZString, c_int) {
     let address = socket.with_network(|network| {
         network.read(|record| {
-            let info = &record.info;
-            let host = with_host(info, |host| ZString::new(host.to_bytes()));
-            (host, address_port(info).into())
+            let host = record.with_host(|host| ZString::new(host.to_bytes()));
+            (host, record.port().into())
         })
     });
     address.unwrap_or_else(|| (ZString::new(b""), 0))

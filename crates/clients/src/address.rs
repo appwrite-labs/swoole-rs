@@ -5,8 +5,6 @@
 use crate::ip::swr_v1_clients_ip;
 use std::cell::Cell;
 use std::ffi::{CStr, c_char, c_int};
-use std::io::Write;
-use std::net::Ipv4Addr;
 use swoole_rs_corebase::CCast;
 use swoole_rs_corebase::constants::SocketType;
 use swoole_rs_corebase::net_address::{BAD_HOST_ADDR, DNSLOOKUP_RESOLVE_FAILED, platform_parses};
@@ -226,48 +224,13 @@ pub fn host_bytes(address: &SocketAddress, length: usize) -> Option<[u8; 128]> {
 /// into this call's own buffer rather than the thread's scratch, so nothing can
 /// overwrite it while `f` runs.
 pub fn with_host<R>(address: &SocketAddress, f: impl FnOnce(&CStr) -> R) -> R {
-    if inet4(address.kind) {
-        // `inet_ntop(AF_INET)` writes the four octets in decimal, as `Ipv4Addr` displays;
-        // at most 15 characters, which leave the buffer its terminator.
-        let mut text = [0u8; 46];
-        let ip = Ipv4Addr::from(address.addr.v4().sin_addr.s_addr.to_ne_bytes());
-        if write!(&mut text[..45], "{ip}").is_err() {
-            return f(c"");
-        }
-        f(CStr::from_bytes_until_nul(&text).unwrap_or_default())
-    } else if inet6(address.kind) {
-        let ip = address.addr.v6().sin6_addr.s6_addr;
-        // `inet_ntop(AF_INET6)`'s text, empty when it fails.
-        let text = ntop(
-            libc::AF_INET6,
-            &ip.map(|byte| c_char::from_ne_bytes([byte])),
-        );
-        let text = text.unwrap_or([0; 46]).map(|unit| unit.to_ne_bytes()[0]);
-        f(CStr::from_bytes_until_nul(&text).unwrap_or_default())
-    } else if local(address.kind) {
-        let path = address.addr.unix().sun_path;
-        // A byte past the path, so an unterminated one still ends.
-        let mut bytes = [0u8; 109];
-        for (byte, c) in bytes.iter_mut().zip(path) {
-            *byte = c.to_ne_bytes()[0];
-        }
-        f(CStr::from_bytes_until_nul(&bytes).unwrap_or_default())
-    } else {
-        f(c"unknown")
-    }
+    address.with_host(f)
 }
 
 /// `Address::get_port`: 0 for an address that is not IP.
 #[must_use]
 pub fn address_port(address: &SocketAddress) -> u16 {
-    let port = if inet4(address.kind) {
-        address.addr.v4().sin_port
-    } else if inet6(address.kind) {
-        address.addr.v6().sin6_port
-    } else {
-        return 0;
-    };
-    u16::from_be(port)
+    address.port()
 }
 
 /// `Address::set_port`, including the original int-to-uint16_t wrapping.

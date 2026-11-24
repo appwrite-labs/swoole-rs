@@ -57,7 +57,7 @@ impl TlsSocket for Co {
         let message = swoole_rs_corebase::tls::error_string(code);
         let function = function.to_string_lossy();
         self.net(|network| {
-            let (host, port) = swoole_rs_corebase::tls::upstream::peer(&network.info);
+            let (host, port) = network.peer_text();
             log::notice(format_args!(
                 "{function}(fd={}) to server[{host}:{port}] failed. Error: {message}[{error}|{}]",
                 network.fd,
@@ -272,9 +272,8 @@ pub(crate) fn recvfrom_peer(ops: &UringSocketOps<'_>, out: &mut Spare<'_>) -> Op
         if peeked <= Some(0) {
             return peeked;
         }
-        let receive = |record: &mut SocketFields| {
-            out.recvfrom_one(tls.fd, libc::MSG_DONTWAIT, &mut record.info)
-        };
+        let receive =
+            |record: &mut SocketFields| record.receive_from(out, tls.fd, libc::MSG_DONTWAIT);
         ops.socket.net(receive).flatten()
     })
 }
@@ -440,12 +439,14 @@ pub(crate) fn swr_v1_hook_uring_poll(
 /// set. `socket` is available, in a coroutine, and `ops` is its view.
 pub(crate) fn accept(socket: Co, ops: &UringSocketOps<'_>) -> Option<OwnedCo> {
     let mut conn = SocketRecord::new();
-    let fd = accept_descriptor(ops, &mut conn.info).ok()?;
+    let mut address = SocketAddress::default();
+    let fd = accept_descriptor(ops, &mut address).ok()?;
     conn.fd = fd;
     conn.removed = true;
-    conn.info.kind = socket
+    address.kind = socket
         .net(|listener| listener.socket_type)
         .unwrap_or_default();
+    conn.record_address(address.addr, address.len, address.kind);
     conn.note_nonblocking(true);
     conn.cloexec = true;
     // A `UringSocket` before it shares the server's TLS, so its session is over the

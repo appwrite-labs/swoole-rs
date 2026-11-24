@@ -1,5 +1,6 @@
 //! Shared wire records for network addresses used by sockets and server connections.
-use core::ffi::c_int;
+use crate::constants::SocketType;
+use core::ffi::{CStr, c_char, c_int};
 
 /// `network::Address`'s storage: the largest of the address families it holds.
 // `repr(C)`: libc's socket address storage, which `connect`, `bind` and `getsockname` read and fill.
@@ -289,4 +290,61 @@ impl<'a> PacketLength<'a> {
         // SAFETY: `buf` holds `buf_size` readable bytes for `'a` (the type's invariant).
         unsafe { core::slice::from_raw_parts(self.buf, self.buf_size as usize) }
     }
+}
+
+/// The address as text, as `network::Address`'s getters give it.
+impl SocketAddress {
+    /// `Address::get_addr` for Rust: `f` reads the text, which an IP address formats
+    /// into this call's own buffer rather than a shared scratch, so nothing can
+    /// overwrite it while `f` runs.
+    pub fn with_host<R>(&self, f: impl FnOnce(&CStr) -> R) -> R {
+        if kind_is(self.kind, SocketType::is_inet4) {
+            // `inet_ntop(AF_INET)` writes the four octets in decimal, as `Ipv4Addr` displays;
+            // at most 15 characters, which leave the buffer its terminator.
+            let mut text = [0u8; 46];
+            let ip = std::net::Ipv4Addr::from(self.addr.v4().sin_addr.s_addr.to_ne_bytes());
+            let mut room = &mut text[..45];
+            if std::io::Write::write_fmt(&mut room, format_args!("{ip}")).is_err() {
+                return f(c"");
+            }
+            f(CStr::from_bytes_until_nul(&text).unwrap_or_default())
+        } else if kind_is(self.kind, SocketType::is_inet6) {
+            let ip = self.addr.v6().sin6_addr.s6_addr;
+            // `inet_ntop(AF_INET6)`'s text, empty when it fails.
+            let text = crate::ntop(
+                libc::AF_INET6,
+                &ip.map(|byte| c_char::from_ne_bytes([byte])),
+            );
+            let text = text.unwrap_or([0; 46]).map(|unit| unit.to_ne_bytes()[0]);
+            f(CStr::from_bytes_until_nul(&text).unwrap_or_default())
+        } else if kind_is(self.kind, SocketType::is_local) {
+            let path = self.addr.unix().sun_path;
+            // A byte past the path, so an unterminated one still ends.
+            let mut bytes = [0u8; 109];
+            for (byte, c) in bytes.iter_mut().zip(path) {
+                *byte = c.to_ne_bytes()[0];
+            }
+            f(CStr::from_bytes_until_nul(&bytes).unwrap_or_default())
+        } else {
+            f(c"unknown")
+        }
+    }
+
+    /// `Address::get_port`: 0 for an address that is not IP.
+    #[must_use]
+    pub fn port(&self) -> u16 {
+        let port = if kind_is(self.kind, SocketType::is_inet4) {
+            self.addr.v4().sin_port
+        } else if kind_is(self.kind, SocketType::is_inet6) {
+            self.addr.v6().sin6_port
+        } else {
+            return 0;
+        };
+        u16::from_be(port)
+    }
+}
+
+/// Whether `kind` is a socket type `test` holds for.
+fn kind_is(kind: c_int, test: fn(SocketType) -> bool) -> bool {
+    SocketType::from_raw(kind).is_some_and(test)
 }

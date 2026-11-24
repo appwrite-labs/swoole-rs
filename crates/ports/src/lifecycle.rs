@@ -1,6 +1,5 @@
 //! Listening socket import and close.
 use core::ffi::{CStr, c_int};
-use swoole_rs_clients::address::{address_port, with_host};
 use swoole_rs_corebase::log::LogLevel::SW_LOG_WARNING as LOG_WARNING;
 use swoole_rs_corebase::reactor::event_api::{Deferred, swoole_event_defer_value};
 use swoole_rs_corebase::reactor::{OwnedSocket, SocketRecord, socket_type};
@@ -41,23 +40,24 @@ pub(crate) fn import(config: &mut PortConfig, fd: c_int) -> bool {
         log::error_log(LOG_WARNING, libc::EINVAL, origin, message);
         return false;
     }
-    let family = c_int::from(socket.info.addr.family());
+    let family = c_int::from(socket.address_family());
     let kind = socket_type(family, so_type);
     socket.socket_type = kind.raw();
-    socket.info.kind = kind.raw();
+    socket.type_address(kind.raw());
     socket.fd_type = if kind.is_dgram() {
         FD_DGRAM_SERVER
     } else {
         FD_STREAM_SERVER
     };
     socket.removed = true;
-    let info = socket.info;
+    let port = socket.port();
+    let host_set = socket.with_host(|host| config.host.set(host.to_bytes()));
     config.set_listening_socket(OwnedSocket::new(Box::new(socket)));
     config.r#type = kind.raw();
-    if !with_host(&info, |host| config.host.set(host.to_bytes())) {
+    if !host_set {
         swoole_rs_corebase::fatal("out of memory storing a port's host");
     }
-    config.port.set(address_port(&info).into());
+    config.port.set(port.into());
     config.listening.set(true);
     true
 }

@@ -10,7 +10,7 @@ use crate::client::ClientFraming;
 use crate::protocol::{Package, Protocol};
 use swoole_rs_corebase::buffer::string::StringBuffer;
 use swoole_rs_corebase::log::LogLevel::{SW_LOG_ERROR as LOG_ERROR, SW_LOG_WARNING as LOG_WARNING};
-use swoole_rs_corebase::net_types::PacketLength;
+use swoole_rs_corebase::net_types::{PacketLength, SocketAddress};
 use swoole_rs_corebase::reactor::{Caught, Socket, SocketFields, swr_v1_socket_reset_on_close};
 use swoole_rs_corebase::{log, swr_v1_core_pagesize};
 use swoole_rs_error::ErrorCode;
@@ -132,14 +132,17 @@ pub fn socket_flags(socket: &SocketFields, paused: impl FnOnce() -> bool) -> u32
 /// `proto_error`: the warning, with the peer's address (or the socket's own when
 /// `getpeername` fails) appended as `<host:port>`.
 fn proto_error(socket: Socket<'_>, code: ErrorCode, origin: &CStr, message: &str) {
-    let address = socket.read(|socket| {
-        let mut address = socket.info;
-        if !socket.get_peer_name(&mut address) {
-            address = socket.info;
+    let (host, port) = socket.read(|socket| {
+        // Over a copy of the socket's own address; `get_peer_name` types it.
+        let (addr, len) = socket.address_storage();
+        let mut peer = SocketAddress { addr, len, kind: 0 };
+        if socket.get_peer_name(&mut peer) {
+            crate::address::host_port(&peer)
+        } else {
+            let host = socket.with_host(|host| host.to_string_lossy().into_owned());
+            (host, socket.port().into())
         }
-        address
     });
-    let (host, port) = crate::address::host_port(&address);
     log::error_log(
         LOG_WARNING,
         code as c_int,

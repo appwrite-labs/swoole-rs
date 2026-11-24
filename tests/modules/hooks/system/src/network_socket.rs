@@ -210,7 +210,7 @@ impl Socket {
     }
 
     fn get_port(&self) -> c_int {
-        swoole_rs_clients::address::address_port(&self.record().info).into()
+        self.record().port().into()
     }
 
     fn set_timeout(&self, timeout: f64, kind: c_int) {

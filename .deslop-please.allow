@@ -69,7 +69,6 @@ field-leak swoole_rs_corebase::reactor::socket_record::SocketFields::events
 field-leak swoole_rs_corebase::reactor::socket_record::SocketFields::fd
 field-leak swoole_rs_corebase::reactor::socket_record::SocketFields::fd_type
 field-leak swoole_rs_corebase::reactor::socket_record::SocketFields::in_buffer
-field-leak swoole_rs_corebase::reactor::socket_record::SocketFields::info
 field-leak swoole_rs_corebase::reactor::socket_record::SocketFields::kernel_nobufs
 field-leak swoole_rs_corebase::reactor::socket_record::SocketFields::last_received_time
 field-leak swoole_rs_corebase::reactor::socket_record::SocketFields::last_sent_time

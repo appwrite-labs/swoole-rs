@@ -749,7 +749,7 @@ impl CoSocket {
         let network = OwnedSocket::new(socket);
         network.socket().edit(|record| {
             record.set_owner(Some(owner));
-            record.info.kind = self.kind.get();
+            record.type_address(self.kind.get());
         });
         self.put_socket(network);
         true

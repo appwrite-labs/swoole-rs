@@ -6,8 +6,8 @@
 use crate::co_io::{Timer, available, check, errno, set_err, would_block};
 use crate::co_socket::Co;
 use crate::socket_wait::{WriteSlot, wait, wait_retry};
-use swoole_rs_corebase::net_types::SocketAddress;
 use swoole_rs_corebase::reactor::Events;
+use swoole_rs_corebase::reactor::SocketFields;
 
 /// Where a transfer's call moves its bytes: `skip` bytes into the caller's buffer
 /// ([`At::Caller`]), or the socket's write buffer once a write's wait moved them
@@ -202,17 +202,12 @@ pub(crate) fn recvfrom_peer(socket: Co, call: impl FnOnce() -> Option<usize>) ->
         return None;
     }
     let local = socket.net(|network| {
-        network.info.len = SocketAddress::CAPACITY;
+        network.make_room_for_sender();
         network.is_local()
     })?;
     let result = call();
     if result.is_some() && local {
-        socket.net(|network| {
-            let info = &mut network.info;
-            if info.len as usize <= core::mem::offset_of!(libc::sockaddr_un, sun_path) {
-                info.addr.edit_unix(|un| un.sun_path[0] = 0);
-            }
-        });
+        socket.net(SocketFields::clear_unnamed_sender);
     }
     result
 }

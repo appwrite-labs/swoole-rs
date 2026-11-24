@@ -5,9 +5,10 @@
 use crate::CCast;
 use crate::constants::SW_BACKLOG;
 use crate::lent::Spare;
+use crate::net_types::AddressStorage;
 use crate::reactor::socket_rw::interrupted;
 use crate::reactor::{Drain, Socket, SocketAddress, SocketFields};
-use std::ffi::c_int;
+use std::ffi::{CStr, c_int};
 
 /// `time<std::chrono::milliseconds>(true)`, from native code so the clock is the
 /// one its timers read.
@@ -39,6 +40,102 @@ impl SocketFields {
     pub fn get_peer_name(&self, address: &mut SocketAddress) -> bool {
         address.kind = self.socket_type;
         address.peer_name(self.fd).is_ok()
+    }
+
+    /// `Address::get_port` of the socket's address (the peer an accept, connect or
+    /// recvfrom left there, or the socket's own name after [`Self::get_name`]): 0
+    /// for an address that is not IP.
+    #[inline]
+    #[must_use]
+    pub fn port(&self) -> u16 {
+        self.info.port()
+    }
+
+    /// `Address::get_addr` of the socket's address, as [`SocketAddress::with_host`].
+    pub fn with_host<R>(&self, f: impl FnOnce(&CStr) -> R) -> R {
+        self.info.with_host(f)
+    }
+
+    /// The address family its storage holds.
+    #[inline]
+    #[must_use]
+    pub const fn address_family(&self) -> libc::sa_family_t {
+        self.info.addr.family()
+    }
+
+    /// The address's storage and length, to copy into a native address.
+    #[inline]
+    #[must_use]
+    pub const fn address_storage(&self) -> (AddressStorage, libc::socklen_t) {
+        (self.info.addr, self.info.len)
+    }
+
+    /// The socket's address becomes the peer it connected to or accepted: `len`
+    /// bytes of `addr`, of socket type `kind`.
+    #[inline]
+    pub const fn record_address(
+        &mut self,
+        addr: AddressStorage,
+        len: libc::socklen_t,
+        kind: c_int,
+    ) {
+        self.info.addr = addr;
+        self.info.len = len;
+        self.info.kind = kind;
+    }
+
+    /// The socket's address takes the socket type `kind` (`info.type = type`).
+    #[inline]
+    pub const fn type_address(&mut self, kind: c_int) {
+        self.info.kind = kind;
+    }
+
+    /// One recvfrom(2) on `fd` into `out`'s room, the sender into the socket's
+    /// address, as [`Spare::recvfrom_one`].
+    #[inline]
+    pub fn receive_from(&mut self, out: &mut Spare<'_>, fd: c_int, flags: c_int) -> Option<usize> {
+        out.recvfrom_one(fd, flags, &mut self.info)
+    }
+
+    /// `info.len = sizeof(info.addr)`: the whole address is room for a recvfrom's sender.
+    #[inline]
+    pub const fn make_room_for_sender(&mut self) {
+        self.info.len = SocketAddress::CAPACITY;
+    }
+
+    /// An unnamed Unix sender (one whose length ends before its path) leaves the
+    /// address's path empty, as upstream's `recvfrom` does for a local socket.
+    pub fn clear_unnamed_sender(&mut self) {
+        let info = &mut self.info;
+        if info.len as usize <= core::mem::offset_of!(libc::sockaddr_un, sun_path) {
+            info.addr.edit_unix(|un| un.sun_path[0] = 0);
+        }
+    }
+
+    /// `Client_udp_connect`'s bind: the socket's address becomes the Unix `path`
+    /// (written through its NUL, cut at the path's room), and the socket binds it at
+    /// `sizeof(sockaddr_un)`; its address keeps its own length and type, as upstream.
+    pub fn bind_unix_path(&mut self, path: &[u8]) -> bool {
+        self.info.addr.edit_unix(|address| {
+            for (slot, byte) in address.sun_path.iter_mut().zip(path.iter().chain(&[0])) {
+                *slot = std::ffi::c_char::from_ne_bytes([*byte]);
+            }
+            address.sun_family = libc::AF_UNIX.c_cast::<libc::sa_family_t>();
+        });
+        let mut local = self.info;
+        local.len = crate::sys::socklen::<libc::sockaddr_un>();
+        local.bind(self.fd)
+    }
+
+    /// unlink(2) of the Unix path the socket's address holds, as a Unix datagram
+    /// client's close removes the path it bound.
+    pub fn unlink_unix_path(&self) {
+        let path = self.info.addr.unix().sun_path;
+        // c_char is i8 or u8 by target; its one byte either way.
+        let path = path.map(|byte| byte.to_ne_bytes()[0]);
+        if let Ok(path) = std::ffi::CStr::from_bytes_until_nul(&path) {
+            _ = crate::sys::unlink(path);
+        }
     }
 
     /// `Socket::bind(address)`: bind(2), marking the socket bound.
