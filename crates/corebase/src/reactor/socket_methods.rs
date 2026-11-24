@@ -372,9 +372,9 @@ pub fn what_event_want(
     socket: &SocketFields,
     default: crate::reactor::Events,
 ) -> crate::reactor::Events {
-    let tls = socket.tls;
-    if !socket.ssl().is_null() && (tls.want_read || tls.want_write) {
-        if tls.want_write {
+    let wants = socket.tls_wants();
+    if !socket.ssl().is_null() && !wants.is_empty() {
+        if wants.contains(crate::reactor::Events::WRITE) {
             crate::reactor::Events::WRITE
         } else {
             crate::reactor::Events::READ

@@ -44,11 +44,12 @@ impl Wait {
                     return None;
                 }
                 let tls = !record.ssl().is_null();
+                let wants = record.tls_wants();
                 Some(WaitState {
                     events: record.events & (Events::READ | Events::WRITE),
                     nobufs: core::mem::take(&mut record.kernel_nobufs),
-                    want_read: tls && record.tls.want_read,
-                    want_write: tls && record.tls.want_write,
+                    want_read: tls && wants.contains(Events::READ),
+                    want_write: tls && wants.contains(Events::WRITE),
                     removed: record.removed,
                 })
             })

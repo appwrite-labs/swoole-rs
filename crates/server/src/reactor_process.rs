@@ -16,10 +16,9 @@ use crate::view;
 
 pub(crate) mod native;
 
-/// `SW_FD_SESSION`, `SW_FD_STREAM_SERVER` and `SW_SSL_STATE_READY`.
+/// `SW_FD_SESSION` and `SW_FD_STREAM_SERVER`.
 const FD_SESSION: c_int = swoole_rs_corebase::constants::FdType::SW_FD_SESSION as c_int;
 const FD_STREAM_SERVER: c_int = swoole_rs_corebase::constants::FdType::SW_FD_STREAM_SERVER as c_int;
-use swoole_rs_corebase::tls::SslState::SW_SSL_STATE_READY as SSL_READY;
 
 /// `Socket::is_stream(type)`.
 fn is_stream(port: view::Port<'_>) -> bool {
@@ -231,7 +230,7 @@ pub(crate) fn heartbeat(serv: view::Server<'_>, reactor: Reactor) {
         }
         let ssl_pending = conn
             .socket()
-            .is_some_and(|s| s.read(|s| !s.ssl().is_null() && s.tls.state != SSL_READY));
+            .is_some_and(|s| s.read(swoole_rs_corebase::reactor::SocketFields::tls_handshaking));
         if ssl_pending || serv.config().disable_notify.get() || conn.close_force() {
             crate::conn_io::close_connection(serv, reactor, conn.socket());
             return;

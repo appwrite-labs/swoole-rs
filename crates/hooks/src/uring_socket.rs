@@ -496,10 +496,12 @@ pub(crate) fn sendfile(
 
 /// The socket's `ssl_want_read` (bit 0) and `ssl_want_write` (bit 1).
 fn want(socket: Co) -> c_int {
-    let tls = socket.net(|network| network.tls);
-    tls.map_or(0, |tls| {
-        c_int::from(tls.want_read) | (c_int::from(tls.want_write) << 1)
-    })
+    socket
+        .net(|network| network.tls_wants())
+        .map_or(0, |wants| {
+            c_int::from(wants.contains(Events::READ))
+                | (c_int::from(wants.contains(Events::WRITE)) << 1)
+        })
 }
 
 /// `UringSocket::send_once` or `recv_once`: `io`, the open socket's one attempt on

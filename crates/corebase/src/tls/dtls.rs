@@ -400,7 +400,7 @@ pub fn dtls_open(socket: Socket<'_>, context: &std::sync::Arc<crate::tls::TlsSet
     }
     let size = crate::reactor::SOCKET_DEFAULTS.buffer_size();
     _ = crate::reactor::set_socket_buffer_size(socket.fd(), true, true, size);
-    socket.edit(|record| record.dtls = true);
+    socket.edit(crate::reactor::SocketFields::become_dtls);
     true
 }
 

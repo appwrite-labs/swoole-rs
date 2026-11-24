@@ -373,8 +373,12 @@ impl Handle<'_> {
         self.socket().read(|socket| socket.socket_type)
     }
 
-    fn tls_state(self) -> SslState {
-        self.socket().read(|socket| socket.tls.state)
+    fn tls_ready(self) -> bool {
+        self.socket().read(SocketFields::tls_ready)
+    }
+
+    fn tls_awaits_stream(self) -> bool {
+        self.socket().read(SocketFields::tls_awaits_stream)
     }
 
     /// `socket->removed = 1`: close skips the reactor.
@@ -1079,7 +1083,7 @@ pub fn set_proxy(
 fn enable_dtls(this: Handle<'_>) {
     this.edit_tls(|fields, _| fields.protocols = SSL_DTLS);
     this.socket().edit(|socket| {
-        socket.dtls = true;
+        socket.become_dtls();
         socket.send_in_dtls_records();
     });
     this.set(Flag::Dtls, true);
@@ -1092,7 +1096,7 @@ fn tls_freeze(owner: &TlsContext) -> Option<TlsSettings> {
 /// `Client::ssl_handshake()`.
 #[must_use]
 pub fn ssl_handshake(this: Handle<'_>) -> bool {
-    if this.tls_state() == SSL_STATE_READY {
+    if this.tls_ready() {
         return false;
     }
     let settings =
@@ -1126,9 +1130,7 @@ pub fn ssl_handshake(this: Handle<'_>) -> bool {
     if !(this.get().socket_ops.tls_connect)(this.socket()) {
         return false;
     }
-    if this.tls_state() == SSL_STATE_READY
-        && settings.verify_peer()
-        && !ssl_verify(this, settings.allow_self_signed())
+    if this.tls_ready() && settings.verify_peer() && !ssl_verify(this, settings.allow_self_signed())
     {
         return false;
     }
@@ -1816,12 +1818,12 @@ fn on_read(this: Handle<'_>) -> bool {
             return true;
         }
     }
-    if this.flag(Flag::OpenSsl) && this.tls_state() != SSL_STATE_READY {
+    if this.flag(Flag::OpenSsl) && !this.tls_ready() {
         if !ssl_handshake(this) {
             log::set_last_error(ERROR_SSL_HANDSHAKE_FAILED);
             return connect_failed(this);
         }
-        if this.tls_state() == SSL_STATE_READY {
+        if this.tls_ready() {
             this.on_connect();
         }
         return true;
@@ -1906,16 +1908,20 @@ fn on_datagram(this: Handle<'_>) -> bool {
 /// async stream client; `reactor` and `event` are the handler's.
 fn on_write(this: Handle<'_>, reactor: Running<'_>, event: &mut Event) -> bool {
     if this.flag(Flag::Active) {
-        if this.flag(Flag::OpenSsl) && this.tls_state() == SSL_STATE_WAIT_STREAM {
+        if this.flag(Flag::OpenSsl) && this.tls_awaits_stream() {
             if !ssl_handshake(this) {
                 log::set_last_error(ERROR_SSL_HANDSHAKE_FAILED);
                 return write_failed(this);
             }
-            if this.tls_state() == SSL_STATE_READY {
+            if this.tls_ready() {
                 this.on_connect();
                 return true;
             }
-            if this.socket().read(|socket| socket.tls.want_read) {
+            if this
+                .socket()
+                .read(SocketFields::tls_wants)
+                .contains(Events::READ)
+            {
                 this.event(EventOp::Set, Events::READ);
             }
             return true;
@@ -1963,8 +1969,7 @@ fn on_write(this: Handle<'_>, reactor: Running<'_>, event: &mut Event) -> bool {
             log::set_last_error(ERROR_SSL_HANDSHAKE_FAILED);
             return write_failed(this);
         }
-        this.socket()
-            .edit(|socket| socket.tls.state = SSL_STATE_WAIT_STREAM);
+        this.socket().edit(SocketFields::await_tls_stream);
         return true;
     }
     this.on_connect();
@@ -1992,7 +1997,7 @@ fn on_error(this: Handle<'_>, reactor: Running<'_>, event: &mut Event) -> bool {
 fn on_timeout(this: Handle<'_>) {
     log::set_last_error(libc::ETIMEDOUT);
     this.get().timer.set(None);
-    if this.flag(Flag::OpenSsl) && this.tls_state() != SSL_STATE_READY {
+    if this.flag(Flag::OpenSsl) && !this.tls_ready() {
         this.set(Flag::Active, false);
     }
     let socks5 = this.proxy_state(Proxy::Socks5);
