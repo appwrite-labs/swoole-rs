@@ -37,12 +37,12 @@ What is done:
 
 - **No upstream source is compiled.** Nothing from swoole-src's `src/`, `ext-src/` or
   `include/` is in the build, and the build needs no swoole-src checkout.
-- **Some C remains, on purpose.** Of the C and C++ that swoole-src bundles from
-  elsewhere, what is left in `native/swoole-src/thirdparty` is PHP's PDO drivers for
-  SQLite, Firebird and Oracle, `proc_open`, the plain-files stream wrapper and PECL ssh2.
-  The cURL hook and the PostgreSQL and ODBC drivers are Rust now, with C glue in
-  `native/hooks` for the parts tied to PHP's private layouts. The rest of our own C is
-  shims in `crates/zend-sys` over the parts of PHP's C API that Rust can't call
+- **Some C remains, on purpose.** None of the C and C++ that swoole-src bundles from
+  elsewhere is built as upstream ships it. The cURL and ssh2 hooks, `proc_open`, the
+  plain-files stream wrapper and the PDO drivers for PostgreSQL, SQLite, Firebird, Oracle
+  and ODBC are Rust crates, with C glue in `native/hooks` for the parts tied to PHP's
+  allocator and private layouts. The rest of our own C is shims, most of them in
+  `crates/zend-sys`, over the parts of PHP's C API that Rust can't call
   ([what stays C](docs/zend.md#what-stays-c)). TLS is OpenSSL, as it is upstream.
 - **Upstream's PHP tests pass wherever upstream passes them.** Every merge runs the pinned
   PHPTs on both builds with their original assertions, and fails a change that fails a
@@ -104,8 +104,9 @@ or putting an async runtime under Swoole's reactor (`deny.toml` bans them). The
 The target is the full PHP API of the pinned Swoole version. The upstream tests measure compatibility.
 
 - **Servers.** `Swoole\Server` over TCP, UDP and Unix sockets in base, process and thread
-  mode, `Swoole\Http\Server`, `Swoole\WebSocket\Server`, HTTP/2, task workers, static
-  files, TLS and DTLS, and the coroutine `Swoole\Coroutine\Http\Server`.
+  mode, `Swoole\Http\Server`, `Swoole\WebSocket\Server`, `Swoole\Redis\Server`, HTTP/2,
+  task workers, static files, TLS and DTLS, and the coroutine
+  `Swoole\Coroutine\Http\Server`.
 - **Coroutines.** The scheduler, `Coroutine\Channel`, `Coroutine\System`, and
   `Swoole\Runtime` hooks for streams, sockets, sleep, cURL and PDO.
 - **Clients.** `Swoole\Client`, `Coroutine\Client`, `Coroutine\Socket`,
@@ -136,7 +137,7 @@ Optional parts are build switches. Each of upstream's `configure` switches goes 
 
 | | Upstream Swoole | swoole-rs |
 | --- | --- | --- |
-| Language | C and C++ | Rust, plus the C and C++ that upstream bundles |
+| Language | C and C++ | Rust, with C and C++ glue over PHP's C API |
 | Build | `phpize`, `configure`, `make` | Cargo, through `tools/build_ext.py` |
 | PHP API | the reference | the same, generated from upstream's stubs (`tools/arginfo.py`) |
 | Upstream PHPTs | the reference | [![Upstream PHPTs passing](https://img.shields.io/endpoint?url=https%3A%2F%2Fraw.githubusercontent.com%2Fappwrite-labs%2Fswoole-rs%2Fbadges%2Fphpt.json)](https://github.com/appwrite-labs/swoole-rs/actions/workflows/merge.yml?query=branch%3Amain) |
@@ -193,7 +194,8 @@ version the build stands in for, and `swoole-rs`, its own version and commit.
 built by this repository's release workflow.
 
 A release binary is the default build plus the native cURL hook: TLS, HTTP/2, Brotli and
-zstd are in, and `zts` files add `Swoole\Thread`. The other switches in the
+zstd are in, and `zts` files add `Swoole\Thread`. The cURL hook needs PHP's curl
+extension, which the official images build in. The other switches in the
 [table above](#features) are not; build from source for those. The arm64 glibc files are
 built with profile-guided optimisation.
 
@@ -255,7 +257,7 @@ runs everything in `main`'s merge queue before a change lands and hourly on `mai
 
 - `crates/`: the Rust. `crates/ext` builds `swoole.so`, and `crates/zend` is the layer
   over PHP's C API.
-- `native/`: the bundled C, the C glue of the hooks, and the headers the Rust exports.
+- `native/`: the C glue of the hooks, and the headers the Rust exports.
 - `tests/`: each module's tests, the PHP-API differential fuzzer and the tools' own tests.
 - `fuzz/`: the codec fuzz targets, compared against upstream.
 - `tools/`: the build (`build_ext.py`, `build_upstream.py`), `dev.py` and `ci.py`.
@@ -267,7 +269,7 @@ runs everything in `main`'s merge queue before a change lands and hourly on `mai
 
 ## Licence
 
-[Apache-2.0](LICENSE), as upstream Swoole. Bundled PHP code retains the
+[Apache-2.0](LICENSE), as upstream Swoole. The code kept from PHP retains the
 [PHP License 3.01](native/swoole-src/thirdparty/LICENSE), and the Zend Engine file retains
 [Zend License 2.00](native/swoole-src/thirdparty/LICENSE-ZEND). [`NOTICE`](NOTICE) lists the attributions.
 
