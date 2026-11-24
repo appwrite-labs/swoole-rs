@@ -3,7 +3,7 @@ use super::*;
 use std::cell::RefCell;
 use std::io::Write;
 use std::os::fd::{AsRawFd, IntoRawFd};
-use swoole_rs_corebase::reactor::SocketRecord;
+use swoole_rs_corebase::reactor::{Descriptor, SocketRecord};
 
 #[derive(Default)]
 struct Mock {
@@ -20,6 +20,8 @@ struct Mock {
     /// The record `make_socket` allocated; the client releases it.
     socket: Option<core::ptr::NonNull<SocketRecord>>,
     fail_socket: bool,
+    /// The descriptor `make_socket` builds its record over; none is -1.
+    socket_fd: Option<c_int>,
     /// The last lookup `async_dispatch` took.
     lookup: Option<Lookup>,
     /// The records `free_socket` released, which tests still read: freed with the test.
@@ -56,9 +58,8 @@ pub(super) mod ops {
             set_errno(libc::EMFILE);
             return None;
         }
-        let mut record = SocketRecord::new();
+        let mut record = SocketRecord::over_fd(mock(|m| m.socket_fd).unwrap_or(-1));
         record.open_as(kind, swoole_rs_corebase::constants::SocketFlag::default());
-        record.forget_descriptor();
         let socket = swoole_rs_corebase::reactor::OwnedSocket::new(Box::new(record));
         mock(|m| m.socket = core::ptr::NonNull::new(socket.socket().as_ptr()));
         Some(socket)
@@ -330,7 +331,17 @@ fn new_client(kind: c_int, is_async: bool) -> *mut Client {
 /// A client of `kind`, its construction log dropped, listened to for every event
 /// with `callbacks`.
 fn client(kind: c_int, is_async: bool, callbacks: bool) -> *mut Client {
-    mock(|m| *m = Mock::default());
+    client_over(kind, is_async, callbacks, None)
+}
+
+/// [`client`] whose socket record is made over `fd`.
+fn client_over(kind: c_int, is_async: bool, callbacks: bool, fd: Option<c_int>) -> *mut Client {
+    mock(|m| {
+        *m = Mock {
+            socket_fd: fd,
+            ..Mock::default()
+        }
+    });
     log::set_last_error(0);
     let client = new_client(kind, is_async);
     if callbacks {
@@ -435,7 +446,7 @@ fn close_returns_zero_when_on_close_released_the_client() {
     Handle::raw(client).set(Flag::Active, true);
     mock(|m| m.releases = Some(ClientEvent::Close));
     assert!(close(Handle::raw(client)));
-    assert_eq!(sock().fd, -1);
+    assert_eq!(sock().descriptor(), Descriptor::Closed);
     free(client);
 }
 
@@ -780,7 +791,9 @@ fn datagram_sends_fail_with_sendto_and_dtls_sends_as_a_stream() {
 
 #[test]
 fn public_record_defaults_and_direct_framing_writes_drive_reads() {
-    let client = client(1, true, true);
+    let (mut peer, reader) = std::os::unix::net::UnixStream::pair().unwrap();
+    reader.set_nonblocking(true).unwrap();
+    let client = client_over(1, true, true, Some(reader.as_raw_fd()));
     let fields = Handle::raw(client).get().framing.record.as_ptr();
     unsafe {
         assert!(!(*fields).http2 && !(*fields).open_eof_check && !(*fields).open_length_check);
@@ -801,9 +814,6 @@ fn public_record_defaults_and_direct_framing_writes_drive_reads() {
         assert_eq!(Some(Handle::raw(client).socket().as_ptr()), made);
         assert!((*fields).object.is_null() && (*fields).buffer.is_null());
         Handle::raw(client).input_init();
-        let (mut peer, reader) = std::os::unix::net::UnixStream::pair().unwrap();
-        reader.set_nonblocking(true).unwrap();
-        sock().fd = reader.as_raw_fd();
         (*fields).protocol.get_package_length = Some(crate::framing_recv::default_length_func);
         (*fields).open_length_check = true;
         peer.write_all(&4u32.to_be_bytes()).unwrap();
@@ -822,14 +832,13 @@ fn public_record_defaults_and_direct_framing_writes_drive_reads() {
 
 #[test]
 fn failed_framed_read_closes_the_live_client() {
-    let client = client(1, true, true);
+    let (peer, reader) = std::os::unix::net::UnixStream::pair().unwrap();
+    let client = client_over(1, true, true, Some(reader.into_raw_fd()));
     let handle = Handle::raw(client);
     handle.input_init();
     handle
         .client()
         .edit_record(|record| record.open_length_check = true);
-    let (peer, reader) = std::os::unix::net::UnixStream::pair().unwrap();
-    sock().fd = reader.into_raw_fd();
     // A parallel fork can inherit the peer. Miri models close but not socketpair shutdown.
     if !cfg!(miri) {
         peer.shutdown(std::net::Shutdown::Write).unwrap();

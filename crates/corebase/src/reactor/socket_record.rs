@@ -756,6 +756,13 @@ impl SocketFields {
         }
     }
 
+    /// Where a registry keeps this socket: under its descriptor.
+    #[inline(always)]
+    #[must_use]
+    pub(crate) const fn registry_key(&self) -> crate::reactor::RegistryKey {
+        crate::reactor::RegistryKey::new(self.fd)
+    }
+
     /// Open and not taken off a reactor: upstream's test before `swoole_event_del`.
     #[inline]
     #[must_use]

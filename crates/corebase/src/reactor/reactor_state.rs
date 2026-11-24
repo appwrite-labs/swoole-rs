@@ -624,10 +624,11 @@ impl ReactorState {
         };
         let serial = self.serial;
         socket.edit(|record| {
+            let key = record.registry_key();
             match request {
                 Request::Add(added) => {
-                    let replaced = self.registry.get(record.fd);
-                    if !self.registry.put(record.fd, added, events) {
+                    let replaced = self.registry.entry(key);
+                    if !self.registry.put(key, added, events) {
                         return false;
                     }
                     // A socket whose fd closed unremoved is no longer this registry's.
@@ -640,12 +641,12 @@ impl ReactorState {
                 }
                 Request::Set(_) => {
                     record.events = events;
-                    self.registry.set(record.fd, events);
+                    self.registry.set(key, events);
                 }
                 Request::Del(deleted) => {
                     record.events = crate::reactor::Events::NONE;
                     record.removed = true;
-                    self.registry.remove(record.fd);
+                    self.registry.remove(key);
                     unmark(deleted, serial);
                 }
             }
@@ -663,7 +664,7 @@ impl ReactorState {
             .map(|(fd, ..)| fd)
             .collect();
         for fd in named {
-            self.registry.remove(fd);
+            self.registry.remove(crate::reactor::RegistryKey::new(fd));
         }
         socket.edit(|record| {
             record.events = crate::reactor::Events::NONE;

@@ -171,12 +171,12 @@ pub trait Vectored {
     /// at a time when the socket holds an SSL (upstream's `ssl_readv` and `ssl_writev`),
     /// advancing the vector past what moved.
     fn transfer(&mut self, socket: Socket<'_>) -> Option<usize> {
-        let (fd, ssl) = socket.read(|record| (record.fd, record.ssl()));
+        let (plain, ssl) = socket.read(|record| (record.plain(), record.ssl()));
         let calls = (
             |spare: &mut Spare<'_>| ssl_recv_spare(socket, spare),
             |data: Drain<'_>| ssl_send_drain(socket, data),
         );
-        self.io(Plain::Fd(fd), (!ssl.is_null()).then_some(&calls))
+        self.io(plain, (!ssl.is_null()).then_some(&calls))
     }
 }
 

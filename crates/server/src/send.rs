@@ -19,7 +19,7 @@ use swoole_rs_corebase::log::LogLevel::{
     SW_LOG_NOTICE as LOG_NOTICE, SW_LOG_TRACE as LOG_TRACE, SW_LOG_WARNING as LOG_WARNING,
 };
 use swoole_rs_corebase::reactor::{ChangeOp, Drain, Interest, Socket, count_write, steady_ms};
-use swoole_rs_corebase::reactor::{Events, SocketFields};
+use swoole_rs_corebase::reactor::{Events, SocketFields, SocketIo};
 use swoole_rs_corebase::{CCast, DataHead, log, microtime};
 use swoole_rs_error::ErrorCode as E;
 
@@ -93,7 +93,7 @@ pub fn send_parts(
         return None;
     }
     let parts = [IoSlice::new(head), IoSlice::new(body)];
-    let write = |fd| swoole_rs_corebase::tls::upstream::writev(fd, &parts);
+    let write = |io: SocketIo| io.writev(&parts);
     // A failed write sent nothing: all of it is queued, where the reactor meets the error.
     let (conn, sent) = write_now(state, session_id, write)?;
     let sent = sent.unwrap_or(0);
@@ -129,16 +129,15 @@ pub fn send_parts(
 fn write_now(
     state: &ServerState,
     session_id: core::ffi::c_long,
-    write: impl Fn(c_int) -> Option<usize>,
+    write: impl Fn(SocketIo) -> Option<usize>,
 ) -> Option<(Connection<'_>, Option<usize>)> {
     let conn = state.connection(session_id, Lookup::VerifiedTls)?;
     if conn.overflow() {
         return None;
     }
     let socket = conn.socket()?;
-    let (fd, dont_restart) =
-        socket.read(|s| s.may_write_directly().then_some((s.fd, s.dont_restart)))?;
-    let sent = count_write(*socket, dont_restart, || write(fd), steady_ms);
+    let io = socket.read(|s| s.may_write_directly().then(|| s.io()))?;
+    let sent = count_write(*socket, io.dont_restart(), || write(io), steady_ms);
     Some((conn, sent))
 }
 
@@ -152,7 +151,7 @@ fn send_now<'a>(
     data: &[u8],
 ) -> Option<(i64, Connection<'a>)> {
     let (conn, sent) = loop {
-        let (conn, sent) = write_now(state, session_id, |fd| Drain::new(data).send(fd, 0))?;
+        let (conn, sent) = write_now(state, session_id, |io| io.send(Drain::new(data), 0))?;
         if sent.is_some() || std::io::Error::last_os_error().raw_os_error() != Some(libc::EINTR) {
             break (conn, sent);
         }

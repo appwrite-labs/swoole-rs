@@ -7,7 +7,7 @@ use crate::constants::SW_BACKLOG;
 use crate::lent::Spare;
 use crate::net_types::AddressStorage;
 use crate::reactor::socket_rw::interrupted;
-use crate::reactor::{Drain, Socket, SocketAddress, SocketFields};
+use crate::reactor::{Drain, IoError, Socket, SocketAddress, SocketFields};
 use std::ffi::{CStr, c_int};
 
 /// `time<std::chrono::milliseconds>(true)`, from native code so the clock is the
@@ -431,6 +431,58 @@ impl SocketFields {
     pub fn framing_entry_flags(&self, paused: impl FnOnce() -> bool) -> u32 {
         use swoole_rs_framing::recv::FLAG_SKIP;
         self.framing_flags(paused) | if self.skip_recv { FLAG_SKIP } else { 0 }
+    }
+}
+
+impl SocketFields {
+    /// The descriptor and its retry policy, for I/O that runs once the record's borrow
+    /// ends: a wait that may run signal handlers, or a direct write whose count edits it.
+    #[inline(always)]
+    #[must_use]
+    pub const fn io(&self) -> SocketIo {
+        SocketIo {
+            fd: self.fd,
+            dont_restart: self.dont_restart,
+        }
+    }
+}
+
+/// A socket's descriptor taken out of its record's borrow for one I/O call, from
+/// [`SocketFields::io`]: only the calls themselves reach it.
+#[derive(Clone, Copy)]
+pub struct SocketIo {
+    fd: c_int,
+    dont_restart: bool,
+}
+
+impl SocketIo {
+    /// Whether an interrupted call fails instead of retrying (`dont_restart`).
+    #[inline(always)]
+    #[must_use]
+    pub const fn dont_restart(self) -> bool {
+        self.dont_restart
+    }
+
+    /// `Socket::wait_event`'s poll of the descriptor for `events`.
+    /// # Errors
+    /// The timeout or poll error, also recorded for the caller.
+    #[inline]
+    pub fn wait(self, timeout_ms: c_int, events: crate::reactor::Events) -> Result<(), IoError> {
+        crate::reactor::socket_upstream::wait_event(self.fd, self.dont_restart, timeout_ms, events)
+    }
+
+    /// send(2) of `data` with `flags`: how many bytes it sent, or None with errno set.
+    #[inline(always)]
+    #[must_use]
+    pub fn send(self, data: Drain<'_>, flags: c_int) -> Option<usize> {
+        data.send(self.fd, flags)
+    }
+
+    /// writev(2) of `vectors`: the bytes written, or None with errno set.
+    #[inline(always)]
+    #[must_use]
+    pub fn writev(self, vectors: &[std::io::IoSlice<'_>]) -> Option<usize> {
+        crate::sys::writev(self.fd, vectors)
     }
 }
 

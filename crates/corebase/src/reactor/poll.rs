@@ -96,8 +96,16 @@ mod tests {
     fn fills_within_its_room_and_stays_put() {
         let mut registry = Registry::default();
         let socket = crate::reactor::registry::tests::fake;
-        assert!(registry.put(3, socket(30), SW_EVENT_READ));
-        assert!(registry.put(4, socket(40), SW_EVENT_WRITE));
+        assert!(registry.put(
+            crate::reactor::RegistryKey::new(3),
+            socket(30),
+            SW_EVENT_READ
+        ));
+        assert!(registry.put(
+            crate::reactor::RegistryKey::new(4),
+            socket(40),
+            SW_EVENT_WRITE
+        ));
         let mut snapshot = PollSnapshot::new(1);
         let entries = snapshot.entries();
         assert_eq!(snapshot.fill(&registry), 1);

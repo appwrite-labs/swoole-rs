@@ -309,8 +309,7 @@ impl<'a> Socket<'a> {
     /// wait runs signal handlers that may reach other sockets.
     #[must_use]
     pub fn wait_event(self, timeout_ms: c_int, events: crate::reactor::Events) -> bool {
-        let (fd, dont_restart) = self.read(|record| (record.fd, record.dont_restart));
-        crate::reactor::socket_upstream::wait_event(fd, dont_restart, timeout_ms, events).is_ok()
+        self.read(SocketFields::io).wait(timeout_ms, events).is_ok()
     }
 }
 
@@ -634,8 +633,8 @@ fn deregister(socket: Socket<'_>, mark: u32) {
     let Some(reactor) = reactor.filter(|reactor| reactor.serial() == mark) else {
         crate::fatal("a socket was freed while registered with a reactor other than this thread's");
     };
-    let (fd, removed) = socket.read(|record| (record.fd, record.removed));
-    let registered = reactor.registry(|registry| registry.get(fd));
+    let (key, removed) = socket.read(|record| (record.registry_key(), record.removed));
+    let registered = reactor.registry(|registry| registry.entry(key));
     if !removed && registered.is_some_and(|entry| entry.as_ptr() == socket.as_ptr()) {
         socket.edit(|record| record.silent_remove = true);
         _ = crate::reactor::reactor_upstream::reactor_del(reactor, socket);
