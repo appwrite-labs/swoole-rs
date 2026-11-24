@@ -397,10 +397,10 @@ pub(crate) fn idle_timeout(serv: view::Server<'_>, reactor: Reactor, conn: Conne
         .port_by_server_fd(conn.server_fd())
         .map_or(0.0, |port| port.config().max_idle_time.get());
     let now = swoole_rs_corebase::reactor::steady_ms();
-    let (received, sent) = conn
+    let active = conn
         .socket()
-        .map_or_default(|s| s.read(|s| (s.last_received_time, s.last_sent_time)));
-    if now - received < idle && now - sent < idle {
+        .map_or_default(|s| s.read(|s| s.active_within(now, idle)));
+    if active {
         return;
     }
     if serv.config().disable_notify.get() || conn.closed().load(Relaxed) != 0 || conn.close_force()

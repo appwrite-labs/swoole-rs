@@ -84,9 +84,9 @@ fn read_as(prequeue: bool, serv: view::Server<'_>, reactor: Reactor, event: &mut
     let port = serv.port_by_server_fd(conn.server_fd());
     // A plain stream goes straight to its port reader. Only a datagram handler
     // or a TLS handshake can run before it and change the receive count.
-    let (datagram, secure, received) =
-        sock.read(|s| (s.is_dgram(), !s.ssl().is_null(), s.total_recv_bytes));
-    let last_recv_bytes = if datagram || secure {
+    let (datagram, secure, mark) =
+        sock.read(|s| (s.is_dgram(), !s.ssl().is_null(), s.receive_mark()));
+    let before = if datagram || secure {
         if let Some(config) = port.map(view::Port::config)
             && datagram
             && hybrid().dtls_read(config, *sock, fd)
@@ -103,9 +103,9 @@ fn read_as(prequeue: bool, serv: view::Server<'_>, reactor: Reactor, event: &mut
             Handshake::Wait => return true,
             Handshake::Ready | Handshake::Continue => {}
         }
-        sock.read(|s| s.total_recv_bytes)
+        sock.read(SocketFields::receive_mark)
     } else {
-        received
+        mark
     };
     let Some(port) = port else {
         return false;
@@ -117,8 +117,7 @@ fn read_as(prequeue: bool, serv: view::Server<'_>, reactor: Reactor, event: &mut
     // A readable event on the live connection of `fd`, of this server's port `port`.
     let retval = on_read(reactor.handle(), port, ReadEvent::new(serv, event, conn));
     // Upstream reads the socket after the read too.
-    let (total_recv_bytes, notified) = sock.read(|s| (s.total_recv_bytes, s.close_notified));
-    let received = total_recv_bytes.wrapping_sub(last_recv_bytes);
+    let (received, notified) = sock.read(|s| (s.received_since(before), s.close_notified));
     if received.cast_signed() > 0 {
         let received = received as u64;
         if let Some(gs) = port.config().counters() {

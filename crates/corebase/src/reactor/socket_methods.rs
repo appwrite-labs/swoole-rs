@@ -212,6 +212,17 @@ impl SocketFields {
     }
 }
 
+/// A point in a socket's receive count ([`SocketFields::receive_mark`]).
+#[derive(Clone, Copy)]
+pub struct ReceiveMark(usize);
+
+/// A socket's byte counts ([`SocketFields::traffic`]).
+#[derive(Clone, Copy)]
+pub struct Traffic {
+    pub received: u64,
+    pub sent: u64,
+}
+
 impl SocketFields {
     /// The record's fd, its blocking flags and whether it holds an `SSL`. Inlining lets
     /// each I/O operation load only the fields it uses under the single socket borrow.
@@ -223,6 +234,58 @@ impl SocketFields {
             self.dont_restart,
             !self.ssl().is_null(),
         )
+    }
+
+    /// Counts `bytes` received and, while an idle timer watches receives, restarts its
+    /// clock at `now()`.
+    #[inline(always)]
+    fn count_received(&mut self, bytes: usize, now: SteadyMs) {
+        self.total_recv_bytes += bytes;
+        if self.recv_timer.is_some() {
+            self.last_received_time = now();
+        }
+    }
+
+    /// Counts `bytes` sent and, while an idle timer watches sends, restarts its clock
+    /// at `now()`.
+    #[inline(always)]
+    fn count_sent(&mut self, bytes: usize, now: SteadyMs) {
+        self.total_send_bytes += bytes;
+        if self.send_timer().is_some() {
+            self.last_sent_time = now();
+        }
+    }
+
+    /// Where the receive count stands, for [`Self::received_since`] to measure from.
+    #[inline]
+    #[must_use]
+    pub const fn receive_mark(&self) -> ReceiveMark {
+        ReceiveMark(self.total_recv_bytes)
+    }
+
+    /// The bytes received since `mark` was taken.
+    #[inline]
+    #[must_use]
+    pub const fn received_since(&self, mark: ReceiveMark) -> usize {
+        self.total_recv_bytes.wrapping_sub(mark.0)
+    }
+
+    /// The bytes received and sent over the socket's life.
+    #[inline]
+    #[must_use]
+    pub const fn traffic(&self) -> Traffic {
+        Traffic {
+            received: self.total_recv_bytes as u64,
+            sent: self.total_send_bytes as u64,
+        }
+    }
+
+    /// Whether the socket received and sent within the `idle` milliseconds before
+    /// `now`.
+    #[inline]
+    #[must_use]
+    pub fn active_within(&self, now: f64, idle: f64) -> bool {
+        now - self.last_received_time < idle && now - self.last_sent_time < idle
     }
 }
 
@@ -274,14 +337,8 @@ pub fn record_recv(
             && socket.read(|record| record.event_hup))
         .then_some(0);
     };
-    if total != 0
-        && socket.edit(|record| {
-            record.total_recv_bytes += total;
-            record.recv_timer.is_some()
-        })
-    {
-        let time = now();
-        socket.edit(|record| record.last_received_time = time);
+    if total != 0 {
+        socket.edit(|record| record.count_received(total, now));
     }
     Some(total)
 }
@@ -332,14 +389,8 @@ pub fn count_write(
             break sent;
         }
     };
-    if let Some(sent @ 1..) = sent
-        && socket.edit(|record| {
-            record.total_send_bytes += sent;
-            record.send_timer().is_some()
-        })
-    {
-        let time = now();
-        socket.edit(|record| record.last_sent_time = time);
+    if let Some(sent @ 1..) = sent {
+        socket.edit(|record| record.count_sent(sent, now));
     }
     sent
 }

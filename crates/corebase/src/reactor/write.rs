@@ -226,10 +226,15 @@ impl SocketFields {
         self.output.send_timer
     }
 
-    /// Arms `timer` as the idle timer watching the socket's sends.
+    /// Watches the socket's sends for `idle` seconds of quiet from `now`: the write
+    /// timeout, the idle clock and, when given, `timer` as the send idle timer.
     #[inline]
-    pub fn arm_send_timer(&mut self, timer: crate::timer_key::Held) {
-        self.output.send_timer = Some(timer);
+    pub fn watch_send_idle(&mut self, idle: f64, timer: Option<crate::timer_key::Held>, now: f64) {
+        self.set_timeout(idle, crate::reactor::TimeoutKind::WRITE);
+        self.last_sent_time = now;
+        if let Some(timer) = timer {
+            self.output.send_timer = Some(timer);
+        }
     }
 
     /// The send idle timer, disarmed, for the caller to delete.
