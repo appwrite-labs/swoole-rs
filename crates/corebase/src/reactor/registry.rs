@@ -10,6 +10,19 @@ use std::ffi::{c_int, c_void};
 /// first (`OwnedSocket::into_box`), so every entry is live.
 type Sockets = Table<(Heap<'static>, crate::reactor::Events)>;
 
+/// A socket's place in the registry: its descriptor, from
+/// [`crate::reactor::SocketFields::registry_key`].
+#[derive(Clone, Copy)]
+pub struct RegistryKey(c_int);
+
+impl RegistryKey {
+    #[inline(always)]
+    #[must_use]
+    pub(crate) const fn new(fd: c_int) -> Self {
+        Self(fd)
+    }
+}
+
 #[derive(Default)]
 pub struct Registry {
     sockets: Sockets,
@@ -36,26 +49,33 @@ impl Registry {
             .map(|entry| entry.0)
     }
 
-    /// `Reactor::_add`/`_set`: maps `fd` to `socket` registered for `events`; false, leaving
-    /// the registry unchanged, if allocation fails or `fd` is negative.
+    /// [`Self::get`] at a socket's key.
+    #[inline]
+    #[must_use]
+    pub(crate) fn entry(&self, key: RegistryKey) -> Option<Heap<'static>> {
+        self.get(key.0)
+    }
+
+    /// `Reactor::_add`/`_set`: maps `key` to `socket` registered for `events`; false, leaving
+    /// the registry unchanged, if allocation fails or the key's fd is negative.
     pub(crate) fn put(
         &mut self,
-        fd: c_int,
+        RegistryKey(fd): RegistryKey,
         socket: Heap<'_>,
         events: crate::reactor::Events,
     ) -> bool {
         slot(fd).is_some_and(|fd| self.sockets.insert(fd, (socket.named(), events)).is_ok())
     }
 
-    /// `Reactor::_set`: the events `fd` is registered for, if it is.
-    pub(crate) fn set(&mut self, fd: c_int, events: crate::reactor::Events) {
+    /// `Reactor::_set`: the events `key` is registered for, if it is.
+    pub(crate) fn set(&mut self, RegistryKey(fd): RegistryKey, events: crate::reactor::Events) {
         if let Some(entry) = slot(fd).and_then(|fd| self.sockets.get_mut(fd)) {
             entry.1 = events;
         }
     }
 
-    /// `Reactor::_del`: forgets `fd`.
-    pub(crate) fn remove(&mut self, fd: c_int) {
+    /// `Reactor::_del`: forgets `key`.
+    pub(crate) fn remove(&mut self, RegistryKey(fd): RegistryKey) {
         if let Some(fd) = slot(fd) {
             self.sockets.remove(fd);
         }
@@ -112,13 +132,13 @@ pub(crate) mod tests {
         let at = |socket: Option<Heap<'static>>| socket.map(|socket| socket.as_ptr());
         assert_eq!(swr_v1_reactor_registry_count(None), 0);
         assert!(swr_v1_reactor_registry_get(None, 3).is_null());
-        assert!(registry.put(3, socket(30), SW_EVENT_READ));
-        assert!(registry.put(4, socket(40), SW_EVENT_WRITE));
-        assert!(registry.put(5, socket(50), SW_EVENT_READ | SW_EVENT_WRITE));
-        assert!(registry.put(4, socket(40), crate::reactor::Events::ERROR));
-        assert!(!registry.put(-1, socket(10), SW_EVENT_READ));
-        registry.remove(5);
-        registry.remove(9);
+        assert!(registry.put(RegistryKey(3), socket(30), SW_EVENT_READ));
+        assert!(registry.put(RegistryKey(4), socket(40), SW_EVENT_WRITE));
+        assert!(registry.put(RegistryKey(5), socket(50), SW_EVENT_READ | SW_EVENT_WRITE));
+        assert!(registry.put(RegistryKey(4), socket(40), crate::reactor::Events::ERROR));
+        assert!(!registry.put(RegistryKey(-1), socket(10), SW_EVENT_READ));
+        registry.remove(RegistryKey(5));
+        registry.remove(RegistryKey(9));
         assert_eq!(registry.count(), 2);
         assert_eq!(at(registry.get(4)), at(Some(socket(40))));
         assert!(registry.get(5).is_none());
@@ -128,7 +148,7 @@ pub(crate) mod tests {
             .map(|socket| socket.as_ptr())
             .collect();
         assert_eq!(sockets, [socket(30).as_ptr(), socket(40).as_ptr()]);
-        registry.set(3, SW_EVENT_WRITE);
+        registry.set(RegistryKey(3), SW_EVENT_WRITE);
         let registered: Vec<_> = registry
             .registered()
             .map(|(fd, socket, events)| (fd, socket.as_ptr() as usize, events))

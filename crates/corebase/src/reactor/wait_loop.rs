@@ -441,22 +441,20 @@ fn handle(ops: &Loop<'_>, event: &mut Event, kind: Table, fd_type: c_int) -> boo
     handler(ops.reactor, event)
 }
 
+/// What a ready socket's event names: poll's entry fd, else the socket's own, and its type.
+struct Ready {
+    fd: c_int,
+    fd_type: c_int,
+}
+
 impl crate::reactor::SocketFields {
-    /// The event for this ready socket (`socket`, its handle): over `fd`, poll's entry
-    /// fd, or this socket's own descriptor when that is -1.
+    /// [`Ready`] for this socket, which poll reported at `fd` (-1: its own).
     #[inline(always)]
-    const fn event(
-        &self,
-        fd: c_int,
-        reactor_id: i16,
-        socket: crate::reactor::Heap<'static>,
-    ) -> Event {
-        Event::of(
-            if fd < 0 { self.fd } else { fd },
-            reactor_id,
-            self.fd_type,
-            Some(socket),
-        )
+    const fn ready(&self, fd: c_int) -> Ready {
+        Ready {
+            fd: if fd < 0 { self.fd } else { fd },
+            fd_type: self.fd_type,
+        }
     }
 }
 
@@ -468,7 +466,8 @@ fn prepare(
     fd: c_int,
     hangup: bool,
 ) -> Event {
-    let event = socket.read(|record| record.event(fd, ops.reactor_id, socket));
+    let ready = socket.read(|record| record.ready(fd));
+    let event = Event::of(ready.fd, ops.reactor_id, ready.fd_type, Some(socket));
     if hangup {
         socket.edit(|record| record.event_hup = true);
     }
