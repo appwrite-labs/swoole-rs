@@ -172,7 +172,7 @@ pub(crate) struct State {
     /// reads its server's.
     pub(crate) compression_types: Option<Rc<HashSet<Box<[u8]>>>>,
     /// A coroutine server's WebSocket message being assembled from fragments.
-    pub(crate) ws_buffer: Option<Box<crate::websocket::Message>>,
+    pub(crate) ws_buffer: crate::websocket::Assembly,
 }
 
 /// `swoole::http::Response`.
