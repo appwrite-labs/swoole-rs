@@ -165,9 +165,10 @@ fn native_tls_effects_keep_the_session_and_settings_while_the_peer_is_pending() 
     ));
     assert!((effects.connect)(this, ConnectMode::Raw));
     let (_peer, _) = listener.accept().unwrap();
-    assert!(this.socket().edit(|record| {
-        swoole_rs_corebase::reactor::socket_upstream::socket_set_fd_option(record, 1, -1)
-    }));
+    assert!(
+        this.socket()
+            .edit(|record| { record.set_fd_option_or_warn(1, -1) })
+    );
     assert!(enable_ssl(this).is_some());
     let context = this.get().tls_context().unwrap().clone();
     assert!(

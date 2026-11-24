@@ -6,7 +6,6 @@
 //! Rust record and operations; no native code reads its fields.
 use crate::CCast;
 use crate::log;
-use crate::reactor::socket_upstream::socket_set_fd_option;
 use crate::reactor::{Heap, SOCKET_DEFAULTS, SocketRecord, TimeoutKind, set_socket_buffer_size};
 use crate::tls::event_socket::EventSocket;
 use crate::tls::upstream::{read_sync, write_sync};
@@ -141,7 +140,7 @@ pub fn set_timeout(this: &SocketPair, timeout: f64) {
 pub fn set_blocking(this: &mut SocketPair, blocking: bool) {
     let [master, worker] = ends(this);
     for socket in [worker, master].into_iter().flatten() {
-        socket.edit(|record| socket_set_fd_option(record, c_int::from(!blocking), -1));
+        socket.edit(|record| record.set_fd_option_or_warn(c_int::from(!blocking), -1));
     }
     this.blocking = blocking;
 }

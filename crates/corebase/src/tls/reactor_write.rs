@@ -7,7 +7,6 @@
 use crate::CCast;
 use crate::log;
 use crate::reactor::reactor_upstream::{interest, trigger_close_event};
-use crate::reactor::socket_upstream::socket_set_fd_option;
 use crate::reactor::{
     Drain, Event, FlushEffects, Heap, Interest, OwnedSocket, Running, SOCKET_DEFAULTS,
     WriteEffects, WriteError, WritePayload,
@@ -44,7 +43,7 @@ struct Flush<'a> {
 impl<F: Fn() -> Option<usize>> WriteEffects for Write<'_, F> {
     fn set_nonblock(&self) {
         self.socket
-            .edit(|record| socket_set_fd_option(record, 1, -1));
+            .edit(|record| record.set_fd_option_or_warn(1, -1));
     }
 
     fn send(&self) -> Option<usize> {

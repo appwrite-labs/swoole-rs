@@ -11,7 +11,6 @@ use swoole_rs_corebase::CCast;
 use swoole_rs_corebase::ServerEvent;
 use swoole_rs_corebase::constants::SocketType;
 use swoole_rs_corebase::log::LogLevel::{SW_LOG_ERROR, SW_LOG_TRACE, SW_LOG_WARNING};
-use swoole_rs_corebase::reactor::socket_upstream::socket_set_fd_option;
 use swoole_rs_corebase::utilities::swoole_hash;
 
 /// `DISPATCH_RESULT_USERFUNC_FALLBACK`.
@@ -444,7 +443,7 @@ fn import_sockets(
         }
         // The record `import` made: O_NONBLOCK and O_CLOEXEC.
         if let Some(socket) = port.listening_socket() {
-            socket.edit(|socket| socket_set_fd_option(socket, 1, 1));
+            socket.edit(|socket| socket.set_fd_option_or_warn(1, 1));
         }
         keep_port(serv, port);
         imported += 1;

@@ -212,18 +212,18 @@ impl SocketFields {
     }
 }
 
-/// The record's fd, its blocking flags and whether it holds an `SSL`. Inlining lets each
-/// I/O operation load only the fields it uses under the single socket borrow.
-#[inline(always)]
-fn io_of(socket: Socket<'_>) -> (c_int, bool, bool, bool) {
-    socket.read(|record| {
+impl SocketFields {
+    /// The record's fd, its blocking flags and whether it holds an `SSL`. Inlining lets
+    /// each I/O operation load only the fields it uses under the single socket borrow.
+    #[inline(always)]
+    fn io_view(&self) -> (c_int, bool, bool, bool) {
         (
-            record.fd,
-            record.is_nonblocking(),
-            record.dont_restart,
-            !record.ssl().is_null(),
+            self.fd,
+            self.is_nonblocking(),
+            self.dont_restart,
+            !self.ssl().is_null(),
         )
-    })
+    }
 }
 
 /// `Socket::recv`: recv(2), or `tls` reads until `buffer` is full when the socket is
@@ -239,7 +239,7 @@ pub fn record_recv(
     tls: impl Fn(Socket<'_>, &mut Spare<'_>) -> Option<usize>,
     now: SteadyMs,
 ) -> Option<usize> {
-    let (fd, nonblock, dont_restart, secure) = io_of(socket);
+    let (fd, nonblock, dont_restart, secure) = socket.read(SocketFields::io_view);
     let total = loop {
         let total = if secure {
             let (mut sum, mut total) = (0, Some(0));
@@ -296,7 +296,7 @@ pub fn record_send(
     tls: impl Fn(Socket<'_>, Drain<'_>) -> Option<usize>,
     now: SteadyMs,
 ) -> Option<usize> {
-    let (fd, _, dont_restart, secure) = io_of(socket);
+    let (fd, _, dont_restart, secure) = socket.read(SocketFields::io_view);
     let write = || {
         if secure {
             tls(socket, data)
@@ -313,7 +313,7 @@ pub fn record_write(
     write: impl Fn(c_int) -> Option<usize>,
     now: SteadyMs,
 ) -> Option<usize> {
-    let (fd, _, dont_restart, _) = io_of(socket);
+    let (fd, _, dont_restart, _) = socket.read(SocketFields::io_view);
     count_write(socket, dont_restart, || write(fd), now)
 }
 
@@ -352,7 +352,7 @@ pub fn record_peek(
     flags: c_int,
     tls: impl Fn(Socket<'_>, &mut Spare<'_>) -> Option<usize>,
 ) -> Option<usize> {
-    let (fd, _, _, secure) = io_of(socket);
+    let (fd, _, _, secure) = socket.read(SocketFields::io_view);
     loop {
         let peeked = if secure {
             tls(socket, buffer)

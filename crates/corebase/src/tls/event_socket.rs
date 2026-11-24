@@ -1,6 +1,6 @@
 //! A `Socket` record this owns, on the thread's reactor: `Swoole\Event`'s user
 //! sockets, a pipe's ends and an event waiter's watch.
-use crate::reactor::{Heap, OwnedSocket, Socket, SocketRecord, event_api, socket_upstream};
+use crate::reactor::{Heap, OwnedSocket, Socket, SocketRecord, event_api};
 use std::ffi::c_int;
 
 /// A heap record this owns until [`EventSocket::free`], lending it only for a borrow
@@ -20,7 +20,7 @@ impl EventSocket {
         let socket = Self::adopt(Box::new(SocketRecord::with_fd(fd, fd_type)));
         socket
             .socket()
-            .edit(|record| socket_upstream::socket_set_fd_option(record, 1, -1));
+            .edit(|record| record.set_fd_option_or_warn(1, -1));
         socket
     }
 

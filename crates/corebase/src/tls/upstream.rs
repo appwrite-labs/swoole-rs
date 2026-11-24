@@ -7,9 +7,7 @@ use crate::buffer::string::StringBuffer;
 use crate::constants::SocketFlag;
 use crate::lent::{Spare, lend_spare};
 use crate::net_address::{BAD_HOST_ADDR, assign, platform_parses};
-use crate::reactor::socket_upstream::{
-    make_typed, socket_cork, socket_make_nonblocking, socket_uncork,
-};
+use crate::reactor::socket_upstream::make_typed;
 use crate::reactor::{
     Drain, Events, Fill, OutputEffects, RangeError, Socket, SocketAddress, SocketFields,
     SocketFileRequest, SslSendfileWarning, SyncEffects, SyncMode, handle_send_owned, record_peek,
@@ -522,7 +520,7 @@ impl<S: ReadSlot> SyncEffects for Call<'_, '_, S> {
     /// and a write to a nonblocking plain socket only reads it.
     fn prepare(&self) {
         self.socket.edit(|record| {
-            socket_make_nonblocking(record);
+            record.make_nonblocking();
             if !record.ssl().is_null() {
                 swr_v1_socket_ssl_clear(&mut record.tls);
             }
@@ -798,11 +796,11 @@ pub fn sendfile_sync(
         return false;
     };
     let total = request.length();
-    let corked = total > CORK_MIN_SIZE && socket.edit(socket_cork);
+    let corked = total > CORK_MIN_SIZE && socket.edit(SocketFields::cork);
     let io = Io::Sendfile(&mut request, total);
     let rv = sync_out(socket, io, 0);
     if corked {
-        socket.edit(socket_uncork);
+        socket.edit(SocketFields::uncork);
     }
     rv.is_some()
 }
@@ -824,11 +822,11 @@ impl OutputEffects for Output<'_> {
     }
 
     fn cork(&self) -> bool {
-        self.0.edit(socket_cork)
+        self.0.edit(SocketFields::cork)
     }
 
     fn uncork(&self) {
-        self.0.edit(socket_uncork);
+        self.0.edit(SocketFields::uncork);
     }
 
     fn sent(&self) {

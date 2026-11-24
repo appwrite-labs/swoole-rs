@@ -264,7 +264,7 @@ impl Exchange for Wire<'_> {
     }
     fn cork(&self) {
         // An `extern "C"` fn is no closure.
-        let cork = swoole_rs_corebase::reactor::socket_upstream::socket_cork;
+        let cork = swoole_rs_corebase::reactor::SocketFields::cork;
         self.socket.edit(cork);
     }
     fn send(&self, kind: ServerEvent, data: &[u8]) {
