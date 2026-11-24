@@ -579,6 +579,14 @@ impl SocketFields {
         self.fd_type = fd_type;
     }
 
+    /// The socket's `SW_SOCK_*` type as a connection records and the server's stats
+    /// report it, known to `SocketType` or not.
+    #[inline]
+    #[must_use]
+    pub const fn type_code(&self) -> crate::constants::SocketTypeCode {
+        crate::constants::SocketTypeCode(self.socket_type)
+    }
+
     /// `Socket::is_stream`: TCP, TCP6 or a Unix stream.
     #[inline]
     #[must_use]
