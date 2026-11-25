@@ -359,14 +359,19 @@ impl<'a> Ssl<'a> {
         socket: Socket<'a>,
         read: impl FnOnce(&SocketFields) -> T,
     ) -> (Option<HeldSsl<'a>>, T) {
-        socket.read(|record| {
-            let held = NonNull::new(record.ssl().cast()).map(|ptr| {
-                // The record owns this reference throughout its read. Retain
-                // another before any callback or coroutine can close the slot.
-                assert_eq!(SSL_up_ref(Self(ptr, PhantomData)), 1, "SSL_up_ref failed");
-                HeldSsl(ptr, PhantomData)
-            });
-            (held, read(record))
+        socket.read(|record| (Self::retained(socket, record), read(record)))
+    }
+
+    /// [`Self::of`] inside a read of the socket that lent `record`, its fields: the
+    /// lease is bounded by that socket's lifetime.
+    /// # Panics
+    /// When OpenSSL cannot retain the live session reference.
+    pub(crate) fn retained(_socket: Socket<'a>, record: &SocketFields) -> Option<HeldSsl<'a>> {
+        NonNull::new(record.ssl().cast()).map(|ptr| {
+            // The record owns this reference throughout its read. Retain
+            // another before any callback or coroutine can close the slot.
+            assert_eq!(SSL_up_ref(Self(ptr, PhantomData)), 1, "SSL_up_ref failed");
+            HeldSsl(ptr, PhantomData)
         })
     }
 

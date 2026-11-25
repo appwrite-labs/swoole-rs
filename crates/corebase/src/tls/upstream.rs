@@ -77,32 +77,35 @@ impl SocketFields {
     /// One TLS step of `socket`'s session: `step` over a copy of its TLS group and what
     /// `pick` reads in the same borrow, then the group stored back. The step runs
     /// outside any borrow of the record, which OpenSSL's info callback reads meanwhile.
+    /// None when `pick` reads none.
     fn tls_step<P, R>(
         socket: Socket<'_>,
-        pick: impl FnOnce(&Self) -> P,
+        pick: impl FnOnce(&Self) -> Option<P>,
         step: impl FnOnce(&mut SocketTls, P) -> R,
-    ) -> R {
-        let (before, picked) = socket.read(|record| (record.tls, pick(record)));
+    ) -> Option<R> {
+        let (before, picked) = socket.read(|record| Some((record.tls, pick(record)?)))?;
         let mut tls = before;
         let result = step(&mut tls, picked);
         // Most transfers leave the group as it was, and then the record needs no edit.
         if tls != before {
             socket.edit(|record| record.tls = tls);
         }
-        result
+        Some(result)
     }
 }
 
-/// [`SocketFields::tls_step`] with the socket's SSL, held for the step: None without one.
+/// [`SocketFields::tls_step`] with the socket's SSL, retained in the same read as the
+/// TLS group and held for the step: None without one.
 fn with_tls<P, R>(
     socket: Socket<'_>,
     pick: impl FnOnce(&SocketFields) -> P,
     step: impl FnOnce(&mut SocketTls, Ssl, P) -> R,
 ) -> Option<R> {
-    let held = Ssl::of(socket)?;
-    Some(SocketFields::tls_step(socket, pick, |tls, picked| {
-        step(tls, held.get(), picked)
-    }))
+    SocketFields::tls_step(
+        socket,
+        |record| Some((Ssl::retained(socket, record)?, pick(record))),
+        |tls, (held, picked)| step(tls, held.get(), picked),
+    )
 }
 
 /// `Address::get_addr()` and `get_port()` of the socket's own address, as its logs print them.
