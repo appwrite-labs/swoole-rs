@@ -20,7 +20,7 @@ use swoole_rs_http2::frame_flag::{
 use swoole_rs_http2::{
     FrameAction, FrameType, GOAWAY_SIZE, HeaderKind, HeaderRole, Http2FrameFacts, Http2Settings,
     Http2WindowPlan, Media, PING_PAYLOAD, QueueAction, WINDOW_UPDATE_SIZE, decode_packet,
-    hpack::{self, Decoder, Encoder, Error},
+    hpack::{self, Decoder, Encoder, Error, MAX_DECODED_STRING},
     send_frame_size, sw_rs_http2_chunk, sw_rs_http2_default_settings, sw_rs_http2_header_plan,
     sw_rs_http2_headers_flags, sw_rs_http2_inflate_step, sw_rs_http2_media_kind,
     sw_rs_http2_pack_frame_header, sw_rs_http2_pack_settings, sw_rs_http2_queue_action,
@@ -454,7 +454,7 @@ impl Client {
             .set(swoole_rs_http2::INITIAL_CONNECTION_WINDOW);
         self.remote_window.set(remote.init_window_size);
         self.hpack.replace(Some((
-            Decoder::default(),
+            Decoder::new(MAX_DECODED_STRING),
             hpack::Field::default(),
             Encoder::new(self.local.header_table_size),
         )));

@@ -259,7 +259,7 @@ pub fn http2_hpack(bytes: &[u8]) {
         return;
     };
     let last = role & 2 == 0;
-    let decoder = swoole_rs_http2::hpack::Decoder::default();
+    let decoder = swoole_rs_http2::hpack::Decoder::new(swoole_rs_http2::hpack::MAX_DECODED_STRING);
     let mut field = swoole_rs_http2::hpack::Field::default();
     let mut inflater = std::ptr::null_mut();
     // SAFETY: `inflater` is a writable pointer.
