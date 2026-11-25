@@ -1287,7 +1287,7 @@ impl Client {
         true
     }
 
-    /// Upstream's send_yield PHPT buffers a 64 MiB uncompressed response.
+    /// Upstream's `send_yield` PHPT buffers a 64 MiB uncompressed response.
     fn buffered_body_limit(&self) -> usize {
         self.package_max_length.get().unwrap_or(64 * 1024 * 1024)
     }
