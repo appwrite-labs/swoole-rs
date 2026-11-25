@@ -95,8 +95,6 @@ pub mod reactor_upstream;
 #[cfg(unix)]
 pub mod readiness;
 #[cfg(unix)]
-pub mod signal_upstream;
-#[cfg(unix)]
 pub mod socket_upstream;
 
 mod iov_progress;

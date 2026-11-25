@@ -315,42 +315,17 @@ fn kqueue(ops: &Loop<'_>, event: &libc::kevent) {
     target_os = "dragonfly"
 ))]
 mod kqueue_signal {
-    use super::{c_int, log};
+    use super::c_int;
 
-    /// `SW_LOG_WARNING`, `SW_ERROR_UNREGISTERED_SIGNAL` and `SW_ERROR_EVENT_UNKNOWN_DATA`.
+    /// `SW_LOG_WARNING` and `SW_ERROR_EVENT_UNKNOWN_DATA`.
     pub(super) use crate::log::LogLevel::SW_LOG_WARNING as LOG_WARNING;
-    const UNREGISTERED_SIGNAL: c_int =
-        swoole_rs_error::ErrorCode::SW_ERROR_UNREGISTERED_SIGNAL as c_int;
     pub(super) const EVENT_UNKNOWN_DATA: c_int =
         swoole_rs_error::ErrorCode::SW_ERROR_EVENT_UNKNOWN_DATA as c_int;
 
-    /// `ReactorKqueue::wait`'s signal entry for `signo`: its registration is read before
-    /// its handler, which may register another, runs.
+    /// `ReactorKqueue::wait`'s signal entry for `signo`, which the signal layer handles.
     pub(super) fn dispatch_signal(signo: c_int) {
-        dispatch(signo, crate::process::signal::signal_activated(signo));
-    }
-
-    /// An activated signal (`Some` handler) runs its handler unless that is `SIG_IGN`,
-    /// and warns when it has none.
-    pub(super) fn dispatch(signo: c_int, activated: Option<crate::process::signal::Handler>) {
-        let Some(handler) = activated else {
-            return;
-        };
-        match handler {
-            crate::process::signal::Handler::NONE => {
-                let name = crate::process::signal::signal_name(signo);
-                let name = name.as_cstr();
-                log::error_log(
-                    LOG_WARNING,
-                    UNREGISTERED_SIGNAL,
-                    c"ReactorKqueue::wait",
-                    format_args!(
-                        "Unable to find callback function for signal {}",
-                        name.to_string_lossy()
-                    ),
-                );
-            }
-            handler => handler.call(signo),
+        if let Some(signals) = crate::reactor::callbacks::signals() {
+            (signals.kqueue)(signo);
         }
     }
 }
@@ -652,34 +627,5 @@ mod tests {
             libc::close(fds[1]);
         }
         (EFFECTS.with(|effects| effects.borrow().clone()), removed)
-    }
-
-    /// kqueue's signal entry: inactive does nothing, no handler warns, `SIG_IGN` is skipped,
-    /// any other handler runs with the signal number.
-    #[test]
-    #[cfg(any(
-        target_os = "macos",
-        target_os = "freebsd",
-        target_os = "openbsd",
-        target_os = "netbsd",
-        target_os = "dragonfly"
-    ))]
-    fn signal_entries_run_their_handler_as_upstreams_kqueue_wait() {
-        use crate::process::signal::Handler;
-        static SEEN: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(0);
-        extern "C" fn handler(signo: c_int) {
-            SEEN.store(signo, std::sync::atomic::Ordering::SeqCst);
-        }
-        let handler = Handler::new(handler);
-        for (activated, seen) in [
-            (None, 0),
-            (Some(Handler::NONE), 0),
-            (Some(Handler::IGNORE), 0),
-            (Some(handler), libc::SIGUSR1),
-        ] {
-            SEEN.store(0, std::sync::atomic::Ordering::SeqCst);
-            kqueue_signal::dispatch(libc::SIGUSR1, activated);
-            assert_eq!(SEEN.load(std::sync::atomic::Ordering::SeqCst), seen);
-        }
     }
 }

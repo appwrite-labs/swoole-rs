@@ -474,7 +474,7 @@ upstream's `std_allocator.malloc` hook did (the Rust pool doesn't allocate throu
 | `os.daemon` | `os.daemon` |
 
 `core-tests/src/os/signal.cpp` is Rust in `system/src/signal.rs`, run by
-`hooks-system-rust`. The cases call `corebase::reactor`'s `signal_upstream` (`set`,
+`hooks-system-rust`. The cases call `corebase::process`'s `signal_upstream` (`set`,
 `_callback`, `_get_handler`, `_get_listener_num`, `_clear`) and corebase::process's `signal`
 (the sigaction form of `swoole_signal_set`, `_dispatch`, `_isset`,
 `_unblock_all`, `_to_str`), corebase's `signal_block_all` and

@@ -7,7 +7,7 @@ use crate::{
 use std::ffi::c_int;
 use swoole_rs_zend::{Call, E_ERROR, E_WARNING, Owned, bailout, message};
 
-use swoole_rs_corebase::reactor::signal_upstream::{self, Handler};
+use swoole_rs_corebase::process::signal_upstream::{self, Handler};
 
 /// `SwooleG.signal_listener_num += delta`.
 fn listeners(delta: i32) {

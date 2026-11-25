@@ -2,9 +2,8 @@
 
 use crate::locks::SharedMutex;
 use crate::process::process_pool::IpcMode;
+use crate::reactor::Heap;
 use core::cell::Cell;
-use core::marker::PhantomData;
-use core::ptr::NonNull;
 use core::sync::atomic::{
     AtomicBool, AtomicI32, AtomicI64, AtomicPtr, AtomicU8, AtomicU32, Ordering,
 };
@@ -69,32 +68,6 @@ impl WorkerType {
     #[must_use]
     pub const fn code(self) -> u8 {
         self as u8
-    }
-}
-
-/// A native socket record this crate keeps for its owner, lent for `'a`. Only the
-/// fields whose writers vouch for them are lent as one: a worker's pipe ends (the
-/// unsafe [`Worker::set_pipes`], or copies of them, such as a hook's socket). So the
-/// record is live for `'a`, and `corebase::reactor` takes one as its `Socket`.
-#[derive(Clone, Copy)]
-pub struct NativeSocket<'a> {
-    raw: NonNull<c_void>,
-    life: PhantomData<&'a c_void>,
-}
-
-impl NativeSocket<'_> {
-    /// One of the vouched-for fields above, or `None` while it is null.
-    pub(crate) fn lend(raw: *mut c_void) -> Option<Self> {
-        Some(Self {
-            raw: NonNull::new(raw)?,
-            life: PhantomData,
-        })
-    }
-
-    /// The record's address.
-    #[must_use]
-    pub fn as_non_null(self) -> NonNull<c_void> {
-        self.raw
     }
 }
 
@@ -509,8 +482,8 @@ impl<'a> Worker<'a> {
     /// The `end` of the worker's pipe, or `None` while it has none: live for the
     /// handle, as the record's invariant has it.
     #[must_use]
-    pub fn pipe(self, end: PipeEnd) -> Option<NativeSocket<'a>> {
-        NativeSocket::lend(match end {
+    pub fn pipe(self, end: PipeEnd) -> Option<Heap<'a>> {
+        Heap::lend(match end {
             PipeEnd::Master => self.pipe_master(),
             PipeEnd::Worker => self.pipe_worker(),
             PipeEnd::Current => self.pipe_current(),
@@ -714,7 +687,7 @@ pub fn copy_for_process<'a>(
     pool: crate::process::process_pool::PoolRef<'a>,
     id: usize,
     copy: &mut WorkerRecord,
-) -> Option<NativeSocket<'a>> {
+) -> Option<Heap<'a>> {
     let pool = pool.record();
     // Copied by value, as upstream's `new Worker(...)` does.
     let from = pool.worker(id)?;
@@ -731,7 +704,7 @@ pub fn copy_for_process<'a>(
         *worker.pipe_current.get_mut() = current;
         worker.pipe_object.set(null);
         // A unix-socket pool's worker pipes are live sockets (the record's invariant).
-        pipe = NativeSocket::lend(current);
+        pipe = Heap::lend(current);
     }
     if pool.has_message_bus() {
         *worker.pipe_current.get_mut() = null;
@@ -759,9 +732,9 @@ mod tests {
     use super::*;
 
     /// The fd a test's pipe end points at.
-    fn fd(pipe: NativeSocket<'_>) -> c_int {
+    fn fd(pipe: Heap<'_>) -> c_int {
         // SAFETY: the tests' pipe ends point at their fd array.
-        unsafe { pipe.as_non_null().cast::<c_int>().read() }
+        unsafe { pipe.as_ptr().cast::<c_int>().read() }
     }
 
     #[test]

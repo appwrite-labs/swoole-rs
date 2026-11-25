@@ -1,6 +1,6 @@
 //! `src/os/signal.cc`'s kqueue path (BSD and macOS): registering a signal as an
 //! `EVFILT_SIGNAL` event on the reactor's kqueue, with the table slot as its
-//! `udata` for the reactor to dispatch, and clearing every registered one.
+//! `udata` for the reactor to dispatch, dispatching one, and clearing every registered one.
 use std::ffi::c_int;
 use std::sync::atomic::Ordering::Relaxed;
 
@@ -66,9 +66,59 @@ pub fn signal_kqueue_clear(kq: c_int, available: bool) {
     crate::process::signal::signal_reset();
 }
 
+/// `ReactorKqueue::wait`'s signal entry for `signo`: its registration is read before
+/// its handler, which may register another, runs.
+pub(crate) fn signal_kqueue_dispatch(signo: c_int) {
+    dispatch(signo, crate::process::signal::signal_activated(signo));
+}
+
+/// An activated signal (`Some` handler) runs its handler unless that is `SIG_IGN`,
+/// and warns when it has none.
+fn dispatch(signo: c_int, activated: Option<Handler>) {
+    let Some(handler) = activated else {
+        return;
+    };
+    match handler {
+        Handler::NONE => {
+            let name = crate::process::signal::signal_name(signo);
+            crate::log::error_log(
+                crate::log::LogLevel::SW_LOG_WARNING,
+                swoole_rs_error::ErrorCode::SW_ERROR_UNREGISTERED_SIGNAL as c_int,
+                c"ReactorKqueue::wait",
+                format_args!(
+                    "Unable to find callback function for signal {}",
+                    name.as_cstr().to_string_lossy()
+                ),
+            );
+        }
+        handler => handler.call(signo),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// kqueue's signal entry: inactive does nothing, no handler warns, `SIG_IGN` is skipped,
+    /// any other handler runs with the signal number.
+    #[test]
+    fn signal_entries_run_their_handler_as_upstreams_kqueue_wait() {
+        static SEEN: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(0);
+        extern "C" fn handler(signo: c_int) {
+            SEEN.store(signo, std::sync::atomic::Ordering::SeqCst);
+        }
+        let handler = Handler::new(handler);
+        for (activated, seen) in [
+            (None, 0),
+            (Some(Handler::NONE), 0),
+            (Some(Handler::IGNORE), 0),
+            (Some(handler), libc::SIGUSR1),
+        ] {
+            SEEN.store(0, std::sync::atomic::Ordering::SeqCst);
+            dispatch(libc::SIGUSR1, activated);
+            assert_eq!(SEEN.load(std::sync::atomic::Ordering::SeqCst), seen);
+        }
+    }
 
     #[test]
     fn a_signal_is_registered_on_the_kqueue_and_cleared() {

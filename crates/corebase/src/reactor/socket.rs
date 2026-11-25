@@ -317,7 +317,7 @@ impl<'a> Socket<'a> {
 /// A [`Socket`] a reactor may register: a heap record whose one free is
 /// [`OwnedSocket`]'s, which first deletes it from the reactor that registered it, or a
 /// record never freed. So a registry may name it past `'a`: no entry outlives its
-/// record. Only an owner ([`OwnedSocket::heap`]), a worker's pipe ([`Heap::lent`]), the
+/// record. Only an owner ([`OwnedSocket::heap`]), a worker's pipe ([`Heap::lend`]), the
 /// registry and C++, whose records `delete` frees through an owner, make one, and tests'
 /// fixtures (feature `test-records`); a record on a frame ([`Socket::new`]) has none.
 #[derive(Clone, Copy)]
@@ -325,14 +325,16 @@ impl<'a> Socket<'a> {
 pub struct Heap<'a>(Socket<'a>);
 
 impl<'a> Heap<'a> {
-    /// The pipe end `corebase::process` lends for `'a`, a worker's pipe whose writer vouched
-    /// for it: a live heap record of this crate's, which its owner frees.
+    /// A pipe end `corebase::process` lends for `'a`, or `None` while it is null. Only the
+    /// fields whose writers vouch for them are lent as one: a worker's pipe ends (the
+    /// unsafe `Worker::set_pipes`, or copies of them, such as a hook's socket). So the
+    /// record is a live heap record of this crate's, which its owner frees.
     #[must_use]
-    pub fn lent(native: crate::process::worker_record::NativeSocket<'a>) -> Self {
-        Self(Socket {
-            record: native.as_non_null().cast(),
+    pub(crate) fn lend(raw: *mut std::ffi::c_void) -> Option<Self> {
+        Some(Self(Socket {
+            record: NonNull::new(raw)?.cast(),
             _live: PhantomData,
-        })
+        }))
     }
 
     /// A test fixture's record with no owner: live until the test frees it, through
