@@ -20,6 +20,18 @@ const INIT: [u32; 5] = [
 /// Compute the 20-byte SHA-1 digest of `data`.
 #[must_use]
 pub fn digest(data: &[u8]) -> [u8; 20] {
+    digest_with_suffix(data, b"")
+}
+
+/// Hash the full input followed by a fixed suffix that fits beside the final
+/// partial block and padding in two SHA-1 blocks.
+pub(super) fn digest_with_suffix<const N: usize>(data: &[u8], suffix: &[u8; N]) -> [u8; 20] {
+    const {
+        assert!(
+            N <= 56,
+            "SHA-1 suffix and padding must fit in two final blocks"
+        );
+    }
     let mut h = INIT;
     let mut schedule = [0u32; 80];
 
@@ -32,16 +44,17 @@ pub fn digest(data: &[u8]) -> [u8; 20] {
     // length. It spills into a second block when the remainder leaves no room.
     let bit_len = u64::try_from(data.len())
         .unwrap_or(u64::MAX)
+        .wrapping_add(N as u64)
         .wrapping_mul(8);
     let mut tail = [[0u8; 64]; 2];
     for (slot, &byte) in tail
         .as_flattened_mut()
         .iter_mut()
-        .zip(rest.iter().chain(&[0x80]))
+        .zip(rest.iter().chain(suffix).chain(&[0x80]))
     {
         *slot = byte;
     }
-    let used = if rest.len() < 56 { 1 } else { 2 };
+    let used = if rest.len() + N < 56 { 1 } else { 2 };
     if let Some(length) = tail
         .get_mut(used - 1)
         .and_then(|block| block.last_chunk_mut())
