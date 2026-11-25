@@ -10,6 +10,7 @@ use std::{
 };
 use swoole_rs_corebase::CCast;
 use swoole_rs_corebase::CellExt;
+use swoole_rs_corebase::buffer::BoundedBytes;
 use swoole_rs_corebase::constants::HTTP2_PREFACE;
 use swoole_rs_corebase::reactor::Events;
 use swoole_rs_hooks::{co_socket::Co, packet::recv_packet, socket_extra::set_close_hook};
@@ -28,7 +29,7 @@ use swoole_rs_http2::{
     sw_rs_http2_stream_flags, sw_rs_http2_stream_update, sw_rs_http2_window_plan,
     sw_rs_http2_write_allowed,
 };
-use swoole_rs_inflate::Inflate;
+use swoole_rs_inflate::{DecodeError, Inflate};
 use swoole_rs_phphttp::http2::{IdMap, entries};
 use swoole_rs_phpstubs::http2_client_coro;
 use swoole_rs_zend::{
@@ -137,9 +138,9 @@ impl Conn {
 
 struct Stream {
     flags: u32,
-    buffer: Vec<u8>,
+    /// None while draining a response that exceeded its limit.
+    buffer: Option<BoundedBytes>,
     gzip: Option<Inflate>,
-    discard_body: bool,
     response: Response,
     remote_window: u32,
     local_window: u32,
@@ -731,9 +732,8 @@ impl Client {
     fn create_stream(&self, id: u32, flags: u32) {
         let stream = Stream {
             flags,
-            buffer: Vec::new(),
+            buffer: Some(BoundedBytes::new(self.decoded_body_limit.get(), 0)),
             gzip: None,
-            discard_body: false,
             response: Response::new(id),
             remote_window: self.remote.get().init_window_size,
             local_window: self.local.init_window_size,
@@ -962,14 +962,14 @@ impl Client {
         }
         let ready = self.streams.with_taken(|streams| {
             let stream = streams.get_mut(&id)?;
-            if stream.discard_body {
+            let Some(buffer) = &mut stream.buffer else {
                 if facts.flags & FLAG_END_STREAM != 0
                     && matches!(facts.action, FrameAction::Data | FrameAction::Headers)
                 {
                     streams.remove(&id);
                 }
                 return None;
-            }
+            };
             let plan = sw_rs_http2_response(facts.action, facts.flags, stream.flags, pipeline_read);
             if !plan.ready {
                 return None;
@@ -982,11 +982,11 @@ impl Client {
                     // A reset deletes its stream above, so upstream's stream_error is 0 here.
                     response.own().long(c"errCode", 0);
                 }
-                if !stream.buffer.is_empty() {
-                    response.bytes(c"data", &stream.buffer);
+                if !buffer.as_ref().is_empty() {
+                    response.bytes(c"data", buffer.as_ref());
                 }
             }
-            stream.buffer.clear();
+            buffer.clear();
             // The return value takes the stream's response; a pipeline stream
             // goes on with a fresh one.
             Some(if plan.end {
@@ -1064,22 +1064,20 @@ impl Client {
         }
         stream.local_window = window(stream.local_window, payload.len(), 0, false).value;
         let credit = window(stream.local_window, 0, self.local.init_window_size, false);
-        if !stream.discard_body {
-            let bytes = if let Some(gzip) = &mut stream.gzip {
-                match gzip.decode(payload) {
-                    Ok(bytes) => bytes,
-                    Err(swoole_rs_inflate::DecodeError::Limit(limit)) => {
-                        stream.discard_body = true;
-                        stream.gzip = None;
-                        stream.buffer = Vec::new();
-                        return Buffered::Limit(limit, credit);
-                    }
-                    Err(_) => return Buffered::Failed,
-                }
-            } else {
-                payload
+        if let Some(buffer) = &mut stream.buffer {
+            let bytes = match &mut stream.gzip {
+                Some(gzip) => gzip.decode(payload),
+                None => Ok(payload),
             };
-            stream.buffer.extend_from_slice(bytes);
+            match bytes.and_then(|bytes| buffer.append(bytes).map_err(DecodeError::Limit)) {
+                Ok(()) => {}
+                Err(DecodeError::Limit(limit)) => {
+                    stream.buffer = None;
+                    stream.gzip = None;
+                    return Buffered::Limit(limit, credit);
+                }
+                Err(DecodeError::Codec(_)) => return Buffered::Failed,
+            }
         }
         Buffered::Window(credit)
     }
@@ -1201,10 +1199,12 @@ impl Client {
                 } else {
                     if kind == HeaderKind::ContentEncoding && media_kind(text) == Media::Gzip {
                         self.streams.with_taken(|streams| {
-                            if let Some(stream) = streams.get_mut(&id) {
-                                stream.gzip.get_or_insert_with(|| {
-                                    Inflate::gzip_only(self.decoded_body_limit.get())
-                                });
+                            if let Some(stream) = streams.get_mut(&id)
+                                && let Some(buffer) = &stream.buffer
+                            {
+                                stream
+                                    .gzip
+                                    .get_or_insert_with(|| Inflate::gzip_only(buffer.limit()));
                             }
                         });
                     } else if kind == HeaderKind::SetCookie {
