@@ -7,6 +7,7 @@ use std::mem;
 pub use typed::{Detached as TypedDetached, Front as TypedFront, Kind as EntryKind};
 
 /// Contiguous peer input with a byte limit fixed at construction.
+#[derive(Debug)]
 pub struct BoundedBytes {
     bytes: Vec<u8>,
     limit: usize,
