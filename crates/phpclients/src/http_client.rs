@@ -428,7 +428,7 @@ impl Client {
             compress: Cell::new(Compress::None),
             compression_error: Cell::new(false),
             // The largest response in upstream's compression_with_big_data PHPT.
-            decoded_body_limit: Cell::new(32 * 1024 * 1024),
+            decoded_body_limit: Cell::new(swoole_rs_inflate::DEFAULT_BODY_LIMIT),
             decoder: Cell::default(),
             connection_close: Cell::new(false),
             event_stream: Cell::new(false),
@@ -1284,9 +1284,10 @@ impl Client {
         if decoder.is_none() {
             let compress = self.compress.get();
             let made = match compress {
-                Compress::Gzip | Compress::Deflate => {
-                    Ok(Decoder::Zlib(Inflate::new(compress == Compress::Gzip)))
-                }
+                Compress::Gzip | Compress::Deflate => Ok(Decoder::Zlib(Inflate::new(
+                    compress == Compress::Gzip,
+                    self.decoded_body_limit.get(),
+                ))),
                 Compress::Br => {
                     brotli::Decoder::new(self.decoded_body_limit.get()).map(Decoder::Brotli)
                 }
@@ -1307,9 +1308,7 @@ impl Client {
             }
         }
         let output = match decoder.as_mut() {
-            Some(Decoder::Zlib(inflate)) => inflate.decode(input).ok_or_else(|| {
-                DecodeError::Codec("HttpClient::decompress_response failed".to_owned())
-            }),
+            Some(Decoder::Zlib(inflate)) => inflate.decode(input),
             Some(Decoder::Brotli(decoder)) => decoder.decode(input),
             Some(Decoder::Zstd(decoder)) => decoder.decode(input),
             None => return Ok(false),

@@ -194,7 +194,20 @@ impl Stream {
     /// One `inflate(flush)` or `deflate(flush)` into `out`'s spare capacity, appending
     /// what it wrote; `input` advances past what it read.
     pub fn run_into(&mut self, input: &mut &[u8], out: &mut Vec<u8>, flush: c_int) -> Step {
+        self.run_into_limited(input, out, flush, out.capacity() - out.len())
+    }
+
+    /// As [`Self::run_into`], lending at most `maximum` spare bytes to zlib.
+    pub fn run_into_limited(
+        &mut self,
+        input: &mut &[u8],
+        out: &mut Vec<u8>,
+        flush: c_int,
+        maximum: usize,
+    ) -> Step {
         let spare = out.spare_capacity_mut();
+        let size = spare.len().min(maximum);
+        let (spare, _) = spare.split_at_mut(size);
         let (avail_in, avail_out) = (room(input.len()), room(spare.len()));
         let call = if self.deflate { deflate } else { inflate };
         let status = call(Lent::new(&mut self.z, input, spare), flush);
