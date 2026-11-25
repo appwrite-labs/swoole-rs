@@ -52,7 +52,7 @@ const BOUNDARY: &[u8] = b"--WebKitFormBoundaryeGOz80A8JnaO6kuw";
 
 /// `create_parser()`.
 fn create_parser() -> MultipartParser {
-    MultipartParser::new(BOUNDARY)
+    MultipartParser::new(BOUNDARY).unwrap()
 }
 
 fn len(data: &[u8]) -> isize {
@@ -299,4 +299,15 @@ fn data() {
     assert_eq!(data[..result.data.len()], result.data, "part data");
     assert!(result.header_complete, "headers complete");
     assert!(result.body_end, "body end");
+}
+
+#[test]
+fn boundary_length_includes_both_leading_dashes() {
+    let boundary = [b'b'; 253];
+    let parser = MultipartParser::new(&boundary).unwrap();
+    assert_eq!(
+        parser.boundary().split_at(2),
+        (b"--".as_slice(), boundary.as_slice())
+    );
+    assert!(MultipartParser::new(&[b'b'; 254]).is_none());
 }
