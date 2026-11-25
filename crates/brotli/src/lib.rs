@@ -135,7 +135,7 @@ pub fn compress(input: &[u8], quality: i32) -> Option<Vec<u8>> {
 pub enum DecodeError {
     /// The response exceeded its configured decoded byte limit.
     Limit(usize),
-    /// libbrotli's diagnostic for malformed input.
+    /// The codec's diagnostic for malformed input.
     Codec(String),
 }
 

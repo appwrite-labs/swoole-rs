@@ -7,7 +7,7 @@
 
 pub mod zstd;
 
-pub use swoole_rs_brotli as brotli;
+pub use swoole_rs_brotli::{self as brotli, DecodeError};
 
 use std::ffi::c_int;
 

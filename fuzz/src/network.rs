@@ -429,8 +429,8 @@ pub fn http_inflate(bytes: &[u8]) {
 /// An HTTP client's Brotli or zstd response body (the first byte's low bit), compressed
 /// at the level its other bits pick, through `Client::decompress_response`'s decoder in
 /// the chunks the second byte counts, gives the body back. The body as it is decodes
-/// without a panic in chunks of at most 16 bytes, until one fails or the output passes
-/// 16 MiB: a few bytes of Brotli can expand to 16 MiB, so it is never fed whole.
+/// in chunks of at most 16 bytes with a decoded limit of the input length or 16 MiB,
+/// whichever is smaller.
 pub fn http_decompress(bytes: &[u8]) {
     use swoole_rs_inflate::{brotli, zstd};
     let Some((&[mode, count], rest)) = bytes.split_first_chunk::<2>() else {
@@ -440,7 +440,7 @@ pub fn http_decompress(bytes: &[u8]) {
     let level = i32::from(mode >> 1);
     if mode & 1 == 0 {
         let stream = brotli::compress(body, level % 12).expect("BrotliEncoderCompress");
-        let new = || brotli::Decoder::new(body.len()).expect("BrotliDecoderCreateInstance");
+        let new = |limit| brotli::Decoder::new(limit).expect("BrotliDecoderCreateInstance");
         round_trip(
             new,
             |decoder, chunk| decoder.decode(chunk).ok(),
@@ -451,7 +451,7 @@ pub fn http_decompress(bytes: &[u8]) {
     } else {
         // -3 to 19: zstd's fast levels and all but its slowest ultra ones.
         let stream = zstd::compress(body, level % 23 - 3).expect("ZSTD_compress");
-        let new = || zstd::Decoder::new().expect("ZSTD_initDStream");
+        let new = |limit| zstd::Decoder::new(limit).expect("ZSTD_initDStream");
         round_trip(
             new,
             |decoder, chunk| decoder.decode(chunk).ok(),
@@ -464,22 +464,20 @@ pub fn http_decompress(bytes: &[u8]) {
 
 /// `http_decompress` for one decoder: `body` in small chunks, then `stream` in `lengths`.
 fn round_trip<D>(
-    new: impl Fn() -> D,
+    new: impl Fn(usize) -> D,
     decode: impl for<'a> Fn(&'a mut D, &[u8]) -> Option<&'a [u8]>,
     body: &[u8],
     stream: &[u8],
     lengths: &[u8],
 ) {
-    let mut decoder = new();
-    let mut produced = 0;
+    let mut decoder = new(body.len().min(1 << 24));
     for chunk in body.chunks(lengths.first().map_or(16, |&n| usize::from(n % 16) + 1)) {
-        match decode(&mut decoder, chunk) {
-            Some(out) if produced + out.len() <= 1 << 24 => produced += out.len(),
-            _ => break,
+        if decode(&mut decoder, chunk).is_none() {
+            break;
         }
     }
     assert_eq!(
-        in_chunks(new(), decode, stream, lengths).as_deref(),
+        in_chunks(new(body.len()), decode, stream, lengths).as_deref(),
         Some(body),
         "{stream:?} in {lengths:?}"
     );
