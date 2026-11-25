@@ -602,6 +602,7 @@ name = "swoole-rs-inflate"
 version = "0.1.0"
 dependencies = [
  "swoole-rs-brotli",
+ "swoole-rs-corebase",
  "swoole-rs-zlib",
  "zstd",
 ]
