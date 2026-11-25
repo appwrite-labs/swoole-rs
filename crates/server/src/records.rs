@@ -2,7 +2,7 @@
 use core::cell::Cell;
 use core::ffi::{c_int, c_void};
 use core::sync::atomic::{
-    AtomicBool, AtomicU32,
+    AtomicBool, AtomicU8, AtomicU32,
     Ordering::{Acquire, Relaxed},
 };
 use swoole_rs_corebase::constants::SocketTypeCode;
@@ -43,8 +43,9 @@ pub struct ConnectionRecord {
     pub websocket_compression: Cell<bool>,
     pub protect: Cell<bool>,
     /// The close flags, a bit each ([`CloseFlag`]): packed so the record stays a power
-    /// of two bytes.
-    close_flags: Cell<u8>,
+    /// of two bytes, and atomic so a worker's write and a reactor's to the same shared
+    /// slot can't undo each other's bit.
+    close_flags: AtomicU8,
     pub reactor_id: Cell<u8>,
     pub close_errno: Cell<u16>,
     pub recv_queued_bytes: AtomicU32,
@@ -138,7 +139,7 @@ impl ConnectionRecord {
         ] {
             flag.set(false);
         }
-        self.close_flags.set(0);
+        self.close_flags.store(0, Relaxed);
         self.reactor_id.set(0);
         self.close_errno.set(0);
         self.recv_queued_bytes.store(0, Relaxed);
@@ -244,12 +245,15 @@ macro_rules! field {
     (close $get:ident, $set:ident: $bit:ident) => {
         #[must_use]
         pub fn $get(self) -> bool {
-            self.record.close_flags.get() & CloseFlag::$bit != 0
+            self.record.close_flags.load(Relaxed) & CloseFlag::$bit != 0
         }
 
         pub fn $set(self, value: bool) {
-            let flags = self.record.close_flags.get() & !CloseFlag::$bit;
-            self.record.close_flags.set(flags | if value { CloseFlag::$bit } else { 0 });
+            if value {
+                self.record.close_flags.fetch_or(CloseFlag::$bit, Relaxed);
+            } else {
+                self.record.close_flags.fetch_and(!CloseFlag::$bit, Relaxed);
+            }
         }
     };
     (atomic $field:ident: $ty:ty) => {
