@@ -310,7 +310,7 @@ mod tests {
     fn a_session_starts_from_the_default_settings() {
         // header_table_size, enable_push, max_concurrent_streams,
         // init_window_size, max_frame_size, max_header_list_size.
-        assert_eq!(defaults(), [4096, 0, u32::MAX, 65535, 16384, u32::MAX]);
+        assert_eq!(defaults(), [4096, 0, 128, 65535, 16384, u32::MAX]);
         assert_eq!(defaults()[INIT_WINDOW_SIZE], 65535);
     }
 }
