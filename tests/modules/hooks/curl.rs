@@ -21,7 +21,7 @@ mod recording {
     use super::{LOOP, Multi, log};
     use std::ffi::{c_long, c_void};
     use std::{cell::Cell, ptr};
-    use swoole_rs_corebase::reactor::SocketFields;
+    use swoole_rs_corebase::reactor::{ChangeOp, SocketFields};
     use swoole_rs_corebase::tls::event_socket::EventSocket;
 
     pub(super) static OPS: crate::host::Ops = crate::host::Ops {
@@ -33,15 +33,16 @@ mod recording {
         },
         socket_add: |socket, events| {
             log(format!("add {events}"));
-            socket.socket().edit(|record| {
-                record.events = events;
-                record.note_joined_reactor();
-            });
+            socket
+                .socket()
+                .edit(|record| record.note_change(ChangeOp::Add, events));
             true
         },
         socket_set: |socket, events| {
             log(format!("set {events}"));
-            socket.socket().edit(|record| record.events = events);
+            socket
+                .socket()
+                .edit(|record| record.note_change(ChangeOp::Set, events));
             true
         },
         socket_del: |socket| {
@@ -356,7 +357,7 @@ fn freeing_a_native_watch_preserves_the_curl_owned_descriptor() {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let socket = host::ReactorSocket::new(listener.as_raw_fd(), &host::NATIVE);
     assert!(socket.removed());
-    assert!(socket.events().is_empty());
+    assert!(!socket.has_interest());
     socket.free();
     socket.free();
     assert!(listener.local_addr().is_ok(), "curl still owns the fd");

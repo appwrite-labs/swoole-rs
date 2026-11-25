@@ -617,7 +617,7 @@ impl ReactorState {
         request: crate::reactor::change::Request<'_>,
         events: crate::reactor::Events,
     ) -> bool {
-        use crate::reactor::change::Request;
+        use crate::reactor::change::{ChangeOp, Request};
         let socket = match request {
             Request::Add(socket) | Request::Set(socket) => *socket,
             Request::Del(socket) => socket,
@@ -636,15 +636,14 @@ impl ReactorState {
                         unmark(*replaced, serial);
                     }
                     added.mark().store(serial, Ordering::Relaxed);
-                    record.events = events;
-                    record.note_joined_reactor();
+                    record.note_change(ChangeOp::Add, events);
                 }
                 Request::Set(_) => {
-                    record.events = events;
+                    record.note_change(ChangeOp::Set, events);
                     self.registry.set(key, events);
                 }
                 Request::Del(deleted) => {
-                    record.note_deregistered();
+                    record.note_change(ChangeOp::Del, events);
                     self.registry.remove(key);
                     unmark(deleted, serial);
                 }
