@@ -400,17 +400,17 @@ pub fn http_inflate(bytes: &[u8]) {
     };
     let decoder = || {
         if gzip && mode & 4 != 0 {
-            Inflate::gzip_only()
+            Inflate::gzip_only(body.len())
         } else {
-            Inflate::new(gzip)
+            Inflate::new(gzip, body.len())
         }
     };
     let _ = decoder().decode(body);
-    let _ = in_chunks(decoder(), Inflate::decode, body, lengths);
+    let _ = in_chunks(decoder(), |decoder, chunk| decoder.decode(chunk).ok(), body, lengths);
     let level = c_int::from(mode >> 3) % 10;
     let stream = swoole_rs_deflate::compress(body, 2 * body.len() + 64, window_bits, level)
         .unwrap_or_else(|failure| panic!("compress {window_bits} at {level}: {failure:?}"));
-    assert_eq!(decoder().decode(&stream), Some(body), "one call");
+    assert_eq!(decoder().decode(&stream), Ok(body), "one call");
     // The raw retry is the first chunk's alone: a raw stream whose first two bytes
     // read as a zlib header, or whose first chunk is shorter, fails in pieces.
     if window_bits < 0
@@ -420,7 +420,7 @@ pub fn http_inflate(bytes: &[u8]) {
         return;
     }
     assert_eq!(
-        in_chunks(decoder(), Inflate::decode, &stream, lengths).as_deref(),
+        in_chunks(decoder(), |decoder, chunk| decoder.decode(chunk).ok(), &stream, lengths).as_deref(),
         Some(body),
         "chunks {lengths:?}"
     );

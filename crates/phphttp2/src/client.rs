@@ -139,6 +139,7 @@ struct Stream {
     flags: u32,
     buffer: Vec<u8>,
     gzip: Option<Inflate>,
+    discard_body: bool,
     response: Response,
     remote_window: u32,
     local_window: u32,
@@ -195,6 +196,7 @@ enum Buffered {
     Nothing,
     /// The body did not decompress.
     Failed,
+    Limit(usize, Http2WindowPlan),
     /// Buffered: the stream's window plan.
     Window(Http2WindowPlan),
 }
@@ -218,6 +220,7 @@ struct Client {
     stream_id: Cell<u32>,
     last_stream_id: Cell<u32>,
     local: Http2Settings,
+    decoded_body_limit: Cell<usize>,
     remote: Cell<Http2Settings>,
     remote_window: Cell<u32>,
     local_window: Cell<u32>,
@@ -235,10 +238,14 @@ fn strerror(code: c_int) -> String {
 }
 
 /// `php_swoole_socket_set` when `settings` is an array.
-fn apply(socket: Co, settings: &Value) {
+fn apply(socket: Co, settings: &Value, decoded_body_limit: &Cell<usize>) {
     if let Some(settings) = settings.array() {
         // Every setting.
-        swoole_rs_phpclients::socket_set(socket, settings);
+        if swoole_rs_phpclients::socket_set(socket, settings)
+            && settings.get(b"package_max_length").is_some()
+        {
+            decoded_body_limit.set(socket.protocol().package_max_length as usize);
+        }
     }
 }
 
@@ -335,6 +342,7 @@ impl Client {
             stream_id: Cell::new(0),
             last_stream_id: Cell::new(0),
             local,
+            decoded_body_limit: Cell::new(swoole_rs_inflate::DEFAULT_BODY_LIMIT),
             remote: Cell::default(),
             remote_window: Cell::new(0),
             local_window: Cell::default(),
@@ -438,7 +446,7 @@ impl Client {
         if let Some(this) = self.conn.this()
             && let Some(setting) = this.property(c"setting")
         {
-            apply(socket, &setting);
+            apply(socket, &setting, &self.decoded_body_limit);
         }
         if swoole_rs_zend::bailout::pending() {
             return false;
@@ -725,6 +733,7 @@ impl Client {
             flags,
             buffer: Vec::new(),
             gzip: None,
+            discard_body: false,
             response: Response::new(id),
             remote_window: self.remote.get().init_window_size,
             local_window: self.local.init_window_size,
@@ -938,11 +947,29 @@ impl Client {
                 if let Err(frame) = self.open_windows(id, length, buffered) {
                     return frame;
                 }
+                if let Buffered::Limit(limit, _) = buffered {
+                    if facts.flags & FLAG_END_STREAM != 0 {
+                        self.streams.with_taken(|streams| streams.remove(&id));
+                    }
+                    self.update_error(
+                        swoole_rs_error::ErrorCode::SW_ERROR_PACKAGE_LENGTH_TOO_LARGE as c_int,
+                        format!("decoded response exceeds {limit} bytes").as_bytes(),
+                    );
+                    return Frame::Fail;
+                }
             }
             _ => {}
         }
         let ready = self.streams.with_taken(|streams| {
             let stream = streams.get_mut(&id)?;
+            if stream.discard_body {
+                if facts.flags & FLAG_END_STREAM != 0
+                    && matches!(facts.action, FrameAction::Data | FrameAction::Headers)
+                {
+                    streams.remove(&id);
+                }
+                return None;
+            }
             let plan = sw_rs_http2_response(facts.action, facts.flags, stream.flags, pipeline_read);
             if !plan.ready {
                 return None;
@@ -1035,23 +1062,26 @@ impl Client {
         if payload.is_empty() {
             return Buffered::Nothing;
         }
-        let buffered = if let Some(gzip) = &mut stream.gzip {
-            gzip.decode(payload)
-                .map(|output| stream.buffer.extend_from_slice(output))
-        } else {
-            stream.buffer.extend_from_slice(payload);
-            Some(())
-        };
-        if buffered.is_none() {
-            return Buffered::Failed;
-        }
         stream.local_window = window(stream.local_window, payload.len(), 0, false).value;
-        Buffered::Window(window(
-            stream.local_window,
-            0,
-            self.local.init_window_size,
-            false,
-        ))
+        let credit = window(stream.local_window, 0, self.local.init_window_size, false);
+        if !stream.discard_body {
+            let bytes = if let Some(gzip) = &mut stream.gzip {
+                match gzip.decode(payload) {
+                    Ok(bytes) => bytes,
+                    Err(swoole_rs_inflate::DecodeError::Limit(limit)) => {
+                        stream.discard_body = true;
+                        stream.gzip = None;
+                        stream.buffer = Vec::new();
+                        return Buffered::Limit(limit, credit);
+                    }
+                    Err(_) => return Buffered::Failed,
+                }
+            } else {
+                payload
+            };
+            stream.buffer.extend_from_slice(bytes);
+        }
+        Buffered::Window(credit)
     }
 
     /// The window updates a buffered DATA frame of `length` bytes calls for.
@@ -1066,7 +1096,7 @@ impl Client {
                 );
                 return Err(Frame::Fail);
             }
-            Buffered::Window(window) => window,
+            Buffered::Window(window) | Buffered::Limit(_, window) => window,
         };
         let connection = window(self.local_window.get(), length, initial, false);
         self.local_window.set(connection.value);
@@ -1172,7 +1202,9 @@ impl Client {
                     if kind == HeaderKind::ContentEncoding && media_kind(text) == Media::Gzip {
                         self.streams.with_taken(|streams| {
                             if let Some(stream) = streams.get_mut(&id) {
-                                stream.gzip = Some(Inflate::gzip_only());
+                                stream.gzip.get_or_insert_with(|| {
+                                    Inflate::gzip_only(self.decoded_body_limit.get())
+                                });
                             }
                         });
                     } else if kind == HeaderKind::SetCookie {
@@ -1434,7 +1466,7 @@ fn set(call: &Call) {
         props.merge(c"setting", settings);
     }
     if let Some(socket) = client.socket() {
-        apply(socket, settings);
+        apply(socket, settings, &client.decoded_body_limit);
     }
     call.set_bool(true);
 }

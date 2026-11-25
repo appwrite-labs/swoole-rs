@@ -17,7 +17,8 @@ use swoole_rs_zlib::{
     Z_SYNC_FLUSH,
 };
 
-const OUT_GROW: usize = 16384;
+/// Default decoded HTTP response body limit, covering the largest upstream compression PHPT.
+pub const DEFAULT_BODY_LIMIT: usize = 32 * 1024 * 1024;
 
 /// A per-response gzip/deflate inflate stream. `out` holds the bytes produced by
 /// the most recent chunk; the caller copies them into its body buffer.
@@ -25,35 +26,21 @@ pub struct Inflate {
     stream: Option<Stream>,
     first_chunk: bool,
     gzip: bool,
+    limit: usize,
+    remaining: usize,
     out: Vec<u8>,
-}
-
-/// Inflate all of `input` into `out`, or the zlib error status. Mirrors the
-/// pinned `Z_SYNC_FLUSH` loop.
-fn run(stream: &mut Stream, mut input: &[u8], out: &mut Vec<u8>) -> Result<(), c_int> {
-    out.clear();
-    loop {
-        if out.len() == out.capacity() {
-            out.reserve(OUT_GROW);
-        }
-        let step = stream.run_into(&mut input, out, Z_SYNC_FLUSH);
-        if step.status == Z_STREAM_END || (step.status == Z_OK && input.is_empty()) {
-            return Ok(());
-        }
-        if step.status != Z_OK {
-            return Err(step.status);
-        }
-    }
 }
 
 impl Inflate {
     /// A gzip (or deflate) response decompressor.
     #[must_use]
-    pub fn new(gzip: bool) -> Self {
+    pub fn new(gzip: bool, limit: usize) -> Self {
         Self {
             stream: None,
             first_chunk: true,
             gzip,
+            limit,
+            remaining: limit,
             out: Vec::new(),
         }
     }
@@ -61,20 +48,21 @@ impl Inflate {
     /// A gzip-only decompressor (`inflateInit2(MAX_WBITS + 16)`), which never
     /// falls back to raw deflate: the HTTP/2 client's.
     #[must_use]
-    pub fn gzip_only() -> Self {
-        let mut inflate = Self::new(true);
+    pub fn gzip_only(limit: usize) -> Self {
+        let mut inflate = Self::new(true, limit);
         inflate.first_chunk = false;
         inflate
     }
 
-    /// Inflate one body chunk: the bytes it produced, or None on an empty
-    /// input or a decompression error, as the pinned method.
-    pub fn decode(&mut self, input: &[u8]) -> Option<&[u8]> {
-        (!input.is_empty() && self.chunk(input)).then_some(&self.out[..])
-    }
-
-    fn chunk(&mut self, input: &[u8]) -> bool {
-        let first = self.first_chunk;
+    /// Inflate one body chunk within the response's remaining budget.
+    /// # Errors
+    /// Returns the configured limit on overflow or a codec error on empty or malformed input.
+    pub fn decode(&mut self, input: &[u8]) -> Result<&[u8], DecodeError> {
+        let codec_error =
+            || DecodeError::Codec("HttpClient::decompress_response failed".to_owned());
+        if input.is_empty() {
+            return Err(codec_error());
+        }
         if self.stream.is_none() {
             let encoding = if self.gzip {
                 ENCODING_GZIP
@@ -83,19 +71,26 @@ impl Inflate {
             };
             self.stream = Stream::inflate(encoding).ok();
         }
-        let Some(stream) = self.stream.as_mut() else {
-            return false;
-        };
-        let status = run(stream, input, &mut self.out);
-        self.first_chunk = false;
+        let stream = self.stream.as_mut().ok_or_else(codec_error)?;
+        let mut result = run(stream, input, &mut self.out, self.remaining);
         // Upstream retries a first-chunk data error as raw deflate (no zlib header).
-        if status == Err(Z_DATA_ERROR) && first {
-            self.stream = None;
+        if std::mem::take(&mut self.first_chunk)
+            && result == Err(MessageFailure::Inflate(Z_DATA_ERROR))
+        {
             self.stream = Stream::inflate(ENCODING_RAW).ok();
-            return (self.stream.as_mut())
-                .is_some_and(|raw| run(raw, input, &mut self.out).is_ok());
+            result = run(
+                self.stream.as_mut().ok_or_else(codec_error)?,
+                input,
+                &mut self.out,
+                self.remaining,
+            );
         }
-        status.is_ok()
+        result.map_err(|err| match err {
+            MessageFailure::Limit(_) => DecodeError::Limit(self.limit),
+            _ => codec_error(),
+        })?;
+        self.remaining -= self.out.len();
+        Ok(&self.out)
     }
 }
 
@@ -114,21 +109,36 @@ pub enum MessageFailure {
 ///
 /// # Errors
 /// Returns the configured limit on overflow or the zlib status on a codec error.
-pub fn message(mut input: &[u8], max: usize) -> Result<Vec<u8>, MessageFailure> {
+pub fn message(input: &[u8], max: usize) -> Result<Vec<u8>, MessageFailure> {
     let mut stream = Stream::inflate(ENCODING_RAW).map_err(MessageFailure::Init)?;
+    let mut out = Vec::new();
+    run(&mut stream, input, &mut out, max)?;
+    Ok(out)
+}
+
+fn run(
+    stream: &mut Stream,
+    mut input: &[u8],
+    out: &mut Vec<u8>,
+    max: usize,
+) -> Result<(), MessageFailure> {
+    out.clear();
     let ceiling = max.saturating_add(1);
-    let mut out = Vec::with_capacity(input.len().saturating_add(1024).min(ceiling));
+    if out.capacity() == 0 {
+        out.reserve_exact(input.len().saturating_add(1024).min(ceiling));
+    }
     loop {
-        let step = stream.run_into(&mut input, &mut out, Z_SYNC_FLUSH);
+        let room = (ceiling.min(out.capacity()) - out.len()).min(u32::MAX as usize);
+        let step = stream.run_into_limited(&mut input, out, Z_SYNC_FLUSH, room);
         if out.len() > max {
             return Err(MessageFailure::Limit(max));
         }
         if step.status == Z_STREAM_END
             || (input.is_empty()
-                && (step.status == Z_OK && out.len() < out.capacity()
+                && (step.status == Z_OK && step.written < room
                     || step.status == swoole_rs_zlib::Z_BUF_ERROR && !out.is_empty()))
         {
-            return Ok(out);
+            return Ok(());
         }
         if step.status != Z_OK {
             return Err(MessageFailure::Inflate(step.status));
@@ -154,7 +164,10 @@ mod tests {
     }
 
     fn inflate_all(gzip: bool, compressed: &[u8]) -> Option<Vec<u8>> {
-        Inflate::new(gzip).decode(compressed).map(<[u8]>::to_vec)
+        Inflate::new(gzip, DEFAULT_BODY_LIMIT)
+            .decode(compressed)
+            .ok()
+            .map(<[u8]>::to_vec)
     }
 
     #[test]
@@ -186,7 +199,14 @@ mod tests {
     fn chunked_input_reassembles() {
         let payload = b"chunk boundaries must not corrupt the inflate stream".repeat(8);
         let compressed = deflate(&payload, 31);
-        let mut inflate = Inflate::new(true);
+        let mut inflate = Inflate::new(true, payload.len());
+        let mut bounded = Inflate::new(true, payload.len() - 1);
+        assert_eq!(
+            compressed
+                .chunks(7)
+                .try_for_each(|part| bounded.decode(part).map(|_| ())),
+            Err(DecodeError::Limit(payload.len() - 1))
+        );
         let mut got = Vec::new();
         for piece in compressed.chunks(7) {
             got.extend_from_slice(inflate.decode(piece).expect("chunk inflates"));
