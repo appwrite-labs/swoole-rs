@@ -385,23 +385,6 @@ impl SocketFields {
         }
     }
 
-    /// What upstream's coroutine `Socket::add_event` asks of [`apply`] to also wait for
-    /// `event`: `None` when the socket is registered for it already, an add of `event`
-    /// alone when it is out of the reactor, else a set of its events and `event`.
-    #[must_use]
-    pub const fn add_event_change(&self, event: Events) -> Option<(ChangeOp, Events)> {
-        if self.events.intersects(event) {
-            None
-        } else if self.removed {
-            Some((ChangeOp::Add, event))
-        } else {
-            Some((
-                ChangeOp::Set,
-                Events::from_bits(self.events.bits() | event.bits()),
-            ))
-        }
-    }
-
     /// What a `Reactor` interest helper asks of [`apply`], as upstream decides
     /// from the socket's events: the op and its events, or `None` when nothing changes.
     pub(crate) fn interest_change(

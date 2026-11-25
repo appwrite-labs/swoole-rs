@@ -58,7 +58,6 @@ field-leak swoole_rs_corebase::reactor::reactor_state::ReactorState::registry
 field-leak swoole_rs_corebase::reactor::reactor_state::ReactorState::running_defer
 field-leak swoole_rs_corebase::reactor::socket::SocketMarks::reactor
 field-leak swoole_rs_corebase::reactor::socket_record::SocketFields::fd
-field-leak swoole_rs_corebase::reactor::socket_record::SocketFields::kernel_nobufs
 field-leak swoole_rs_corebase::reactor::socket_record::SocketFields::owner
 field-leak swoole_rs_corebase::reactor::socket_record::SocketFields::recv_buffer
 field-leak swoole_rs_corebase::reactor::socket_record::SocketFields::tls
