@@ -17,6 +17,7 @@ use std::{
 };
 use swoole_rs_corebase::CCast;
 use swoole_rs_corebase::CellExt;
+use swoole_rs_corebase::buffer::BoundedBytes;
 use swoole_rs_corebase::reactor::{Events, SocketFields};
 use swoole_rs_http::llhttp::{self, Callbacks, EndOfInput, Flow, Parser};
 use swoole_rs_http::status::{BAD_GATEWAY, NO_CONTENT, SERVICE_UNAVAILABLE, SWITCHING_PROTOCOLS};
@@ -145,7 +146,7 @@ struct Client {
     /// The last response's status, which `exec` and `upgrade` read.
     status: Cell<u16>,
     wait_response: Cell<bool>,
-    body: Cell<Vec<u8>>,
+    body: Cell<BoundedBytes>,
     compress: Cell<Compress>,
     compression_error: Cell<bool>,
     decoded_body_limit: Cell<usize>,
@@ -171,6 +172,7 @@ struct Hooks<'a> {
     client: &'a Client,
     /// The client object's properties, found once for the response.
     props: Props<'a>,
+    body_limit_hit: Option<usize>,
 }
 
 /// One parse call's callbacks: the response's hooks and the header name they
@@ -204,7 +206,13 @@ impl<'i> Callbacks<'i> for Spans<'_, '_, 'i> {
     }
 
     fn on_body(&mut self, data: &[u8]) -> Flow {
-        on_body(self.hooks.client, data)
+        match on_body(self.hooks.client, data) {
+            Ok(flow) => flow,
+            Err(limit) => {
+                self.hooks.body_limit_hit = Some(limit);
+                Flow::Fail
+            }
+        }
     }
 
     fn on_message_complete(&mut self) -> Flow {
@@ -424,7 +432,7 @@ impl Client {
             resolve: Rc::default(),
             status: Cell::new(0),
             wait_response: Cell::new(false),
-            body: Cell::default(),
+            body: Cell::new(BoundedBytes::new(0, 0)),
             compress: Cell::new(Compress::None),
             compression_error: Cell::new(false),
             // The largest response in upstream's compression_with_big_data PHPT.
@@ -562,11 +570,6 @@ impl Client {
         if self.co().is_some() {
             return true;
         }
-        self.body.with_taken(|body| {
-            if body.capacity() == 0 {
-                body.reserve(BODY_SIZE);
-            }
-        });
         let zsocket = match native::swoole_http_client_coro_create_socket(self.socket_type) {
             Ok(zsocket) => zsocket,
             Err(error) => {
@@ -652,7 +655,14 @@ impl Client {
         };
         socket.check_bound(Events::WRITE);
         swoole_rs_corebase::log::set_last_error(0);
-        self.body.with_taken(Vec::clear);
+        self.with_body(|body| {
+            let limit = self.decoded_body_limit.get();
+            if body.limit() == limit {
+                body.clear();
+            } else {
+                *body = BoundedBytes::new(limit, BODY_SIZE);
+            }
+        });
 
         let method = not_null(props, c"requestMethod");
         let headers_value = property(props, c"requestHeaders");
@@ -984,6 +994,7 @@ impl Client {
             parser,
             client: self,
             props: self.props(),
+            body_limit_hit: None,
         };
         let timeout = if timeout == 0.0 {
             self.response_timeout.get()
@@ -1031,6 +1042,13 @@ impl Client {
                 .with_net(|net| net.read(SocketFields::close_deferred))
                 .unwrap_or(false)
             {
+                break false;
+            }
+            if let Some(limit) = hooks.body_limit_hit {
+                socket.set_error(
+                    swoole_rs_error::ErrorCode::SW_ERROR_PACKAGE_LENGTH_TOO_LARGE as c_int,
+                    format!("response body exceeds {limit} bytes").as_bytes(),
+                );
                 break false;
             }
             if hooks.parser.error != llhttp::HPE_OK {
@@ -1270,6 +1288,16 @@ impl Client {
         true
     }
 
+    /// Temporarily move the response buffer out while PHP callbacks or file I/O can re-enter.
+    fn with_body<R>(&self, f: impl FnOnce(&mut BoundedBytes) -> R) -> R {
+        let mut body = self
+            .body
+            .replace(BoundedBytes::new(self.decoded_body_limit.get(), 0));
+        let result = f(&mut body);
+        self.body.set(body);
+        result
+    }
+
     /// `decompress_response`: decode a body chunk onto `body`.
     fn decompress(&self, input: &[u8]) -> Result<bool, usize> {
         if input.is_empty() {
@@ -1315,7 +1343,7 @@ impl Client {
         };
         match output {
             Ok(output) => {
-                self.body.with_taken(|body| body.extend_from_slice(output));
+                self.with_body(|body| body.append(output))?;
                 Ok(true)
             }
             Err(DecodeError::Limit(limit)) => Err(limit),
@@ -1479,24 +1507,19 @@ fn on_header_value(hooks: &Hooks, name: &[u8], data: &[u8]) -> Flow {
     Flow::Go
 }
 
-fn on_body(client: &Client, data: &[u8]) -> Flow {
+fn on_body(client: &Client, data: &[u8]) -> Result<Flow, usize> {
     let decompress = client.body_decompression.get()
         && !client.compression_error.get()
         && client.compress.get() != Compress::None;
     let callable = client.write_func.with_taken(|callable| callable.clone());
     let decoded = if decompress {
-        match client.decompress(data) {
-            Ok(decoded) => {
-                client.compression_error.set(!decoded);
-                decoded
-            }
-            Err(limit) => {
-                native::swoole_http_client_coro_inflate_warning(&format!(
-                    "decoded response exceeds {limit} bytes"
-                ));
-                return Flow::Fail;
-            }
-        }
+        let decoded = client.decompress(data).inspect_err(|limit| {
+            native::swoole_http_client_coro_inflate_warning(&format!(
+                "decoded response exceeds {limit} bytes"
+            ));
+        })?;
+        client.compression_error.set(!decoded);
+        decoded
     } else {
         false
     };
@@ -1507,44 +1530,48 @@ fn on_body(client: &Client, data: &[u8]) -> Flow {
         };
         let result = if decoded {
             // Nested calls see an empty body while the callback consumes this chunk.
-            let Some(result) = client.body.with_taken(|body| {
-                let result = (!body.is_empty()).then(|| write(body));
+            let Some(result) = client.with_body(|body| {
+                let result = (!body.as_ref().is_empty()).then(|| write(body.as_ref()));
                 body.clear();
                 result
             }) else {
-                return Flow::Go;
+                return Ok(Flow::Go);
             };
             result
         } else {
             let result = write(data);
-            client.body.with_taken(Vec::clear);
+            client.with_body(BoundedBytes::clear);
             result
         };
         client.in_callback.set(false);
         if result.is_err() {
             client.bailout.set(true);
         }
-        return if matches!(result, Ok(true)) {
+        return Ok(if matches!(result, Ok(true)) {
             Flow::Go
         } else {
             Flow::Fail
-        };
-    }
-    if !decoded {
-        client.body.with_taken(|body| body.extend_from_slice(data));
+        });
     }
     if client.download_name.with_taken(|name| name.is_none()) {
-        return Flow::Go;
-    }
-    // Out of the client while the file calls yield to other coroutines.
-    let written = client.body.with_taken(|body| {
-        let written = body.is_empty() || write_download(client, body);
-        if written {
-            body.clear();
+        if !decoded {
+            client.with_body(|body| body.append(data))?;
         }
-        written
-    });
-    if written { Flow::Go } else { Flow::Fail }
+        return Ok(Flow::Go);
+    }
+    // A plain download can write the parser's slice directly.
+    let written = if decoded {
+        client.with_body(|body| {
+            let written = body.as_ref().is_empty() || write_download(client, body.as_ref());
+            if written {
+                body.clear();
+            }
+            written
+        })
+    } else {
+        data.is_empty() || write_download(client, data)
+    };
+    Ok(if written { Flow::Go } else { Flow::Fail })
 }
 
 /// Append a body chunk to the download, opening its file first: whether it was written.
@@ -1574,7 +1601,7 @@ fn on_message_complete(hooks: &mut Hooks) -> Flow {
     props.long(c"statusCode", i64::from(hooks.parser.status_code));
     if client.download_file.get().is_none() {
         // Out of the client while the write can run PHP code.
-        client.body.with_taken(|body| props.bytes(c"body", body));
+        client.with_body(|body| props.bytes(c"body", body.as_ref()));
     } else {
         drop(client.download_name.take());
     }
