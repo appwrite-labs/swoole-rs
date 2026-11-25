@@ -8,8 +8,11 @@ use std::cell::Cell;
 const ENTRY_OVERHEAD: usize = 32;
 /// `SETTINGS_HEADER_TABLE_SIZE`'s default, and the decoder's fixed limit.
 const DEFAULT_TABLE_SIZE: usize = 4096;
-/// nghttp2's `NGHTTP2_HD_MAX_NV`: the longest name or value it decodes.
+/// nghttp2's `NGHTTP2_HD_MAX_NV`: the longest encoded name or value.
 const MAX_STRING: usize = 65536;
+/// Largest decoded name or value the pinned wire limit permits. The shortest
+/// RFC 7541 Huffman code is five bits.
+pub const MAX_DECODED_STRING: usize = MAX_STRING * 8 / 5;
 
 /// `NGHTTP2_ERR_HEADER_COMP`, the one error decoding reports. Once a decoder
 /// fails, every later call fails too: its table is out of step with the peer's.
@@ -191,7 +194,7 @@ struct Bits {
 
 impl Bits {
     /// EOS fails as soon as its bytes arrive, as nghttp2's failure state does.
-    fn decode(&mut self, input: &[u8], out: &mut Vec<u8>) -> Result<(), Error> {
+    fn decode(&mut self, input: &[u8], out: &mut Vec<u8>, limit: usize) -> Result<(), Error> {
         for &byte in input {
             for shift in (0..8).rev() {
                 self.code = (self.code << 1) | u32::from((byte >> shift) & 1);
@@ -206,6 +209,9 @@ impl Bits {
                         .get(at + offset as usize)
                         .copied()
                         .ok_or(Error)?;
+                    if out.len() >= limit {
+                        return Err(Error);
+                    }
                     // EOS (256) is no byte.
                     out.push(u8::try_from(symbol).map_err(|_| Error)?);
                     *self = Self::default();
@@ -424,6 +430,7 @@ enum State {
 /// decodes through a shared reference: a holder never takes it out or borrows
 /// it between steps, and the field a step emits is in the caller's `Field`.
 pub struct Decoder {
+    string_limit: usize,
     /// Taken out only past the static table: a dynamic lookup, an insertion or
     /// a resize.
     table: Cell<Table>,
@@ -436,9 +443,12 @@ pub struct Decoder {
     bad: Cell<bool>,
 }
 
-impl Default for Decoder {
-    fn default() -> Self {
+impl Decoder {
+    /// Decode header names and values of at most `string_limit` bytes each.
+    #[must_use]
+    pub fn new(string_limit: usize) -> Self {
         Self {
+            string_limit,
             table: Cell::new(Table::new(DEFAULT_TABLE_SIZE)),
             state: Cell::new(State::Opcode),
             in_block: Cell::new(false),
@@ -447,9 +457,7 @@ impl Default for Decoder {
             bad: Cell::new(false),
         }
     }
-}
 
-impl Decoder {
     /// Decode up to the next header field of a block (`nghttp2_hd_inflate_hd`):
     /// call again with the rest of the input until it is consumed, and with
     /// `last` on the block's final fragment. A representation cut short by a
@@ -523,9 +531,12 @@ impl Decoder {
                 };
                 let mut bits = self.huffman.get();
                 if huffman {
-                    bits.decode(text, out)?;
+                    bits.decode(text, out, self.string_limit)?;
                     self.huffman.set(bits);
                 } else {
+                    if text.len() > self.string_limit.saturating_sub(out.len()) {
+                        return Err(Error);
+                    }
                     out.extend_from_slice(text);
                 }
                 let left = left - text.len();
@@ -622,6 +633,9 @@ impl Decoder {
                     self.dynamic(value, field, true)?;
                     return Ok(true);
                 };
+                if name.len().max(text.len()) > self.string_limit {
+                    return Err(Error);
+                }
                 field.name.clear();
                 field.name.extend_from_slice(name);
                 field.value.clear();
@@ -631,6 +645,9 @@ impl Decoder {
             Integer::Name if value == 0 => self.state.set(State::Length { value: false }),
             Integer::Name => {
                 if let Some(&(name, _)) = STATIC.get(value - 1) {
+                    if name.len() > self.string_limit {
+                        return Err(Error);
+                    }
                     field.name.clear();
                     field.name.extend_from_slice(name);
                 } else {
