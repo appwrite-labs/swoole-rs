@@ -10,6 +10,7 @@ pub mod zstd;
 pub use swoole_rs_brotli::{self as brotli, DecodeError};
 
 use std::ffi::c_int;
+use swoole_rs_corebase::buffer::BoundedBytes;
 
 pub use swoole_rs_zlib::error;
 use swoole_rs_zlib::{
@@ -28,7 +29,7 @@ pub struct Inflate {
     gzip: bool,
     limit: usize,
     remaining: usize,
-    out: Vec<u8>,
+    out: BoundedBytes,
 }
 
 impl Inflate {
@@ -41,7 +42,7 @@ impl Inflate {
             gzip,
             limit,
             remaining: limit,
-            out: Vec::new(),
+            out: BoundedBytes::new(limit.saturating_add(1), 0),
         }
     }
 
@@ -85,12 +86,12 @@ impl Inflate {
                 self.remaining,
             );
         }
-        result.map_err(|err| match err {
+        let filled = result.map_err(|err| match err {
             MessageFailure::Limit(_) => DecodeError::Limit(self.limit),
             _ => codec_error(),
         })?;
-        self.remaining -= self.out.len();
-        Ok(&self.out)
+        self.remaining -= filled;
+        Ok(self.out.as_ref().split_at(filled).0)
     }
 }
 
@@ -111,41 +112,47 @@ pub enum MessageFailure {
 /// Returns the configured limit on overflow or the zlib status on a codec error.
 pub fn message(input: &[u8], max: usize) -> Result<Vec<u8>, MessageFailure> {
     let mut stream = Stream::inflate(ENCODING_RAW).map_err(MessageFailure::Init)?;
-    let mut out = Vec::new();
-    run(&mut stream, input, &mut out, max)?;
+    let mut out = BoundedBytes::new(max.saturating_add(1), 0);
+    let filled = run(&mut stream, input, &mut out, max)?;
+    let mut out = out.into_vec();
+    out.truncate(filled);
     Ok(out)
 }
 
 fn run(
     stream: &mut Stream,
     mut input: &[u8],
-    out: &mut Vec<u8>,
+    out: &mut BoundedBytes,
     max: usize,
-) -> Result<(), MessageFailure> {
-    out.clear();
+) -> Result<usize, MessageFailure> {
     let ceiling = max.saturating_add(1);
-    if out.capacity() == 0 {
-        out.reserve_exact(input.len().saturating_add(1024).min(ceiling));
+    let mut end = match out.as_ref().len() {
+        0 => input.len().saturating_add(1024),
+        retained => retained,
     }
+    .min(ceiling);
+    let mut filled = 0;
     loop {
-        let room = (ceiling.min(out.capacity()) - out.len()).min(u32::MAX as usize);
-        let step = stream.run_into_limited(&mut input, out, Z_SYNC_FLUSH, room);
-        if out.len() > max {
+        let prefix = out.writable_prefix(end).map_err(MessageFailure::Limit)?;
+        let room = prefix.split_at_mut(filled).1;
+        let room_len = room.len().min(u32::MAX as usize);
+        let step = stream.run_into_slice(&mut input, room, Z_SYNC_FLUSH);
+        filled += step.written;
+        if filled > max {
             return Err(MessageFailure::Limit(max));
         }
         if step.status == Z_STREAM_END
             || (input.is_empty()
-                && (step.status == Z_OK && step.written < room
-                    || step.status == swoole_rs_zlib::Z_BUF_ERROR && !out.is_empty()))
+                && (step.status == Z_OK && step.written < room_len
+                    || step.status == swoole_rs_zlib::Z_BUF_ERROR && filled != 0))
         {
-            return Ok(());
+            return Ok(filled);
         }
         if step.status != Z_OK {
             return Err(MessageFailure::Inflate(step.status));
         }
-        if out.len() == out.capacity() {
-            let next = out.capacity().saturating_mul(2).min(ceiling);
-            out.reserve_exact(next - out.len());
+        if filled == end {
+            end = end.saturating_mul(2).min(ceiling);
         }
     }
 }
@@ -212,6 +219,22 @@ mod tests {
             got.extend_from_slice(inflate.decode(piece).expect("chunk inflates"));
         }
         assert_eq!(got, payload);
+    }
+
+    #[test]
+    fn zero_budget_accepts_only_empty_output() {
+        let mut http = Inflate::gzip_only(0);
+        assert_eq!(http.decode(&deflate(b"", ENCODING_GZIP)), Ok(&[][..]));
+        let mut http = Inflate::gzip_only(0);
+        assert_eq!(
+            http.decode(&deflate(b"x", ENCODING_GZIP)),
+            Err(DecodeError::Limit(0))
+        );
+        assert_eq!(message(&deflate(b"", ENCODING_RAW), 0), Ok(Vec::new()));
+        assert_eq!(
+            message(&deflate(b"x", ENCODING_RAW), 0),
+            Err(MessageFailure::Limit(0))
+        );
     }
 
     #[test]
