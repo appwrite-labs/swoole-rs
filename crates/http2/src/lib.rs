@@ -77,7 +77,7 @@ pub const INITIAL_CONNECTION_WINDOW: u32 = 65_535;
 static DEFAULT_SETTINGS: [AtomicU32; SETTING_COUNT] = [
     AtomicU32::new(1 << 12),
     AtomicU32::new(0),
-    AtomicU32::new(u32::MAX),
+    AtomicU32::new(128),
     AtomicU32::new(INITIAL_CONNECTION_WINDOW),
     AtomicU32::new(1 << 14),
     AtomicU32::new(u32::MAX),
@@ -828,7 +828,7 @@ mod tests {
         assert_eq!(get_default_setting(2), 0, "SW_HTTP2_DEFAULT_ENABLE_PUSH");
         assert_eq!(
             get_default_setting(3),
-            u32::MAX,
+            128,
             "SW_HTTP2_DEFAULT_MAX_CONCURRENT_STREAMS"
         );
         assert_eq!(
@@ -940,7 +940,7 @@ mod tests {
             Http2Settings {
                 header_table_size: 4096,
                 enable_push: 0,
-                max_concurrent_streams: u32::MAX,
+                max_concurrent_streams: 128,
                 init_window_size: 65535,
                 max_frame_size: 16384,
                 max_header_list_size: u32::MAX,

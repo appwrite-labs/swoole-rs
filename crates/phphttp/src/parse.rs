@@ -663,7 +663,10 @@ fn websocket_connection(state: &State) -> bool {
     true
 }
 
-fn header_value(state: &mut State, name: &[u8], value_: &[u8]) -> Step {
+fn header_value(state: &mut State, name: &[u8], mut value_: &[u8]) -> Step {
+    while let [rest @ .., b' ' | b'\t'] = value_ {
+        value_ = rest;
+    }
     let length = value_.len();
     let (action, known) =
         request_header(name, value_, state.parser.method, state.parse_cookie, true);

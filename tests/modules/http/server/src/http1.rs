@@ -839,7 +839,8 @@ fn static_files() {
         // try again
         serv.insert(INDEX_FILES, "README.md");
         let resp = cli.get("/").unwrap();
-        assert!(find(&resp.body, b"<h2 align=center>"));
+        assert_eq!(resp.status, 200);
+        assert_eq!(resp.body, std::fs::read("README.md").unwrap());
 
         kill_self();
     });
