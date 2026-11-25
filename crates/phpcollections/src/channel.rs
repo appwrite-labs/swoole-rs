@@ -164,10 +164,7 @@ fn push(call: &Call) {
     };
     let Some(data) = call.value(1) else { return };
     match queue.push(data.copy(), timeout) {
-        Ok(()) => {
-            set_error(call, ERROR_OK);
-            call.set_bool(true);
-        }
+        Ok(()) => call.set_bool(true),
         Err((value, error)) => {
             set_error(call, error.into());
             drop(value);
@@ -186,7 +183,6 @@ fn pop(call: &Call) {
     match queue.pop(timeout) {
         Ok(value) => {
             call.set_owned(value);
-            set_error(call, ERROR_OK);
         }
         Err(error) => {
             set_error(call, error.into());

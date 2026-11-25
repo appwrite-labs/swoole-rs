@@ -173,12 +173,12 @@ Swoole\Coroutine\run(function (): void {
     check_collection($channel->push('full', 0.001), false, 'bounded full push timeout');
     check_collection($channel->errCode, SWOOLE_CHANNEL_TIMEOUT, 'push timeout publication');
     check_collection($channel->pop(0.01), "x\0y", 'binary pop');
-    check_collection($channel->errCode, SWOOLE_CHANNEL_OK, 'pop OK publication');
+    check_collection($channel->errCode, SWOOLE_CHANNEL_TIMEOUT, 'successful pop retains the last error');
     check_collection($channel->pop(0.001), false, 'bounded empty pop timeout');
     check_collection($channel->errCode, SWOOLE_CHANNEL_TIMEOUT, 'pop timeout publication');
     check_collection($channel->push(false, 0.01), true, 'false payload accepted');
     check_collection($channel->pop(0.01), false, 'false payload transferred');
-    check_collection($channel->errCode, SWOOLE_CHANNEL_OK, 'false payload distinguished by errCode');
+    check_collection($channel->errCode, SWOOLE_CHANNEL_TIMEOUT, 'successful false payload retains the last error');
     $payload = new CollectionPayload;
     $weak = WeakReference::create($payload);
     check_collection($channel->push($payload,0.01), true, 'object push');

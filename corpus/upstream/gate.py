@@ -74,7 +74,26 @@ LOST_SHARD = 'PHPT shard lost'
 # Pinned tests of upstream fixes to code that is Rust now, by the open issue porting them
 # (#1905 moved the pin to v6.2.5 ahead of the ports). The gate lists them instead of
 # failing on them, and lists those cargo already passes so their entries go.
-PENDING_PORTS = {5650: ['swoole_http_server/create_request.phpt']}
+PENDING_PORTS = {
+    5650: [
+        'swoole_function/sendfile_object.phpt',
+        'swoole_http_server/create_request.phpt',
+    ],
+    5653: [
+        'swoole_server_port/set_return_value.phpt',
+        'swoole_server_port/set_return_value_inherited.phpt',
+    ],
+    5654: ['swoole_timer/defer_next_round.phpt'],
+    5655: [
+        'swoole_coroutine/empty_settings.phpt',
+        'swoole_coroutine/error_reporting_configuration.phpt',
+        'swoole_coroutine/shortname_variadic.phpt',
+        'swoole_table/conditional_stats.phpt',
+        'swoole_table/conditional_types.phpt',
+        'swoole_table/getdel.phpt',
+    ],
+    5656: ['swoole_function/name_resolver_contract.phpt'],
+}
 PENDING = {f'tests/{test}': issue for issue, tests in PENDING_PORTS.items() for test in tests}
 
 
