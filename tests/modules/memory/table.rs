@@ -229,16 +229,22 @@ fn make_clamps_rows_and_conflict_as_upstream() {
 }
 
 #[test]
-fn columns_keep_every_declaration_and_find_the_first() {
+fn columns_reject_duplicates_and_keep_their_offsets() {
     let mut table = Owned::new(64, 0.2);
     let t = table.get_mut();
     assert!(t.add_column(b"integer", TYPE_INT, 0));
     assert!(t.add_column(b"binary", TYPE_STRING, 12));
-    assert!(t.add_column(b"integer", TYPE_FLOAT, 0));
+    assert!(!t.add_column(b"integer", TYPE_FLOAT, 0));
     assert!(t.add_column(b"field\0name", TYPE_STRING, 4));
     assert!(!t.add_column(b"bad", 8, 0));
-    assert_eq!(warnings(), ["Table::add_column(): unknown column type"]);
-    assert_eq!((t.columns().len(), t.column_size()), (4, 3));
+    assert_eq!(
+        warnings(),
+        [
+            "Table::add_column(): column[integer] already exists",
+            "Table::add_column(): unknown column type"
+        ]
+    );
+    assert_eq!((t.columns().len(), t.column_size()), (3, 3));
     let integer = t.column(b"integer").unwrap();
     assert_eq!(
         (integer.kind, integer.width, integer.index),
@@ -246,7 +252,7 @@ fn columns_keep_every_declaration_and_find_the_first() {
     );
     let binary = t.column(b"binary").unwrap();
     assert_eq!((binary.width, binary.index), (16, 8));
-    assert_eq!(t.column(b"field\0name").unwrap().index, 32);
+    assert_eq!(t.column(b"field\0name").unwrap().index, 24);
     assert!(t.column(b"field").is_none());
     assert!(table.create());
     assert!(!table.get_mut().add_column(b"late", TYPE_INT, 0));
@@ -266,11 +272,11 @@ fn sizes_match_upstream_accounting() {
             reason = "upstream's float row count"
         )]
         let all = (size as f32 * (1.0 + conflict)) as usize;
-        let row = 88 + width + 4;
+        let row = (88 + width + 4).next_multiple_of(8);
         let total = all * row + 48 + (all - size) * 24 + size * 8;
         assert_eq!(table.get().memory_total(), total);
         assert!(table.create());
-        assert_eq!(table.get().memory_size(), total - size * 8 - row * size);
+        assert_eq!(table.get().memory_size(), total);
         assert_eq!(table.get().total_slices() as usize, all - size);
         assert_eq!(table.get().available_slices(), table.get().total_slices());
         assert!(table.arena_len >= total);

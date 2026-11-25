@@ -38,7 +38,10 @@ static TABLE: CustomClass<Held> = CustomClass::new();
 /// `struct TableObject { Table *ptr; zend_object std; }`: none until
 /// `__construct`, and again after `destroy()`. Like upstream, the shared
 /// table outlives its object (forked workers may use it).
-struct Held(Cell<Option<Rc<SharedTable>>>);
+struct Held {
+    table: Cell<Option<Rc<SharedTable>>>,
+    converting: Cell<bool>,
+}
 
 impl Custom for Held {
     fn class() -> &'static CustomClass<Self> {
@@ -46,20 +49,23 @@ impl Custom for Held {
     }
 
     fn new() -> Self {
-        Self(Cell::new(None))
+        Self {
+            table: Cell::new(None),
+            converting: Cell::new(false),
+        }
     }
 }
 
 impl Held {
     fn get(&self) -> Option<Rc<SharedTable>> {
-        let table = self.0.take();
+        let table = self.table.take();
         let copy = table.clone();
         // Still empty: cloning an `Rc` runs no code, so nothing filled the slot.
         #[expect(
             clippy::mem_forget,
             reason = "the slot is still empty, so there is nothing to release"
         )]
-        std::mem::forget(self.0.replace(table));
+        std::mem::forget(self.table.replace(table));
         copy
     }
 }
@@ -183,7 +189,7 @@ fn change(call: &Call, change: impl FnOnce(&mut SharedTable) -> bool) -> bool {
     let Some(held) = call.custom::<Held>() else {
         return false;
     };
-    held.0
+    held.table
         .with_taken(|table| table.as_mut().and_then(Rc::get_mut).is_some_and(change))
 }
 
@@ -215,7 +221,7 @@ fn construct(call: &Call) {
         call.set_bool(false);
         return;
     };
-    held.0.set(Some(Rc::new(table)));
+    held.table.set(Some(Rc::new(table)));
 }
 
 /// `column(string $name, int $type, int $size = 0): bool`.
@@ -241,7 +247,7 @@ fn column(call: &Call) {
             return;
         }
         // SW_MEM_ALIGNED_SIZE: to `sizeof(unsigned long)`.
-        size = (size + 7) & !7;
+        size = size.checked_add(7).map_or(i64::MAX, |n| n & !7);
     }
     if table_of(call).is_some_and(|table| table.ready()) {
         fatal(
@@ -281,28 +287,35 @@ fn destroy(call: &Call) {
     if created(call).is_none() {
         return;
     }
-    if let Some(table) = call.custom::<Held>().and_then(|held| held.0.take()) {
+    let Some(held) = call.custom::<Held>() else {
+        return;
+    };
+    if held.converting.get() {
+        let mut message = Message::new();
+        message.push(b"Cannot destroy ");
+        message.push(call.class_name().unwrap_or(c"Swoole\\Table").to_bytes());
+        message.push(b" during value conversion");
+        call.throw_error(message.as_cstr());
+        return;
+    }
+    if let Some(table) = held.table.take() {
         table.destroy();
     }
     call.set_bool(true);
 }
 
-/// `table_set_field_value`: store `value` into a row's column; a new row
-/// clears a column its array leaves out or sets to null. None, with nothing
-/// written, once the conversion bailed out: upstream's longjmp skipped the
-/// write and every later column.
-fn store(row: &mut Locked, column: &Column, value: Option<&Value>, initialize: bool) -> Option<()> {
-    let Some(value) = value.filter(|value| !(initialize && value.is_null())) else {
-        row.clear(column);
-        return Some(());
-    };
-    match column.kind {
-        // Copied, cut to the column with a warning.
-        ColumnType::String => row.set_bytes(column, value.applied_string()?.bytes()),
-        ColumnType::Float => row.set_number(column, value.applied_double()?.to_bits()),
-        ColumnType::Int => row.set_number(column, (value.applied_long()?).c_cast::<u64>()),
-    }
-    Some(())
+/// Converted PHP values owned until the write completes.
+enum ColumnValue {
+    Number(u64),
+    String(ZString),
+}
+
+fn convert<T>(call: &Call, read: impl FnOnce() -> Option<T>) -> Option<T> {
+    let held = call.custom::<Held>()?;
+    let previous = held.converting.replace(true);
+    let result = read();
+    held.converting.set(previous);
+    result.filter(|_| swoole_rs_zend::host::exception().is_null())
 }
 
 /// `set(string $key, array $value): bool`.
@@ -324,25 +337,41 @@ fn set(call: &Call) {
         call.set_bool(false);
         return;
     }
+    let values = convert(call, || {
+        let mut values = Vec::new();
+        for (name, value) in array.entries() {
+            let Some(column) = name.and_then(|name| table.column(name)) else {
+                continue;
+            };
+            let converted = match column.kind {
+                ColumnType::String => ColumnValue::String(value.applied_string()?),
+                ColumnType::Float => ColumnValue::Number(value.applied_double()?.to_bits()),
+                ColumnType::Int => ColumnValue::Number(value.applied_long()?.c_cast::<u64>()),
+            };
+            if !swoole_rs_zend::host::exception().is_null() {
+                return None;
+            }
+            values.push((column, converted));
+        }
+        Some(values)
+    });
+    let Some(values) = values else { return };
     let Some(mut row) = table.lock_set(key).filter(Locked::found) else {
         set_failed(key);
         call.set_bool(false);
         return;
     };
-    let stored = if row.is_new() {
-        table
-            .columns()
-            .try_for_each(|column| store(&mut row, column, array.find(column.name()), true))
-    } else {
-        array.entries().try_for_each(|(name, value)| {
-            match name.and_then(|name| table.column(name)) {
-                Some(column) => store(&mut row, column, Some(value), false),
-                None => Some(()),
-            }
-        })
-    };
+    if row.is_new() {
+        row.clear_row(table.columns());
+    }
+    for (column, value) in &values {
+        match value {
+            ColumnValue::Number(number) => row.set_number(column, *number),
+            ColumnValue::String(string) => row.set_bytes(column, string.bytes()),
+        }
+    }
     drop(row);
-    call.set_bool(stored.is_some());
+    call.set_bool(true);
 }
 
 /// `incr()`/`decr()`: `(string $key, string $column, mixed $incrby = 1)`.
@@ -356,23 +385,24 @@ fn update(call: &Call, subtract: bool) {
         return;
     };
     let by = call.value(3);
-    let Some(mut row) = table.lock_set(key).filter(Locked::found) else {
-        fatal(E_WARNING, c"unable to allocate memory");
-        call.set_bool(false);
-        return;
-    };
     let Some(column) = table.column(name) else {
-        drop(row);
         report(b"column[", name, b"] does not exist");
         call.set_bool(false);
         return;
     };
-    if row.is_new() {
-        row.clear_row(table.columns());
-    }
+    let lock_row = || {
+        let Some(mut row) = table.lock_set(key).filter(Locked::found) else {
+            fatal(E_WARNING, c"unable to allocate memory");
+            call.set_bool(false);
+            return None;
+        };
+        if row.is_new() {
+            row.clear_row(table.columns());
+        }
+        Some(row)
+    };
     match column.kind {
         ColumnType::String => {
-            drop(row);
             fatal(
                 E_WARNING,
                 if subtract {
@@ -384,9 +414,10 @@ fn update(call: &Call, subtract: bool) {
             call.set_bool(false);
         }
         ColumnType::Float => {
-            let Some(by) = by.map_or(Some(1.0), Value::applied_double) else {
+            let Some(by) = convert(call, || by.map_or(Some(1.0), Value::applied_double)) else {
                 return;
             };
+            let Some(mut row) = lock_row() else { return };
             let current = f64::from_bits(row.number(column));
             let value = if subtract { current - by } else { current + by };
             row.set_number(column, value.to_bits());
@@ -394,9 +425,10 @@ fn update(call: &Call, subtract: bool) {
             set_double(call, value);
         }
         ColumnType::Int => {
-            let Some(by) = by.map_or(Some(1), Value::applied_long) else {
+            let Some(by) = convert(call, || by.map_or(Some(1), Value::applied_long)) else {
                 return;
             };
+            let Some(mut row) = lock_row() else { return };
             let current = row.number(column).c_cast::<i64>();
             let value = if subtract {
                 current.wrapping_sub(by)

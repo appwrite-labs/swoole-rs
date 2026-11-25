@@ -259,15 +259,6 @@ impl Column {
     }
 }
 
-/// Every declaration in order, repeats included (upstream's `column_list`),
-/// and where the first declaration of each name sits (upstream's `column_map`).
-/// Tables have a handful of columns, so a scan beats hashing the name.
-#[derive(Default)]
-struct Columns {
-    list: Vec<Column>,
-    first: Vec<usize>,
-}
-
 /// The iterator's position and its private copy of the current row.
 struct Cursor {
     absolute: usize,
@@ -315,11 +306,8 @@ pub struct Table {
 
 /// The arena of a table about to be created.
 struct Plan {
-    /// `calc_memory_size()`: upstream's byte count, rows unpadded.
-    logical: usize,
     /// The arena, rows padded to `stride`.
     physical: usize,
-    row_size: usize,
     stride: usize,
     slices: usize,
 }
@@ -425,17 +413,19 @@ impl Table {
         let slices = rows.checked_sub(self.size)?;
         let row_size = ROW.checked_add(self.item_size)?;
         let stride = row_size.checked_next_multiple_of(8)?;
-        let bytes = |row: usize| {
-            let pool = row.checked_add(size_of::<Slice>())?.checked_mul(slices)?;
-            row.checked_add(size_of::<*mut Row>())?
-                .checked_mul(self.size)?
-                .checked_add(pool)?
-                .checked_add(HEADER)
-        };
+        let pool = stride
+            .checked_add(size_of::<Slice>())?
+            .checked_mul(slices)?;
+        let physical = stride
+            .checked_add(size_of::<*mut Row>())?
+            .checked_mul(self.size)?
+            .checked_add(pool)?
+            .checked_add(HEADER)?;
+        if u32::try_from(stride).is_err() || isize::try_from(physical).is_err() {
+            return None;
+        }
         Some(Plan {
-            logical: bytes(row_size)?,
-            physical: bytes(stride).filter(|&n| isize::try_from(n).is_ok())?,
-            row_size,
+            physical,
             stride,
             slices,
         })
@@ -444,7 +434,7 @@ impl Table {
     /// `calc_memory_size()`: the arena's size as upstream counts it.
     #[must_use]
     pub fn memory_total(&self) -> usize {
-        self.plan().map_or(0, |plan| plan.logical)
+        self.plan().map_or(0, |plan| plan.physical)
     }
 
     /// Bytes `create` needs, or 0 if the table is created or too large.
@@ -505,7 +495,7 @@ impl Table {
         self.first = first;
         self.stride = plan.stride;
         self.pool = Some(pool);
-        self.memory_size = plan.logical - self.size * (plan.row_size + size_of::<*mut Row>());
+        self.memory_size = plan.physical;
         self.memory = std::mem::take(arena);
         self.created = true;
         true
@@ -532,7 +522,7 @@ impl Table {
         self.conflict_proportion
     }
 
-    /// `get_memory_size()`: the collision pool's bytes, as upstream reports them.
+    /// `get_memory_size()`: the allocated table arena's bytes.
     #[must_use]
     pub fn memory_size(&self) -> usize {
         self.memory_size
@@ -857,7 +847,7 @@ impl Table {
 /// copies the handle with the rest of the heap, so each process reads its own.
 pub struct Handle {
     table: &'static mut Table,
-    columns: Columns,
+    columns: Vec<Column>,
     /// The iterator, from `create` until `destroy`.
     cursor: Cell<Option<Cursor>>,
 }
@@ -868,7 +858,7 @@ impl Handle {
     pub fn new(table: &'static mut Table) -> Self {
         Self {
             table,
-            columns: Columns::default(),
+            columns: Vec::new(),
             cursor: Cell::new(None),
         }
     }
@@ -888,45 +878,63 @@ impl Handle {
         if table.created {
             return false;
         }
+        if self.columns.iter().any(|column| column.name() == name) {
+            let message = [
+                b"Table::add_column(): column[".as_slice(),
+                c_str(name),
+                b"] already exists",
+            ]
+            .concat();
+            warn(table.warning, &message);
+            return false;
+        }
         let width = if kind == ColumnType::String {
-            size.wrapping_add(4).c_cast::<u32>()
+            let Some(width) = u32::try_from(size).ok().and_then(|n| n.checked_add(4)) else {
+                let message = [
+                    b"Table::add_column(): column[".as_slice(),
+                    c_str(name),
+                    b"] size is too large",
+                ]
+                .concat();
+                warn(table.warning, &message);
+                return false;
+            };
+            width
         } else {
             8
         };
-        let columns = &mut self.columns;
-        if columns.list.iter().all(|column| *column.name != *name) {
-            columns.first.push(columns.list.len());
-        }
-        columns.list.push(Column {
+        let Some(item_size) = table.item_size.checked_add(width as usize) else {
+            warn(
+                table.warning,
+                b"Table::add_column(): table row size overflow",
+            );
+            return false;
+        };
+        self.columns.push(Column {
             kind,
             width,
             index: table.item_size,
             name: name.into(),
         });
-        table.item_size = table.item_size.wrapping_add(width as usize);
+        table.item_size = item_size;
         true
     }
 
-    /// `Table::get_column`: the first column declared with this name.
+    /// `Table::get_column`: the column declared with this name.
     #[must_use]
     pub fn column(&self, name: &[u8]) -> Option<&Column> {
-        let columns = &self.columns;
-        columns
-            .first
-            .iter()
-            .filter_map(|&at| columns.list.get(at))
-            .find(|column| *column.name == *name)
+        self.columns.iter().find(|column| column.name() == name)
     }
 
-    /// Every declaration, repeats included (`column_list`).
+    /// Every column in declaration order.
     pub fn columns(&self) -> impl ExactSizeIterator<Item = &Column> {
-        self.columns.list.iter()
+        self.columns.iter()
     }
 
     /// `get_column_size()`: distinct names.
     #[must_use]
     pub fn column_size(&self) -> usize {
-        self.columns.first.len()
+        self.columns.len()
     }
 
     /// `Table::create` in `arena` (see [`Table`]'s), with this process's iterator.
