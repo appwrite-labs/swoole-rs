@@ -362,11 +362,13 @@ impl<'a> Ssl<'a> {
         socket.read(|record| (Self::retained(socket, record), read(record)))
     }
 
-    /// [`Self::of`] inside a read of the socket that lent `record`, its fields: the
-    /// lease is bounded by that socket's lifetime.
+    /// [`Self::of`] inside a read of `socket`, which lent `record`: the lease is bounded
+    /// by the socket that owns the SSL.
     /// # Panics
-    /// When OpenSSL cannot retain the live session reference.
-    pub(crate) fn retained(_socket: Socket<'a>, record: &SocketFields) -> Option<HeldSsl<'a>> {
+    /// When `record` is not `socket`'s fields, or OpenSSL cannot retain the live session
+    /// reference.
+    pub(crate) fn retained(socket: Socket<'a>, record: &SocketFields) -> Option<HeldSsl<'a>> {
+        assert!(socket.lends(record), "an SSL retained from another record");
         NonNull::new(record.ssl().cast()).map(|ptr| {
             // The record owns this reference throughout its read. Retain
             // another before any callback or coroutine can close the slot.
