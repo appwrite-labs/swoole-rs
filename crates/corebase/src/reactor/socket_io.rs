@@ -70,7 +70,7 @@ pub fn fd_wait(
         if error != libc::EINTR || dont_restart {
             return Err(IoError::Failed(error));
         }
-        crate::reactor::callbacks::dispatch_signals();
+        crate::reactor::signals::dispatch();
     }
 }
 

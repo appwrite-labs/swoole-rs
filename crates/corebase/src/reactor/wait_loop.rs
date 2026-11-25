@@ -324,7 +324,7 @@ mod kqueue_signal {
 
     /// `ReactorKqueue::wait`'s signal entry for `signo`, which the signal layer handles.
     pub(super) fn dispatch_signal(signo: c_int) {
-        if let Some(signals) = crate::reactor::callbacks::signals() {
+        if let Some(signals) = crate::reactor::signals::get() {
             (signals.kqueue)(signo);
         }
     }

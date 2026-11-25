@@ -41,6 +41,9 @@ pub use socket::{Heap, KeptSockets, OwnedSocket, Socket, SocketLoans};
 mod callbacks;
 pub use callbacks::*;
 
+mod signals;
+pub use signals::{Signals, set_signals};
+
 mod handlers;
 pub use handlers::*;
 

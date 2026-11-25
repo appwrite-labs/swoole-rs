@@ -17,41 +17,6 @@ pub type EndFn = fn();
 /// may change for the conditions after it.
 pub type ExitFn = fn(&mut usize) -> bool;
 
-/// The signal layer's entries into the loop, which the process layer registers through
-/// [`set_signals`] before it installs its first handler: none are needed before then.
-pub struct Signals {
-    /// `swoole_signal_dispatch`: runs the signals the deferred handler marked; whether
-    /// there were any.
-    pub dispatch: fn() -> bool,
-    /// `ReactorKqueue::wait`'s entry for a signal event.
-    #[cfg(any(
-        target_os = "macos",
-        target_os = "freebsd",
-        target_os = "openbsd",
-        target_os = "netbsd",
-        target_os = "dragonfly"
-    ))]
-    pub kqueue: fn(c_int),
-}
-
-static SIGNALS: std::sync::OnceLock<Signals> = std::sync::OnceLock::new();
-
-/// Registers the signal layer's entries once; later ones are ignored.
-pub fn set_signals(signals: Signals) {
-    SIGNALS.get_or_init(|| signals);
-}
-
-/// The signal layer's entries, once registered.
-pub(crate) fn signals() -> Option<&'static Signals> {
-    SIGNALS.get()
-}
-
-/// `swoole_signal_dispatch`, once the signal layer is registered: whether a signal was
-/// pending.
-pub(crate) fn dispatch_signals() -> bool {
-    signals().is_some_and(|signals| (signals.dispatch)())
-}
-
 /// `Reactor::EndCallback` (`PRIORITY_*`): the order the end callbacks run in, the
 /// `io_uring` submit last because the others may queue entries for it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -196,7 +161,7 @@ pub(crate) fn execute_end(reactor: Running<'_>, timed_out: bool) {
             End::Defer => crate::reactor::deferred::run_defer(reactor),
             End::Idle if reactor.with(|state| state.fields.idle_task.is_none()) => continue,
             End::Idle => run_idle(reactor),
-            End::Signal if !dispatch_signals() => continue,
+            End::Signal if !crate::reactor::signals::dispatch() => continue,
             End::Signal => {}
             End::TryExit => {
                 if !reactor.with(|state| state.fields.wait_exit) {
