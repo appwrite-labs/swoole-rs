@@ -86,20 +86,16 @@ runs:
       with:
         name: phpt-engines
         path: target/phpt
-    # The httpbin/guzzle/symfony cases require composer libraries the pin ships a
-    # composer.json for but no lock; install them from the committed lock into the
-    # upstream tree, where corpus/upstream/run.py copies the vendor dir into each
-    # sandbox. Reproducible (exact lock) and cached on the lock hash.
+    # The runner copies test dependencies installed from the upstream lock into each sandbox.
     - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
       with:
         path: ~/.cache/composer
-        key: composer-${{ runner.os }}-${{ hashFiles('corpus/upstream/lib-composer.lock') }}
+        key: composer-${{ runner.os }}-${{ hashFiles('target/upstream/src/tests/include/lib/composer.lock') }}
     # A resolve/platform failure drops any partial vendor, so run.py falls back to its
     # stub and the lib-free cases still run. It says so here, and gate.py's summary says
     # the library cases ran without their libraries (#5263).
     - shell: bash
       run: |
-        cp corpus/upstream/lib-composer.lock target/upstream/src/tests/include/lib/composer.lock
         if ! composer install --no-interaction --no-progress \
             --working-dir=target/upstream/src/tests/include/lib; then
           rm -rf target/upstream/src/tests/include/lib/vendor

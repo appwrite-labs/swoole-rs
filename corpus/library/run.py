@@ -38,8 +38,7 @@ from tools.annotations import annotate
 HEADER = ROOT / 'target/upstream/src/ext-src/php_swoole_library.h'
 SOURCE = ROOT / 'target/library/src'
 REPOSITORY = 'https://github.com/swoole/library.git'
-# Our copy of composer-embedded.json with PHP pinned to the runners' release, so the
-# lock resolves the same everywhere.
+# The embedded test profile loads Composer-only classes and pins PHP to the runners' release.
 COMPOSER = 'composer-swoole-rs.json'
 SERVICES = ('consul', 'httpbin', 'mongodb', 'mysql', 'nacos', 'oracle', 'pgsql', 'php-fpm', 'redis')
 COMPOSE = ('docker', 'compose', '-f', 'docker-compose.yml', '-f', 'docker-compose.host.yml')

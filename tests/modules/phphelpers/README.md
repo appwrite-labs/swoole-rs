@@ -13,7 +13,7 @@ calls whose bodies are private to PHP (its README says why).
 
 - `module.py` (`phphelpers-module`): module INI handlers and information-output
   bailouts, compared across engines.
-- `runtime.py` (`phphelpers-runtime`) takes `--engine native=DSO --engine
+- The v6.2 stdext fixture, `runtime.py`, takes `--engine native=DSO --engine
   selected=DSO`, `--build-manifest` (tools/build_ext.py's) and `--output`:
   stdext copied arrays, native callbacks, autoload and object lifetime
   (`runtime.php`), `bailout.php` children for direct/coroutine return/exception,
@@ -25,10 +25,7 @@ calls whose bodies are private to PHP (its README says why).
   its request shutdown while objects with custom free handlers are live
   (`shutdown_exit.php`); the shutdown finishes and the thread exits 235.
 
-The `swoole_stdext` originals and `phphelpers-runtime` run in the merge tier's
-`phpt-stdext` job on `--stdext` builds. On Linux PHP 8.2, `mb_ucfirst` is
-missing, so one original fails on both engines.
-
+Swoole v6.3.0 removed stdext. The v6.2 runtime fixtures remain with the archived implementation.
 ```sh
 for t in tests/modules/phphelpers/test_*.py; do python3 -m unittest "$t"; done
 ```

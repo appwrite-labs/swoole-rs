@@ -494,7 +494,7 @@ PHPT_SHARDS = len(json.loads(re.search(r"default: '(\[[\d, ]+\])'", (
 BASELINES = {
     'phpt': ('phpt-upstream-1', 'upstream-1.json', r'phpt / upstream \d+', PHPT_SHARDS,
              ('.github/actions/phpt-build', '.github/actions/phpt-env', '.github/actions/instantclient',
-              '.github/workflows/phpt.yml', 'corpus/upstream/services.yml', 'corpus/upstream/lib-composer.lock')),
+              '.github/workflows/phpt.yml', 'corpus/upstream/services.yml')),
     **{variant: (f'phpt-{variant}', 'results/upstream.json', rf'{variant} / phpt', 1,
                  ('.github/workflows/variant.yml', 'corpus/upstream/baseline.sh', 'corpus/upstream/families.sh',
                   *(['.devcontainer/php.sh'] if variant == 'zts' else [])))
