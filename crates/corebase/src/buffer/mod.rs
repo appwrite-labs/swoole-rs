@@ -35,6 +35,7 @@ impl BoundedBytes {
     /// Append a whole chunk.
     /// # Errors
     /// Returns the configured byte limit and leaves the buffer intact if the chunk cannot fit.
+    #[inline]
     pub fn append(&mut self, chunk: &[u8]) -> Result<(), usize> {
         let len = self.bytes.len();
         if chunk.len() > self.limit - len {
