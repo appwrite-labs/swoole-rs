@@ -482,6 +482,12 @@ impl SocketFields {
         self.tls.state == crate::constants::SslState::SW_SSL_STATE_WAIT_STREAM
     }
 
+    /// The session's handshake starts, over the `SSL` the socket was just given.
+    #[inline]
+    pub const fn start_tls_handshake(&mut self) {
+        self.tls.state = crate::constants::SslState::SW_SSL_STATE_HANDSHAKE;
+    }
+
     /// A client's handshake now waits for the stream it connected.
     #[inline]
     pub const fn await_tls_stream(&mut self) {

@@ -18,9 +18,8 @@ use crate::sys::ReadSlot;
 use crate::sys::Text;
 use crate::tls::{
     Accept, Cert, CertRef, HandshakeLog, SocketTls, Ssl, SslIoResult, ssl_recv_into, ssl_shutdown,
-    swr_v1_socket_ssl_accept, swr_v1_socket_ssl_clear, swr_v1_socket_ssl_connect,
-    swr_v1_socket_ssl_error_reason, swr_v1_socket_ssl_peek_reason, swr_v1_socket_ssl_send,
-    swr_v1_socket_ssl_verify,
+    swr_v1_socket_ssl_accept, swr_v1_socket_ssl_connect, swr_v1_socket_ssl_error_reason,
+    swr_v1_socket_ssl_peek_reason, swr_v1_socket_ssl_send, swr_v1_socket_ssl_verify,
 };
 use crate::{log, set_errno};
 use openssl_sys::{X509_V_ERR_DEPTH_ZERO_SELF_SIGNED_CERT, X509_V_OK};
@@ -64,6 +63,35 @@ impl SocketFields {
         length: usize,
     ) -> crate::ossupport::Sendfile {
         crate::ossupport::swr_v1_os_sendfile(self.fd, fd, Some(offset), length)
+    }
+
+    /// `Socket::ssl_clear_error`: clears this thread's OpenSSL error queue and the
+    /// session's want flags.
+    #[inline]
+    pub fn ssl_clear_error(&mut self) {
+        crate::tls::clear_errors();
+        self.tls.want_read = false;
+        self.tls.want_write = false;
+    }
+
+    /// One TLS step of `socket`'s session: `step` over a copy of its TLS group, its SSL
+    /// and what `pick` reads in the same borrow, then the group stored back. The step
+    /// runs outside any borrow of the record, which OpenSSL's info callback reads
+    /// meanwhile. None without an SSL.
+    fn tls_step<P, R>(
+        socket: Socket<'_>,
+        pick: impl FnOnce(&Self) -> P,
+        step: impl FnOnce(&mut SocketTls, Ssl, P) -> R,
+    ) -> Option<R> {
+        let (ssl, (before, picked)) = Ssl::of_reading(socket, |record| (record.tls, pick(record)));
+        let held = ssl?;
+        let mut tls = before;
+        let result = step(&mut tls, held.get(), picked);
+        // Most transfers leave the group as it was, and then the record needs no edit.
+        if tls != before {
+            socket.edit(|record| record.tls = tls);
+        }
+        Some(result)
     }
 }
 
@@ -115,26 +143,6 @@ pub fn peer(info: &SocketAddress) -> (String, c_int) {
         },
     );
     (host, c_int::from(u16::from_be(port)))
-}
-
-/// `step` over a copy of the record's TLS group, its SSL (None without one) and what
-/// `pick` reads in the same borrow, then the group stored back: OpenSSL's info
-/// callback reads the record meanwhile.
-fn with_tls<P, R>(
-    socket: Socket<'_>,
-    pick: impl FnOnce(&SocketFields) -> P,
-    step: impl FnOnce(&mut SocketTls, Ssl, P) -> R,
-) -> Option<R> {
-    let (ssl, (before, picked)) = Ssl::of_reading(socket, |record| (record.tls, pick(record)));
-    let held = ssl?;
-    let ssl = held.get();
-    let mut tls = before;
-    let result = step(&mut tls, ssl, picked);
-    // Most transfers leave the group as it was, and then the record needs no edit.
-    if tls != before {
-        socket.edit(|record| record.tls = tls);
-    }
-    Some(result)
 }
 
 /// The peer's certificate chain, each certificate as PEM (at most
@@ -256,7 +264,7 @@ pub fn ssl_recv_fill<S: ReadSlot>(socket: Socket<'_>, mut buffer: Fill<'_, S>) -
 /// [`ssl_recv_fill`] into `spare`'s room.
 #[inline]
 pub fn ssl_recv_spare(socket: Socket<'_>, spare: &mut Spare<'_>) -> Option<usize> {
-    let result = with_tls(
+    let result = SocketFields::tls_step(
         socket,
         |_| (),
         |tls, ssl, ()| ssl_recv_into(tls, ssl, spare),
@@ -268,7 +276,7 @@ pub fn ssl_recv_spare(socket: Socket<'_>, spare: &mut Spare<'_>) -> Option<usize
 /// DTLS socket sends at most `chunk_size`; None on error or without an SSL.
 #[must_use]
 pub fn ssl_send_drain(socket: Socket<'_>, data: Drain<'_>) -> Option<usize> {
-    let result = with_tls(socket, SocketFields::tls_send_limit, |tls, ssl, limit| {
+    let result = SocketFields::tls_step(socket, SocketFields::tls_send_limit, |tls, ssl, limit| {
         swr_v1_socket_ssl_send(tls, ssl, data.first(limit).bytes())
     });
     ssl_io(socket, result)
@@ -301,7 +309,7 @@ fn error_reason_text() -> (c_int, String) {
 /// `ReturnCode Socket::ssl_accept()`: `SW_ERROR` without an SSL.
 #[must_use]
 pub fn socket_ssl_accept(socket: Socket<'_>) -> Accept {
-    let Some(result) = with_tls(
+    let Some(result) = SocketFields::tls_step(
         socket,
         |_| (),
         |tls, ssl, ()| swr_v1_socket_ssl_accept(tls, ssl),
@@ -330,7 +338,7 @@ pub fn socket_ssl_accept(socket: Socket<'_>) -> Accept {
 /// `int Socket::ssl_connect()` is `SW_OK`: false without an SSL.
 #[must_use]
 pub fn socket_ssl_connect(socket: Socket<'_>) -> bool {
-    let Some(result) = with_tls(
+    let Some(result) = SocketFields::tls_step(
         socket,
         |_| (),
         |tls, ssl, ()| swr_v1_socket_ssl_connect(tls, ssl),
@@ -529,7 +537,7 @@ impl<S: ReadSlot> SyncEffects for Call<'_, '_, S> {
         self.socket.edit(|record| {
             record.make_nonblocking();
             if !record.ssl().is_null() {
-                swr_v1_socket_ssl_clear(&mut record.tls);
+                record.ssl_clear_error();
             }
         });
     }
@@ -966,7 +974,7 @@ pub fn socket_ssl_shutdown(socket: Socket<'_>) -> bool {
 /// [`socket_ssl_shutdown`], quiet when `quiet` (upstream's `ssl_quiet_shutdown`).
 fn shutdown(socket: Socket<'_>, quiet: bool) -> bool {
     let repaired = HALFCLOSE_REPAIRS;
-    let Some(result) = with_tls(
+    let Some(result) = SocketFields::tls_step(
         socket,
         |_| (),
         |tls, ssl, ()| ssl_shutdown(tls, ssl, quiet, repaired),
