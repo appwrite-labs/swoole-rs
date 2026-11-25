@@ -34,10 +34,12 @@ def main():
             report['results'].append(dict(engine=engine.name,exit=result.returncode,stdout=result.stdout,stderr=result.stderr))
             if result.returncode!=255 or not BOUND.match(result.stdout) or 'unreachable' in result.stdout:
                 raise ValueError(f'{engine.name}: websocket recv from a second coroutine did not stop with the bound-socket error')
-            result = run_isolated(engine.command(Path(__file__).with_name('php_websocket_fragment_limit.php')), timeout=35)
-            report['results'].append(dict(engine=engine.name, exit=result.returncode, stdout=result.stdout, stderr=result.stderr))
-            if result.returncode or result.stdout.strip() != 'passed' or result.stderr:
-                raise ValueError(f'{engine.name}: WebSocket fragment limit or recovery failed')
+            for fixture in ('php_websocket_fragment_limit.php', 'php_http_body_limit.php'):
+                result = run_isolated(engine.command(Path(__file__).with_name(fixture)), timeout=35)
+                report['results'].append(dict(engine=engine.name, fixture=fixture, exit=result.returncode,
+                                              stdout=result.stdout, stderr=result.stderr))
+                if result.returncode or result.stdout.strip() != 'passed' or result.stderr:
+                    raise ValueError(f'{engine.name}: {fixture} failed')
         report['passed']=True
     except Exception as error:report['error']=f'{type(error).__name__}: {error}'
     write_report(a.output,report);print(json.dumps({key:report.get(key) for key in ['passed','error']}));return int(not report['passed'])
