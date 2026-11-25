@@ -130,39 +130,56 @@ pub fn compress(input: &[u8], quality: i32) -> Option<Vec<u8>> {
     Some(out)
 }
 
+/// Why a response chunk could not be decoded.
+#[derive(Debug, PartialEq, Eq)]
+pub enum DecodeError {
+    /// The response exceeded its configured decoded byte limit.
+    Limit(usize),
+    /// libbrotli's diagnostic for malformed input.
+    Codec(String),
+}
+
 /// A response's Brotli decoder. The first bytes of `out` hold what the last chunk
 /// produced; all of it is initialised, so it grows, zeroed, only past its largest.
 pub struct Decoder {
     state: Owned,
     out: Vec<u8>,
+    limit: usize,
+    remaining: usize,
 }
 
 impl Decoder {
     /// A decoder on libbrotli's default allocator.
     /// # Errors
     /// Upstream's warning when libbrotli can't allocate one.
-    pub fn new() -> Result<Self, String> {
+    pub fn new(limit: usize) -> Result<Self, String> {
         let state = BrotliDecoderCreateInstance(None, None, None)
             .ok_or("BrotliDecoderCreateInstance() failed")?;
         Ok(Self {
             state,
             out: Vec::new(),
+            limit,
+            remaining: limit,
         })
     }
 
     /// Decode one body chunk: the bytes it produced, growing the output until
     /// libbrotli has consumed the chunk or finished the stream.
     /// # Errors
-    /// Upstream's warning, with libbrotli's reason, when the stream is corrupt.
-    pub fn decode(&mut self, input: &[u8]) -> Result<&[u8], String> {
+    /// Returns the response limit on overflow or libbrotli's diagnostic on corrupt input.
+    pub fn decode(&mut self, input: &[u8]) -> Result<&[u8], DecodeError> {
         let (state, out) = (self.state.live(), &mut self.out);
         let decoded = lend_in(input, |mut next_in, mut available_in| {
-            let mut filled = 0;
+            let mut filled = 0_usize;
             loop {
-                if out.len() < filled + BUFFER {
-                    out.resize(filled + BUFFER, 0);
+                // One extra byte distinguishes an exact fit from excess output.
+                let end = filled
+                    .saturating_add(BUFFER)
+                    .min(self.remaining.saturating_add(1));
+                if out.len() < end {
+                    out.resize(end, 0);
                 }
-                let room = out.get_mut(filled..).unwrap_or_default();
+                let room = out.get_mut(filled..end).unwrap_or_default();
                 let size = room.len();
                 let (result, left) = lend_out(room, |mut next_out, mut available_out| {
                     let result = BrotliDecoderDecompressStream(
@@ -176,13 +193,17 @@ impl Decoder {
                     (result, available_out.get())
                 });
                 filled += size - left;
+                if filled > self.remaining {
+                    return Err(DecodeError::Limit(self.limit));
+                }
                 match result {
                     SUCCESS | NEEDS_MORE_INPUT => return Ok(filled),
                     NEEDS_MORE_OUTPUT => {}
-                    _ => return Err(error(state)),
+                    _ => return Err(DecodeError::Codec(error(state))),
                 }
             }
         })?;
+        self.remaining -= decoded;
         Ok(self.out.get(..decoded).unwrap_or_default())
     }
 }
@@ -205,26 +226,36 @@ mod tests {
         let payload = b"brotli body, compressed once and decoded in pieces. ".repeat(5000);
         let compressed = compress(&payload, MAX_QUALITY).unwrap();
         assert!(compressed.len() < payload.len());
-        let mut decoder = Decoder::new().unwrap();
+        let mut decoder = Decoder::new(payload.len()).unwrap();
         let mut got = Vec::new();
         for piece in compressed.chunks(5) {
             got.extend_from_slice(decoder.decode(piece).unwrap());
         }
         assert_eq!(got, payload);
+        let mut bounded = Decoder::new(payload.len() - 1).unwrap();
+        assert_eq!(
+            compressed
+                .chunks(5)
+                .try_for_each(|chunk| bounded.decode(chunk).map(|_| ())),
+            Err(DecodeError::Limit(payload.len() - 1))
+        );
         // One chunk whose output exceeds the decoder's buffer.
-        let mut decoder = Decoder::new().unwrap();
+        let mut decoder = Decoder::new(payload.len()).unwrap();
         assert_eq!(decoder.decode(&compressed).unwrap(), &payload[..]);
     }
 
     #[test]
     fn empty_input_compresses() {
         let compressed = compress(b"", MIN_QUALITY).unwrap();
-        assert_eq!(Decoder::new().unwrap().decode(&compressed).unwrap(), []);
+        assert_eq!(Decoder::new(0).unwrap().decode(&compressed).unwrap(), []);
     }
 
     #[test]
     fn garbage_is_an_error() {
-        let error = Decoder::new().unwrap().decode(&[0xff; 64]).unwrap_err();
+        let error = Decoder::new(0).unwrap().decode(&[0xff; 64]).unwrap_err();
+        let DecodeError::Codec(error) = error else {
+            panic!("expected a codec error")
+        };
         assert!(
             error.starts_with("BrotliDecoderDecompressStream() failed, _ERROR_"),
             "{error}"

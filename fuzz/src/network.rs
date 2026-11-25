@@ -440,7 +440,7 @@ pub fn http_decompress(bytes: &[u8]) {
     let level = i32::from(mode >> 1);
     if mode & 1 == 0 {
         let stream = brotli::compress(body, level % 12).expect("BrotliEncoderCompress");
-        let new = || brotli::Decoder::new().expect("BrotliDecoderCreateInstance");
+        let new = || brotli::Decoder::new(body.len()).expect("BrotliDecoderCreateInstance");
         round_trip(
             new,
             |decoder, chunk| decoder.decode(chunk).ok(),
