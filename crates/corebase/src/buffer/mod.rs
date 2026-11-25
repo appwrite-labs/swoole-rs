@@ -6,6 +6,50 @@ use std::ffi::c_void;
 use std::mem;
 pub use typed::{Detached as TypedDetached, Front as TypedFront, Kind as EntryKind};
 
+/// Contiguous peer input with a byte limit fixed at construction.
+pub struct BoundedBytes {
+    bytes: Vec<u8>,
+    limit: usize,
+}
+
+impl BoundedBytes {
+    #[must_use]
+    pub fn new(limit: usize, initial_capacity: usize) -> Self {
+        Self {
+            bytes: Vec::with_capacity(initial_capacity.min(limit)),
+            limit,
+        }
+    }
+
+    /// Append a whole chunk.
+    /// # Errors
+    /// Returns the configured byte limit and leaves the buffer intact if the chunk cannot fit.
+    pub fn append(&mut self, chunk: &[u8]) -> Result<(), usize> {
+        let len = self.bytes.len();
+        if chunk.len() > self.limit - len {
+            return Err(self.limit);
+        }
+        let needed = len + chunk.len();
+        if needed > self.bytes.capacity() {
+            let capacity = self
+                .bytes
+                .capacity()
+                .saturating_mul(2)
+                .max(needed)
+                .min(self.limit);
+            self.bytes.reserve_exact(capacity - len);
+        }
+        self.bytes.extend_from_slice(chunk);
+        Ok(())
+    }
+}
+
+impl AsRef<[u8]> for BoundedBytes {
+    fn as_ref(&self) -> &[u8] {
+        &self.bytes
+    }
+}
+
 /// Why a queue operation failed; the queue is unchanged.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Error {

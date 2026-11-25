@@ -64,11 +64,7 @@ pub(crate) struct Request {
     pub(crate) body_at: usize,
     pub(crate) body_length: usize,
     /// An HTTP/2 request's body, as its DATA frames arrive.
-    #[expect(
-        clippy::box_collection,
-        reason = "all zeroes must be valid: a null Box is None"
-    )]
-    pub(crate) h2_data: Option<Box<Vec<u8>>>,
+    pub(crate) h2_data: Option<Box<swoole_rs_corebase::buffer::BoundedBytes>>,
     pub(crate) zobject: Slot,
     /// The array properties made so far, a bit per `parse::Property`.
     pub(crate) arrays: u8,

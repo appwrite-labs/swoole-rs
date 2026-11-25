@@ -11,7 +11,7 @@ pub(crate) use server::{goaway, on_receive, ping, reset, respond, session_receiv
 pub use session::IdMap;
 pub(crate) use session::{session_free, session_new};
 use std::{cell::Cell, ffi::CStr};
-use swoole_rs_corebase::CCast;
+use swoole_rs_corebase::{CCast, buffer::BoundedBytes};
 use swoole_rs_server::view;
 use swoole_rs_zend::{
     ArrayMut, HeldArray, Owned, ZString,
@@ -169,7 +169,7 @@ impl Ctx<'_> {
     #[must_use]
     pub fn has_body(mut self) -> bool {
         let data = self.state().request.h2_data.as_deref();
-        data.is_some_and(|data| !data.is_empty())
+        data.is_some_and(|data| !data.as_ref().is_empty())
     }
 
     /// `$request->post` from the whole body (`PARSE_STRING`).
@@ -195,33 +195,22 @@ impl Ctx<'_> {
         Some(array.find(key)?.copy())
     }
 
-    /// Start the request body (`SW_HTTP2_DATA_BUFFER_SIZE` reserved), unless
-    /// it has started: the bytes it holds.
-    #[must_use]
-    pub fn data_start(mut self) -> usize {
-        self.body().len()
-    }
-
-    /// Append a DATA frame's payload to the request body.
-    pub fn data_append(mut self, payload: &[u8]) {
-        self.body().extend_from_slice(payload);
-    }
-
-    /// The request body, started on first use.
-    fn body(&mut self) -> &mut Vec<u8> {
+    /// Append one DATA payload within the session's request body limit.
+    fn data_append(mut self, payload: &[u8], limit: u32) -> Result<(), usize> {
         self.state()
             .request
             .h2_data
-            .get_or_insert_with(|| Box::new(Vec::with_capacity(DATA_BUFFER_SIZE)))
+            .get_or_insert_with(|| Box::new(BoundedBytes::new(limit as usize, DATA_BUFFER_SIZE)))
+            .append(payload)
     }
 
     /// `parse_multipart_data` over the whole body.
     #[must_use]
     pub fn multipart(mut self) -> bool {
         let state = self.state();
-        let data = state.request.h2_data.take().unwrap_or_default();
-        let parsed = parse::multipart_parse(state, &data);
-        self.state().request.h2_data = Some(data);
+        let data = state.request.h2_data.take();
+        let parsed = parse::multipart_parse(state, data.as_deref().map_or(&[], AsRef::as_ref));
+        self.state().request.h2_data = data;
         parsed
     }
 
@@ -379,7 +368,7 @@ impl Ctx<'_> {
         let body = state.request.h2_data.as_deref();
         // The bytes, copied into request memory the SAPI frees. Nothing this
         // frame owns is held while PHP parses them, which may bail out.
-        let text = parse::Copied::of(query.unwrap_or_else(|| body.map_or(&[], Vec::as_slice)));
+        let text = parse::Copied::of(query.unwrap_or_else(|| body.map_or(&[], AsRef::as_ref)));
         Self::edit_value(state, which, |array| {
             if let Some(array) = array.separate() {
                 parse::treat_string(text, array);
