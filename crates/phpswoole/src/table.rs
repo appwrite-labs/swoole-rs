@@ -187,5 +187,6 @@ pub(crate) fn register_aliases(
         c"swoole_coroutine_defer",
         c"defer",
         &s::arginfo_swoole_coroutine_defer,
-    )
+    )?;
+    Ok(())
 }

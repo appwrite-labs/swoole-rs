@@ -1,26 +1,37 @@
 {
     "name": "swoole/library-embedded-tests",
-    "description": "Installs the test tooling for running the test suite against the library embedded in the Swoole extension (swoole.enable_library=On). The main composer.json cannot be used there: its autoload rules would redeclare the functions and classes the extension already provides. Used by the Build Swoole workflow as: COMPOSER=composer-embedded.json composer update",
+    "description": "Test dependencies for the pinned library with swoole.enable_library=On. Only Composer-only components are autoloaded from source.",
     "license": "Apache-2.0",
     "require": {
         "php": ">=8.2",
-        "ext-swoole": ">=6.2",
+        "ext-swoole": ">=6.3",
         "ext-curl": "*",
         "ext-json": "*",
         "ext-posix": "*",
         "ext-redis": "*",
         "ext-sockets": "*",
         "mongodb/mongodb": "^2.1",
-        "deminy/counit": "~1.0"
+        "deminy/counit": "~1.0",
+        "nikic/php-parser": "^5.2",
+        "google/protobuf": "^4.0",
+        "exussum12/xxhash": "^1.0.0",
+        "chdemko/sorted-collections": "^1.0",
+        "aws/aws-sdk-php": "^3.227"
     },
     "autoload": {
         "classmap": [
             "tests/TestCase.php",
             "tests/DatabaseTestCase.php",
-            "tests/HookFlagsTrait.php"
-        ],
-        "files": [
-            "tests/curl_hook.php"
+            "tests/HookFlagsTrait.php",
+            "src/core/Grpc",
+            "src/core/Debugger",
+            "src/core/Proxy",
+            "src/core/Kafka",
+            "src/core/FastCGI.php",
+            "src/core/FastCGI",
+            "src/core/Coroutine/FastCGI",
+            "examples/grpc/generated",
+            "examples/grpc/Etcd"
         ]
     },
     "config": {

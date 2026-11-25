@@ -93,17 +93,10 @@ def verdict_failed(row, require_all):
 # Originals whose verdict is decided by something outside the engine, on upstream too: a
 # race in the test itself, the runner's network, or a file or tool the runner can't use. They
 # are recorded unsupported, never run or counted as passed.
-RACY = {'tests/swoole_http_server/compression_content_type_release.phpt':
-        'the file starts with a blank line, so PHP\'s runner BORKs it ("tests must start with '
-        '--TEST--") on every engine (#1964)',
-        'tests/swoole_process/process_exec.phpt':
+RACY = {'tests/swoole_process/process_exec.phpt':
         "it execs /usr/bin/python on echo.py, which is Python 2 (raw_input, the print "
         'statement); Python 3 rejects it with a SyntaxError on every engine (#1974); companion: '
         'tests/modules/integration/companion.py --case process_exec (#5358)',
-        'tests/swoole_http2_client_coro/connect_twice.phpt':
-        "it fetches https://nghttp2.org/httpbin/base64/..., and nghttp2.org's httpbin backend "
-        'answers 502 Bad Gateway (nghttpx) to every engine and to curl (#1986); companion: '
-        'tests/modules/integration/companion.py --case connect_twice (#5358)',
         'tests/swoole_server/dispatch_mode_9.phpt':
         "it asserts the standard deviation of per-worker request counts is below 5, which the "
         "scheduler's interleaving decides: in 258 merge-tier runs on 11-11 the first run missed "
@@ -278,9 +271,7 @@ CONDITIONALLY_RACY = {'thread_context': THREAD_CONTEXT_RACY, 'sanitizers': SANIT
 # holding stdout to the deadline, libssh2, PHP's own OOM fix, the resolver's reply. --run-racy
 # leaves them unrun; the rest race, so running them shows a pass rate that moves (#5358).
 ENVIRONMENT = frozenset({
-    'tests/swoole_http_server/compression_content_type_release.phpt',
     'tests/swoole_process/process_exec.phpt',
-    'tests/swoole_http2_client_coro/connect_twice.phpt',
     'tests/swoole_curl/close_before_resume.phpt',
     'tests/swoole_curl/exec_twice.phpt',
     'tests/swoole_table/force_unlock.phpt',
