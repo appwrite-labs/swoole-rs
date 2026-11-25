@@ -728,7 +728,7 @@ mod tests {
             assert!(
                 socket
                     .socket()
-                    .edit(SocketFields::take_owner::<Rc<()>>)
+                    .read(SocketFields::owner::<Rc<()>>)
                     .is_some()
             );
             socket.free();

@@ -398,8 +398,7 @@ impl Connection for Read<'_> {
     #[inline]
     fn init_request(&mut self) {
         if self.request.is_none() {
-            let held = self.conn.take_http_request();
-            self.request = Some(held.unwrap_or_else(swoole_rs_http::request_new));
+            self.request = Some(self.conn.take_http_request());
         }
     }
 

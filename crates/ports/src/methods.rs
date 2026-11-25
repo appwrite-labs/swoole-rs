@@ -22,8 +22,6 @@ pub(crate) const FD_DGRAM_SERVER: c_int =
 use swoole_rs_server::port_config::{PortConfig, ReadEvent, Reader};
 use swoole_rs_server::view;
 
-use swoole_rs_http::request_free;
-
 use crate::read::Readable;
 
 /// The listening socket's options `ListenPort::listen` sets where the platform
@@ -415,7 +413,7 @@ pub fn set_stream_protocol(config: &mut PortConfig) {
 
 /// `ListenPort::destroy_http_request(conn)`: frees the connection's request, if any.
 pub(crate) fn destroy_http_request(conn: swoole_rs_server::Connection<'_>) {
-    request_free(conn.take_http_request());
+    conn.free_http_request();
 }
 
 use crate::read_native::on_read;
@@ -1008,17 +1006,14 @@ mod tests {
     fn destroy_http_request_frees_and_clears() {
         let mut conn = ConnectionRecord::default();
         let slot = swoole_rs_server::Connection::from(&mut conn);
-        slot.hold_http_request(swoole_rs_http::request_new());
+        let mut request = swoole_rs_http::request_new();
+        request.header_length = 1;
+        slot.hold_http_request(request);
         destroy_http_request(slot);
-        assert!(
-            slot.take_http_request().is_none(),
-            "the request is freed and cleared"
-        );
+        let next = slot.take_http_request();
+        assert_eq!(next.header_length, 0, "the request is freed and cleared");
+        swoole_rs_http::request_free(Some(next));
         destroy_http_request(slot);
-        assert!(
-            slot.take_http_request().is_none(),
-            "no request: nothing to do"
-        );
     }
 
     /// Upstream's `server_port.import`. Linux, as core-tests: macOS answers

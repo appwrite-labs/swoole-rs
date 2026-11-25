@@ -76,6 +76,9 @@ pub struct ConnectionRecord {
     /// makes, takes and frees.
     pub(crate) websocket_buffer:
         Cell<Option<Box<swoole_rs_corebase::buffer::string::StringBuffer>>>,
+    /// The HTTP request parsed between reads (upstream's `conn->object`): held only
+    /// while the slot holds its session socket, and freed with it.
+    http_request: Cell<Option<Box<swoole_rs_http::HttpRequest>>>,
     pub lock: AtomicU32,
     pub closed: AtomicU32,
     pub server_fd: Cell<c_int>,
@@ -307,6 +310,7 @@ impl<'a> Connection<'a> {
     /// socket and before its fd is closed, which may hand the fd, and so the slot, to
     /// another thread's accept.
     pub(crate) fn free_socket(self, emptied: impl FnOnce()) {
+        self.free_http_request();
         let socket = self.record.socket.take().map(|socket| {
             // SAFETY: what still holds a handle the slot lent, and why none is used after:
             // - the slot: from here it names nothing, so `socket()` lends no more;
@@ -404,27 +408,31 @@ impl<'a> Connection<'a> {
             .map(crate::view::Port::from)
     }
 
-    /// The HTTP request the session's socket holds (upstream's `conn->object`), no
-    /// longer held, or `None`.
+    /// The request a read on the connection continues: the one it held (upstream's
+    /// `conn->object`), no longer held, or a new one.
     #[must_use]
     #[inline]
-    pub fn take_http_request(self) -> Option<Box<swoole_rs_http::HttpRequest>> {
-        self.socket()?
-            .edit(swoole_rs_corebase::reactor::SocketFields::take_owner)
+    pub fn take_http_request(self) -> Box<swoole_rs_http::HttpRequest> {
+        self.record
+            .http_request
+            .take()
+            .unwrap_or_else(swoole_rs_http::request_new)
     }
 
-    /// The session's socket holds `request` until [`Self::take_http_request`]; without
-    /// a socket, it is freed.
+    /// Frees the request the connection holds, if any.
+    #[inline]
+    pub fn free_http_request(self) {
+        swoole_rs_http::request_free(self.record.http_request.take());
+    }
+
+    /// The connection holds `request` until [`Self::take_http_request`] or until its
+    /// socket is freed; without a socket, it is freed.
     #[inline]
     pub fn hold_http_request(self, request: Box<swoole_rs_http::HttpRequest>) {
-        let Some(socket) = self.socket() else {
+        if self.socket().is_none() {
             return swoole_rs_http::request_free(Some(request));
-        };
-        // A session socket holds nothing else.
-        let replaced = socket.edit(|socket| socket.hold_owner(request));
-        if let Some(Ok(old)) = replaced.map(Box::<dyn core::any::Any>::downcast) {
-            swoole_rs_http::request_free(Some(old));
         }
+        swoole_rs_http::request_free(self.record.http_request.replace(Some(request)));
     }
 
     /// `Server::store_pipe_fd`: a pipe end's slot names its pipe, which nothing reads
@@ -748,18 +756,34 @@ pub(crate) mod tests {
     pub(crate) use crate::table::tests::{naming, naming_at};
 
     #[test]
-    fn a_sessions_socket_holds_its_http_request_between_reads() {
+    fn a_session_holds_its_http_request_between_reads_until_its_socket_is_freed() {
         let record = ConnectionRecord::default();
         let conn = Connection::from(&record);
-        conn.hold_http_request(swoole_rs_http::request_new());
-        assert!(conn.take_http_request().is_none(), "no socket: freed");
+        let marked = |length| {
+            let mut request = swoole_rs_http::request_new();
+            request.header_length = length;
+            request
+        };
+        let take = || {
+            let request = conn.take_http_request();
+            let length = request.header_length;
+            swoole_rs_http::request_free(Some(request));
+            length
+        };
+        conn.hold_http_request(marked(1));
+        assert_eq!(take(), 0, "no socket: freed");
         let socket = Box::new(swoole_rs_corebase::reactor::SocketRecord::with_fd(-1, 0));
         conn.hold_socket(swoole_rs_corebase::reactor::OwnedSocket::new(socket));
-        conn.hold_http_request(swoole_rs_http::request_new());
-        conn.hold_http_request(swoole_rs_http::request_new());
-        assert!(conn.take_http_request().is_some(), "the later one");
-        assert!(conn.take_http_request().is_none(), "taken once");
+        conn.hold_http_request(marked(1));
+        conn.hold_http_request(marked(2));
+        assert_eq!(take(), 2, "the later one");
+        assert_eq!(take(), 0, "taken once");
+        conn.hold_http_request(marked(3));
+        conn.free_http_request();
+        assert_eq!(take(), 0, "freed");
+        conn.hold_http_request(marked(4));
         conn.free_socket(|| {
+            assert_eq!(take(), 0, "freed with the socket");
             assert!(conn.socket().is_none());
             conn.clear();
         });
