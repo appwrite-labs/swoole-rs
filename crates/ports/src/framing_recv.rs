@@ -40,14 +40,9 @@ pub(crate) fn send_data<'a>(
 }
 
 /// A session out of the reactor whose connection no one is closing: `pause` took its
-/// socket out to stop reading.
+/// socket out to stop reading. Out of line: only a socket out of the reactor asks it, and
+/// inlined it costs each length or EOF read an instruction.
+#[inline(never)]
 pub(crate) fn paused(conn: swoole_rs_server::Connection<'_>) -> bool {
-    conn.is_active()
-        && conn.closed().load(Ordering::Relaxed) == 0
-        && !(conn.closing()
-            || conn.close_actively()
-            || conn.close_queued()
-            || conn.close_reset()
-            || conn.close_force()
-            || conn.peer_closed())
+    conn.is_active() && conn.closed().load(Ordering::Relaxed) == 0 && !conn.close_begun()
 }

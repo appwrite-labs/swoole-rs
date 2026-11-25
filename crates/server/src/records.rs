@@ -296,6 +296,13 @@ impl<'a> Connection<'a> {
     field!(close peer_closed, set_peer_closed: PEER_CLOSED);
     field!(close close_notify, set_close_notify: CLOSE_NOTIFY);
     field!(close close_force, set_close_force: CLOSE_FORCE);
+
+    /// Whether any side began closing the connection: any close flag but `close_notify`.
+    #[must_use]
+    #[inline]
+    pub fn close_begun(self) -> bool {
+        self.record.close_flags.load(Relaxed) & !CloseFlag::CLOSE_NOTIFY != 0
+    }
     field!(reactor_id, set_reactor_id: u8);
     field!(close_errno, set_close_errno: u16);
     field!(send_queued_bytes, set_send_queued_bytes: u32);
@@ -822,7 +829,12 @@ pub(crate) mod tests {
         conn.set_server_fd(3);
         conn.set_fd(4);
         conn.set_session_id(5);
+        conn.set_close_notify(true);
+        assert!(!conn.close_begun(), "a close notify alone begins no close");
         conn.set_close_force(true);
+        conn.set_peer_closed(true);
+        conn.set_peer_closed(false);
+        assert!(conn.close_begun() && conn.close_force() && conn.close_notify());
         conn.set_last_recv_time(1.5);
         conn.set_uid(6);
         conn.set_websocket_status(WebSocketStatus::Active);
@@ -832,7 +844,7 @@ pub(crate) mod tests {
         assert_eq!(record.closed.load(Relaxed), 1);
         assert_eq!(conn.server_fd(), 3);
         assert_eq!((conn.fd(), conn.session_id(), conn.uid()), (0, 0, 0));
-        assert!(!conn.close_force());
+        assert!(!conn.close_force() && !conn.close_notify() && !conn.close_begun());
         assert_eq!(conn.last_recv_time().to_bits(), 0);
         assert_eq!(conn.websocket_status(), WebSocketStatus::None);
         assert_eq!(record.lock.load(Relaxed), 0);
