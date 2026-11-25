@@ -41,7 +41,26 @@ impl BoundedBytes {
         if chunk.len() > self.limit - len {
             return Err(self.limit);
         }
-        let needed = len + chunk.len();
+        self.reserve_to(len + chunk.len());
+        self.bytes.extend_from_slice(chunk);
+        Ok(())
+    }
+
+    /// Lend an initialized prefix, retaining the storage for subsequent writes.
+    /// # Errors
+    /// Returns the configured limit when the prefix would exceed it.
+    pub fn writable_prefix(&mut self, length: usize) -> Result<&mut [u8], usize> {
+        if length > self.limit {
+            return Err(self.limit);
+        }
+        if length > self.bytes.len() {
+            self.reserve_to(length);
+            self.bytes.resize(length, 0);
+        }
+        Ok(self.bytes.split_at_mut(length).0)
+    }
+
+    fn reserve_to(&mut self, needed: usize) {
         if needed > self.bytes.capacity() {
             let capacity = self
                 .bytes
@@ -49,10 +68,8 @@ impl BoundedBytes {
                 .saturating_mul(2)
                 .max(needed)
                 .min(self.limit);
-            self.bytes.reserve_exact(capacity - len);
+            self.bytes.reserve_exact(capacity - self.bytes.len());
         }
-        self.bytes.extend_from_slice(chunk);
-        Ok(())
     }
 }
 
