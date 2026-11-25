@@ -93,3 +93,37 @@ def test_coroutines_share_a_client(engine):
         'send 1', 'active 1', 'exists true', 'body, current 5', 'send 3', 'current 5', 'ping true',
         'recv 1 200 one', 'recv 3 200 ', 'active 0', 'close true',
     ], php.stdout + php.stderr
+
+
+def test_response_body_limit_is_per_stream(engine):
+    """A 129-byte body fails and its 128-byte sibling succeeds on the same connection."""
+    from concurrent.futures import ThreadPoolExecutor
+
+    with socket.create_server(('127.0.0.1', 0)) as listener:
+        listener.settimeout(10)
+
+        def serve():
+            conn, _ = listener.accept()
+            with conn:
+                conn.settimeout(10)
+                assert read(conn, len(PREFACE)) == PREFACE
+                requests = 0
+                while requests < 2:
+                    kind, _, _ = read_frame(conn)
+                    requests += kind == 1
+                ok = b'\x88'  # :status: 200
+                conn.sendall(frame(4, 0, 0) + frame(1, 4, 1, ok) + frame(1, 4, 3, ok)
+                             + frame(0, 0, 1, b'a' * 64) + frame(0, 0, 3, b'b' * 64)
+                             + frame(0, 0, 1, b'a' * 65) + frame(0, 1, 1)
+                             + frame(0, 1, 3, b'b' * 64))
+                while conn.recv(4096):
+                    pass
+
+        with ThreadPoolExecutor(1) as pool:
+            served = pool.submit(serve)
+            php = subprocess.run(engine.command(Path(__file__).with_name('body_limit_client.php')),
+                                 env={**os.environ, 'TEST_PORT': str(listener.getsockname()[1])},
+                                 capture_output=True, text=True, timeout=30)
+            served.result()
+    assert php.returncode == 0, php.stdout + php.stderr
+    assert php.stdout.splitlines() == ['bool(true)', 'bool(true)', 'int(3)', 'bool(true)']

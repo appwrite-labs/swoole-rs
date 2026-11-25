@@ -21,6 +21,16 @@ impl BoundedBytes {
         }
     }
 
+    /// Discard buffered bytes after delivery, retaining storage and the limit.
+    pub fn clear(&mut self) {
+        self.bytes.clear();
+    }
+
+    #[must_use]
+    pub fn limit(&self) -> usize {
+        self.limit
+    }
+
     /// Append a whole chunk.
     /// # Errors
     /// Returns the configured byte limit and leaves the buffer intact if the chunk cannot fit.
