@@ -47,7 +47,7 @@ pub(crate) fn flags() -> u32 {
 }
 
 /// `SWOOLE_VERSION`.
-pub(crate) const VERSION: &CStr = c"6.2.6";
+pub(crate) const VERSION: &CStr = c"6.3.0";
 
 #[derive(Clone, Copy)]
 enum Value {
@@ -90,10 +90,10 @@ const fn when(flag: u32, name: &'static CStr, value: Value) -> Constant {
 #[rustfmt::skip]
 static CONSTANTS: [Constant; 251] = [
     always(c"SWOOLE_VERSION", Str(VERSION)),
-    always(c"SWOOLE_VERSION_ID", Long(60206)),
+    always(c"SWOOLE_VERSION_ID", Long(60300)),
     always(c"SWOOLE_MAJOR_VERSION", Long(6)),
-    always(c"SWOOLE_MINOR_VERSION", Long(2)),
-    always(c"SWOOLE_RELEASE_VERSION", Long(6)),
+    always(c"SWOOLE_MINOR_VERSION", Long(3)),
+    always(c"SWOOLE_RELEASE_VERSION", Long(0)),
     always(c"SWOOLE_EXTRA_VERSION", Str(c"")),
     always(c"SWOOLE_DEBUG", Flag(DEBUG)),
     when(COMPRESSION, c"SWOOLE_HAVE_COMPRESSION", Bool(true)),
@@ -418,7 +418,7 @@ mod tests {
     fn upstream_order_and_values() {
         let all: Vec<_> = selected(u32::MAX).collect();
         assert_eq!(all[0].0, c"SWOOLE_VERSION");
-        assert!(matches!(all[1].1, Long(60206)), "SWOOLE_VERSION_ID");
+        assert!(matches!(all[1].1, Long(60300)), "SWOOLE_VERSION_ID");
         let trace_all = all.iter().find(|(name, _)| *name == c"SWOOLE_TRACE_ALL");
         assert!(matches!(trace_all, Some((_, Long(i64::MAX)))));
         let last = all.last().map(|(name, _)| *name);

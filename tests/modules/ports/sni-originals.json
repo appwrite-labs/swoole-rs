@@ -1,10 +1,10 @@
 {
   "repository": "https://github.com/swoole/swoole-src",
-  "commit": "13d2f33664d60b72aaa9f102ff0ef4085c028513",
+  "commit": "e0d606594e13cecd7790baafc5f1e1ead816b77c",
   "tests": [
     {
       "path": "tests/swoole_http_server/sni/server.phpt",
-      "sha256": "068b63f3ea14890e6d257ac8a087d10ca5c7dbf467fda693452031f6d60be0f3",
+      "sha256": "772d1c14b73484ccf79f5eb0f4212d3a7ba77829137f99e5fa9f8c16b36df327",
       "module": "ports-sni",
       "requires": [
         "http",
@@ -61,7 +61,7 @@
     "cases": 2,
     "support_blobs": 8,
     "group": "swoole_http_server/sni",
-    "tree": "e11d9f36149bc9286eaff6c5b7c6a530f6c57fbe",
+    "tree": "bdac7c7272c1272152414fa6171e09266dc072d7",
     "selection": "Every original PHPT; no exclusions or assertion changes",
     "support": "Pinned certificates used by these originals; prepare also verifies the pinned tests/include tree."
   }

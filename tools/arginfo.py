@@ -4,7 +4,7 @@
   arginfo.py [--source PIN]          write crates/phpstubs/src
   arginfo.py [--source PIN] --check  fail unless crates/phpstubs/src is current and
                                      the same model, rendered as gen_stub.php's C, is
-                                     byte-identical to the pin's *_arginfo.h
+                                     identical to the pin's *_arginfo.h apart from a final blank line
 
 Each stub becomes one module of `pub static arginfo_*: ArgInfo<N>` (swoole-rs-zend's
 `arginfo` builders, one per gen_stub macro), so the generated headers can go. The
@@ -488,7 +488,8 @@ def parity(source):
         header = path.with_name(path.name.removesuffix('.stub.php') + '_arginfo.h')
         expected = header.read_text().split('\n', 2)[2]
         actual = c_header(Stub(path.read_text()))
-        if actual != expected:
+        # Upstream's generated headers differ in whether they end with a blank line.
+        if actual != expected and actual != expected + '\n':
             failures.append(header.name)
             if '--verbose' in sys.argv:
                 import difflib

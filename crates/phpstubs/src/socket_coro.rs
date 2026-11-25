@@ -44,9 +44,11 @@ pub static arginfo_class_Swoole_Coroutine_Socket_getBoundCid: a::ArgInfo<2> = a:
     a::begin_type(1, 0, z::IS_LONG, false),
     a::arg_type(c"event", 0, false, z::IS_LONG, false, None),
 ]);
-pub static arginfo_class_Swoole_Coroutine_Socket_peek: a::ArgInfo<2> = a::ArgInfo::new([
+pub static arginfo_class_Swoole_Coroutine_Socket_peek: a::ArgInfo<4> = a::ArgInfo::new([
     a::begin_mask(0, 0, z::MAY_BE_STRING | z::MAY_BE_FALSE),
     a::arg_type(c"length", 0, false, z::IS_LONG, false, Some(c"65536")),
+    a::arg_type(c"timeout", 0, false, z::IS_DOUBLE, false, Some(c"0")),
+    a::arg_type(c"flags", 0, false, z::IS_LONG, false, Some(c"0")),
 ]);
 pub static arginfo_class_Swoole_Coroutine_Socket_recv: a::ArgInfo<3> = a::ArgInfo::new([
     a::begin_mask(0, 0, z::MAY_BE_STRING | z::MAY_BE_FALSE),
@@ -139,4 +141,6 @@ pub static arginfo_class_Swoole_Coroutine_Socket_import: a::ArgInfo<2> = a::ArgI
     a::begin_class_mask(1, 0, c"Swoole\\Coroutine\\Socket", z::MAY_BE_FALSE),
     a::arg(c"stream", 0, false, None),
 ]);
+pub static arginfo_class_Swoole_Coroutine_Socket_export: a::ArgInfo<1> =
+    a::ArgInfo::new([a::begin(0, 0)]);
 pub use crate::required_array as parse_class_swoole_coroutine_socket_setprotocol;

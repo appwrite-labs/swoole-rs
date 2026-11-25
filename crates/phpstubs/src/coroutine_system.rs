@@ -58,7 +58,7 @@ pub static arginfo_class_Swoole_Coroutine_System_getaddrinfo: a::ArgInfo<7> = a:
     a::arg_type(c"timeout", 0, false, z::IS_DOUBLE, false, Some(c"-1")),
 ]);
 pub static arginfo_class_Swoole_Coroutine_System_statvfs: a::ArgInfo<2> = a::ArgInfo::new([
-    a::begin_type(1, 0, z::IS_ARRAY, false),
+    a::begin_mask(1, 0, z::MAY_BE_ARRAY | z::MAY_BE_FALSE),
     a::arg_type(c"path", 0, false, z::IS_STRING, false, None),
 ]);
 pub static arginfo_class_Swoole_Coroutine_System_readFile: a::ArgInfo<3> = a::ArgInfo::new([

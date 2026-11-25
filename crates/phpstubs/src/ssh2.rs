@@ -17,6 +17,22 @@ pub static arginfo_ssh2_disconnect: a::ArgInfo<2> = a::ArgInfo::new([
     a::begin_type(1, 0, z::_IS_BOOL, false),
     a::arg(c"session", 0, false, None),
 ]);
+pub static arginfo_ssh2_set_timeout: a::ArgInfo<4> = a::ArgInfo::new([
+    a::begin_type(2, 0, z::IS_VOID, false),
+    a::arg(c"session", 0, false, None),
+    a::arg_type(c"seconds", 0, false, z::IS_LONG, false, None),
+    a::arg_type(c"microseconds", 0, false, z::IS_LONG, false, Some(c"0")),
+]);
+pub static arginfo_ssh2_keepalive_config: a::ArgInfo<4> = a::ArgInfo::new([
+    a::begin_type(3, 0, z::IS_VOID, false),
+    a::arg(c"session", 0, false, None),
+    a::arg_type(c"want_reply", 0, false, z::_IS_BOOL, false, None),
+    a::arg_type(c"interval", 0, false, z::IS_LONG, false, None),
+]);
+pub static arginfo_ssh2_keepalive_send: a::ArgInfo<2> = a::ArgInfo::new([
+    a::begin_mask(1, 0, z::MAY_BE_LONG | z::MAY_BE_FALSE),
+    a::arg(c"session", 0, false, None),
+]);
 pub static arginfo_ssh2_methods_negotiated: a::ArgInfo<2> = a::ArgInfo::new([
     a::begin_type(1, 0, z::IS_ARRAY, false),
     a::arg(c"session", 0, false, None),
@@ -25,6 +41,10 @@ pub static arginfo_ssh2_fingerprint: a::ArgInfo<3> = a::ArgInfo::new([
     a::begin(1, 0),
     a::arg(c"session", 0, false, None),
     a::arg_type(c"flags", 0, false, z::IS_LONG, false, Some(c"0")),
+]);
+pub static arginfo_ssh2_hostkey: a::ArgInfo<2> = a::ArgInfo::new([
+    a::begin_mask(1, 0, z::MAY_BE_ARRAY | z::MAY_BE_FALSE),
+    a::arg(c"session", 0, false, None),
 ]);
 pub static arginfo_ssh2_auth_none: a::ArgInfo<3> = a::ArgInfo::new([
     a::begin_type(2, 0, z::_IS_BOOL, false),
@@ -71,15 +91,15 @@ pub static arginfo_ssh2_auth_hostbased_file: a::ArgInfo<8> = a::ArgInfo::new([
     ),
 ]);
 pub static arginfo_ssh2_forward_listen: a::ArgInfo<5> = a::ArgInfo::new([
-    a::begin_class_mask(2, 0, c"resource", z::MAY_BE_FALSE),
+    a::begin(2, 0),
     a::arg(c"session", 0, false, None),
     a::arg_type(c"port", 0, false, z::IS_LONG, false, None),
     a::arg_type(c"host", 0, false, z::IS_STRING, false, Some(c"'127.0.0.1'")),
     a::arg_type(c"max_connections", 0, false, z::IS_LONG, false, Some(c"1")),
 ]);
 pub static arginfo_ssh2_forward_accept: a::ArgInfo<4> = a::ArgInfo::new([
-    a::begin_class_mask(1, 0, c"resource", z::MAY_BE_FALSE),
-    a::arg_class(c"listener", 0, false, c"resource", false, None),
+    a::begin(1, 0),
+    a::arg(c"listener", 0, false, None),
     a::arg_type(c"host", 1, false, z::IS_STRING, true, Some(c"null")),
     a::arg_type(c"port", 1, false, z::IS_LONG, true, Some(c"null")),
 ]);
@@ -116,7 +136,7 @@ pub static arginfo_ssh2_exec: a::ArgInfo<8> = a::ArgInfo::new([
     a::begin(2, 0),
     a::arg(c"session", 0, false, None),
     a::arg_type(c"command", 0, false, z::IS_STRING, false, None),
-    a::arg_type(c"pty", 0, false, z::_IS_BOOL, false, Some(c"false")),
+    a::arg_type(c"pty", 0, false, z::IS_STRING, true, Some(c"null")),
     a::arg_type(c"env", 0, false, z::IS_ARRAY, true, Some(c"null")),
     a::arg_type(c"width", 0, false, z::IS_LONG, false, Some(c"80")),
     a::arg_type(c"height", 0, false, z::IS_LONG, false, Some(c"25")),
@@ -152,6 +172,11 @@ pub static arginfo_ssh2_fetch_stream: a::ArgInfo<3> = a::ArgInfo::new([
     a::begin(2, 0),
     a::arg(c"channel", 0, false, None),
     a::arg_type(c"streamid", 0, false, z::IS_LONG, false, None),
+]);
+pub static arginfo_ssh2_send_signal: a::ArgInfo<3> = a::ArgInfo::new([
+    a::begin_type(2, 0, z::_IS_BOOL, false),
+    a::arg(c"channel", 0, false, None),
+    a::arg_type(c"signal", 0, false, z::IS_STRING, false, None),
 ]);
 pub static arginfo_ssh2_send_eof: a::ArgInfo<2> = a::ArgInfo::new([
     a::begin_type(1, 0, z::_IS_BOOL, false),

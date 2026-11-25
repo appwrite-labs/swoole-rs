@@ -119,8 +119,8 @@ unsafe extern "C" {
 
 /// `SWOOLE_VERSION`, `SWOOLE_VERSION_ID` and `SWOOLE_API_VERSION_ID` of the pin;
 /// core-tests' `base.version` compares the functions below with the header's.
-pub const VERSION: &std::ffi::CStr = c"6.2.6";
-const VERSION_ID: c_int = 60206;
+pub const VERSION: &std::ffi::CStr = c"6.3.0";
+const VERSION_ID: c_int = 60300;
 const API_VERSION_ID: c_int = 0x0202_208a;
 
 /// `const char *swoole_version(void)`.
@@ -674,7 +674,7 @@ mod tests {
             (c"1.2", c"1.2.1", -1),
             (c"1.2.1", c"1.2", 1),
             (c"", c"", 0),
-            (c"6.2.6-dev", c"6.2.6", 1),
+            (c"6.3.0-dev", c"6.3.0", 1),
             (c"1.0-beta", c"1.0-rc", 1),
         ] {
             let result = swoole_version_compare(left.into(), right.into());

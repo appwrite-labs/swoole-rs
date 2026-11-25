@@ -33,4 +33,5 @@ pub static arginfo_class_Swoole_Coroutine_Http_Server_onAccept: a::ArgInfo<2> = 
     a::begin_type(1, 0, z::IS_VOID, false),
     a::arg_class(c"conn", 0, false, c"Swoole\\Coroutine\\Socket", false, None),
 ]);
+pub use self::arginfo_class_Swoole_Coroutine_Http_Server_onAccept as arginfo_class_Swoole_Coroutine_Http_Server_flushHttp2Queue;
 pub use crate::required_array as parse_class_swoole_coroutine_http_server_set;

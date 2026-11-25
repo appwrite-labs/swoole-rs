@@ -73,12 +73,20 @@ pub static arginfo_class_Swoole_Server_send: a::ArgInfo<4> = a::ArgInfo::new([
     a::arg_type(c"send_data", 0, false, z::IS_STRING, false, None),
     a::arg_type(c"serverSocket", 0, false, z::IS_LONG, false, Some(c"-1")),
 ]);
-pub static arginfo_class_Swoole_Server_sendfile: a::ArgInfo<5> = a::ArgInfo::new([
+pub static arginfo_class_Swoole_Server_sendfile: a::ArgInfo<6> = a::ArgInfo::new([
     a::begin_type(2, 0, z::_IS_BOOL, false),
     a::arg_type(c"conn_fd", 0, false, z::IS_LONG, false, None),
-    a::arg_type(c"filename", 0, false, z::IS_STRING, false, None),
+    a::arg_class_mask(
+        c"filename",
+        0,
+        false,
+        c"Swoole\\SendFile",
+        z::MAY_BE_STRING,
+        None,
+    ),
     a::arg_type(c"offset", 0, false, z::IS_LONG, false, Some(c"0")),
     a::arg_type(c"length", 0, false, z::IS_LONG, false, Some(c"0")),
+    a::arg_type(c"delete_file", 0, false, z::_IS_BOOL, false, Some(c"false")),
 ]);
 pub static arginfo_class_Swoole_Server_stats: a::ArgInfo<1> =
     a::ArgInfo::new([a::begin_type(0, 0, z::IS_ARRAY, false)]);

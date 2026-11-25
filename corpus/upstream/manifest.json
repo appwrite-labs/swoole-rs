@@ -1,11 +1,11 @@
 {
   "repository": "https://github.com/swoole/swoole-src",
-  "tag": "v6.2.6",
-  "commit": "13d2f33664d60b72aaa9f102ff0ef4085c028513",
+  "tag": "v6.3.0",
+  "commit": "e0d606594e13cecd7790baafc5f1e1ead816b77c",
   "tests": [
     {
       "path": "tests/swoole_http_server/create_request.phpt",
-      "sha256": "ae0ac0bfe0b55c5ccc982d8fae4bfe22430d7084be047d3bf51b812614ed4c99",
+      "sha256": "8dea7eaff72ba9e6663d3a64ab642ddc6c0c5b47ad69f7aa7c9331b61ff81af0",
       "module": "http-request",
       "requires": [
         "upstream_test_bootstrap",
@@ -454,7 +454,7 @@
     },
     {
       "path": "tests/swoole_websocket_server/send_close_frame.phpt",
-      "sha256": "0c8fc3528e1a951974bc5fb54f1a064a2ee58be67da8d687a4703db3ad30d1a2",
+      "sha256": "fd36df3cc417545f7338f0ee093f36512714d2299a75d0bc3dc6adff9aae087b",
       "module": "websocket-network",
       "requires": [
         "upstream_test_bootstrap",
@@ -540,7 +540,7 @@
     },
     {
       "path": "tests/swoole_websocket_server/compression_incompressible.phpt",
-      "sha256": "011c3a2f529b46b5c9b082be92fa1410a5f127fd477ead340c9d0e62da0b3103",
+      "sha256": "e6d6cf9526f3beb915d07ebd9880b28dd7088cc3d3d5b38372b4e50ea0e5b6a1",
       "module": "websocket-network",
       "requires": [
         "upstream_test_bootstrap",
@@ -555,7 +555,7 @@
     },
     {
       "path": "tests/swoole_websocket_server/empty_message.phpt",
-      "sha256": "1d838cfaa1ab7f1a87cb42491d36f6629c045d35c96373c99488d672a544b8f3",
+      "sha256": "a88865334a9fb814968d5ec4b5b734c02f9ef46e15c09a9e3b962af3ab374d54",
       "module": "websocket-network",
       "requires": [
         "upstream_test_bootstrap",
@@ -736,7 +736,7 @@
     },
     {
       "path": "tests/swoole_websocket_server/query.phpt",
-      "sha256": "4781c255a6a95ad84f60991fadc02e8fb39a570b6a7bc088930e8d25194e8d06",
+      "sha256": "14e974e28d5ac439897557d0921646d5290053ac6972dc128c4653d9fa4561fe",
       "module": "websocket-network",
       "requires": [
         "upstream_test_bootstrap",
@@ -836,7 +836,7 @@
     },
     {
       "path": "tests/swoole_timer/clearAll.phpt",
-      "sha256": "f92aa8abdf5382c20e13c5299cb79ed9565d67452b8ea2355468743439c6d5e8",
+      "sha256": "192354dd6bf3a4a317e08a4cf04fc556436f90f67df892571f6b4c38ab4800fd",
       "module": "timers",
       "requires": [
         "upstream_test_bootstrap",
@@ -849,7 +849,7 @@
     },
     {
       "path": "tests/swoole_timer/after_fork.phpt",
-      "sha256": "6c57aef8045b60e2ba62c23edb5e4e89d7545f05ca0010372860f027e0eace72",
+      "sha256": "066af78d87dfeb046e4b5f28616677d54ee98823dfdcedc5b58a4b4a850605bf",
       "module": "timers",
       "requires": [
         "upstream_test_bootstrap",
@@ -860,7 +860,7 @@
     },
     {
       "path": "tests/swoole_timer/reinit_1.phpt",
-      "sha256": "e77e0d85e8a53c91be375cc5b8b4d3fe7f8577869e4d8e36b40c91fd42afb007",
+      "sha256": "d61c0813c35e264c131187690bf3eacd6b9857cb488d113f4d36422dd537b01e",
       "module": "timers",
       "requires": [
         "upstream_test_bootstrap",
@@ -872,7 +872,7 @@
     },
     {
       "path": "tests/swoole_timer/reinit_2.phpt",
-      "sha256": "c9224f339758d324550a9149293a53e044ccddec0ff62cba42190d4a5574cf42",
+      "sha256": "a5dd40a3987b555f529f30b1079ebe46472dfaad482bd0572ba15c3708701ec8",
       "module": "timers",
       "requires": [
         "upstream_test_bootstrap",
@@ -905,7 +905,7 @@
     },
     {
       "path": "tests/swoole_timer/bug_4794_2.phpt",
-      "sha256": "ceb0071e8cf38f8475afd75a6082329ebf0c27696b5dc90606f2b7d3edeb3110",
+      "sha256": "7962be1713198cfaee307bbe07ea839af23c13d0873d462d11f74d6d8677ad0d",
       "module": "timers",
       "requires": [
         "upstream_test_bootstrap",
@@ -930,7 +930,7 @@
     },
     {
       "path": "tests/swoole_timer/bug_4794_4.phpt",
-      "sha256": "e6b8fc9669619693d58a2d2ac7f565b6d059de421b4274aca6a5d4ea036f7076",
+      "sha256": "8950015bc8928b74a3c5b9a2533564db1914d14ea3543940b4dfd32d17bb4da9",
       "module": "timers",
       "requires": [
         "upstream_test_bootstrap",
@@ -967,7 +967,7 @@
     },
     {
       "path": "tests/swoole_timer/bug_4794_7.phpt",
-      "sha256": "7f4ebebdcbc5113cc7f7313bb59d3140367ed75de859ba0b3f087d1c38e5dee5",
+      "sha256": "8db61f554f4c691cb3af89673a3cbcabfb8d6fec1e9379aad2fd4ac3dbe2da36",
       "module": "timers",
       "requires": [
         "upstream_test_bootstrap",
@@ -990,7 +990,7 @@
     },
     {
       "path": "tests/swoole_timer/call_private.phpt",
-      "sha256": "fbaf69ed3db4d74ed7c4756ee2558a6c8c0ee9ce07e3aab21818d8fea4c8f902",
+      "sha256": "9c72da616c0223057578b7b82ab984f6885968363539ab815478d5c3e6c3fd7b",
       "module": "timers",
       "requires": [
         "upstream_test_bootstrap",
@@ -1034,7 +1034,7 @@
     },
     {
       "path": "tests/swoole_timer/manager.phpt",
-      "sha256": "b6974be142d4800767be1786a098d207a2785d4625811c0f9757303da7e10a4f",
+      "sha256": "3c8fd497eddfac5fb07b043e0c0f8f65886ec1f2a768a9a9e9dc5906dbdb9cb9",
       "module": "timers",
       "requires": [
         "upstream_test_bootstrap",
@@ -1046,7 +1046,7 @@
     },
     {
       "path": "tests/swoole_timer/master.phpt",
-      "sha256": "1294ba40d344410306989b1773aa1c9d5b5c54d1a5dd3f5ecf6c6fe0cab76f5a",
+      "sha256": "9ca2d2bd5cfd3c71f4535952f0f092338175c658ce6d89e68c34ccfa0962abf4",
       "module": "timers",
       "requires": [
         "upstream_test_bootstrap",
@@ -1058,7 +1058,7 @@
     },
     {
       "path": "tests/swoole_timer/master_base.phpt",
-      "sha256": "b6b101af0680ab38a16ff3260d8720f9653b211c74279aaba5bd2c360ec9eeee",
+      "sha256": "12b7a394af2e78ddaddc615a92e56055ae590a9e63b871043045614d2b0535c4",
       "module": "timers",
       "requires": [
         "upstream_test_bootstrap",
@@ -1090,7 +1090,7 @@
     },
     {
       "path": "tests/swoole_timer/task_worker.phpt",
-      "sha256": "98a61a438a03b81fe008c57605ed03e43874f5e22777164be36c1aec76582077",
+      "sha256": "6b0c9a1afb33a21743ba6d0da74fff25eb94d1b4a798ad0fb9e7c280cd05f3dd",
       "module": "timers",
       "requires": [
         "upstream_test_bootstrap",
@@ -1103,7 +1103,7 @@
     },
     {
       "path": "tests/swoole_timer/task_worker_tick_1k.phpt",
-      "sha256": "8791a20c4f410a5f5395e38f07f4f0b9d258cc5059e55d22a430c314a33643eb",
+      "sha256": "20b9c4afae848e6da7cbffec47c59a73e38ef62371e925f6c6700cc1c2816537",
       "module": "timers",
       "requires": [
         "upstream_test_bootstrap",

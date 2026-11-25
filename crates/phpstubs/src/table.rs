@@ -31,6 +31,18 @@ pub static arginfo_class_Swoole_Table_set: a::ArgInfo<3> = a::ArgInfo::new([
     a::arg_type(c"key", 0, false, z::IS_STRING, false, None),
     a::arg_type(c"value", 0, false, z::IS_ARRAY, false, None),
 ]);
+pub static arginfo_class_Swoole_Table_add: a::ArgInfo<3> = a::ArgInfo::new([
+    a::begin_type(2, 0, z::_IS_BOOL, false),
+    a::arg_type(c"key", 0, false, z::IS_STRING, false, None),
+    a::arg_type(c"values", 0, false, z::IS_ARRAY, false, None),
+]);
+pub use self::arginfo_class_Swoole_Table_add as arginfo_class_Swoole_Table_update;
+pub static arginfo_class_Swoole_Table_cmpset: a::ArgInfo<4> = a::ArgInfo::new([
+    a::begin_type(3, 0, z::_IS_BOOL, false),
+    a::arg_type(c"key", 0, false, z::IS_STRING, false, None),
+    a::arg_type(c"expected", 0, false, z::IS_ARRAY, false, None),
+    a::arg_type(c"values", 0, false, z::IS_ARRAY, false, None),
+]);
 pub static arginfo_class_Swoole_Table_get: a::ArgInfo<3> = a::ArgInfo::new([
     a::begin_mask(
         1,
@@ -40,13 +52,19 @@ pub static arginfo_class_Swoole_Table_get: a::ArgInfo<3> = a::ArgInfo::new([
     a::arg_type(c"key", 0, false, z::IS_STRING, false, None),
     a::arg_type(c"field", 0, false, z::IS_STRING, true, Some(c"null")),
 ]);
+pub use self::arginfo_class_Swoole_Table_get as arginfo_class_Swoole_Table_getdel;
 pub static arginfo_class_Swoole_Table_del: a::ArgInfo<2> = a::ArgInfo::new([
     a::begin_type(1, 0, z::_IS_BOOL, false),
     a::arg_type(c"key", 0, false, z::IS_STRING, false, None),
 ]);
+pub static arginfo_class_Swoole_Table_cmpdel: a::ArgInfo<3> = a::ArgInfo::new([
+    a::begin_type(2, 0, z::_IS_BOOL, false),
+    a::arg_type(c"key", 0, false, z::IS_STRING, false, None),
+    a::arg_type(c"expected", 0, false, z::IS_ARRAY, false, None),
+]);
 pub use self::arginfo_class_Swoole_Table_del as arginfo_class_Swoole_Table_exists;
 pub static arginfo_class_Swoole_Table_incr: a::ArgInfo<4> = a::ArgInfo::new([
-    a::begin_mask(2, 0, z::MAY_BE_DOUBLE | z::MAY_BE_LONG),
+    a::begin_mask(2, 0, z::MAY_BE_FALSE | z::MAY_BE_DOUBLE | z::MAY_BE_LONG),
     a::arg_type(c"key", 0, false, z::IS_STRING, false, None),
     a::arg_type(c"column", 0, false, z::IS_STRING, false, None),
     a::arg_mask(
@@ -76,6 +94,15 @@ pub use self::arginfo_class_Swoole_Table_current as arginfo_class_Swoole_Table_k
 /// Zend rejected the argument count or type.
 #[inline]
 pub fn parse_class_swoole_table_get<'a>(
+    call: &'a swoole_rs_zend::Call<'_>,
+) -> Result<(&'a [u8], Option<&'a [u8]>), swoole_rs_zend::Invalid> {
+    call.arity(1, 2)?;
+    Ok((call.string(1, b"")?, call.string_or_null(2)?))
+}
+/// # Errors
+/// Zend rejected the argument count or type.
+#[inline]
+pub fn parse_class_swoole_table_getdel<'a>(
     call: &'a swoole_rs_zend::Call<'_>,
 ) -> Result<(&'a [u8], Option<&'a [u8]>), swoole_rs_zend::Invalid> {
     call.arity(1, 2)?;

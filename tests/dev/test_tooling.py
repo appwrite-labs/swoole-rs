@@ -140,7 +140,19 @@ Path(sys.argv[1]).write_text('PASSED ' + sys.argv[2] + '\n')
             tree = Path(directory)
             source = tree / 'source'
             source.mkdir()
-            remote = "// Run default remote object server\nswoole_library_set_option('default_remote_object_server_worker_num', 2);\nswoole_init_default_remote_object_server();\n"
+            remote = """// Run default remote object server
+if (!is_win()) {
+    $remoteObjectDirectory = __DIR__ . '/tmp';
+    if (!is_dir($remoteObjectDirectory)
+        && !@mkdir($remoteObjectDirectory, 0755, true)
+        && !is_dir($remoteObjectDirectory)) {
+        throw new RuntimeException("Unable to create remote object server directory: $remoteObjectDirectory");
+    }
+    swoole_library_set_option('default_remote_object_server_worker_num', 2);
+    swoole_library_set_option('default_remote_object_server_dir', $remoteObjectDirectory);
+    swoole_init_default_remote_object_server();
+}
+"""
             files = {'.gitattributes': b'examples/binary.bin export-ignore\n', 'LICENSE': b'fixture', 'tools/bootstrap.php': b'<?php',
                      'tests/include/bootstrap.php': remote.encode(),
                      'tests/original.phpt': b'--TEST--\noriginal\n--FILE--\n<?php echo "ok";\n--EXPECT--\nok',

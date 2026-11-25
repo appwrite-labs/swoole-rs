@@ -103,9 +103,6 @@ RACY = {'tests/swoole_http_server/compression_content_type_release.phpt':
         "it execs /usr/bin/python on echo.py, which is Python 2 (raw_input, the print "
         'statement); Python 3 rejects it with a SyntaxError on every engine (#1974); companion: '
         'tests/modules/integration/companion.py --case process_exec (#5358)',
-        'tests/swoole_runtime/exec/exec.phpt':
-        "it pings www.gov.cn three times through each exec function; GitHub's hosted runners "
-        'drop ICMP, so ping never answers and the case times out on every engine (#1974)',
         'tests/swoole_http2_client_coro/connect_twice.phpt':
         "it fetches https://nghttp2.org/httpbin/base64/..., and nghttp2.org's httpbin backend "
         'answers 502 Bad Gateway (nghttpx) to every engine and to curl (#1986); companion: '
@@ -136,10 +133,6 @@ RACY = {'tests/swoole_http_server/compression_content_type_release.phpt':
         'tests/swoole_coroutine/dnslookup_ipv6.phpt':
         "the verdict depends on the runner's resolver reply, and both engines fail on some "
         'replies (#428)',
-        'tests/swoole_process_pool/getprocess_4.phpt':
-        'worker 0 gives the pool a fixed 100 ms to restart the SIGTERMed worker 1 before '
-        'getProcess(1); on a loaded runner both engines miss it (upstream failed re-runs in 3 '
-        'merge-tier runs, #703)',
         'tests/swoole_curl/multi/bug4393.phpt':
         'it asserts two concurrent requests to live www.qq.com and www.baidu.com finish within '
         "3.0 s; that's the runner's WAN latency, and upstream misses it too (9.23 s, 3.26 s, "
@@ -298,7 +291,6 @@ CONDITIONALLY_RACY = {'thread_context': THREAD_CONTEXT_RACY, 'sanitizers': SANIT
 ENVIRONMENT = frozenset({
     'tests/swoole_http_server/compression_content_type_release.phpt',
     'tests/swoole_process/process_exec.phpt',
-    'tests/swoole_runtime/exec/exec.phpt',
     'tests/swoole_http2_client_coro/connect_twice.phpt',
     'tests/swoole_curl/close_before_resume.phpt',
     'tests/swoole_curl/exec_twice.phpt',
@@ -427,7 +419,19 @@ def prepare(source, destination, cases, support_files=()):
     # Adapt only that support setup, never PHPT code, assertions, or expectations.
     bootstrap = destination / 'tests/include/bootstrap.php'
     original = bootstrap.read_text()
-    remote_setup = "// Run default remote object server\nswoole_library_set_option('default_remote_object_server_worker_num', 2);\nswoole_init_default_remote_object_server();\n"
+    remote_setup = """// Run default remote object server
+if (!is_win()) {
+    $remoteObjectDirectory = __DIR__ . '/tmp';
+    if (!is_dir($remoteObjectDirectory)
+        && !@mkdir($remoteObjectDirectory, 0755, true)
+        && !is_dir($remoteObjectDirectory)) {
+        throw new RuntimeException("Unable to create remote object server directory: $remoteObjectDirectory");
+    }
+    swoole_library_set_option('default_remote_object_server_worker_num', 2);
+    swoole_library_set_option('default_remote_object_server_dir', $remoteObjectDirectory);
+    swoole_init_default_remote_object_server();
+}
+"""
     if original.count(remote_setup) != 1:
         raise ValueError('Upstream bootstrap remote setup changed; review adapter')
     bootstrap.write_text(original.replace(remote_setup, '// Remote-object service excluded from this isolated selection.\n'))

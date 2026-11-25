@@ -8,7 +8,7 @@ use swoole_rs_zend::sys as z;
 
 pub static arginfo_class_Swoole_Thread___construct: a::ArgInfo<3> = a::ArgInfo::new([
     a::begin(1, 0),
-    a::arg_type(c"script_file", 0, false, z::IS_STRING, false, None),
+    a::arg_type(c"entry", 0, false, z::IS_STRING, false, None),
     a::arg_type(c"args", 0, true, z::IS_MIXED, false, None),
 ]);
 pub static arginfo_class_Swoole_Thread_join: a::ArgInfo<1> =
@@ -16,6 +16,8 @@ pub static arginfo_class_Swoole_Thread_join: a::ArgInfo<1> =
 pub use self::arginfo_class_Swoole_Thread_join as arginfo_class_Swoole_Thread_joinable;
 pub static arginfo_class_Swoole_Thread_getExitStatus: a::ArgInfo<1> =
     a::ArgInfo::new([a::begin_type(0, 0, z::IS_LONG, false)]);
+pub static arginfo_class_Swoole_Thread_getResult: a::ArgInfo<1> =
+    a::ArgInfo::new([a::begin_type(0, 0, z::IS_MIXED, false)]);
 pub use self::arginfo_class_Swoole_Thread_join as arginfo_class_Swoole_Thread_isAlive;
 pub use self::arginfo_class_Swoole_Thread_join as arginfo_class_Swoole_Thread_detach;
 pub static arginfo_class_Swoole_Thread_getArguments: a::ArgInfo<1> =
