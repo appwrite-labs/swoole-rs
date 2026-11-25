@@ -52,8 +52,8 @@ pub struct DescriptorOps {
     pub make: fn(i32),
     /// Release the wrapper but not the descriptor, which the backend closes.
     pub free: fn(),
-    /// The wrapper's events.
-    pub events: fn() -> i32,
+    /// Whether the wrapper is registered for reading.
+    pub reading: fn() -> bool,
     /// Add the wrapper to the thread's loop for `events`: whether it worked.
     pub add: fn(i32) -> bool,
     /// Remove the wrapper, if any, from `reactor`.
@@ -157,7 +157,7 @@ fn setup(ops: &Ops) -> bool {
         (descriptor.install)();
     }
     let read = corebase::constants::EventType::SW_EVENT_READ as i32;
-    if (descriptor.events)() & read == 0 && !(descriptor.add)(read) {
+    if !(descriptor.reading)() && !(descriptor.add)(read) {
         return false;
     }
     (descriptor.erase_end)();
