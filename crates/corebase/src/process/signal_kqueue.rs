@@ -32,6 +32,7 @@ pub fn signal_kqueue_set(kq: c_int, signo: c_int, handler: Handler, failed: &mut
         slot.reset();
         event.flags = libc::EV_DELETE;
     } else {
+        crate::process::signal::register_with_reactor();
         // kqueue delivers the signal instead.
         let previous = crate::process::signal::install(signo, libc::SIG_IGN, false, false);
         if !slot.activated.load(Relaxed) {
