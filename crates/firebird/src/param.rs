@@ -238,8 +238,12 @@ fn bind(dbh: &Dbh, stmt: &Stmt, index: zend_long, value: &Slot) -> bool {
         IS_LONG => SQL_LONG,
         IS_DOUBLE => SQL_DOUBLE,
         IS_STRING => {
-            let empty = value.str().is_none_or(|text| text.bytes().is_empty());
-            if empty && empty_is_null(base_type(sqltype)) {
+            let len = value.str().map_or(0, |text| text.bytes().len());
+            if c_short::try_from(len).is_err() {
+                stmt_state_message(dbh, stmt, b"22001", b"String data right truncation");
+                return false;
+            }
+            if len == 0 && empty_is_null(base_type(sqltype)) {
                 return bind_null(dbh, stmt, index, sqltype);
             }
             SQL_TEXT

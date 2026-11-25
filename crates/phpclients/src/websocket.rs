@@ -463,13 +463,9 @@ pub fn close_frame(code: i32, reason: &[u8], flags: u8) -> Option<Frame> {
 
 /// `FrameObject::uncompress`: the inflated payload, as a string.
 #[must_use]
-pub fn uncompress(data: &[u8]) -> Option<Owned> {
-    use swoole_rs_inflate::{MESSAGE_HEADROOM, MessageFailure, error, message};
+pub fn uncompress(data: &[u8], max: usize) -> Option<Owned> {
+    use swoole_rs_inflate::{MessageFailure, error, message};
 
-    const _: () = assert!(
-        MESSAGE_HEADROOM == swoole_rs_corebase::constants::SW_BUFFER_SIZE_STD as usize / 2,
-        "WebSocket inflate headroom must match half the standard buffer size"
-    );
     if !has_zlib() {
         warning(
             c"FrameObject::uncompress",
@@ -477,7 +473,7 @@ pub fn uncompress(data: &[u8]) -> Option<Owned> {
         );
         return None;
     }
-    match message(data) {
+    match message(data, max) {
         Ok(plain) => Some(Owned::string(ZString::new(&plain))),
         Err(MessageFailure::Init(status)) => {
             warning(
@@ -486,6 +482,13 @@ pub fn uncompress(data: &[u8]) -> Option<Owned> {
                     "inflateInit2() failed by {}",
                     error(status).to_string_lossy()
                 ),
+            );
+            None
+        }
+        Err(MessageFailure::Limit(limit)) => {
+            warning(
+                c"websocket::message_uncompress",
+                &format!("decoded message exceeds {limit} bytes"),
             );
             None
         }
@@ -614,7 +617,10 @@ fn unpack(call: &Call) {
     let payload = data.get(frame.header_length..frame.header_length + frame.payload_length);
     let payload = payload.unwrap_or_default();
     let zpayload = if frame.flags.is_compressed() {
-        let Some(plain) = uncompress(payload) else {
+        let Some(plain) = uncompress(
+            payload,
+            swoole_rs_corebase::constants::SW_INPUT_BUFFER_SIZE as usize,
+        ) else {
             log::set_last_error(PROTOCOL_ERROR);
             call.set_bool(false);
             return;
@@ -661,7 +667,7 @@ impl Default for ClientWebSocket {
             frames: Cell::new(0),
             mask: Cell::new(true),
             compression: Cell::new(false),
-            message: Cell::new(None),
+            message: Cell::new(Assembly::Idle),
         }
     }
 }
@@ -730,8 +736,6 @@ pub const OPEN_PING_FRAME: u8 = 1 << 1;
 pub const OPEN_PONG_FRAME: u8 = 1 << 2;
 pub const OPEN_CLOSE_FRAME: u8 = 1 << 3;
 pub const SETTING_COMPRESSION: u8 = 1 << 4;
-/// `SW_WEBSOCKET_DEFAULT_BUFFER`.
-const DEFAULT_BUFFER: usize = 4096;
 
 /// A message being assembled from fragments: its payload so far, and the
 /// first frame's opcode and flags.
@@ -742,7 +746,15 @@ pub struct Message {
 
 /// Where a message being assembled lives: a context's `ws_buffer`, or a
 /// client's `continue_frame_buffer` (null when none).
-pub type Assembly = Option<Box<Message>>;
+// HTTP contexts zero-initialize this field.
+#[repr(u8)]
+#[derive(Default)]
+pub enum Assembly {
+    #[default]
+    Idle = 0,
+    Collecting(Box<Message>),
+    Discarding,
+}
 
 /// `websocket::send_frame`: answer a control frame the user did not ask for.
 fn reply(settings: u8, socket: co::Co, opcode: u8, payload: &[u8]) {
@@ -770,9 +782,9 @@ fn protocol_error() -> Owned {
 }
 
 /// The payload as a string, inflated when `compressed`.
-fn payload_string(payload: &[u8], compressed: bool) -> Option<Owned> {
+fn payload_string(payload: &[u8], compressed: bool, max: usize) -> Option<Owned> {
     if compressed {
-        uncompress(payload)
+        uncompress(payload, max)
     } else {
         Some(Owned::string(ZString::new(payload)))
     }
@@ -843,8 +855,35 @@ fn receive(settings: u8, slot: &mut Assembly, socket: co::Co, packet: &mut [u8])
         let payload = Owned::string(ZString::new(payload));
         return Next::Done(deliver(opcode.code(), payload, FLAG_FIN));
     }
+    if opcode == Opcode::Continuation && matches!(slot, Assembly::Discarding) {
+        if frame.flags.is_final() {
+            *slot = Assembly::Idle;
+        }
+        return Next::Recv;
+    }
+    let limit = socket.edit_protocol(|protocol| protocol.package_max_length as usize);
+    if opcode == Opcode::Continuation || !frame.flags.is_final() {
+        let assembled = match slot {
+            Assembly::Collecting(message) => message.data.len(),
+            _ => 0,
+        };
+        if assembled
+            .checked_add(payload.len())
+            .is_none_or(|len| len > limit)
+        {
+            *slot = if frame.flags.is_final() {
+                Assembly::Idle
+            } else {
+                Assembly::Discarding
+            };
+            log::set_last_error(
+                swoole_rs_error::ErrorCode::SW_ERROR_PACKAGE_LENGTH_TOO_LARGE as c_int,
+            );
+            return Next::Done(Owned::null());
+        }
+    }
     if opcode == Opcode::Continuation {
-        let Some(message) = slot.as_mut() else {
+        let Assembly::Collecting(message) = slot else {
             warning(
                 func,
                 "A continuation frame cannot stand alone and MUST be preceded by an initial frame whose \
@@ -857,17 +896,18 @@ fn receive(settings: u8, slot: &mut Assembly, socket: co::Co, packet: &mut [u8])
             return Next::Recv;
         }
         // The whole message is assembled: release its memory once delivered.
-        let Some(message) = slot.take() else {
+        let Assembly::Collecting(message) = std::mem::take(slot) else {
             return Next::Done(Owned::null());
         };
         let complete = message.metadata;
-        let Some(payload) = payload_string(&message.data, complete.flags.is_compressed()) else {
+        let Some(payload) = payload_string(&message.data, complete.flags.is_compressed(), limit)
+        else {
             return Next::Done(protocol_error());
         };
         let flags = complete.flags.with_final().bits();
         return Next::Done(deliver(complete.opcode.code(), payload, flags));
     }
-    if slot.is_some() {
+    if !matches!(slot, Assembly::Idle) {
         warning(
             func,
             "All fragments of a message, except for the initial frame, must use the continuation \
@@ -876,20 +916,13 @@ fn receive(settings: u8, slot: &mut Assembly, socket: co::Co, packet: &mut [u8])
         return Next::Done(Owned::null());
     }
     if frame.flags.is_final() {
-        let Some(payload) = payload_string(payload, frame.flags.is_compressed()) else {
+        let Some(payload) = payload_string(payload, frame.flags.is_compressed(), limit) else {
             return Next::Done(protocol_error());
         };
         return Next::Done(deliver(opcode.code(), payload, frame.flags.bits()));
     }
-    let size = if payload.is_empty() {
-        DEFAULT_BUFFER
-    } else {
-        payload.len()
-    };
-    let mut data = Vec::with_capacity(size);
-    data.extend_from_slice(payload);
-    *slot = Some(Box::new(Message {
-        data,
+    *slot = Assembly::Collecting(Box::new(Message {
+        data: payload.to_vec(),
         metadata: FrameMetadata {
             opcode,
             flags: frame.flags,

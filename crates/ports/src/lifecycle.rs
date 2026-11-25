@@ -7,8 +7,6 @@ use swoole_rs_corebase::{log, sys};
 use swoole_rs_server::port_config::PortConfig;
 pub use swoole_rs_server::port_tls::{context_dup, sni_add, ssl_init};
 
-use crate::methods::{FD_DGRAM_SERVER, FD_STREAM_SERVER};
-
 /// `getsockopt(fd, SOL_SOCKET, option)`: the value, or `None` (errno set).
 fn get_option(fd: c_int, option: c_int) -> Option<c_int> {
     let mut value: c_int = 0;
@@ -42,12 +40,7 @@ pub(crate) fn import(config: &mut PortConfig, fd: c_int) -> bool {
     }
     let family = c_int::from(socket.address_family());
     let kind = socket_type(family, so_type);
-    socket.type_as(kind);
-    socket.fd_type = if kind.is_dgram() {
-        FD_DGRAM_SERVER
-    } else {
-        FD_STREAM_SERVER
-    };
+    socket.listen_as(kind);
     let port = socket.port();
     let host_set = socket.with_host(|host| config.host.set(host.to_bytes()));
     config.set_listening_socket(OwnedSocket::new(Box::new(socket)));

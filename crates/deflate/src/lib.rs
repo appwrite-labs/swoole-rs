@@ -180,8 +180,14 @@ mod tests {
                 !compressed.ends_with(&[0, 0, 0xff, 0xff]),
                 "the sync flush tail is dropped"
             );
-            let plain = swoole_rs_inflate::message(&compressed).unwrap();
+            let plain = swoole_rs_inflate::message(&compressed, data.len()).unwrap();
             assert_eq!(plain, data, "permessage-deflate round trip");
+            if let Some(max) = data.len().checked_sub(1) {
+                assert_eq!(
+                    swoole_rs_inflate::message(&compressed, max),
+                    Err(swoole_rs_inflate::MessageFailure::Limit(max))
+                );
+            }
         }
     }
 

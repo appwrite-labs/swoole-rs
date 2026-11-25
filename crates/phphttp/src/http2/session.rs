@@ -12,7 +12,7 @@ use std::{
 };
 use swoole_rs_corebase::CellExt;
 use swoole_rs_http2::{
-    hpack::{Decoder, Encoder, Field},
+    hpack::{Decoder, Encoder, Field, MAX_DECODED_STRING},
     sw_rs_http2_default_settings,
 };
 use swoole_rs_zend::bailout;
@@ -76,6 +76,9 @@ pub(crate) struct SessionState {
     /// The stream whose header block awaits CONTINUATION frames (0: none),
     /// and whether that block's HEADERS frame ended the stream.
     pub(crate) header_stream_id: Cell<u32>,
+    // A bounded grace period for DATA already in flight when a stream was reset.
+    pub(crate) recently_reset: Cell<[u32; 16]>,
+    pub(crate) remaining_headers: Cell<Option<u32>>,
     pub(crate) header_end_stream: Cell<bool>,
     pub(crate) shutting_down: Cell<bool>,
     /// The connection's context: frames that belong to no stream go out on it.
@@ -138,7 +141,7 @@ impl SessionState {
         Self {
             fd,
             streams: Cell::default(),
-            inflater: Decoder::default(),
+            inflater: Decoder::new(MAX_DECODED_STRING),
             field: Cell::default(),
             deflater: Cell::default(),
             local,
@@ -148,6 +151,8 @@ impl SessionState {
             max_body_size,
             last_stream_id: Cell::new(0),
             header_stream_id: Cell::new(0),
+            recently_reset: Cell::new([0; 16]),
+            remaining_headers: Cell::new(None),
             header_end_stream: Cell::new(false),
             shutting_down: Cell::new(false),
             default_ctx,

@@ -106,6 +106,20 @@ pub fn get_default_setting(id: u32) -> u32 {
     default_slot(id).load(Ordering::Relaxed)
 }
 
+// This local decode limit is independent of the settings advertised to peers.
+static MAX_HEADERS: AtomicU32 = AtomicU32::new(1000);
+
+#[must_use]
+pub fn max_headers() -> u32 {
+    MAX_HEADERS.load(Ordering::Relaxed)
+}
+
+pub fn set_max_headers(limit: u32) {
+    if limit != 0 {
+        MAX_HEADERS.store(limit, Ordering::Relaxed);
+    }
+}
+
 /// All defaults, for the server's SETTINGS frame.
 #[must_use]
 pub fn sw_rs_http2_default_settings() -> Http2Settings {
@@ -157,16 +171,6 @@ pub fn sw_rs_http2_window_plan(
         0
     };
     Http2WindowPlan { value, increment }
-}
-
-#[must_use]
-pub fn sw_rs_http2_data_rejected(
-    current: usize,
-    additional: usize,
-    maximum: u32,
-    ended: bool,
-) -> bool {
-    current.wrapping_add(additional) > maximum as usize || ended
 }
 
 /// HTTP/2 error codes used by both the wire handlers and PHP registration.

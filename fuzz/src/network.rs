@@ -172,7 +172,7 @@ pub fn multipart(bytes: &[u8]) {
     let Some((boundary, body)) = rest.split_at_checked(usize::from(boundary % 70) + 1) else {
         return;
     };
-    let mut parser = MultipartParser::new(boundary);
+    let mut parser = MultipartParser::new(boundary).expect("RFC 2046 boundary fits");
     let mut parts = Parts::default();
     let step = usize::from(step).max(1);
     for chunk in body.chunks(step) {
@@ -259,7 +259,7 @@ pub fn http2_hpack(bytes: &[u8]) {
         return;
     };
     let last = role & 2 == 0;
-    let decoder = swoole_rs_http2::hpack::Decoder::default();
+    let decoder = swoole_rs_http2::hpack::Decoder::new(swoole_rs_http2::hpack::MAX_DECODED_STRING);
     let mut field = swoole_rs_http2::hpack::Field::default();
     let mut inflater = std::ptr::null_mut();
     // SAFETY: `inflater` is a writable pointer.
@@ -369,7 +369,7 @@ pub fn http_rewrite(bytes: &[u8]) {
 /// `swoole_rs_inflate::message` return, and the first byte as a level (-1 to 9) with
 /// the rest as a message round-trips through `swoole_rs_deflate::message`.
 pub fn ws_inflate(bytes: &[u8]) {
-    let _ = swoole_rs_inflate::message(bytes);
+    let _ = swoole_rs_inflate::message(bytes, 64 * 1024);
     let Some((&level, data)) = bytes.split_first() else {
         return;
     };
@@ -377,7 +377,7 @@ pub fn ws_inflate(bytes: &[u8]) {
     let compressed = swoole_rs_deflate::message(data, level)
         .unwrap_or_else(|failure| panic!("deflate at {level}: {failure:?}"));
     assert_eq!(
-        swoole_rs_inflate::message(&compressed).as_deref(),
+        swoole_rs_inflate::message(&compressed, data.len()).as_deref(),
         Ok(data),
         "level {level}"
     );
@@ -400,17 +400,17 @@ pub fn http_inflate(bytes: &[u8]) {
     };
     let decoder = || {
         if gzip && mode & 4 != 0 {
-            Inflate::gzip_only()
+            Inflate::gzip_only(body.len())
         } else {
-            Inflate::new(gzip)
+            Inflate::new(gzip, body.len())
         }
     };
     let _ = decoder().decode(body);
-    let _ = in_chunks(decoder(), Inflate::decode, body, lengths);
+    let _ = in_chunks(decoder(), |decoder, chunk| decoder.decode(chunk).ok(), body, lengths);
     let level = c_int::from(mode >> 3) % 10;
     let stream = swoole_rs_deflate::compress(body, 2 * body.len() + 64, window_bits, level)
         .unwrap_or_else(|failure| panic!("compress {window_bits} at {level}: {failure:?}"));
-    assert_eq!(decoder().decode(&stream), Some(body), "one call");
+    assert_eq!(decoder().decode(&stream), Ok(body), "one call");
     // The raw retry is the first chunk's alone: a raw stream whose first two bytes
     // read as a zlib header, or whose first chunk is shorter, fails in pieces.
     if window_bits < 0
@@ -420,7 +420,7 @@ pub fn http_inflate(bytes: &[u8]) {
         return;
     }
     assert_eq!(
-        in_chunks(decoder(), Inflate::decode, &stream, lengths).as_deref(),
+        in_chunks(decoder(), |decoder, chunk| decoder.decode(chunk).ok(), &stream, lengths).as_deref(),
         Some(body),
         "chunks {lengths:?}"
     );
@@ -429,8 +429,8 @@ pub fn http_inflate(bytes: &[u8]) {
 /// An HTTP client's Brotli or zstd response body (the first byte's low bit), compressed
 /// at the level its other bits pick, through `Client::decompress_response`'s decoder in
 /// the chunks the second byte counts, gives the body back. The body as it is decodes
-/// without a panic in chunks of at most 16 bytes, until one fails or the output passes
-/// 16 MiB: a few bytes of Brotli can expand to 16 MiB, so it is never fed whole.
+/// in chunks of at most 16 bytes with a decoded limit of the input length or 16 MiB,
+/// whichever is smaller.
 pub fn http_decompress(bytes: &[u8]) {
     use swoole_rs_inflate::{brotli, zstd};
     let Some((&[mode, count], rest)) = bytes.split_first_chunk::<2>() else {
@@ -440,7 +440,7 @@ pub fn http_decompress(bytes: &[u8]) {
     let level = i32::from(mode >> 1);
     if mode & 1 == 0 {
         let stream = brotli::compress(body, level % 12).expect("BrotliEncoderCompress");
-        let new = || brotli::Decoder::new().expect("BrotliDecoderCreateInstance");
+        let new = |limit| brotli::Decoder::new(limit).expect("BrotliDecoderCreateInstance");
         round_trip(
             new,
             |decoder, chunk| decoder.decode(chunk).ok(),
@@ -451,7 +451,7 @@ pub fn http_decompress(bytes: &[u8]) {
     } else {
         // -3 to 19: zstd's fast levels and all but its slowest ultra ones.
         let stream = zstd::compress(body, level % 23 - 3).expect("ZSTD_compress");
-        let new = || zstd::Decoder::new().expect("ZSTD_initDStream");
+        let new = |limit| zstd::Decoder::new(limit).expect("ZSTD_initDStream");
         round_trip(
             new,
             |decoder, chunk| decoder.decode(chunk).ok(),
@@ -464,22 +464,20 @@ pub fn http_decompress(bytes: &[u8]) {
 
 /// `http_decompress` for one decoder: `body` in small chunks, then `stream` in `lengths`.
 fn round_trip<D>(
-    new: impl Fn() -> D,
+    new: impl Fn(usize) -> D,
     decode: impl for<'a> Fn(&'a mut D, &[u8]) -> Option<&'a [u8]>,
     body: &[u8],
     stream: &[u8],
     lengths: &[u8],
 ) {
-    let mut decoder = new();
-    let mut produced = 0;
+    let mut decoder = new(body.len().min(1 << 24));
     for chunk in body.chunks(lengths.first().map_or(16, |&n| usize::from(n % 16) + 1)) {
-        match decode(&mut decoder, chunk) {
-            Some(out) if produced + out.len() <= 1 << 24 => produced += out.len(),
-            _ => break,
+        if decode(&mut decoder, chunk).is_none() {
+            break;
         }
     }
     assert_eq!(
-        in_chunks(new(), decode, stream, lengths).as_deref(),
+        in_chunks(new(body.len()), decode, stream, lengths).as_deref(),
         Some(body),
         "{stream:?} in {lengths:?}"
     );

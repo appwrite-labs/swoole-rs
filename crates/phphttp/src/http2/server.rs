@@ -18,11 +18,10 @@ use swoole_rs_http2::{
     Http2RespondFacts, Http2WindowPlan, Media, PING_PAYLOAD, Respond, WindowAction, decode_packet,
     hpack::{Encoder, Error},
     send_frame_size, sw_rs_http2_chunk, sw_rs_http2_content_length_rejected,
-    sw_rs_http2_data_rejected, sw_rs_http2_file_complete, sw_rs_http2_header_defaults,
-    sw_rs_http2_header_plan, sw_rs_http2_headers_flags, sw_rs_http2_inflate_step,
-    sw_rs_http2_media_kind, sw_rs_http2_pack_frame_header, sw_rs_http2_respond_next,
-    sw_rs_http2_response_status, sw_rs_http2_setting_plan, sw_rs_http2_window_action,
-    sw_rs_http2_window_plan,
+    sw_rs_http2_file_complete, sw_rs_http2_header_defaults, sw_rs_http2_header_plan,
+    sw_rs_http2_headers_flags, sw_rs_http2_inflate_step, sw_rs_http2_media_kind,
+    sw_rs_http2_pack_frame_header, sw_rs_http2_respond_next, sw_rs_http2_response_status,
+    sw_rs_http2_setting_plan, sw_rs_http2_window_action, sw_rs_http2_window_plan,
 };
 use swoole_rs_phpserver::RecvData;
 use swoole_rs_server::{Connection, view};
@@ -963,6 +962,9 @@ fn headers(
         };
         block = kept;
     }
+    session
+        .remaining_headers
+        .set(Some(swoole_rs_http2::max_headers()));
     header_block(session, &stream, flags, block)
 }
 
@@ -982,6 +984,10 @@ fn header_block(session: &Session, stream: &Stream, flags: u32, payload: &[u8]) 
         return true;
     }
     session.header_stream_id.set(0);
+    if session.remaining_headers.get().is_none() {
+        const ENHANCE_YOUR_CALM: u32 = 11;
+        return reset_stream(session, stream, ENHANCE_YOUR_CALM);
+    }
     if !discard && !headers_complete(stream) {
         return false;
     }
@@ -1104,10 +1110,23 @@ fn settings(session: &Session, payload: &[u8]) -> bool {
     true
 }
 
+fn reset_stream(session: &Session, stream: &Stream, code: u32) -> bool {
+    let mut ids = session.recently_reset.get();
+    ids.rotate_right(1);
+    ids[0] = stream.id;
+    session.recently_reset.set(ids);
+    reset(stream.ctx(), stream.id, code);
+    session.remove(stream.id)
+}
+
 /// A DATA frame: buffer the body, keep the windows open and dispatch the
 /// request at the end of the stream.
 fn data(session: &Session, stream_id: u32, flags: u32, payload: &[u8]) -> bool {
     let Some(stream) = session.stream(stream_id, false) else {
+        if stream_id != 0 && session.recently_reset.get().contains(&stream_id) {
+            connection_flow(session, session.default_ctx(), payload.len());
+            return true;
+        }
         log(
             LOG_WARNING,
             STREAM_NOT_FOUND,
@@ -1122,13 +1141,10 @@ fn data(session: &Session, stream_id: u32, flags: u32, payload: &[u8]) -> bool {
     let ctx = stream.ctx();
     let length = payload.len();
     if length > 0 {
-        let buffered = ctx.data_start();
-        let ended = get(ctx, Field::End) != 0;
-        if sw_rs_http2_data_rejected(buffered, length, session.max_body_size, ended) {
-            reset(ctx, stream_id, 0);
-            return session.remove(stream_id);
+        if get(ctx, Field::End) != 0 || ctx.data_append(payload, session.max_body_size).is_err() {
+            connection_flow(session, ctx, length);
+            return reset_stream(session, &stream, 0);
         }
-        ctx.data_append(payload);
         flow(session, &stream, ctx, stream_id, length);
     }
     if flags & FLAG_END_STREAM != 0 {
@@ -1140,19 +1156,24 @@ fn data(session: &Session, stream_id: u32, flags: u32, payload: &[u8]) -> bool {
 /// Flow control: debit both receive windows, and reopen each once a quarter
 /// remains.
 fn flow(session: &Session, stream: &Stream, ctx: Ctx, stream_id: u32, length: usize) {
+    connection_flow(session, ctx, length);
     let initial = session.local(INIT_WINDOW_SIZE);
-    let connection = window(session.local_window_size.get(), length, initial, false);
-    session.local_window_size.set(connection.value);
     let debited = window(stream.local_window_size.get(), length, 0, false).value;
     stream.local_window_size.set(debited);
-    if connection.increment != 0 {
-        window_update(ctx, 0, connection.increment);
-        session.local_window_size.set(initial);
-    }
     let reopen = window(debited, 0, initial, false);
     if reopen.increment != 0 {
         window_update(ctx, stream_id, reopen.increment);
         stream.local_window_size.set(initial);
+    }
+}
+
+fn connection_flow(session: &Session, ctx: Ctx, length: usize) {
+    let initial = session.local(INIT_WINDOW_SIZE);
+    let connection = window(session.local_window_size.get(), length, initial, false);
+    session.local_window_size.set(connection.value);
+    if connection.increment != 0 {
+        window_update(ctx, 0, connection.increment);
+        session.local_window_size.set(initial);
     }
 }
 
@@ -1193,10 +1214,15 @@ fn parse_header(
         input = rest;
         let inflate_flags = step.flags();
         // Trailers are decoded for the HPACK table but never exposed or acted on.
-        if let Some((name, value)) = step.header.filter(|_| !discard)
-            && !request_header(session, stream, name, value)
-        {
-            continue;
+        if let Some((name, value)) = step.header {
+            let remaining = session
+                .remaining_headers
+                .get()
+                .and_then(|n| n.checked_sub(1));
+            session.remaining_headers.set(remaining);
+            if remaining.is_some() && !discard && !request_header(session, stream, name, value) {
+                continue;
+            }
         }
         let step = sw_rs_http2_inflate_step(inflate_flags, input.len(), false);
         if step.end_headers {

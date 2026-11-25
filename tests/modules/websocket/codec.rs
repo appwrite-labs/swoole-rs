@@ -518,3 +518,20 @@ fn encoding_errors_leave_output_untouched() {
         assert_eq!(bytes(&output), vec![FILL; 16]);
     }
 }
+
+#[test]
+fn handshake_hashes_the_entire_binary_key_across_padding_boundaries() {
+    // Reference tokens for zero-filled keys. With the 36-byte GUID appended,
+    // these lengths cross the padding, block, and multi-block boundaries.
+    for (length, expected) in [
+        (19, b"7nO251RCmyFzcAO/m6teFMzpEXU="),
+        (20, b"SxPzbI0w3duH/iaTx548BcHMvrc="),
+        (28, b"e0DVzW2Nnlw6nvkMbnUPzs97VRM="),
+        (63, b"sdiTdgVahukH8LbJVfhW9pCKUOQ="),
+        (64, b"KPGXUjIyFitm4+epMPmE3Fx5VJQ="),
+        (84, b"D/AkzWw6l/Nt+v2/pMGxvKxHj0k="),
+        (1024, b"E2Dgar1nCYFURUkBQilCH/yzf68="),
+    ] {
+        assert_eq!(&swoole_rs_websocket::accept(&vec![0; length]), expected);
+    }
+}

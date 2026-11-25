@@ -64,11 +64,7 @@ pub(crate) struct Request {
     pub(crate) body_at: usize,
     pub(crate) body_length: usize,
     /// An HTTP/2 request's body, as its DATA frames arrive.
-    #[expect(
-        clippy::box_collection,
-        reason = "all zeroes must be valid: a null Box is None"
-    )]
-    pub(crate) h2_data: Option<Box<Vec<u8>>>,
+    pub(crate) h2_data: Option<Box<swoole_rs_corebase::buffer::BoundedBytes>>,
     pub(crate) zobject: Slot,
     /// The array properties made so far, a bit per `parse::Property`.
     pub(crate) arrays: u8,
@@ -172,7 +168,7 @@ pub(crate) struct State {
     /// reads its server's.
     pub(crate) compression_types: Option<Rc<HashSet<Box<[u8]>>>>,
     /// A coroutine server's WebSocket message being assembled from fragments.
-    pub(crate) ws_buffer: Option<Box<crate::websocket::Message>>,
+    pub(crate) ws_buffer: crate::websocket::Assembly,
 }
 
 /// `swoole::http::Response`.

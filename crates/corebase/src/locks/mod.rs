@@ -228,11 +228,11 @@ fn deadline(millis: i32) -> timespec {
 /// it, as `Thread\Lock` lets one thread unlock what another locked; for a pthread
 /// mutex that is undefined.
 #[cfg(target_os = "linux")]
-#[derive(Debug)]
-struct Word(AtomicU32);
+#[derive(Debug, Default)]
+struct UnownedMutex(AtomicU32);
 
 #[cfg(target_os = "linux")]
-impl Word {
+impl UnownedMutex {
     fn try_lock(&self) -> Result<(), i32> {
         self.0
             .compare_exchange(0, 1, Ordering::Acquire, Ordering::Relaxed)
@@ -277,12 +277,68 @@ impl Word {
     }
 }
 
+/// The flag is the public lock. Its mutex only protects flag access and is
+/// released by the same thread that acquired it.
+#[cfg(not(target_os = "linux"))]
+#[derive(Debug, Default)]
+struct UnownedMutex {
+    held: std::sync::Mutex<bool>,
+    available: std::sync::Condvar,
+}
+
+#[cfg(not(target_os = "linux"))]
+impl UnownedMutex {
+    fn try_lock(&self) -> Result<(), i32> {
+        let mut held = match self.held.try_lock() {
+            Ok(held) => held,
+            Err(std::sync::TryLockError::WouldBlock) => return Err(EBUSY),
+            Err(std::sync::TryLockError::Poisoned(error)) => error.into_inner(),
+        };
+        if std::mem::replace(&mut *held, true) {
+            Err(EBUSY)
+        } else {
+            Ok(())
+        }
+    }
+
+    fn lock(&self, millis: i32) -> Result<(), i32> {
+        let held = self
+            .held
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut held = if millis > 0 {
+            let timeout = std::time::Duration::from_millis(millis.unsigned_abs().into());
+            let (held, _) = self
+                .available
+                .wait_timeout_while(held, timeout, |held| *held)
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if *held {
+                return Err(ETIMEDOUT);
+            }
+            held
+        } else {
+            self.available
+                .wait_while(held, |held| *held)
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+        };
+        *held = true;
+        Ok(())
+    }
+
+    fn unlock(&self) {
+        *self
+            .held
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = false;
+        self.available.notify_one();
+    }
+}
+
 /// A made lock of one kind, live for `'a`.
 #[derive(Clone, Copy)]
 enum Live<'a> {
     Mutex(MutexRef<'a>),
-    #[cfg(target_os = "linux")]
-    Word(&'a Word),
+    UnownedMutex(&'a UnownedMutex),
     RwLock(RwLockRef<'a>),
     #[cfg(target_os = "linux")]
     Spin(SpinRef<'a>),
@@ -309,8 +365,7 @@ impl Live<'_> {
                 }
                 pthread_result(pthread_mutex_lock(lock))
             }
-            #[cfg(target_os = "linux")]
-            Self::Word(word) => {
+            Self::UnownedMutex(word) => {
                 if operation & LOCK_NB != 0 {
                     word.try_lock()
                 } else {
@@ -364,8 +419,7 @@ impl Live<'_> {
     fn unlock(self) -> Result<(), i32> {
         match self {
             Self::Mutex(lock) => pthread_result(pthread_mutex_unlock(lock)),
-            #[cfg(target_os = "linux")]
-            Self::Word(word) => {
+            Self::UnownedMutex(word) => {
                 word.unlock();
                 Ok(())
             }
@@ -427,8 +481,7 @@ pub struct Lock(Held);
 #[derive(Debug)]
 enum Held {
     Mutex(Box<SharedMutex>),
-    #[cfg(target_os = "linux")]
-    Word(Box<Word>),
+    UnownedMutex(Box<UnownedMutex>),
     SharedMutex(&'static Words<MUTEX_LOCK>),
     RwLock(Box<RwLock>),
     SharedRwLock(&'static Words<RW_LOCK>),
@@ -480,16 +533,10 @@ impl Lock {
         }
     }
 
-    /// `Thread\Lock`'s mutex: thread-private, and any thread may unlock it, as
-    /// upstream's tests have one thread unlock what another locked. On Linux that is a
-    /// [`Word`]; elsewhere a [`private`](Self::private) pthread mutex, for which an
-    /// unlock by another thread is undefined.
+    /// A thread-private mutex that any thread can release.
     #[must_use]
     pub fn unowned_mutex() -> Option<Self> {
-        #[cfg(target_os = "linux")]
-        return Some(Self(Held::Word(Box::new(Word(AtomicU32::new(0))))));
-        #[cfg(not(target_os = "linux"))]
-        Self::private(Kind::Mutex)
+        Some(Self(Held::UnownedMutex(Box::default())))
     }
 
     /// A process-shared lock (`new Mutex(true)`) in `storage`, which it keeps:
@@ -524,8 +571,7 @@ impl Lock {
     fn live(&self) -> Live<'_> {
         match &self.0 {
             Held::Mutex(mutex) => Live::Mutex(MutexRef(&mutex.lock)),
-            #[cfg(target_os = "linux")]
-            Held::Word(word) => Live::Word(word),
+            Held::UnownedMutex(word) => Live::UnownedMutex(word),
             Held::SharedMutex(lock) => Live::Mutex(MutexRef(lock)),
             Held::RwLock(rwlock) => Live::RwLock(rwlock.live()),
             Held::SharedRwLock(lock) => Live::RwLock(RwLockRef(lock)),
@@ -901,7 +947,6 @@ mod tests {
     /// it again until another thread unlocks it, and the unlocking thread's writes are
     /// visible to it once it holds the lock.
     #[test]
-    #[cfg(target_os = "linux")]
     fn another_thread_unlocks_a_private_mutex() {
         let lock = super::Lock::unowned_mutex().expect("a mutex");
         let written = AtomicU32::new(0);

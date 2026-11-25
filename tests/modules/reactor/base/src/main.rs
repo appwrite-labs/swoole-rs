@@ -243,6 +243,12 @@ fn unix_socket(blocking: bool, protocol: c_int) -> Box<SocketPair> {
     Box::new(socket_pair::unix_socket(blocking, protocol))
 }
 
+/// A `UnixSocket` whose ends' readiness goes to `fd_type`'s handlers, as upstream's
+/// sets `fd_type` on its end before adding it.
+fn unix_socket_for(fd_type: c_int, blocking: bool, protocol: c_int) -> Box<SocketPair> {
+    Box::new(socket_pair::unix_socket_for(fd_type, blocking, protocol))
+}
+
 /// `new Pipe(blocking)`.
 fn pipe_pair(blocking: bool) -> Box<SocketPair> {
     Box::new(socket_pair::pipe(blocking))
@@ -724,13 +730,12 @@ unsafe fn reactor_test_func(reactor: Running<'_>) {
         assert_eq!(add(reactor, sock(&p, false), SW_EVENT_READ), SW_OK);
         assert_eq!(add(reactor, sock(&p, true), SW_EVENT_WRITE), SW_OK);
 
-        let unsock = unix_socket(false, SOCK_STREAM);
+        let unsock = unix_socket_for(SW_FD_STREAM, false, SOCK_STREAM);
         assert!(ready(&unsock));
 
         let write_count: *mut c_int = Box::into_raw(Box::new(0));
         let sock2 = sock(&unsock, false);
         (*sock2).fields.attach_object(write_count);
-        (*sock2).fields.fd_type = SW_FD_STREAM;
 
         reactor_upstream::set_handlers(
             reactor,
@@ -821,8 +826,8 @@ fn count_user(_: Running<'_>, event: &mut Event) -> bool {
 unsafe fn poll_readiness_after_fd_reuse() {
     unsafe {
         let sockets = [
-            unix_socket(false, SOCK_STREAM),
-            unix_socket(false, SOCK_STREAM),
+            unix_socket_for(SW_FD_STREAM, false, SOCK_STREAM),
+            unix_socket_for(SW_FD_STREAM, false, SOCK_STREAM),
         ];
         assert!(ready(&sockets[0]));
         assert!(ready(&sockets[1]));
@@ -841,7 +846,6 @@ unsafe fn poll_readiness_after_fd_reuse() {
             replacement_count: 0,
         }));
         for &socket in &(*state).sockets {
-            (*socket).fields.fd_type = SW_FD_STREAM;
             (*socket).fields.attach_object(state);
         }
 

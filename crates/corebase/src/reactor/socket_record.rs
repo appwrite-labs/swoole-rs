@@ -638,12 +638,18 @@ impl SocketFields {
         self.cloexec = flags.contains(SocketFlag::SW_SOCK_CLOEXEC);
     }
 
-    /// A socket of `kind`, and its address one of `kind` too, as a socket adopted
-    /// from a descriptor learns what it is.
+    /// A listening socket adopted from its descriptor learns what it is: a socket of
+    /// `kind`, its address one of `kind` too, and its readiness going to the datagram
+    /// or stream server's handlers.
     #[inline]
-    pub const fn type_as(&mut self, kind: SocketType) {
+    pub const fn listen_as(&mut self, kind: SocketType) {
         self.socket_type = kind.raw();
         self.info.kind = kind.raw();
+        self.fd_type = if kind.is_dgram() {
+            crate::constants::FdType::SW_FD_DGRAM_SERVER as c_int
+        } else {
+            crate::constants::FdType::SW_FD_STREAM_SERVER as c_int
+        };
     }
 
     /// `socket->object = this; socket_type = type; fd_type = ...`: the record now

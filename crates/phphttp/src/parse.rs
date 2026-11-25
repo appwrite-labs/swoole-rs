@@ -867,14 +867,14 @@ fn multipart_free(state: &mut State) {
 }
 
 /// `Context::get_multipart_boundary` of a `multipart/form-data` content
-/// type, then `Context::init_multipart_parser`; false when it has no boundary.
+/// type, then `Context::init_multipart_parser`; false when the boundary is missing or too long.
 pub(crate) fn multipart_start(state: &mut State, content_type: &[u8]) -> bool {
     let offset = b"multipart/form-data".len();
     let boundary = swoole_rs_http::boundary(content_type, offset)
         .ok()
         .flatten()
         .and_then(|span| content_type.get(span.offset..span.offset + span.length));
-    let Some(boundary) = boundary else {
+    let Some(parser) = boundary.and_then(MultipartParser::new) else {
         let message = format!("boundary of multipart/form-data not found, fd:{}", state.fd);
         host::log(
             swoole_rs_corebase::log::LogLevel::SW_LOG_WARNING,
@@ -886,10 +886,7 @@ pub(crate) fn multipart_start(state: &mut State, content_type: &[u8]) -> bool {
         state.parser.error = INVALID_HEADER_TOKEN;
         return false;
     };
-    state.mt_parser = Some(Box::new(Multipart {
-        parser: MultipartParser::new(boundary),
-        fp: None,
-    }));
+    state.mt_parser = Some(Box::new(Multipart { parser, fp: None }));
     state.parse.form_data = Some(Box::new(Vec::with_capacity(BUFFER_SIZE_STD)));
     true
 }
@@ -1235,8 +1232,8 @@ pub(crate) fn body(state: &State) -> Option<&[u8]> {
     {
         return Some(chunked);
     }
-    let data = state.request.h2_data.as_deref()?;
-    (!data.is_empty()).then_some(data.as_slice())
+    let data = state.request.h2_data.as_deref()?.as_ref();
+    (!data.is_empty()).then_some(data)
 }
 
 /// `llhttp_method_name(parser.method)`.

@@ -234,6 +234,9 @@ unsafe extern "C" {
         shost: Text<'_>,
         sport: c_int,
     ) -> *mut LIBSSH2_CHANNEL;
+    safe fn swr_ssh2_forward_enter(session: Session);
+    safe fn swr_ssh2_forward_leave(session: Session);
+    safe fn swr_ssh2_forward_closed(session: Session) -> bool;
     /// The channel stream over `channel`, which holds a reference to the
     /// session resource, put in `out`; false when no stream can be allocated.
     safe fn swr_ssh2_session_stream(session_resource: &Value, channel: Opened, out: ReturnSlot<'_>);
@@ -976,6 +979,37 @@ fn auth_agent(call: &Call<'_>) {
     }
 }
 
+/// Keeps the native session through callbacks and coroutine waits during forwarding.
+struct Forwarding(Session);
+
+impl Forwarding {
+    fn new(session: Session) -> Self {
+        swr_ssh2_forward_enter(session);
+        Self(session)
+    }
+
+    fn open<T>(&self, mut open: impl FnMut() -> Option<T>) -> Option<T> {
+        // A disconnect can wake a successful socket poll. End the retry before
+        // it calls libssh2 again, even if the last native error is still EAGAIN.
+        hooked(self.0, || {
+            if swr_ssh2_forward_closed(self.0) {
+                return Some(None);
+            }
+            open().map(Some)
+        })
+        .flatten()
+        .filter(|_| !swr_ssh2_forward_closed(self.0))
+    }
+}
+
+impl Drop for Forwarding {
+    fn drop(&mut self) {
+        swoole_rs_zend::bailout::defer(swoole_rs_zend::contain_with(|| {
+            swr_ssh2_forward_leave(self.0);
+        }));
+    }
+}
+
 /// `PHP_SSH2_LISTEN_MAX_QUEUED`: `ssh2_forward_listen`'s default queue.
 const LISTEN_MAX_QUEUED: i64 = 128;
 
@@ -1001,6 +1035,7 @@ fn forward_listen(call: &Call<'_>) {
     let Some(session) = session(call, resource) else {
         return;
     };
+    let forwarding = Forwarding::new(session);
     if !authenticated(session) {
         warn("Connection not authenticated");
         call.set_bool(false);
@@ -1009,9 +1044,9 @@ fn forward_listen(call: &Call<'_>) {
     let host = host.map(|host| text(host).0);
     // C passed the longs to libssh2's ints as they were.
     let (port, queue) = (port.c_cast(), queue.c_cast());
-    let Some(listener) = hooked(session, || {
-        libssh2_channel_forward_listen_ex(session, host, port, None, queue)
-    }) else {
+    let Some(listener) =
+        forwarding.open(|| libssh2_channel_forward_listen_ex(session, host, port, None, queue))
+    else {
         warn("Failure listening on remote port");
         call.set_bool(false);
         return;
@@ -1033,7 +1068,8 @@ fn forward_accept(call: &Call<'_>) {
         return;
     };
     let session = swr_ssh2_listener_session(resource);
-    let Some(channel) = hooked(session, || libssh2_channel_forward_accept(listener)) else {
+    let forwarding = Forwarding::new(session);
+    let Some(channel) = forwarding.open(|| libssh2_channel_forward_accept(listener)) else {
         call.set_bool(false);
         return;
     };
@@ -2261,8 +2297,7 @@ fn wrapper_auth(
     })
 }
 
-/// `ssh2_disconnect(resource $session): bool`: the resource closed, as C's
-/// `zend_list_close` did whatever its type, and true.
+/// `ssh2_disconnect(resource $session): bool`: close a session resource.
 fn disconnect(call: &Call<'_>) {
     if call.arity(1, 1).is_err() {
         return;
@@ -2270,6 +2305,9 @@ fn disconnect(call: &Call<'_>) {
     let Ok(resource) = call.resource(1) else {
         return;
     };
+    if session(call, resource).is_none() {
+        return;
+    }
     resource.close_resource();
     call.set_bool(true);
 }

@@ -28,6 +28,7 @@
 
 #ifdef SW_USE_ODBC
 #include "php.h"
+#include "main/php_memory_streams.h"
 #include "ext/pdo/php_pdo.h"
 #include "ext/pdo/php_pdo_driver.h"
 
@@ -225,16 +226,72 @@ bool swr_odbc_has_columns(pdo_stmt_t *stmt) {
     return ((pdo_odbc_stmt *) stmt->driver_data)->cols != NULL;
 }
 
-/* What a bound parameter holds now, through its reference if it is one. */
-zval *swr_odbc_parameter_value(struct pdo_bound_param_data *param) {
-    zval *value = &param->parameter;
-    ZVAL_DEREF(value);
-    return value;
+/* Hold the input values independently of their PHP references while stream
+ * wrappers run. Only SQL_PARAM_INPUT records are passed back by SQLParamData. */
+static bool prepare_inputs(pdo_stmt_t *stmt, zend_array *inputs) {
+    struct pdo_bound_param_data *param;
+    ZEND_HASH_FOREACH_PTR(stmt->bound_params, param) {
+        pdo_odbc_param *binding = param->driver_data;
+        if (binding && binding->paramtype == SQL_PARAM_INPUT && binding->len != SQL_NULL_DATA) {
+            zval snapshot;
+            ZVAL_COPY_DEREF(&snapshot, &param->parameter);
+            zend_hash_index_update(inputs, (zend_ulong)(uintptr_t)param, &snapshot);
+        }
+    } ZEND_HASH_FOREACH_END();
+
+    zval *value;
+    ZEND_HASH_FOREACH_VAL(inputs, value) {
+        if (Z_TYPE_P(value) == IS_STRING) {
+            continue;
+        }
+        php_stream *source = NULL;
+        if (Z_TYPE_P(value) == IS_RESOURCE) {
+            php_stream_from_zval_no_verify(source, value);
+        }
+        if (!source) {
+            return false;
+        }
+        php_stream *copy = php_stream_temp_new();
+        if (!copy) {
+            return false;
+        }
+        char page[8192];
+        ssize_t n;
+        while (source && (n = php_stream_read(source, page, sizeof(page))) > 0 && !EG(exception)) {
+            if (php_stream_write(copy, page, n) != n) {
+                php_stream_close(copy);
+                return false;
+            }
+            php_stream_from_zval_no_verify(source, value);
+        }
+        if (!source || n < 0 || EG(exception) || php_stream_rewind(copy) != 0) {
+            php_stream_close(copy);
+            return false;
+        }
+        zval_ptr_dtor(value);
+        php_stream_to_zval(copy, value);
+    } ZEND_HASH_FOREACH_END();
+    return true;
 }
 
-extern bool swr_odbc_execute(pdo_dbh_t *, pdo_stmt_t *, bool, const char *, const int (*)[3]);
+extern bool swr_odbc_execute(pdo_dbh_t *, pdo_stmt_t *, bool, zend_array *, const char *, const int (*)[3]);
 static int odbc_stmt_execute(pdo_stmt_t *stmt) {
-    return swr_odbc_execute(stmt->dbh, stmt, stmt->executed, stmt_file, &execute_lines);
+    zend_array *inputs = stmt->bound_params ? zend_new_array(zend_hash_num_elements(stmt->bound_params)) : NULL;
+    if (inputs && !prepare_inputs(stmt, inputs)) {
+        zend_array_destroy(inputs);
+        if (!EG(exception)) {
+            pdo_odbc_stmt *record = stmt->driver_data;
+            record->einfo = (pdo_odbc_errinfo){.last_state = "HY000", .what = "could not read input LOB stream",
+                                              .file = stmt_file, .line = execute_lines[2]};
+            memcpy(stmt->error_code, "HY000", sizeof("HY000"));
+        }
+        return false;
+    }
+    bool ok = swr_odbc_execute(stmt->dbh, stmt, stmt->executed, inputs, stmt_file, &execute_lines);
+    if (inputs) {
+        zend_array_destroy(inputs);
+    }
+    return ok;
 }
 
 

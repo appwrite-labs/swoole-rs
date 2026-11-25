@@ -302,7 +302,8 @@ impl<'a> Socket<'a> {
     #[must_use]
     #[track_caller]
     pub fn take_kernel_nobufs(self) -> bool {
-        self.read(SocketFields::kernel_nobufs_pending) && self.edit(SocketFields::has_kernel_nobufs)
+        self.read(SocketFields::kernel_nobufs_pending)
+            && self.edit(SocketFields::claim_nobufs_report)
     }
 
     /// `Socket::wait_event`: whether an event came. It waits outside any borrow, since the

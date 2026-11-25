@@ -212,12 +212,14 @@ impl SocketFields {
         true
     }
 
-    /// `Socket::has_kernel_nobufs`: whether a send hit `ENOBUFS` since the last call.
-    pub fn has_kernel_nobufs(&mut self) -> bool {
-        std::mem::take(&mut self.kernel_nobufs)
+    /// `Socket::has_kernel_nobufs`: the report that a send hit `ENOBUFS` since the last
+    /// one is claimed, once: true the first time after the hit, false until the next.
+    #[inline]
+    pub(crate) const fn claim_nobufs_report(&mut self) -> bool {
+        std::mem::replace(&mut self.kernel_nobufs, false)
     }
 
-    /// Whether a send hit `ENOBUFS` since [`Self::has_kernel_nobufs`] last cleared it,
+    /// Whether a send hit `ENOBUFS` since [`Self::claim_nobufs_report`] last claimed it,
     /// leaving it set.
     #[inline]
     #[must_use]
@@ -225,7 +227,7 @@ impl SocketFields {
         self.kernel_nobufs
     }
 
-    /// A send or receive on the socket hit `ENOBUFS`, as [`Self::has_kernel_nobufs`]
+    /// A send or receive on the socket hit `ENOBUFS`, as [`Self::claim_nobufs_report`]
     /// reports next. It writes only that flag.
     #[inline]
     pub const fn note_kernel_nobufs(&mut self) {
@@ -283,12 +285,6 @@ impl SocketFields {
         self.dont_restart = true;
     }
 
-    /// The socket joined its reactor's registry (`removed = 0`).
-    #[inline]
-    pub const fn note_joined_reactor(&mut self) {
-        self.removed = false;
-    }
-
     /// The socket left its reactor, or is to be treated as never in one
     /// (`removed = 1`): closing or freeing it skips the reactor.
     #[inline]
@@ -326,13 +322,67 @@ impl SocketFields {
         self.events.intersects(events)
     }
 
-    /// What the socket is registered for and whose handlers (`swFdType`) its
-    /// readiness goes to, as a status report shows them.
+    /// Whether the socket is registered for any event at all.
     #[inline]
     #[must_use]
-    pub const fn registration(&self) -> (crate::reactor::Events, c_int) {
-        (self.events, self.fd_type)
+    pub const fn has_interest(&self) -> bool {
+        !self.events.is_empty()
     }
+
+    /// The socket's row in a status report: what it is, what it is registered for,
+    /// whose handlers its readiness goes to, its port and its byte counts.
+    #[must_use]
+    pub fn status(&self) -> SocketStatus {
+        SocketStatus {
+            events: self.events,
+            socket_type: self.type_code(),
+            fd_type: self.fd_type,
+            port: self.port(),
+            traffic: self.traffic(),
+        }
+    }
+
+    /// What a hooked wait on the socket needs: `None` once close is deferred
+    /// (`close_wait`), else the state with the `ENOBUFS` report claimed.
+    #[must_use]
+    pub fn wait_state(&mut self) -> Option<WaitState> {
+        if self.close_deferred() {
+            return None;
+        }
+        let tls = !self.ssl().is_null();
+        let wants = self.tls_wants();
+        let rw = crate::reactor::Events::READ | crate::reactor::Events::WRITE;
+        Some(WaitState {
+            events: self.events & rw,
+            nobufs: self.claim_nobufs_report(),
+            want_read: tls && wants.contains(crate::reactor::Events::READ),
+            want_write: tls && wants.contains(crate::reactor::Events::WRITE),
+            removed: self.has_left_reactor(),
+        })
+    }
+}
+
+/// The state a hooked wait reads before it waits ([`SocketFields::wait_state`]).
+pub struct WaitState {
+    /// The read and write events the socket is registered for.
+    pub events: crate::reactor::Events,
+    /// A send hit `ENOBUFS` since the last report, so the wait backs off instead.
+    pub nobufs: bool,
+    /// The TLS session wants a read, or a write, before it can go on.
+    pub want_read: bool,
+    pub want_write: bool,
+    pub removed: bool,
+}
+
+/// A socket's row in a status report ([`SocketFields::status`]).
+#[derive(Clone, Copy)]
+pub struct SocketStatus {
+    pub events: crate::reactor::Events,
+    pub socket_type: crate::constants::SocketTypeCode,
+    /// `swFdType`: whose handlers the socket's readiness goes to.
+    pub fd_type: c_int,
+    pub port: u16,
+    pub traffic: Traffic,
 }
 
 /// A point in a socket's receive count ([`SocketFields::receive_mark`]).
@@ -889,8 +939,8 @@ mod tests {
         assert_eq!(socket.info.kind, 1);
         assert_eq!(socket.info.len, length);
         socket.kernel_nobufs = true;
-        assert!(socket.has_kernel_nobufs());
-        assert!(!socket.has_kernel_nobufs());
+        assert!(socket.claim_nobufs_report());
+        assert!(!socket.claim_nobufs_report());
         assert!(socket.set_fd_option(1, -1).ok);
         assert!(socket.set_kernel_timeout(true, 1.5));
         assert!(socket.set_kernel_timeout(false, 0.25));

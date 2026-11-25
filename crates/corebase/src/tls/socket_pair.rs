@@ -32,9 +32,10 @@ pub struct SocketPair {
 }
 
 /// The constructors: the base's fields, then `pipe(2)` or an `AF_UNIX` `socketpair(2)`
-/// of `protocol`, then a socket for each end (`socks[1]` the master, which writes).
+/// of `protocol`, then a socket for each end (`socks[1]` the master, which writes)
+/// whose readiness goes to `fd_type`'s handlers.
 /// False, after a warning from `origin`, when the descriptors can't be created.
-fn open(blocking: bool, unix: Option<c_int>, origin: &CStr) -> (SocketPair, bool) {
+fn open(blocking: bool, unix: Option<c_int>, fd_type: c_int, origin: &CStr) -> (SocketPair, bool) {
     let timeout = SOCKET_DEFAULTS.read.get();
     let mut pair = SocketPair {
         blocking,
@@ -53,7 +54,7 @@ fn open(blocking: bool, unix: Option<c_int>, origin: &CStr) -> (SocketPair, bool
         return (pair, false);
     };
     pair.socks = socks;
-    let end = |fd| EventSocket::adopt(Box::new(SocketRecord::with_fd(fd, FD_PIPE)));
+    let end = |fd| EventSocket::adopt(Box::new(SocketRecord::with_fd(fd, fd_type)));
     pair.master_socket = Some(end(pair.socks[1]));
     pair.worker_socket = Some(end(pair.socks[0]));
     set_blocking(&mut pair, blocking);
@@ -63,14 +64,21 @@ fn open(blocking: bool, unix: Option<c_int>, origin: &CStr) -> (SocketPair, bool
 /// `Pipe(blocking)` by value: both ends null when it failed.
 #[must_use]
 pub fn pipe(blocking: bool) -> SocketPair {
-    open(blocking, None, c"Pipe").0
+    open(blocking, None, FD_PIPE, c"Pipe").0
 }
 
 /// `UnixSocket(blocking, protocol)` by value: both ends null when it failed.
 /// Sets both ends' kernel buffers to `Socket::default_buffer_size`.
 #[must_use]
 pub fn unix_socket(blocking: bool, protocol: c_int) -> SocketPair {
-    let (pair, opened) = open(blocking, Some(protocol), c"UnixSocket");
+    unix_socket_for(FD_PIPE, blocking, protocol)
+}
+
+/// [`unix_socket`] whose ends' readiness goes to `fd_type`'s handlers rather than
+/// the pipe's.
+#[must_use]
+pub fn unix_socket_for(fd_type: c_int, blocking: bool, protocol: c_int) -> SocketPair {
+    let (pair, opened) = open(blocking, Some(protocol), fd_type, c"UnixSocket");
     if opened {
         let size = SOCKET_DEFAULTS.buffer_size();
         #[expect(
