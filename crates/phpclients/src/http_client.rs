@@ -148,6 +148,7 @@ struct Client {
     body: Cell<Vec<u8>>,
     compress: Cell<Compress>,
     compression_error: Cell<bool>,
+    decoded_body_limit: Cell<usize>,
     decoder: Cell<Option<Decoder>>,
     connection_close: Cell<bool>,
     event_stream: Cell<bool>,
@@ -426,6 +427,8 @@ impl Client {
             body: Cell::default(),
             compress: Cell::new(Compress::None),
             compression_error: Cell::new(false),
+            // The largest response in upstream's compression_with_big_data PHPT.
+            decoded_body_limit: Cell::new(32 * 1024 * 1024),
             decoder: Cell::default(),
             connection_close: Cell::new(false),
             event_stream: Cell::new(false),
@@ -537,6 +540,10 @@ impl Client {
         if let Some(socket) = self.co() {
             crate::socket_options::apply(socket, array, swoole_rs_phpswoole::SocketSettings::All);
             if !swoole_rs_zend::bailout::pending() {
+                if array.get(b"package_max_length").is_some() {
+                    self.decoded_body_limit
+                        .set(socket.handle().protocol().package_max_length as usize);
+                }
                 socket.skip_proxy_handshake();
             }
         }
@@ -1281,11 +1288,7 @@ impl Client {
                     Ok(Decoder::Zlib(Inflate::new(compress == Compress::Gzip)))
                 }
                 Compress::Br => {
-                    let Some(socket) = self.co() else {
-                        return Ok(false);
-                    };
-                    let limit = socket.handle().protocol().package_max_length as usize;
-                    brotli::Decoder::new(limit).map(Decoder::Brotli)
+                    brotli::Decoder::new(self.decoded_body_limit.get()).map(Decoder::Brotli)
                 }
                 Compress::Zstd => zstd::Decoder::new().map(Decoder::Zstd),
                 Compress::None => Err(format!(
