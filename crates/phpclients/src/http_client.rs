@@ -149,7 +149,7 @@ struct Client {
     body: Cell<BoundedBytes>,
     compress: Cell<Compress>,
     compression_error: Cell<bool>,
-    decoded_body_limit: Cell<usize>,
+    package_max_length: Cell<Option<usize>>,
     decoder: Cell<Option<Decoder>>,
     connection_close: Cell<bool>,
     event_stream: Cell<bool>,
@@ -435,8 +435,7 @@ impl Client {
             body: Cell::new(BoundedBytes::new(0, 0)),
             compress: Cell::new(Compress::None),
             compression_error: Cell::new(false),
-            // The largest response in upstream's compression_with_big_data PHPT.
-            decoded_body_limit: Cell::new(swoole_rs_inflate::DEFAULT_BODY_LIMIT),
+            package_max_length: Cell::new(None),
             decoder: Cell::default(),
             connection_close: Cell::new(false),
             event_stream: Cell::new(false),
@@ -549,8 +548,8 @@ impl Client {
             crate::socket_options::apply(socket, array, swoole_rs_phpswoole::SocketSettings::All);
             if !swoole_rs_zend::bailout::pending() {
                 if array.get(b"package_max_length").is_some() {
-                    self.decoded_body_limit
-                        .set(socket.handle().protocol().package_max_length as usize);
+                    self.package_max_length
+                        .set(Some(socket.handle().protocol().package_max_length as usize));
                 }
                 socket.skip_proxy_handshake();
             }
@@ -656,7 +655,7 @@ impl Client {
         socket.check_bound(Events::WRITE);
         swoole_rs_corebase::log::set_last_error(0);
         self.with_body(|body| {
-            let limit = self.decoded_body_limit.get();
+            let limit = self.buffered_body_limit();
             if body.limit() == limit {
                 body.clear();
             } else {
@@ -1288,11 +1287,16 @@ impl Client {
         true
     }
 
+    /// Upstream's send_yield PHPT buffers a 64 MiB uncompressed response.
+    fn buffered_body_limit(&self) -> usize {
+        self.package_max_length.get().unwrap_or(64 * 1024 * 1024)
+    }
+
     /// Temporarily move the response buffer out while PHP callbacks or file I/O can re-enter.
     fn with_body<R>(&self, f: impl FnOnce(&mut BoundedBytes) -> R) -> R {
         let mut body = self
             .body
-            .replace(BoundedBytes::new(self.decoded_body_limit.get(), 0));
+            .replace(BoundedBytes::new(self.buffered_body_limit(), 0));
         let result = f(&mut body);
         self.body.set(body);
         result
@@ -1311,17 +1315,17 @@ impl Client {
     fn decode(&self, decoder: &mut Option<Decoder>, input: &[u8]) -> Result<bool, usize> {
         if decoder.is_none() {
             let compress = self.compress.get();
+            let limit = self
+                .package_max_length
+                .get()
+                .unwrap_or(swoole_rs_inflate::DEFAULT_BODY_LIMIT);
             let made = match compress {
                 Compress::Gzip | Compress::Deflate => Ok(Decoder::Zlib(Inflate::new(
                     compress == Compress::Gzip,
-                    self.decoded_body_limit.get(),
+                    limit,
                 ))),
-                Compress::Br => {
-                    brotli::Decoder::new(self.decoded_body_limit.get()).map(Decoder::Brotli)
-                }
-                Compress::Zstd => {
-                    zstd::Decoder::new(self.decoded_body_limit.get()).map(Decoder::Zstd)
-                }
+                Compress::Br => brotli::Decoder::new(limit).map(Decoder::Brotli),
+                Compress::Zstd => zstd::Decoder::new(limit).map(Decoder::Zstd),
                 Compress::None => Err(format!(
                     "HttpClient::decompress_response unknown compress method [{}]",
                     compress as c_int
