@@ -24,16 +24,16 @@ use std::ptr;
 use swoole_rs_corebase::CCast;
 use swoole_rs_corebase::sys::Text;
 use swoole_rs_ssh2_sys::{
-    KbdintResponse, LIBSSH2_AGENT, LIBSSH2_CHANNEL, LIBSSH2_ERROR_EAGAIN,
+    ChannelSignal, KbdintResponse, LIBSSH2_AGENT, LIBSSH2_CHANNEL, LIBSSH2_ERROR_EAGAIN,
     LIBSSH2_ERROR_SOCKET_NONE, LIBSSH2_LISTENER, LIBSSH2_SESSION, LIBSSH2_SESSION_BLOCK_OUTBOUND,
     LIBSSH2_SFTP, LIBSSH2_SFTP_ATTRIBUTES, LIBSSH2_SFTP_HANDLE, PasswdChangeReq,
     libssh2_agent_connect, libssh2_agent_disconnect, libssh2_agent_get_identity,
     libssh2_agent_list_identities, libssh2_agent_publickey, libssh2_agent_userauth,
     libssh2_channel_close, libssh2_channel_eof, libssh2_channel_flush_ex,
     libssh2_channel_forward_accept, libssh2_channel_forward_cancel,
-    libssh2_channel_forward_listen_ex, libssh2_channel_get_exit_status, libssh2_channel_read_ex,
-    libssh2_channel_request_pty_ex, libssh2_channel_request_pty_size_ex, libssh2_channel_send_eof,
-    libssh2_channel_setenv_ex, libssh2_channel_write_ex, libssh2_scp_recv, libssh2_scp_send_ex,
+    libssh2_channel_forward_listen_ex, libssh2_channel_read_ex, libssh2_channel_request_pty_ex,
+    libssh2_channel_request_pty_size_ex, libssh2_channel_send_eof, libssh2_channel_setenv_ex,
+    libssh2_channel_write_ex, libssh2_keepalive_send, libssh2_scp_recv, libssh2_scp_send_ex,
     libssh2_session_handshake, libssh2_sftp_init, libssh2_sftp_mkdir_ex, libssh2_sftp_read,
     libssh2_sftp_rename_ex, libssh2_sftp_rmdir_ex, libssh2_sftp_stat_ex, libssh2_sftp_symlink_ex,
     libssh2_sftp_tell, libssh2_sftp_unlink_ex, libssh2_sftp_write, libssh2_userauth_authenticated,
@@ -309,6 +309,16 @@ macro_rules! hooks {
     (@params $first:ident $(, $rest:ident)*) => {
         concat!(stringify!($first), $(", ", stringify!($rest),)*)
     };
+    // Optional SDK functions are supplied by C at the call site, so older
+    // libssh2 versions can still link the extension without the symbol.
+    (@dispatch $function:ident, $export:ident(sdk_call, $($arg:ident),*)) => {
+        concat!("#undef ", stringify!($function), "\n#define ", stringify!($function), "(", hooks!(@params $($arg),*), ") ",
+                stringify!($export), "(ssh2_bound(session), session, ", stringify!($function), $(", ", stringify!($arg),)* ")\n")
+    };
+    (@export $export:ident(sdk_call: $sdk:ty, $($arg:ident: $ty:ty),*) -> $ret:ty => $function:ident) => {
+        hooks!(@define concat!("Retry the SDK's `", stringify!($function), "` on `EAGAIN`."),
+            ops, wait_on, $export(sdk_call: $sdk, $($arg: $ty),*) -> $ret = [sdk_call($($arg),*)]);
+    };
     (@dispatch $function:ident, $export:ident($($arg:ident),*)) => {
         concat!("#undef ", stringify!($function), "\n#define ", stringify!($function), "(", hooks!(@params $($arg),*), ") ",
                 stringify!($export), "(ssh2_bound(session), session", $(", ", stringify!($arg),)* ")\n")
@@ -348,7 +358,8 @@ hooks! {
     swoole_libssh2_channel_eof(channel: *mut LIBSSH2_CHANNEL) -> c_int => libssh2_channel_eof;
     swoole_libssh2_channel_close(channel: *mut LIBSSH2_CHANNEL) -> c_int => libssh2_channel_close;
     swoole_libssh2_channel_send_eof(channel: *mut LIBSSH2_CHANNEL) -> c_int => libssh2_channel_send_eof;
-    swoole_libssh2_channel_get_exit_status(channel: *mut LIBSSH2_CHANNEL) -> c_int => libssh2_channel_get_exit_status;
+    swoole_libssh2_keepalive_send(session: *mut LIBSSH2_SESSION, seconds_to_next: *mut c_int) -> c_int => libssh2_keepalive_send;
+    swoole_libssh2_channel_signal_ex(sdk_call: ChannelSignal, channel: *mut LIBSSH2_CHANNEL, signame: *const c_char, signame_len: usize) -> c_int => libssh2_channel_signal_ex;
     swoole_libssh2_channel_request_pty_size_ex(channel: *mut LIBSSH2_CHANNEL, width: c_int, height: c_int, width_px: c_int, height_px: c_int) -> c_int => libssh2_channel_request_pty_size_ex;
     swoole_libssh2_channel_forward_listen_ex(session: *mut LIBSSH2_SESSION, host: *const c_char, port: c_int, bound_port: *mut c_int, queue_maxsize: c_int) -> *mut LIBSSH2_LISTENER => libssh2_channel_forward_listen_ex;
     swoole_libssh2_channel_forward_accept(listener: *mut LIBSSH2_LISTENER) -> *mut LIBSSH2_CHANNEL => libssh2_channel_forward_accept;

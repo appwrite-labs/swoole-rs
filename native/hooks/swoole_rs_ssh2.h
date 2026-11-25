@@ -26,7 +26,8 @@ int swoole_libssh2_channel_write_ex(const struct swr_v1_ssh2_ops *ops, LIBSSH2_S
 int swoole_libssh2_channel_eof(const struct swr_v1_ssh2_ops *ops, LIBSSH2_SESSION *wait_on, LIBSSH2_CHANNEL *channel);
 int swoole_libssh2_channel_close(const struct swr_v1_ssh2_ops *ops, LIBSSH2_SESSION *wait_on, LIBSSH2_CHANNEL *channel);
 int swoole_libssh2_channel_send_eof(const struct swr_v1_ssh2_ops *ops, LIBSSH2_SESSION *wait_on, LIBSSH2_CHANNEL *channel);
-int swoole_libssh2_channel_get_exit_status(const struct swr_v1_ssh2_ops *ops, LIBSSH2_SESSION *wait_on, LIBSSH2_CHANNEL *channel);
+int swoole_libssh2_keepalive_send(const struct swr_v1_ssh2_ops *ops, LIBSSH2_SESSION *wait_on, LIBSSH2_SESSION *session, int *seconds_to_next);
+int swoole_libssh2_channel_signal_ex(const struct swr_v1_ssh2_ops *ops, LIBSSH2_SESSION *wait_on, int (*sdk_call)(LIBSSH2_CHANNEL *, const char *, size_t), LIBSSH2_CHANNEL *channel, const char *signame, size_t signame_len);
 int swoole_libssh2_channel_request_pty_size_ex(const struct swr_v1_ssh2_ops *ops, LIBSSH2_SESSION *wait_on, LIBSSH2_CHANNEL *channel, int width, int height, int width_px, int height_px);
 LIBSSH2_LISTENER *swoole_libssh2_channel_forward_listen_ex(const struct swr_v1_ssh2_ops *ops, LIBSSH2_SESSION *wait_on, LIBSSH2_SESSION *session, const char *host, int port, int *bound_port, int queue_maxsize);
 LIBSSH2_CHANNEL *swoole_libssh2_channel_forward_accept(const struct swr_v1_ssh2_ops *ops, LIBSSH2_SESSION *wait_on, LIBSSH2_LISTENER *listener);

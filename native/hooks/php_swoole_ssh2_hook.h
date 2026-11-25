@@ -17,8 +17,10 @@
 #define libssh2_channel_close(channel) swoole_libssh2_channel_close(ssh2_bound(session), session, channel)
 #undef libssh2_channel_send_eof
 #define libssh2_channel_send_eof(channel) swoole_libssh2_channel_send_eof(ssh2_bound(session), session, channel)
-#undef libssh2_channel_get_exit_status
-#define libssh2_channel_get_exit_status(channel) swoole_libssh2_channel_get_exit_status(ssh2_bound(session), session, channel)
+#undef libssh2_keepalive_send
+#define libssh2_keepalive_send(session, seconds_to_next) swoole_libssh2_keepalive_send(ssh2_bound(session), session, session, seconds_to_next)
+#undef libssh2_channel_signal_ex
+#define libssh2_channel_signal_ex(channel, signame, signame_len) swoole_libssh2_channel_signal_ex(ssh2_bound(session), session, libssh2_channel_signal_ex, channel, signame, signame_len)
 #undef libssh2_channel_request_pty_size_ex
 #define libssh2_channel_request_pty_size_ex(channel, width, height, width_px, height_px) swoole_libssh2_channel_request_pty_size_ex(ssh2_bound(session), session, channel, width, height, width_px, height_px)
 #undef libssh2_channel_forward_listen_ex

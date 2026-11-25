@@ -16,6 +16,13 @@ static void text(const char *actual, const char *expected) { assert(std::strcmp(
 
 extern "C" {
 int libssh2_session_block_directions(LIBSSH2_SESSION *) { return 0; }
+int libssh2_keepalive_send(LIBSSH2_SESSION *, int *seconds) { *seconds = 15; return 0; }
+#ifdef libssh2_channel_signal
+int libssh2_channel_signal_ex(LIBSSH2_CHANNEL *channel, const char *name, size_t length) {
+    assert(channel == channel_value && length == 3 && std::memcmp(name, "INT", length) == 0);
+    return 7;
+}
+#endif
 static int last_errno;
 int libssh2_session_last_errno(LIBSSH2_SESSION *) { return last_errno; }
 #ifdef SWR_HYBRID
@@ -156,6 +163,11 @@ int main() {
     assert(libssh2_sftp_rmdir(sftp, "path") == 7);
     assert(libssh2_userauth_publickey_fromfile(session, "user", "pub", "priv", "pass") == 7);
     assert(libssh2_userauth_keyboard_interactive(session, "user", nullptr) == 7);
+    int seconds = 0;
+    assert(libssh2_keepalive_send(session, &seconds) == 0 && seconds == 15);
+#ifdef libssh2_channel_signal
+    assert(libssh2_channel_signal_ex(channel_value, "INT", 3) == 7);
+#endif
     assert(calls == 18);
     std::puts("aliases=18");
 }
