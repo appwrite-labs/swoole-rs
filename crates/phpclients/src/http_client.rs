@@ -20,7 +20,7 @@ use swoole_rs_corebase::CellExt;
 use swoole_rs_corebase::reactor::{Events, SocketFields};
 use swoole_rs_http::llhttp::{self, Callbacks, EndOfInput, Flow, Parser};
 use swoole_rs_http::status::{BAD_GATEWAY, NO_CONTENT, SERVICE_UNAVAILABLE, SWITCHING_PROTOCOLS};
-use swoole_rs_inflate::{Inflate, brotli, zstd};
+use swoole_rs_inflate::{DecodeError, Inflate, brotli, zstd};
 use swoole_rs_phpstubs::http_client_coro;
 use swoole_rs_websocket::{ENCODED_KEY_LEN, KEY_LEN, Opcode};
 use swoole_rs_zend::{
@@ -1290,7 +1290,9 @@ impl Client {
                 Compress::Br => {
                     brotli::Decoder::new(self.decoded_body_limit.get()).map(Decoder::Brotli)
                 }
-                Compress::Zstd => zstd::Decoder::new().map(Decoder::Zstd),
+                Compress::Zstd => {
+                    zstd::Decoder::new(self.decoded_body_limit.get()).map(Decoder::Zstd)
+                }
                 Compress::None => Err(format!(
                     "HttpClient::decompress_response unknown compress method [{}]",
                     compress as c_int
@@ -1305,14 +1307,10 @@ impl Client {
             }
         }
         let output = match decoder.as_mut() {
-            Some(Decoder::Zlib(inflate)) => inflate
-                .decode(input)
-                .ok_or_else(|| "HttpClient::decompress_response failed".to_owned()),
-            Some(Decoder::Brotli(decoder)) => match decoder.decode(input) {
-                Err(brotli::DecodeError::Limit(limit)) => return Err(limit),
-                Err(brotli::DecodeError::Codec(message)) => Err(message),
-                Ok(chunk) => Ok(chunk),
-            },
+            Some(Decoder::Zlib(inflate)) => inflate.decode(input).ok_or_else(|| {
+                DecodeError::Codec("HttpClient::decompress_response failed".to_owned())
+            }),
+            Some(Decoder::Brotli(decoder)) => decoder.decode(input),
             Some(Decoder::Zstd(decoder)) => decoder.decode(input),
             None => return Ok(false),
         };
@@ -1321,7 +1319,8 @@ impl Client {
                 self.body.with_taken(|body| body.extend_from_slice(output));
                 Ok(true)
             }
-            Err(message) => {
+            Err(DecodeError::Limit(limit)) => Err(limit),
+            Err(DecodeError::Codec(message)) => {
                 native::swoole_http_client_coro_inflate_warning(&message);
                 Ok(false)
             }
