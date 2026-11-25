@@ -473,8 +473,10 @@ mod tests {
         // SAFETY: SIGUSR2 has the deferred handler installed above.
         unsafe { libc::raise(libc::SIGUSR2) };
         assert_eq!(SEEN.load(Relaxed), 0);
-        swoole_signal_dispatch();
+        // Through the entry `signal_set` registered with the loop, as its end callback runs it.
+        assert!(crate::reactor::signals::dispatch());
         assert_eq!(SEEN.swap(0, Relaxed), libc::SIGUSR2);
+        assert!(!crate::reactor::signals::dispatch());
 
         // Removing a handler puts back the action from before its registration.
         set_action(libc::SIGUSR2, 0, false, false);
