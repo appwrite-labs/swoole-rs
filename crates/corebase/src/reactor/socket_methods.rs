@@ -212,12 +212,14 @@ impl SocketFields {
         true
     }
 
-    /// `Socket::has_kernel_nobufs`: whether a send hit `ENOBUFS` since the last call.
-    pub fn has_kernel_nobufs(&mut self) -> bool {
-        std::mem::take(&mut self.kernel_nobufs)
+    /// `Socket::has_kernel_nobufs`: the report that a send hit `ENOBUFS` since the last
+    /// one is claimed, once: true the first time after the hit, false until the next.
+    #[inline]
+    pub const fn claim_nobufs_report(&mut self) -> bool {
+        std::mem::replace(&mut self.kernel_nobufs, false)
     }
 
-    /// Whether a send hit `ENOBUFS` since [`Self::has_kernel_nobufs`] last cleared it,
+    /// Whether a send hit `ENOBUFS` since [`Self::claim_nobufs_report`] last claimed it,
     /// leaving it set.
     #[inline]
     #[must_use]
@@ -225,7 +227,7 @@ impl SocketFields {
         self.kernel_nobufs
     }
 
-    /// A send or receive on the socket hit `ENOBUFS`, as [`Self::has_kernel_nobufs`]
+    /// A send or receive on the socket hit `ENOBUFS`, as [`Self::claim_nobufs_report`]
     /// reports next. It writes only that flag.
     #[inline]
     pub const fn note_kernel_nobufs(&mut self) {
@@ -889,8 +891,8 @@ mod tests {
         assert_eq!(socket.info.kind, 1);
         assert_eq!(socket.info.len, length);
         socket.kernel_nobufs = true;
-        assert!(socket.has_kernel_nobufs());
-        assert!(!socket.has_kernel_nobufs());
+        assert!(socket.claim_nobufs_report());
+        assert!(!socket.claim_nobufs_report());
         assert!(socket.set_fd_option(1, -1).ok);
         assert!(socket.set_kernel_timeout(true, 1.5));
         assert!(socket.set_kernel_timeout(false, 0.25));

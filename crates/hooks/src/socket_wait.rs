@@ -35,7 +35,7 @@ pub(crate) enum Retry {
 struct Wait(Co);
 
 impl Wait {
-    /// `close_wait`, else `has_kernel_nobufs()` (which clears it); the TLS
+    /// `close_wait`, else the claimed `ENOBUFS` report; the TLS
     /// session's wants, `removed` and `events`.
     fn snapshot(&self) -> Option<WaitState> {
         self.0
@@ -47,7 +47,7 @@ impl Wait {
                 let wants = record.tls_wants();
                 Some(WaitState {
                     events: record.events & (Events::READ | Events::WRITE),
-                    nobufs: record.has_kernel_nobufs(),
+                    nobufs: record.claim_nobufs_report(),
                     want_read: tls && wants.contains(Events::READ),
                     want_write: tls && wants.contains(Events::WRITE),
                     removed: record.has_left_reactor(),
