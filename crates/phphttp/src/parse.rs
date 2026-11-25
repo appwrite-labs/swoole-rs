@@ -1235,8 +1235,8 @@ pub(crate) fn body(state: &State) -> Option<&[u8]> {
     {
         return Some(chunked);
     }
-    let data = state.request.h2_data.as_deref()?;
-    (!data.is_empty()).then_some(data.as_slice())
+    let data = state.request.h2_data.as_deref()?.as_ref();
+    (!data.is_empty()).then_some(data)
 }
 
 /// `llhttp_method_name(parser.method)`.

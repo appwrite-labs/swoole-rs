@@ -68,7 +68,7 @@ pub(crate) struct Request {
         clippy::box_collection,
         reason = "all zeroes must be valid: a null Box is None"
     )]
-    pub(crate) h2_data: Option<Box<Vec<u8>>>,
+    pub(crate) h2_data: Option<Box<swoole_rs_corebase::buffer::BoundedBytes>>,
     pub(crate) zobject: Slot,
     /// The array properties made so far, a bit per `parse::Property`.
     pub(crate) arrays: u8,
