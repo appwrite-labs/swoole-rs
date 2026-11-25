@@ -74,25 +74,35 @@ impl SocketFields {
         self.tls.want_write = false;
     }
 
-    /// One TLS step of `socket`'s session: `step` over a copy of its TLS group, its SSL
-    /// and what `pick` reads in the same borrow, then the group stored back. The step
-    /// runs outside any borrow of the record, which OpenSSL's info callback reads
-    /// meanwhile. None without an SSL.
+    /// One TLS step of `socket`'s session: `step` over a copy of its TLS group and what
+    /// `pick` reads in the same borrow, then the group stored back. The step runs
+    /// outside any borrow of the record, which OpenSSL's info callback reads meanwhile.
     fn tls_step<P, R>(
         socket: Socket<'_>,
         pick: impl FnOnce(&Self) -> P,
-        step: impl FnOnce(&mut SocketTls, Ssl, P) -> R,
-    ) -> Option<R> {
-        let (ssl, (before, picked)) = Ssl::of_reading(socket, |record| (record.tls, pick(record)));
-        let held = ssl?;
+        step: impl FnOnce(&mut SocketTls, P) -> R,
+    ) -> R {
+        let (before, picked) = socket.read(|record| (record.tls, pick(record)));
         let mut tls = before;
-        let result = step(&mut tls, held.get(), picked);
+        let result = step(&mut tls, picked);
         // Most transfers leave the group as it was, and then the record needs no edit.
         if tls != before {
             socket.edit(|record| record.tls = tls);
         }
-        Some(result)
+        result
     }
+}
+
+/// [`SocketFields::tls_step`] with the socket's SSL, held for the step: None without one.
+fn with_tls<P, R>(
+    socket: Socket<'_>,
+    pick: impl FnOnce(&SocketFields) -> P,
+    step: impl FnOnce(&mut SocketTls, Ssl, P) -> R,
+) -> Option<R> {
+    let held = Ssl::of(socket)?;
+    Some(SocketFields::tls_step(socket, pick, |tls, picked| {
+        step(tls, held.get(), picked)
+    }))
 }
 
 /// `Address::get_addr()` and `get_port()` of the socket's own address, as its logs print them.
@@ -264,7 +274,7 @@ pub fn ssl_recv_fill<S: ReadSlot>(socket: Socket<'_>, mut buffer: Fill<'_, S>) -
 /// [`ssl_recv_fill`] into `spare`'s room.
 #[inline]
 pub fn ssl_recv_spare(socket: Socket<'_>, spare: &mut Spare<'_>) -> Option<usize> {
-    let result = SocketFields::tls_step(
+    let result = with_tls(
         socket,
         |_| (),
         |tls, ssl, ()| ssl_recv_into(tls, ssl, spare),
@@ -276,7 +286,7 @@ pub fn ssl_recv_spare(socket: Socket<'_>, spare: &mut Spare<'_>) -> Option<usize
 /// DTLS socket sends at most `chunk_size`; None on error or without an SSL.
 #[must_use]
 pub fn ssl_send_drain(socket: Socket<'_>, data: Drain<'_>) -> Option<usize> {
-    let result = SocketFields::tls_step(socket, SocketFields::tls_send_limit, |tls, ssl, limit| {
+    let result = with_tls(socket, SocketFields::tls_send_limit, |tls, ssl, limit| {
         swr_v1_socket_ssl_send(tls, ssl, data.first(limit).bytes())
     });
     ssl_io(socket, result)
@@ -309,7 +319,7 @@ fn error_reason_text() -> (c_int, String) {
 /// `ReturnCode Socket::ssl_accept()`: `SW_ERROR` without an SSL.
 #[must_use]
 pub fn socket_ssl_accept(socket: Socket<'_>) -> Accept {
-    let Some(result) = SocketFields::tls_step(
+    let Some(result) = with_tls(
         socket,
         |_| (),
         |tls, ssl, ()| swr_v1_socket_ssl_accept(tls, ssl),
@@ -338,7 +348,7 @@ pub fn socket_ssl_accept(socket: Socket<'_>) -> Accept {
 /// `int Socket::ssl_connect()` is `SW_OK`: false without an SSL.
 #[must_use]
 pub fn socket_ssl_connect(socket: Socket<'_>) -> bool {
-    let Some(result) = SocketFields::tls_step(
+    let Some(result) = with_tls(
         socket,
         |_| (),
         |tls, ssl, ()| swr_v1_socket_ssl_connect(tls, ssl),
@@ -974,7 +984,7 @@ pub fn socket_ssl_shutdown(socket: Socket<'_>) -> bool {
 /// [`socket_ssl_shutdown`], quiet when `quiet` (upstream's `ssl_quiet_shutdown`).
 fn shutdown(socket: Socket<'_>, quiet: bool) -> bool {
     let repaired = HALFCLOSE_REPAIRS;
-    let Some(result) = SocketFields::tls_step(
+    let Some(result) = with_tls(
         socket,
         |_| (),
         |tls, ssl, ()| ssl_shutdown(tls, ssl, quiet, repaired),
