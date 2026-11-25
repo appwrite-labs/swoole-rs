@@ -4,6 +4,7 @@
 
 use crate::DecodeError;
 use ::zstd::stream::raw::{Decoder as Stream, InBuffer, Operation, OutBuffer};
+use swoole_rs_corebase::buffer::BoundedBytes;
 
 /// `ZSTD_minCLevel()` and `ZSTD_maxCLevel()`.
 #[must_use]
@@ -23,7 +24,7 @@ pub fn compress(input: &[u8], level: i32) -> Result<Vec<u8>, String> {
 /// A response's zstd decoder. `out` holds the bytes the last chunk produced.
 pub struct Decoder {
     stream: Stream<'static>,
-    out: Vec<u8>,
+    out: BoundedBytes,
     limit: usize,
     remaining: usize,
 }
@@ -37,7 +38,7 @@ impl Decoder {
             .map_err(|error| format!("ZSTD_initDStream() failed, Error: [{error}]"))?;
         Ok(Self {
             stream,
-            out: Vec::new(),
+            out: BoundedBytes::new(limit.saturating_add(1), 0),
             limit,
             remaining: limit,
         })
@@ -55,10 +56,11 @@ impl Decoder {
             let end = filled
                 .saturating_add(::zstd::zstd_safe::DCtx::out_size())
                 .min(self.remaining.saturating_add(1));
-            if self.out.len() < end {
-                self.out.resize(end, 0);
-            }
-            let room = self.out.get_mut(filled..end).unwrap_or_default();
+            let prefix = self
+                .out
+                .writable_prefix(end)
+                .map_err(|_| DecodeError::Limit(self.limit))?;
+            let room = prefix.get_mut(filled..).unwrap_or_default();
             let mut sink = OutBuffer::around(room);
             self.stream.run(&mut source, &mut sink).map_err(|error| {
                 DecodeError::Codec(format!("ZSTD_decompressStream() failed, Error: [{error}]"))
@@ -69,7 +71,7 @@ impl Decoder {
             }
             if source.pos() == input.len() && filled < end {
                 self.remaining -= filled;
-                return Ok(self.out.get(..filled).unwrap_or_default());
+                return Ok(self.out.as_ref().get(..filled).unwrap_or_default());
             }
         }
     }

@@ -60,7 +60,6 @@ field-leak swoole_rs_corebase::reactor::socket::SocketMarks::reactor
 field-leak swoole_rs_corebase::reactor::socket_record::SocketFields::fd
 field-leak swoole_rs_corebase::reactor::socket_record::SocketFields::owner
 field-leak swoole_rs_corebase::reactor::socket_record::SocketFields::recv_buffer
-field-leak swoole_rs_corebase::reactor::socket_record::SocketFields::tls
 field-leak swoole_rs_corebase::reactor::socket_record::SocketRecord::fields
 field-leak swoole_rs_corebase::resolver_request::ResolverRequest::fields
 field-leak swoole_rs_corebase::small_fn::SmallFn::ops

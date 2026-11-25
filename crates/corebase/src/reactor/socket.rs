@@ -231,6 +231,17 @@ impl<'a> Socket<'a> {
         self.record.as_ptr()
     }
 
+    /// Whether `fields` are this record's, as [`Self::read`] and [`Self::edit`] lend them.
+    #[inline]
+    #[must_use]
+    pub fn lends(self, fields: &SocketFields) -> bool {
+        let own = self
+            .record
+            .as_ptr()
+            .wrapping_byte_add(std::mem::offset_of!(SocketRecord, fields));
+        std::ptr::eq(own.cast_const().cast::<SocketFields>(), fields)
+    }
+
     /// `read`'s result over the record.
     /// # Panics
     /// Inside an `edit` closure over the same record on this thread.

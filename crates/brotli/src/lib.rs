@@ -14,6 +14,7 @@
 use std::ffi::{c_int, c_void};
 use std::marker::PhantomData;
 use std::ptr::NonNull;
+use swoole_rs_corebase::buffer::BoundedBytes;
 use swoole_rs_corebase::lent::{Count, In, Out, lend_in, lend_out};
 use swoole_rs_corebase::sys::Text;
 
@@ -143,7 +144,7 @@ pub enum DecodeError {
 /// produced; all of it is initialised, so it grows, zeroed, only past its largest.
 pub struct Decoder {
     state: Owned,
-    out: Vec<u8>,
+    out: BoundedBytes,
     limit: usize,
     remaining: usize,
 }
@@ -157,7 +158,7 @@ impl Decoder {
             .ok_or("BrotliDecoderCreateInstance() failed")?;
         Ok(Self {
             state,
-            out: Vec::new(),
+            out: BoundedBytes::new(limit.saturating_add(1), 0),
             limit,
             remaining: limit,
         })
@@ -176,10 +177,10 @@ impl Decoder {
                 let end = filled
                     .saturating_add(BUFFER)
                     .min(self.remaining.saturating_add(1));
-                if out.len() < end {
-                    out.resize(end, 0);
-                }
-                let room = out.get_mut(filled..end).unwrap_or_default();
+                let prefix = out
+                    .writable_prefix(end)
+                    .map_err(|_| DecodeError::Limit(self.limit))?;
+                let room = prefix.get_mut(filled..).unwrap_or_default();
                 let size = room.len();
                 let (result, left) = lend_out(room, |mut next_out, mut available_out| {
                     let result = BrotliDecoderDecompressStream(
@@ -204,7 +205,7 @@ impl Decoder {
             }
         })?;
         self.remaining -= decoded;
-        Ok(self.out.get(..decoded).unwrap_or_default())
+        Ok(self.out.as_ref().get(..decoded).unwrap_or_default())
     }
 }
 
