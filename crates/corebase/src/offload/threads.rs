@@ -9,7 +9,7 @@ use crate::offload::AsyncEvent;
 use crate::ossupport::{Pool, PoolHooks, pool_complete};
 use crate::reactor::event_api::{on_destroy, swr_v1_event_current};
 use crate::reactor::{Event, Running, Socket};
-use crate::tls::socket_pair::{SocketPair, close, drop, unix_socket};
+use crate::tls::socket_pair::{SocketPair, close, drop, unix_socket_for};
 use crate::tls::upstream::write_sync;
 use crate::{
     log, microtime, set_thread_async_threads, swoole_thread_clean, swoole_thread_init,
@@ -227,17 +227,14 @@ fn create() -> *mut AsyncThreads {
     }
     let mut threads = Box::new(AsyncThreads {
         task_num: 0,
-        pipe: unix_socket(false, libc::SOCK_STREAM),
+        pipe: unix_socket_for(FD_AIO, false, libc::SOCK_STREAM),
         pool: None,
     });
-    let (Some(read), Some(write)) = (threads.pipe.worker_end(), threads.pipe.master_end()) else {
+    let (Some(_), Some(write)) = (threads.pipe.worker_end(), threads.pipe.master_end()) else {
         drop(&mut threads.pipe);
         log::set_last_error(SYSTEM_CALL_FAIL);
         return ptr::null_mut();
     };
-    for end in [read, write] {
-        end.edit(|end| end.fd_type = FD_AIO);
-    }
     // The pipe owns its read end, which stays registered until `destroyed` frees the
     // pipe with the reactor.
     if let Some(read) = threads.pipe.worker_event() {

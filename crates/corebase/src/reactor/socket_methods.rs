@@ -326,13 +326,29 @@ impl SocketFields {
         self.events.intersects(events)
     }
 
-    /// What the socket is registered for and whose handlers (`swFdType`) its
-    /// readiness goes to, as a status report shows them.
-    #[inline]
+    /// The socket's row in a status report: what it is, what it is registered for,
+    /// whose handlers its readiness goes to, its port and its byte counts.
     #[must_use]
-    pub const fn registration(&self) -> (crate::reactor::Events, c_int) {
-        (self.events, self.fd_type)
+    pub fn status(&self) -> SocketStatus {
+        SocketStatus {
+            events: self.events,
+            socket_type: self.type_code(),
+            fd_type: self.fd_type,
+            port: self.port(),
+            traffic: self.traffic(),
+        }
     }
+}
+
+/// A socket's row in a status report ([`SocketFields::status`]).
+#[derive(Clone, Copy)]
+pub struct SocketStatus {
+    pub events: crate::reactor::Events,
+    pub socket_type: crate::constants::SocketTypeCode,
+    /// `swFdType`: whose handlers the socket's readiness goes to.
+    pub fd_type: c_int,
+    pub port: u16,
+    pub traffic: Traffic,
 }
 
 /// A point in a socket's receive count ([`SocketFields::receive_mark`]).
