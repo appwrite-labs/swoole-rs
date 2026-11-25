@@ -1,50 +1,50 @@
 # Coverage of crates/
 
-Lines of `crates/` the Cargo swoole.so ran under the PHPT corpus, the corpus apps and swoole/library's suite, measured on `e64134a` (`tools/coverage.py`, nightly `.github/workflows/coverage.yml`). A process that exits by a signal or `_exit` records nothing.
+Lines of `crates/` the Cargo swoole.so ran under the PHPT corpus, the corpus apps and swoole/library's suite, measured on `ab5d2a5` (`tools/coverage.py`, nightly `.github/workflows/coverage.yml`). A process that exits by a signal or `_exit` records nothing.
 
 | crate | lines | covered | entry points not reached |
 | --- | ---: | ---: | ---: |
 | phpthread | 1,647 | 0.0% | 52 |
 | base64 | 84 | 35.7% | 0 |
-| ssh2 | 1,649 | 36.6% | 21 |
-| odbc | 1,034 | 39.7% | 0 |
+| ssh2 | 1,672 | 36.2% | 21 |
+| odbc | 1,025 | 39.2% | 0 |
 | pgsql | 2,156 | 42.8% | 9 |
 | crc32 | 41 | 46.3% | 0 |
-| firebird | 1,615 | 48.6% | 0 |
+| firebird | 1,619 | 48.6% | 0 |
 | error-ffi | 114 | 54.4% | 6 |
 | phplocks | 441 | 58.7% | 17 |
 | error | 120 | 62.5% | 0 |
 | phpredis | 195 | 66.7% | 0 |
-| ports | 1,527 | 66.9% | 0 |
+| ports | 1,517 | 67.2% | 0 |
 | protocols | 399 | 67.4% | 0 |
 | phpevents | 743 | 68.0% | 0 |
 | sqlite | 471 | 71.1% | 0 |
-| curl | 2,444 | 72.0% | 6 |
+| curl | 2,443 | 72.0% | 6 |
 | phpruntime | 2,618 | 72.1% | 1 |
 | phpprocess | 2,009 | 72.9% | 2 |
-| server | 10,787 | 73.6% | 0 |
-| clients | 2,765 | 74.0% | 0 |
+| server | 10,753 | 73.7% | 0 |
+| clients | 2,750 | 73.8% | 0 |
 | phpcoroutines | 2,847 | 74.4% | 2 |
 | firebird-sys | 12 | 75.0% | 0 |
-| corebase | 21,557 | 75.5% | 3 |
 | http | 4,209 | 75.6% | 0 |
+| corebase | 21,768 | 75.7% | 3 |
 | zend | 3,768 | 77.1% | 6 |
-| phpswoole | 1,614 | 79.1% | 0 |
-| hooks | 4,382 | 79.2% | 1 |
+| phpswoole | 1,621 | 78.9% | 0 |
+| hooks | 4,376 | 79.2% | 1 |
 | phpserver | 4,596 | 82.3% | 1 |
-| phpclients | 7,073 | 82.4% | 0 |
+| phpclients | 7,082 | 82.5% | 0 |
 | oci | 1,452 | 84.0% | 0 |
-| bus | 560 | 84.5% | 0 |
+| bus | 559 | 84.6% | 0 |
 | phpcollections | 557 | 85.3% | 0 |
 | phptimer | 165 | 85.5% | 0 |
 | websocket | 403 | 85.6% | 0 |
 | phphttp2 | 1,139 | 86.0% | 0 |
 | inflate | 96 | 86.5% | 0 |
-| phphttp | 5,822 | 87.3% | 0 |
+| phphttp | 5,852 | 87.2% | 0 |
 | framing | 349 | 88.8% | 0 |
 | brotli | 75 | 89.3% | 0 |
 | httpbindings | 239 | 90.4% | 0 |
-| http2 | 763 | 91.2% | 0 |
+| http2 | 771 | 90.7% | 0 |
 | deflate | 57 | 91.2% | 0 |
 | zlib | 95 | 93.7% | 0 |
 | locale | 116 | 99.1% | 0 |
@@ -52,7 +52,7 @@ Lines of `crates/` the Cargo swoole.so ran under the PHPT corpus, the corpus app
 | ext | 3 | 100.0% | 0 |
 | ffi | 20 | 100.0% | 0 |
 | phpstubs | 12 | 100.0% | 0 |
-| **crates/** | 94,850 | 73.6% | 127 |
+| **crates/** | 95,066 | 73.6% | 127 |
 
 # Entry points no run reached
 
