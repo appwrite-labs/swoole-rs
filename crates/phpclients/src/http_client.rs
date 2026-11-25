@@ -148,6 +148,7 @@ struct Client {
     body: Cell<Vec<u8>>,
     compress: Cell<Compress>,
     compression_error: Cell<bool>,
+    decoded_body_limit: Cell<usize>,
     decoder: Cell<Option<Decoder>>,
     connection_close: Cell<bool>,
     event_stream: Cell<bool>,
@@ -426,6 +427,8 @@ impl Client {
             body: Cell::default(),
             compress: Cell::new(Compress::None),
             compression_error: Cell::new(false),
+            // The largest response in upstream's compression_with_big_data PHPT.
+            decoded_body_limit: Cell::new(32 * 1024 * 1024),
             decoder: Cell::default(),
             connection_close: Cell::new(false),
             event_stream: Cell::new(false),
@@ -537,6 +540,10 @@ impl Client {
         if let Some(socket) = self.co() {
             crate::socket_options::apply(socket, array, swoole_rs_phpswoole::SocketSettings::All);
             if !swoole_rs_zend::bailout::pending() {
+                if array.get(b"package_max_length").is_some() {
+                    self.decoded_body_limit
+                        .set(socket.handle().protocol().package_max_length as usize);
+                }
                 socket.skip_proxy_handshake();
             }
         }
@@ -1264,23 +1271,25 @@ impl Client {
     }
 
     /// `decompress_response`: decode a body chunk onto `body`.
-    fn decompress(&self, input: &[u8]) -> bool {
+    fn decompress(&self, input: &[u8]) -> Result<bool, usize> {
         if input.is_empty() {
-            return false;
+            return Ok(false);
         }
         self.decoder
             .with_taken(|decoder| self.decode(decoder, input))
     }
 
     /// [`decompress`](Self::decompress) with the decoder, made here if none is.
-    fn decode(&self, decoder: &mut Option<Decoder>, input: &[u8]) -> bool {
+    fn decode(&self, decoder: &mut Option<Decoder>, input: &[u8]) -> Result<bool, usize> {
         if decoder.is_none() {
             let compress = self.compress.get();
             let made = match compress {
                 Compress::Gzip | Compress::Deflate => {
                     Ok(Decoder::Zlib(Inflate::new(compress == Compress::Gzip)))
                 }
-                Compress::Br => brotli::Decoder::new().map(Decoder::Brotli),
+                Compress::Br => {
+                    brotli::Decoder::new(self.decoded_body_limit.get()).map(Decoder::Brotli)
+                }
                 Compress::Zstd => zstd::Decoder::new().map(Decoder::Zstd),
                 Compress::None => Err(format!(
                     "HttpClient::decompress_response unknown compress method [{}]",
@@ -1291,7 +1300,7 @@ impl Client {
                 Ok(made) => *decoder = Some(made),
                 Err(message) => {
                     native::swoole_http_client_coro_inflate_warning(&message);
-                    return false;
+                    return Ok(false);
                 }
             }
         }
@@ -1299,18 +1308,22 @@ impl Client {
             Some(Decoder::Zlib(inflate)) => inflate
                 .decode(input)
                 .ok_or_else(|| "HttpClient::decompress_response failed".to_owned()),
-            Some(Decoder::Brotli(decoder)) => decoder.decode(input),
+            Some(Decoder::Brotli(decoder)) => match decoder.decode(input) {
+                Err(brotli::DecodeError::Limit(limit)) => return Err(limit),
+                Err(brotli::DecodeError::Codec(message)) => Err(message),
+                Ok(chunk) => Ok(chunk),
+            },
             Some(Decoder::Zstd(decoder)) => decoder.decode(input),
-            None => return false,
+            None => return Ok(false),
         };
         match output {
             Ok(output) => {
                 self.body.with_taken(|body| body.extend_from_slice(output));
-                true
+                Ok(true)
             }
             Err(message) => {
                 native::swoole_http_client_coro_inflate_warning(&message);
-                false
+                Ok(false)
             }
         }
     }
@@ -1472,12 +1485,29 @@ fn on_body(client: &Client, data: &[u8]) -> Flow {
     let decompress = client.body_decompression.get()
         && !client.compression_error.get()
         && client.compress.get() != Compress::None;
-    if let Some(callable) = client.write_func.with_taken(|callable| callable.clone()) {
+    let callable = client.write_func.with_taken(|callable| callable.clone());
+    let decoded = if decompress {
+        match client.decompress(data) {
+            Ok(decoded) => {
+                client.compression_error.set(!decoded);
+                decoded
+            }
+            Err(limit) => {
+                native::swoole_http_client_coro_inflate_warning(&format!(
+                    "decoded response exceeds {limit} bytes"
+                ));
+                return Flow::Fail;
+            }
+        }
+    } else {
+        false
+    };
+    if let Some(callable) = callable {
         let write = |chunk: &[u8]| {
             client.in_callback.set(true);
             client.call_write(&callable, chunk)
         };
-        let result = if decompress && client.decompress(data) {
+        let result = if decoded {
             // Nested calls see an empty body while the callback consumes this chunk.
             let Some(result) = client.body.with_taken(|body| {
                 let result = (!body.is_empty()).then(|| write(body));
@@ -1488,9 +1518,6 @@ fn on_body(client: &Client, data: &[u8]) -> Flow {
             };
             result
         } else {
-            if decompress {
-                client.compression_error.set(true);
-            }
             let result = write(data);
             client.body.with_taken(Vec::clear);
             result
@@ -1505,12 +1532,7 @@ fn on_body(client: &Client, data: &[u8]) -> Flow {
             Flow::Fail
         };
     }
-    if decompress {
-        if !client.decompress(data) {
-            client.compression_error.set(true);
-            client.body.with_taken(|body| body.extend_from_slice(data));
-        }
-    } else {
+    if !decoded {
         client.body.with_taken(|body| body.extend_from_slice(data));
     }
     if client.download_name.with_taken(|name| name.is_none()) {
