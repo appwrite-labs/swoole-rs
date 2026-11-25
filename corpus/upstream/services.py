@@ -23,7 +23,7 @@ NONE = ['swoole_atomic', 'swoole_client_async', 'swoole_client_coro', 'swoole_co
         'swoole_coroutine_wait_group', 'swoole_event', 'swoole_ftp', 'swoole_function', 'swoole_global',
         'swoole_http2_server', 'swoole_http2_server_coro', 'swoole_http_server_coro', 'swoole_iouring',
         'swoole_library', 'swoole_lock', 'swoole_pdo_sqlite', 'swoole_process', 'swoole_process_pool',
-        'swoole_redis_server', 'swoole_server_coro', 'swoole_server_port', 'swoole_ssh2', 'swoole_stdext',
+        'swoole_redis_server', 'swoole_server_coro', 'swoole_server_port', 'swoole_ssh2',
         'swoole_table', 'swoole_test_runner', 'swoole_thread', 'swoole_timer', 'swoole_websocket_server']
 NEEDS = {family: [] for family in NONE} | {
     'swoole_channel_coro': ['redis'],

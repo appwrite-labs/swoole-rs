@@ -5,7 +5,7 @@ crates/ext's build.rs compiles native/ (native/swoole-src holds the C swoole-src
 swoole-src checkout is needed; then the extension is checked to load and report the pinned version.
 Prints `Built cargo: <path>` (target/ext/swoole.so) and writes the build's config.h beside it, which
 the ABI export gate preprocesses with, and target/ext/build-manifest.json, which
-tools/ext_identity.py checks gates' engines against. `--php-sockets`, `--stdext`, `--fix-halfclose`
+tools/ext_identity.py checks gates' engines against. `--php-sockets`, `--fix-halfclose`
 and build_upstream.py's `--configure` switches turn on the crates/ext feature of the same build profile.
 
 `--native` also lays out target/ext/sdk for the native gates, which link fixtures outside PHP:
@@ -170,7 +170,6 @@ def main():
     parser.add_argument('--php-config', default=os.environ.get('PHP_CONFIG', 'php-config'))
     parser.add_argument('--profile', default='release', help='Cargo profile (default: release)')
     parser.add_argument('--php-sockets', action='store_true', help='Build with PHP sockets integration')
-    parser.add_argument('--stdext', action='store_true', help='Build with the experimental stdext')
     parser.add_argument('--fix-halfclose', action='store_true', help='Build the opt-in half-close repairs')
     parser.add_argument('--configure', action='append', default=[], metavar='ARG',
                         help="A service hook's configure switch, as build_upstream.py takes it; repeatable")
@@ -189,7 +188,7 @@ def main():
         source_ref = 'unknown'
     env['SWOOLE_RS_COMMIT'] = source_ref[:12]
     switches = tomllib.loads((ROOT / 'crates/ext/Cargo.toml').read_text())['package']['metadata']['configure']
-    features = ['php', *(['sockets'] if args.php_sockets else []), *(['stdext'] if args.stdext else []),
+    features = ['php', *(['sockets'] if args.php_sockets else []),
                 *(['halfclose'] if args.fix_halfclose else [])]
     for flag in args.configure:
         name, _, value = flag.partition('=')

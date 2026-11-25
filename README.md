@@ -22,7 +22,7 @@
 
 [Swoole](https://github.com/swoole/swoole-src)'s PHP extension, rewritten in Rust.
 `swoole.so` is built by Cargo from the crates in `crates/`. It presents the same PHP
-classes, functions and constants as upstream Swoole v6.2.6, and upstream is built only
+classes, functions and constants as upstream Swoole v6.3.0, and upstream is built only
 to compare against.
 
 This page quotes no measurements, because they go stale. The badges above are live, each
@@ -130,7 +130,6 @@ Optional parts are build switches. Each of upstream's `configure` switches goes 
 | `--configure=--enable-cares` | c-ares for DNS |
 | `--configure=--enable-iouring`, `--configure=--enable-uring-socket` | io_uring file and socket I/O |
 | `--configure=--enable-swoole-thread` | `Swoole\Thread` (needs thread-safe PHP) |
-| `--stdext` | upstream's experimental stdext |
 | `--fix-halfclose` | see below |
 
 ## Compared with upstream Swoole

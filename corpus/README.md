@@ -46,8 +46,8 @@ matching PHP curl and sockets packages first where separate. These explicit modu
 recorded in report metadata. Homebrew PHP builds them in and needs no extra flags; do not add dynamic
 module flags for those built-in modules.
 
-The reference is **v6.2.6**, commit
-`13d2f33664d60b72aaa9f102ff0ef4085c028513`.
+The reference is **v6.3.0**, commit
+`e0d606594e13cecd7790baafc5f1e1ead816b77c`.
 `tools/build_upstream.py` verifies the checkout's commit and writes
 `target/upstream/build.log`; it never runs `make install` or changes php.ini.
 

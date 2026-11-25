@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Build the pinned upstream swoole.so with phpize, configure and make. Never run `make install`.
 
-The default profile builds in the pinned checkout (target/upstream/src); --stdext, --php-sockets and
+The default profile builds in the pinned checkout (target/upstream/src); --php-sockets and
 --configure build a copy of the pin (see tree()). Prints `Built upstream: <swoole.so>`, or
 `Cached upstream: <swoole.so>` when that profile's last build had the same configuration."""
 import argparse
@@ -54,7 +54,6 @@ def add_build_arguments(parser):
     parser.add_argument('--jobs', type=int, default=default_jobs())
     parser.add_argument('--php-config', default='php-config')
     parser.add_argument('--phpize', default='phpize')
-    parser.add_argument('--stdext', action='store_true', help='Explicit experimental upstream stdext profile; separate runtime qualification required')
     parser.add_argument('--php-sockets', action='store_true', help='Enable upstream PHP sockets integration; requires installed php_sockets.h')
     parser.add_argument('--ccache', type=Path, default=shutil.which('ccache'), help='Compiler cache executable; shared bounded cache, detected by default')
     parser.add_argument('--no-ccache', dest='ccache', action='store_const', const=None, help='Disable compiler caching for this build')
@@ -68,8 +67,6 @@ def extension_configuration(args, extra=()):
         raise ValueError('--jobs must be positive')
     configure = ['./configure', f'--with-php-config={args.php_config}', '--enable-brotli', '--enable-zstd', *extra]
     configure.append('--enable-sockets' if getattr(args, 'php_sockets', False) else '--disable-sockets')
-    if getattr(args, 'stdext', False):
-        configure.append('--enable-swoole-stdext')
     prefix = args.openssl_dir
     if not prefix and sys.platform == 'darwin':
         prefix = subprocess.check_output(['brew', '--prefix', 'openssl@3'], text=True).strip()
@@ -154,12 +151,12 @@ def build_extension(source, log_path, args, extra=(), *, incremental=False, timi
     return configure
 
 
-def tree(stdext=False, php_sockets=False, configure=()):
+def tree(php_sockets=False, configure=()):
     """Where a profile builds: the pinned checkout itself by default, else a copy of the pin per
-    profile (target/upstream-builds/php-sockets-stdext/src and so on), so profiles never rebuild each other."""
-    if not (stdext or php_sockets or configure):
+    profile (target/upstream-builds/php-sockets/src and so on), so profiles never rebuild each other."""
+    if not (php_sockets or configure):
         return ROOT / 'target/upstream/src'
-    name = '-'.join(name for name, on in [('php-sockets', php_sockets), ('stdext', stdext)] if on) or 'configured'
+    name = 'php-sockets' if php_sockets else 'configured'
     return ROOT / 'target/upstream-builds' / name / 'src'
 
 
@@ -207,7 +204,7 @@ def main():
         raise RuntimeError(f'Upstream checkout is {actual}; expected {COMMIT}. Refusing to alter it.')
     if subprocess.run(['git', '-C', str(pin), 'diff', '--quiet', 'HEAD', '--']).returncode:
         raise RuntimeError('Upstream has tracked source changes; refusing to build a modified reference.')
-    source = tree(args.stdext, args.php_sockets, args.configure)
+    source = tree(args.php_sockets, args.configure)
     library, record_path = source / 'modules/swoole.so', source.parent / 'build.json'
     # The pin never changes, so a build stays current while its configuration does.
     record = {'commit': COMMIT, 'configure': extension_configuration(args)[0], 'platform': [sys.platform, os.uname().machine],

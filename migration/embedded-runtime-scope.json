@@ -1,12 +1,12 @@
 {
   "assigned_to": "@loks0n",
   "accepted_utc": "2026-10-24T15:27:35.857284+00:00",
-  "pinned_upstream": "13d2f33664d60b72aaa9f102ff0ef4085c028513",
-  "embedded_header_sha256": "f334a659e52fa137c3422825237fc9309ada8870b3653eae6f9c52b55c3b950a",
+  "pinned_upstream": "e0d606594e13cecd7790baafc5f1e1ead816b77c",
+  "embedded_header_sha256": "48d04b5fabd6fbab7a3bfa12ed23befb6b2b601c70e6a5b875a834ba0b7ad5af",
   "research_sha256": "7362f833bbdc80d4dcc7ab73300b93f9d7e9c679a1393743e08246b19782d548",
   "scope_rule": "All actual first-party embedded PHP algorithms and runtime outcomes remain in the Rust completion goal. Zend ABI/value/refcount/GC/exception/bailout/VM and required OS effects may use minimal native shims, after Rust returns. This does not exempt pool/retry/RPC/proxy/collection/coordination policy.",
   "reservation_effect": "None. Existing owners, frozen ABI and unavailable areas remain protected. Planning anchors are scope assignments, never implementation grants or new capacity.",
-  "inventory_count_not_parity_score": 78,
+  "inventory_count_not_parity_score": 58,
   "conditional_profiles": [
     "enable_library on/off and CLI RINIT versus preloader",
     "SWOOLE_USE_SHORTNAME aliases on/off",
@@ -28,8 +28,8 @@
     {
       "payload": "constants.php",
       "symbol": "swoole_library_source_constants",
-      "sha256": "1bab90417f56561ef77b90977e5c29c240b3e39e8b443a4559a41fee68f05170",
-      "bytes": 524,
+      "sha256": "ae9ed6f2ee612e5729c118a7c4c028c66950015f32fa0b1af3eeb6fdf275b433",
+      "bytes": 1880,
       "group": "registration_constants_aliases",
       "supporting_areas": [],
       "required_runtime_outcomes": "Constant values,exception identity,function/class aliases,shortname on/off and library-load on/off must preserve PHP observable signatures and errors.",
@@ -47,8 +47,8 @@
     {
       "payload": "std/exec.php",
       "symbol": "swoole_library_source_std_exec",
-      "sha256": "758df69dde843f5a6098d5faf827fa35c353053172d8c10c635476881a6281e4",
-      "bytes": 1068,
+      "sha256": "778d150054c74a2b1a0947e29abdde65972b13c434f5da6d21b9fbfa0503e1a5",
+      "bytes": 1717,
       "group": "coroutine_os_exec_helpers",
       "supporting_areas": [
         "F02-os-async"
@@ -71,8 +71,8 @@
     {
       "payload": "core/Constant.php",
       "symbol": "swoole_library_source_core_constant",
-      "sha256": "193dd8db65455c37d02c1400c494f4b8e382074dc7a891a4b9d82f469ae4383e",
-      "bytes": 16497,
+      "sha256": "0499dccf82e048f22d67cc15fbe912294cd3179df6e2352fef8113fe4f33e5ef",
+      "bytes": 16730,
       "group": "registration_constants_aliases",
       "supporting_areas": [],
       "required_runtime_outcomes": "Constant values,exception identity,function/class aliases,shortname on/off and library-load on/off must preserve PHP observable signatures and errors.",
@@ -92,8 +92,8 @@
     {
       "payload": "core/StringObject.php",
       "symbol": "swoole_library_source_core_string_object",
-      "sha256": "ba333f18c5f0dc2de4212c3bf06b96ac42d519dc1b4e55c9f0f925a9dbe9ad4a",
-      "bytes": 5217,
+      "sha256": "303464cc0b4fe270279e69e9421df17c07e9f6b76760dcb0386e9ec8d47931c4",
+      "bytes": 5306,
       "group": "collections_strings_object_proxy",
       "supporting_areas": [],
       "required_runtime_outcomes": "Array/key/index/null/bounds semantics,iterator position,serialization,ArrayAccess/count,magic forwarding,Unicode encoding/conversion,mutation/COW and exceptions/destruction.",
@@ -113,8 +113,8 @@
     {
       "payload": "core/MultibyteStringObject.php",
       "symbol": "swoole_library_source_core_multibyte_string_object",
-      "sha256": "2393480ba61aa1fd1e9ccc32477710b53aa6c66ada5c918c38eb4c4b4624b09a",
-      "bytes": 1769,
+      "sha256": "6702cc664cb39c921b5bf42315bb0de521a25fdf67e99a3fbc633b540240af8f",
+      "bytes": 2692,
       "group": "collections_strings_object_proxy",
       "supporting_areas": [],
       "required_runtime_outcomes": "Array/key/index/null/bounds semantics,iterator position,serialization,ArrayAccess/count,magic forwarding,Unicode encoding/conversion,mutation/COW and exceptions/destruction.",
@@ -155,8 +155,8 @@
     {
       "payload": "core/ArrayObject.php",
       "symbol": "swoole_library_source_core_array_object",
-      "sha256": "bb0af2fb1bbf491bebb33b2a4d2727522719ed380fdc855608d0234b7d60efef",
-      "bytes": 14400,
+      "sha256": "6f8744a60e3709f9203587e910bdb4f9919660f84e7e053bfc5cc928eda48b0b",
+      "bytes": 15554,
       "group": "collections_strings_object_proxy",
       "supporting_areas": [],
       "required_runtime_outcomes": "Array/key/index/null/bounds semantics,iterator position,serialization,ArrayAccess/count,magic forwarding,Unicode encoding/conversion,mutation/COW and exceptions/destruction.",
@@ -176,8 +176,8 @@
     {
       "payload": "core/ObjectProxy.php",
       "symbol": "swoole_library_source_core_object_proxy",
-      "sha256": "0127875869460b5918914b3e66e627ad7361e682309567212f574a916909ea18",
-      "bytes": 1162,
+      "sha256": "9168ae60b87fa841a3a395b31974903503d22eafd062ef8c8df23b14a6057c05",
+      "bytes": 1181,
       "group": "collections_strings_object_proxy",
       "supporting_areas": [],
       "required_runtime_outcomes": "Array/key/index/null/bounds semantics,iterator position,serialization,ArrayAccess/count,magic forwarding,Unicode encoding/conversion,mutation/COW and exceptions/destruction.",
@@ -197,8 +197,8 @@
     {
       "payload": "core/Coroutine/WaitGroup.php",
       "symbol": "swoole_library_source_core_coroutine_wait_group",
-      "sha256": "21c1fdcf66f79cd091a992bafce4db0d9d13d5a0f9fc04b86ebc7e0b2bda9b3c",
-      "bytes": 1744,
+      "sha256": "b212de47f37a990654153f2e34b747c89a34ee42053b191ff4dbf98498914f3f",
+      "bytes": 1732,
       "group": "coroutine_coordination_scheduler_helpers",
       "supporting_areas": [],
       "required_runtime_outcomes": "WaitGroup add/done/wait/timeout/reuse,Barrier lifetime completion,run scheduler hook-flag defaults,batch/map key preservation and timeout partial results,parallel exceptions,defer/deadlock reports. These PHP algorithms survive even if underlying coroutine primitives migrate.",
@@ -218,8 +218,8 @@
     {
       "payload": "core/Coroutine/Server.php",
       "symbol": "swoole_library_source_core_coroutine_server",
-      "sha256": "19d896c0cf096fc303a71de62135e6ea27ae5e5fe2bb8e7e5389edb4ada353f7",
-      "bytes": 4340,
+      "sha256": "1475d4d6ee3f9142fa211f5f67d822c178b5f56b7b7a7560d762835cb14b3bcc",
+      "bytes": 7202,
       "group": "coroutine_server_connection",
       "supporting_areas": [
         "F04-clients-resolver",
@@ -266,8 +266,8 @@
     {
       "payload": "core/Coroutine/Barrier.php",
       "symbol": "swoole_library_source_core_coroutine_barrier",
-      "sha256": "1dd4e07fc37a058f149f954714602aac978686c47792954b05fde3ca864f7ac3",
-      "bytes": 1752,
+      "sha256": "2cdaabdb18be902ac10408be7f0790229ea8fcf04d5cc398e81ded8fc1161b9b",
+      "bytes": 2468,
       "group": "coroutine_coordination_scheduler_helpers",
       "supporting_areas": [],
       "required_runtime_outcomes": "WaitGroup add/done/wait/timeout/reuse,Barrier lifetime completion,run scheduler hook-flag defaults,batch/map key preservation and timeout partial results,parallel exceptions,defer/deadlock reports. These PHP algorithms survive even if underlying coroutine primitives migrate.",
@@ -287,8 +287,8 @@
     {
       "payload": "core/Coroutine/Http/ClientProxy.php",
       "symbol": "swoole_library_source_core_coroutine_http_client_proxy",
-      "sha256": "cb785585daf05554214128a9cdb6792533d52eb056bad17e76270ecfde16f5d8",
-      "bytes": 859,
+      "sha256": "1d0c70ea31ec90be154ce38b60f2cf581ee54bbc10327191c42cbb733e320eba",
+      "bytes": 2079,
       "group": "http_client_helpers",
       "supporting_areas": [
         "F04-clients-resolver",
@@ -311,8 +311,8 @@
     {
       "payload": "core/Coroutine/Http/functions.php",
       "symbol": "swoole_library_source_core_coroutine_http_functions",
-      "sha256": "96cb3631a798a08aedb98289c6632b72dc342e39ce1bd73de26e1d8a68eaa760",
-      "bytes": 6482,
+      "sha256": "eaa6e51a04f2721f63c5bc0410432144350342c58d718c14c843ba7fe66cf8fa",
+      "bytes": 6960,
       "group": "http_client_helpers",
       "supporting_areas": [
         "F04-clients-resolver",
@@ -338,10 +338,34 @@
       "evidence_target": "Exact actual embedded payload callers, unchanged original assertions and supplemental defined behavior; source-bound native/selected configurations; lifetime and optimized performance separately"
     },
     {
+      "payload": "core/Coroutine/Http2/MultiplexClient.php",
+      "symbol": "swoole_library_source_core_coroutine_http2_multiplex_client",
+      "sha256": "9e42893be50ee0883a57c5a1c93de0d9db667211e0316dc0ed802b8c7df27229",
+      "bytes": 24119,
+      "group": "http_client_helpers",
+      "supporting_areas": [
+        "F04-clients-resolver",
+        "F13-optional-integrations"
+      ],
+      "required_runtime_outcomes": "HTTP helper backend selection,http/curl/stream request settings/body/header/status/error propagation,ClientProxy reconnect/lifetime,status phrase lookup.",
+      "declared_types": [
+        "Swoole\\Coroutine\\Http2\\MultiplexClient"
+      ],
+      "declared_functions": [],
+      "original_family_hints": "swoole_http_client_coro,swoole_http_client,swoole_runtime",
+      "inference_limit": "References/family hints only,not assertions,execution or coverage;dynamic/inherited/helper calls may be missed. Counts are trace completeness,not parity.",
+      "companion_source_warning": null,
+      "planning_anchor": "F09-bindings-http",
+      "scope_status": "accepted_first_party_rust_outcome",
+      "implementation_status": "not_qualified_by_this_scope_acceptance",
+      "planning_owner": "eng-lead-1; @loks0n",
+      "evidence_target": "Exact actual embedded payload callers, unchanged original assertions and supplemental defined behavior; source-bound native/selected configurations; lifetime and optimized performance separately"
+    },
+    {
       "payload": "core/ConnectionPool.php",
       "symbol": "swoole_library_source_core_connection_pool",
-      "sha256": "fdfa48d1947d444bd9016e9079773198bc881f39c4cf2898bfd229b70cddfe17",
-      "bytes": 2341,
+      "sha256": "ce77cd07ec4122a8737559d2fb115da0ac3389592894b74409507ddb8db2d213",
+      "bytes": 9248,
       "group": "generic_connection_pool",
       "supporting_areas": [
         "F04-clients-resolver",
@@ -387,8 +411,8 @@
     {
       "payload": "core/Database/MysqliConfig.php",
       "symbol": "swoole_library_source_core_database_mysqli_config",
-      "sha256": "78213acaebeb97da28c893d77287ab7e38141ed30d16afc6b23e3a848fe94624",
-      "bytes": 2239,
+      "sha256": "b0a8ff4feac83198ff0bad279344e87901bd00e89248eb1e700da091e184d27c",
+      "bytes": 2646,
       "group": "database_config_pools_reconnect_proxies",
       "supporting_areas": [
         "F10-bindings-runtime"
@@ -433,8 +457,8 @@
     {
       "payload": "core/Database/MysqliPool.php",
       "symbol": "swoole_library_source_core_database_mysqli_pool",
-      "sha256": "5f9e04c32190ec7178dc7ebdce3a4431415e764fa93f0049be61fabdab7123c8",
-      "bytes": 1331,
+      "sha256": "a4a1fc8192c82dc896dbdf33a5ed9df5adb75ef12197d123e814902bf8c61ec3",
+      "bytes": 4869,
       "group": "database_config_pools_reconnect_proxies",
       "supporting_areas": [
         "F10-bindings-runtime"
@@ -456,8 +480,8 @@
     {
       "payload": "core/Database/MysqliProxy.php",
       "symbol": "swoole_library_source_core_database_mysqli_proxy",
-      "sha256": "8fb38f961453c3d76aeabf21ca53913f22b719ccaa0f23c57f1ef8b54c4f2f82",
-      "bytes": 3562,
+      "sha256": "05f01954644b5e816b8f76f8f22b49aa2cc42d28d181c0574ef2fe2194df7f18",
+      "bytes": 9967,
       "group": "database_config_pools_reconnect_proxies",
       "supporting_areas": [
         "F10-bindings-runtime"
@@ -479,8 +503,8 @@
     {
       "payload": "core/Database/MysqliStatementProxy.php",
       "symbol": "swoole_library_source_core_database_mysqli_statement_proxy",
-      "sha256": "244d67902ed3ae846bd5f84c868805f9e57cccb602815cb5e99f3131a93bb038",
-      "bytes": 3366,
+      "sha256": "755786f5785010144323bb62ea6cbfe7a8155892387163cbe15593a12bbc506d",
+      "bytes": 5502,
       "group": "database_config_pools_reconnect_proxies",
       "supporting_areas": [
         "F10-bindings-runtime"
@@ -502,8 +526,8 @@
     {
       "payload": "core/Database/DetectsLostConnections.php",
       "symbol": "swoole_library_source_core_database_detects_lost_connections",
-      "sha256": "2d3ecc5844a763ab329b36d3633ed5bcd4f15f632e41142553f93ee159222153",
-      "bytes": 5118,
+      "sha256": "bf26cec40826b60b867adbb9c936102d60ec46c52cbbf40a78a112fbd55ac986",
+      "bytes": 3790,
       "group": "database_config_pools_reconnect_proxies",
       "supporting_areas": [
         "F10-bindings-runtime"
@@ -525,8 +549,8 @@
     {
       "payload": "core/Database/PDOConfig.php",
       "symbol": "swoole_library_source_core_database_pdo_config",
-      "sha256": "2ec8a8dccc76b558904459b7e8c531e3b6ae497614a5d3847cee80ba2e473f17",
-      "bytes": 2852,
+      "sha256": "e9c9ace6800e70e334446b019ed27d4f24bbc633cb1fe577e5e9b32b62356b15",
+      "bytes": 3288,
       "group": "database_config_pools_reconnect_proxies",
       "supporting_areas": [
         "F10-bindings-runtime"
@@ -548,8 +572,8 @@
     {
       "payload": "core/Database/PDOPool.php",
       "symbol": "swoole_library_source_core_database_pdo_pool",
-      "sha256": "8495c10b2f194a8d45c9b4a345d9576e388a7a9c5a037452381a2a58d47a1e9b",
-      "bytes": 3780,
+      "sha256": "199b83e1169f0526f295d34e9e2bb40e2f6e3278e3b4d85e03a1a56d2ecf6883",
+      "bytes": 8749,
       "group": "database_config_pools_reconnect_proxies",
       "supporting_areas": [
         "F10-bindings-runtime"
@@ -571,8 +595,8 @@
     {
       "payload": "core/Database/PDOProxy.php",
       "symbol": "swoole_library_source_core_database_pdo_proxy",
-      "sha256": "70b945a456ff42fcb31dda40b352c115038595eec5e77860884a829fc270058c",
-      "bytes": 2551,
+      "sha256": "6c29822a8695315ac130d81321e8a3ae8b31b2bfb8fe2002b0011b96d80e50f1",
+      "bytes": 8340,
       "group": "database_config_pools_reconnect_proxies",
       "supporting_areas": [
         "F10-bindings-runtime"
@@ -594,8 +618,8 @@
     {
       "payload": "core/Database/PDOStatementProxy.php",
       "symbol": "swoole_library_source_core_database_pdo_statement_proxy",
-      "sha256": "ee4d4c3c78b069bd1c479fd56e0c21229d4d2b101d26f8a089bbb5c4cac12526",
-      "bytes": 3993,
+      "sha256": "9c80657463bdb138c82e18173d074a6865a1066806e4283c886a19a78241033d",
+      "bytes": 8522,
       "group": "database_config_pools_reconnect_proxies",
       "supporting_areas": [
         "F10-bindings-runtime"
@@ -617,8 +641,8 @@
     {
       "payload": "core/Database/RedisConfig.php",
       "symbol": "swoole_library_source_core_database_redis_config",
-      "sha256": "cbdc2b2ffb629d4c6c63b6ca110286472373482c3e3f6124664a1504040973a5",
-      "bytes": 2905,
+      "sha256": "50721ac621a7050c1a8a7d7f2f1f8c3d0afd19b8909f1c91a55fce2e16562c09",
+      "bytes": 3111,
       "group": "database_config_pools_reconnect_proxies",
       "supporting_areas": [
         "F10-bindings-runtime"
@@ -640,8 +664,8 @@
     {
       "payload": "core/Database/RedisPool.php",
       "symbol": "swoole_library_source_core_database_redis_pool",
-      "sha256": "8b00afd61f14020f2f8199bf95e7b691bb98507b0e9dfd72b7b904c038cc3bcd",
-      "bytes": 1804,
+      "sha256": "9e86a3e5bb30d3e6b7262457095f628f2696be98cd8da63d04cdf508ff0992cc",
+      "bytes": 3796,
       "group": "database_config_pools_reconnect_proxies",
       "supporting_areas": [
         "F10-bindings-runtime"
@@ -663,8 +687,8 @@
     {
       "payload": "core/Http/Status.php",
       "symbol": "swoole_library_source_core_http_status",
-      "sha256": "62087163d35ab862be20bb4091c68c43ff1dac66ea41f6c8ed95c12ef5d53997",
-      "bytes": 7302,
+      "sha256": "5650fca5fa9b60f6875885b3929a9082fd80395f4d53c1d6c5311e15cd8c5ec4",
+      "bytes": 8108,
       "group": "http_client_helpers",
       "supporting_areas": [
         "F04-clients-resolver",
@@ -712,8 +736,8 @@
     {
       "payload": "core/Curl/Handler.php",
       "symbol": "swoole_library_source_core_curl_handler",
-      "sha256": "f537dd8daae7797fcc5365ac9cab778f89b50ebee7a22c0b04df56443bebe6c4",
-      "bytes": 36098,
+      "sha256": "eaee23273b63ba06cecfd1055b49b16157ea8582d8f33ab51de418c4805a1037",
+      "bytes": 67055,
       "group": "curl_emulation_wrappers",
       "supporting_areas": [
         "F09-bindings-http",
@@ -735,519 +759,10 @@
       "evidence_target": "Exact actual embedded payload callers, unchanged original assertions and supplemental defined behavior; source-bound native/selected configurations; lifetime and optimized performance separately"
     },
     {
-      "payload": "core/FastCGI.php",
-      "symbol": "swoole_library_source_core_fast_cgi",
-      "sha256": "f620620418fafcaed0ae7a321916330f410f82fb271526deffcc1b7d4edf5867",
-      "bytes": 1846,
-      "group": "fastcgi_php_record_message_policy",
-      "supporting_areas": [
-        "F09-bindings-http"
-      ],
-      "required_runtime_outcomes": "PHP record pack/unpack,params length/name/value encoding,incremental frame parsing,padding/request IDs,STDOUT/STDERR termination,messages and HTTP request/response projection. Native M13 FastCGI codec does not prove these PHP objects migrated.",
-      "declared_types": [
-        "Swoole\\FastCGI"
-      ],
-      "declared_functions": [],
-      "original_family_hints": "swoole_fastcgi,swoole_library",
-      "inference_limit": "References/family hints only,not assertions,execution or coverage;dynamic/inherited/helper calls may be missed. Counts are trace completeness,not parity.",
-      "companion_source_warning": null,
-      "planning_anchor": "F06-protocol-base-mime",
-      "scope_status": "accepted_first_party_rust_outcome",
-      "implementation_status": "not_qualified_by_this_scope_acceptance",
-      "planning_owner": "eng-lead-1; @loks0n",
-      "evidence_target": "Exact actual embedded payload callers, unchanged original assertions and supplemental defined behavior; source-bound native/selected configurations; lifetime and optimized performance separately"
-    },
-    {
-      "payload": "core/FastCGI/Record.php",
-      "symbol": "swoole_library_source_core_fast_cgi_record",
-      "sha256": "e881d545c2e491548594423ea0ee6578f6aab82387b4aea06532ee15e32d3bd4",
-      "bytes": 5703,
-      "group": "fastcgi_php_record_message_policy",
-      "supporting_areas": [
-        "F09-bindings-http"
-      ],
-      "required_runtime_outcomes": "PHP record pack/unpack,params length/name/value encoding,incremental frame parsing,padding/request IDs,STDOUT/STDERR termination,messages and HTTP request/response projection. Native M13 FastCGI codec does not prove these PHP objects migrated.",
-      "declared_types": [
-        "Swoole\\FastCGI\\Record"
-      ],
-      "declared_functions": [],
-      "original_family_hints": "swoole_fastcgi,swoole_library",
-      "inference_limit": "References/family hints only,not assertions,execution or coverage;dynamic/inherited/helper calls may be missed. Counts are trace completeness,not parity.",
-      "companion_source_warning": null,
-      "planning_anchor": "F06-protocol-base-mime",
-      "scope_status": "accepted_first_party_rust_outcome",
-      "implementation_status": "not_qualified_by_this_scope_acceptance",
-      "planning_owner": "eng-lead-1; @loks0n",
-      "evidence_target": "Exact actual embedded payload callers, unchanged original assertions and supplemental defined behavior; source-bound native/selected configurations; lifetime and optimized performance separately"
-    },
-    {
-      "payload": "core/FastCGI/Record/Params.php",
-      "symbol": "swoole_library_source_core_fast_cgi_record_params",
-      "sha256": "56d68bc897e9fd9e39e0479bf5b9d24dc649694005343d6fb55a7dda92a81f4e",
-      "bytes": 4759,
-      "group": "fastcgi_php_record_message_policy",
-      "supporting_areas": [
-        "F09-bindings-http"
-      ],
-      "required_runtime_outcomes": "PHP record pack/unpack,params length/name/value encoding,incremental frame parsing,padding/request IDs,STDOUT/STDERR termination,messages and HTTP request/response projection. Native M13 FastCGI codec does not prove these PHP objects migrated.",
-      "declared_types": [
-        "Swoole\\FastCGI\\Record\\Params"
-      ],
-      "declared_functions": [],
-      "original_family_hints": "swoole_fastcgi,swoole_library",
-      "inference_limit": "References/family hints only,not assertions,execution or coverage;dynamic/inherited/helper calls may be missed. Counts are trace completeness,not parity.",
-      "companion_source_warning": null,
-      "planning_anchor": "F06-protocol-base-mime",
-      "scope_status": "accepted_first_party_rust_outcome",
-      "implementation_status": "not_qualified_by_this_scope_acceptance",
-      "planning_owner": "eng-lead-1; @loks0n",
-      "evidence_target": "Exact actual embedded payload callers, unchanged original assertions and supplemental defined behavior; source-bound native/selected configurations; lifetime and optimized performance separately"
-    },
-    {
-      "payload": "core/FastCGI/Record/AbortRequest.php",
-      "symbol": "swoole_library_source_core_fast_cgi_record_abort_request",
-      "sha256": "a70d401e54d8ccd96f7f81349565212cf72cbc946cc373f036ba9261bcb49ebf",
-      "bytes": 549,
-      "group": "fastcgi_php_record_message_policy",
-      "supporting_areas": [
-        "F09-bindings-http"
-      ],
-      "required_runtime_outcomes": "PHP record pack/unpack,params length/name/value encoding,incremental frame parsing,padding/request IDs,STDOUT/STDERR termination,messages and HTTP request/response projection. Native M13 FastCGI codec does not prove these PHP objects migrated.",
-      "declared_types": [
-        "Swoole\\FastCGI\\Record\\AbortRequest"
-      ],
-      "declared_functions": [],
-      "original_family_hints": "swoole_fastcgi,swoole_library",
-      "inference_limit": "References/family hints only,not assertions,execution or coverage;dynamic/inherited/helper calls may be missed. Counts are trace completeness,not parity.",
-      "companion_source_warning": null,
-      "planning_anchor": "F06-protocol-base-mime",
-      "scope_status": "accepted_first_party_rust_outcome",
-      "implementation_status": "not_qualified_by_this_scope_acceptance",
-      "planning_owner": "eng-lead-1; @loks0n",
-      "evidence_target": "Exact actual embedded payload callers, unchanged original assertions and supplemental defined behavior; source-bound native/selected configurations; lifetime and optimized performance separately"
-    },
-    {
-      "payload": "core/FastCGI/Record/BeginRequest.php",
-      "symbol": "swoole_library_source_core_fast_cgi_record_begin_request",
-      "sha256": "107eea6bd0490dadc83ef72bd550761fcb42dfa8f35cd4819b01cba8ac907d0a",
-      "bytes": 3214,
-      "group": "fastcgi_php_record_message_policy",
-      "supporting_areas": [
-        "F09-bindings-http"
-      ],
-      "required_runtime_outcomes": "PHP record pack/unpack,params length/name/value encoding,incremental frame parsing,padding/request IDs,STDOUT/STDERR termination,messages and HTTP request/response projection. Native M13 FastCGI codec does not prove these PHP objects migrated.",
-      "declared_types": [
-        "Swoole\\FastCGI\\Record\\BeginRequest"
-      ],
-      "declared_functions": [],
-      "original_family_hints": "swoole_fastcgi,swoole_library",
-      "inference_limit": "References/family hints only,not assertions,execution or coverage;dynamic/inherited/helper calls may be missed. Counts are trace completeness,not parity.",
-      "companion_source_warning": null,
-      "planning_anchor": "F06-protocol-base-mime",
-      "scope_status": "accepted_first_party_rust_outcome",
-      "implementation_status": "not_qualified_by_this_scope_acceptance",
-      "planning_owner": "eng-lead-1; @loks0n",
-      "evidence_target": "Exact actual embedded payload callers, unchanged original assertions and supplemental defined behavior; source-bound native/selected configurations; lifetime and optimized performance separately"
-    },
-    {
-      "payload": "core/FastCGI/Record/Data.php",
-      "symbol": "swoole_library_source_core_fast_cgi_record_data",
-      "sha256": "344f2dcf199ee82e60f42afa154f578d3d947c834066cf508ddd6745acc80007",
-      "bytes": 588,
-      "group": "fastcgi_php_record_message_policy",
-      "supporting_areas": [
-        "F09-bindings-http"
-      ],
-      "required_runtime_outcomes": "PHP record pack/unpack,params length/name/value encoding,incremental frame parsing,padding/request IDs,STDOUT/STDERR termination,messages and HTTP request/response projection. Native M13 FastCGI codec does not prove these PHP objects migrated.",
-      "declared_types": [
-        "Swoole\\FastCGI\\Record\\Data"
-      ],
-      "declared_functions": [],
-      "original_family_hints": "swoole_fastcgi,swoole_library",
-      "inference_limit": "References/family hints only,not assertions,execution or coverage;dynamic/inherited/helper calls may be missed. Counts are trace completeness,not parity.",
-      "companion_source_warning": null,
-      "planning_anchor": "F06-protocol-base-mime",
-      "scope_status": "accepted_first_party_rust_outcome",
-      "implementation_status": "not_qualified_by_this_scope_acceptance",
-      "planning_owner": "eng-lead-1; @loks0n",
-      "evidence_target": "Exact actual embedded payload callers, unchanged original assertions and supplemental defined behavior; source-bound native/selected configurations; lifetime and optimized performance separately"
-    },
-    {
-      "payload": "core/FastCGI/Record/EndRequest.php",
-      "symbol": "swoole_library_source_core_fast_cgi_record_end_request",
-      "sha256": "3f8bba896d0835b61b39a370797eddbd0d030c35668f5efc3f45568ce9a11098",
-      "bytes": 3946,
-      "group": "fastcgi_php_record_message_policy",
-      "supporting_areas": [
-        "F09-bindings-http"
-      ],
-      "required_runtime_outcomes": "PHP record pack/unpack,params length/name/value encoding,incremental frame parsing,padding/request IDs,STDOUT/STDERR termination,messages and HTTP request/response projection. Native M13 FastCGI codec does not prove these PHP objects migrated.",
-      "declared_types": [
-        "Swoole\\FastCGI\\Record\\EndRequest"
-      ],
-      "declared_functions": [],
-      "original_family_hints": "swoole_fastcgi,swoole_library",
-      "inference_limit": "References/family hints only,not assertions,execution or coverage;dynamic/inherited/helper calls may be missed. Counts are trace completeness,not parity.",
-      "companion_source_warning": null,
-      "planning_anchor": "F06-protocol-base-mime",
-      "scope_status": "accepted_first_party_rust_outcome",
-      "implementation_status": "not_qualified_by_this_scope_acceptance",
-      "planning_owner": "eng-lead-1; @loks0n",
-      "evidence_target": "Exact actual embedded payload callers, unchanged original assertions and supplemental defined behavior; source-bound native/selected configurations; lifetime and optimized performance separately"
-    },
-    {
-      "payload": "core/FastCGI/Record/GetValues.php",
-      "symbol": "swoole_library_source_core_fast_cgi_record_get_values",
-      "sha256": "32c4ec931bfd0c2ea72cea3a2d397c041ce644a6fe9ab4b5b8f7dcf6d540235e",
-      "bytes": 1687,
-      "group": "fastcgi_php_record_message_policy",
-      "supporting_areas": [
-        "F09-bindings-http"
-      ],
-      "required_runtime_outcomes": "PHP record pack/unpack,params length/name/value encoding,incremental frame parsing,padding/request IDs,STDOUT/STDERR termination,messages and HTTP request/response projection. Native M13 FastCGI codec does not prove these PHP objects migrated.",
-      "declared_types": [
-        "Swoole\\FastCGI\\Record\\GetValues"
-      ],
-      "declared_functions": [],
-      "original_family_hints": "swoole_fastcgi,swoole_library",
-      "inference_limit": "References/family hints only,not assertions,execution or coverage;dynamic/inherited/helper calls may be missed. Counts are trace completeness,not parity.",
-      "companion_source_warning": null,
-      "planning_anchor": "F06-protocol-base-mime",
-      "scope_status": "accepted_first_party_rust_outcome",
-      "implementation_status": "not_qualified_by_this_scope_acceptance",
-      "planning_owner": "eng-lead-1; @loks0n",
-      "evidence_target": "Exact actual embedded payload callers, unchanged original assertions and supplemental defined behavior; source-bound native/selected configurations; lifetime and optimized performance separately"
-    },
-    {
-      "payload": "core/FastCGI/Record/GetValuesResult.php",
-      "symbol": "swoole_library_source_core_fast_cgi_record_get_values_result",
-      "sha256": "667eaae8f19ec7f85ba32ebf349129529a5a16217f8c63814d243ae67bd91692",
-      "bytes": 1643,
-      "group": "fastcgi_php_record_message_policy",
-      "supporting_areas": [
-        "F09-bindings-http"
-      ],
-      "required_runtime_outcomes": "PHP record pack/unpack,params length/name/value encoding,incremental frame parsing,padding/request IDs,STDOUT/STDERR termination,messages and HTTP request/response projection. Native M13 FastCGI codec does not prove these PHP objects migrated.",
-      "declared_types": [
-        "Swoole\\FastCGI\\Record\\GetValuesResult"
-      ],
-      "declared_functions": [],
-      "original_family_hints": "swoole_fastcgi,swoole_library",
-      "inference_limit": "References/family hints only,not assertions,execution or coverage;dynamic/inherited/helper calls may be missed. Counts are trace completeness,not parity.",
-      "companion_source_warning": null,
-      "planning_anchor": "F06-protocol-base-mime",
-      "scope_status": "accepted_first_party_rust_outcome",
-      "implementation_status": "not_qualified_by_this_scope_acceptance",
-      "planning_owner": "eng-lead-1; @loks0n",
-      "evidence_target": "Exact actual embedded payload callers, unchanged original assertions and supplemental defined behavior; source-bound native/selected configurations; lifetime and optimized performance separately"
-    },
-    {
-      "payload": "core/FastCGI/Record/Stdin.php",
-      "symbol": "swoole_library_source_core_fast_cgi_record_stdin",
-      "sha256": "a4b99f4cc361debcba8acb8af251a5040035a219c01e51d4a10adfecada36cd8",
-      "bytes": 606,
-      "group": "fastcgi_php_record_message_policy",
-      "supporting_areas": [
-        "F09-bindings-http"
-      ],
-      "required_runtime_outcomes": "PHP record pack/unpack,params length/name/value encoding,incremental frame parsing,padding/request IDs,STDOUT/STDERR termination,messages and HTTP request/response projection. Native M13 FastCGI codec does not prove these PHP objects migrated.",
-      "declared_types": [
-        "Swoole\\FastCGI\\Record\\Stdin"
-      ],
-      "declared_functions": [],
-      "original_family_hints": "swoole_fastcgi,swoole_library",
-      "inference_limit": "References/family hints only,not assertions,execution or coverage;dynamic/inherited/helper calls may be missed. Counts are trace completeness,not parity.",
-      "companion_source_warning": null,
-      "planning_anchor": "F06-protocol-base-mime",
-      "scope_status": "accepted_first_party_rust_outcome",
-      "implementation_status": "not_qualified_by_this_scope_acceptance",
-      "planning_owner": "eng-lead-1; @loks0n",
-      "evidence_target": "Exact actual embedded payload callers, unchanged original assertions and supplemental defined behavior; source-bound native/selected configurations; lifetime and optimized performance separately"
-    },
-    {
-      "payload": "core/FastCGI/Record/Stdout.php",
-      "symbol": "swoole_library_source_core_fast_cgi_record_stdout",
-      "sha256": "c50597624ee7181a639c831714683b2ef6d2d7d49e80b2afb3d7fa2a7faa780d",
-      "bytes": 601,
-      "group": "fastcgi_php_record_message_policy",
-      "supporting_areas": [
-        "F09-bindings-http"
-      ],
-      "required_runtime_outcomes": "PHP record pack/unpack,params length/name/value encoding,incremental frame parsing,padding/request IDs,STDOUT/STDERR termination,messages and HTTP request/response projection. Native M13 FastCGI codec does not prove these PHP objects migrated.",
-      "declared_types": [
-        "Swoole\\FastCGI\\Record\\Stdout"
-      ],
-      "declared_functions": [],
-      "original_family_hints": "swoole_fastcgi,swoole_library",
-      "inference_limit": "References/family hints only,not assertions,execution or coverage;dynamic/inherited/helper calls may be missed. Counts are trace completeness,not parity.",
-      "companion_source_warning": null,
-      "planning_anchor": "F06-protocol-base-mime",
-      "scope_status": "accepted_first_party_rust_outcome",
-      "implementation_status": "not_qualified_by_this_scope_acceptance",
-      "planning_owner": "eng-lead-1; @loks0n",
-      "evidence_target": "Exact actual embedded payload callers, unchanged original assertions and supplemental defined behavior; source-bound native/selected configurations; lifetime and optimized performance separately"
-    },
-    {
-      "payload": "core/FastCGI/Record/Stderr.php",
-      "symbol": "swoole_library_source_core_fast_cgi_record_stderr",
-      "sha256": "eb2cfe8efec3071a43adbae8a849bfd79545184f2a0fe9519b7960b508801889",
-      "bytes": 601,
-      "group": "fastcgi_php_record_message_policy",
-      "supporting_areas": [
-        "F09-bindings-http"
-      ],
-      "required_runtime_outcomes": "PHP record pack/unpack,params length/name/value encoding,incremental frame parsing,padding/request IDs,STDOUT/STDERR termination,messages and HTTP request/response projection. Native M13 FastCGI codec does not prove these PHP objects migrated.",
-      "declared_types": [
-        "Swoole\\FastCGI\\Record\\Stderr"
-      ],
-      "declared_functions": [],
-      "original_family_hints": "swoole_fastcgi,swoole_library",
-      "inference_limit": "References/family hints only,not assertions,execution or coverage;dynamic/inherited/helper calls may be missed. Counts are trace completeness,not parity.",
-      "companion_source_warning": null,
-      "planning_anchor": "F06-protocol-base-mime",
-      "scope_status": "accepted_first_party_rust_outcome",
-      "implementation_status": "not_qualified_by_this_scope_acceptance",
-      "planning_owner": "eng-lead-1; @loks0n",
-      "evidence_target": "Exact actual embedded payload callers, unchanged original assertions and supplemental defined behavior; source-bound native/selected configurations; lifetime and optimized performance separately"
-    },
-    {
-      "payload": "core/FastCGI/Record/UnknownType.php",
-      "symbol": "swoole_library_source_core_fast_cgi_record_unknown_type",
-      "sha256": "0592113867b853a5c842e869891eb664f13779bceb76b2575f5704a8635bc4e4",
-      "bytes": 2077,
-      "group": "fastcgi_php_record_message_policy",
-      "supporting_areas": [
-        "F09-bindings-http"
-      ],
-      "required_runtime_outcomes": "PHP record pack/unpack,params length/name/value encoding,incremental frame parsing,padding/request IDs,STDOUT/STDERR termination,messages and HTTP request/response projection. Native M13 FastCGI codec does not prove these PHP objects migrated.",
-      "declared_types": [
-        "Swoole\\FastCGI\\Record\\UnknownType"
-      ],
-      "declared_functions": [],
-      "original_family_hints": "swoole_fastcgi,swoole_library",
-      "inference_limit": "References/family hints only,not assertions,execution or coverage;dynamic/inherited/helper calls may be missed. Counts are trace completeness,not parity.",
-      "companion_source_warning": null,
-      "planning_anchor": "F06-protocol-base-mime",
-      "scope_status": "accepted_first_party_rust_outcome",
-      "implementation_status": "not_qualified_by_this_scope_acceptance",
-      "planning_owner": "eng-lead-1; @loks0n",
-      "evidence_target": "Exact actual embedded payload callers, unchanged original assertions and supplemental defined behavior; source-bound native/selected configurations; lifetime and optimized performance separately"
-    },
-    {
-      "payload": "core/FastCGI/FrameParser.php",
-      "symbol": "swoole_library_source_core_fast_cgi_frame_parser",
-      "sha256": "cfd654b9808bc1057edbba691189c5448944d6da7ce62899eea6df0f04696b10",
-      "bytes": 3572,
-      "group": "fastcgi_php_record_message_policy",
-      "supporting_areas": [
-        "F09-bindings-http"
-      ],
-      "required_runtime_outcomes": "PHP record pack/unpack,params length/name/value encoding,incremental frame parsing,padding/request IDs,STDOUT/STDERR termination,messages and HTTP request/response projection. Native M13 FastCGI codec does not prove these PHP objects migrated.",
-      "declared_types": [
-        "Swoole\\FastCGI\\FrameParser"
-      ],
-      "declared_functions": [],
-      "original_family_hints": "swoole_fastcgi,swoole_library",
-      "inference_limit": "References/family hints only,not assertions,execution or coverage;dynamic/inherited/helper calls may be missed. Counts are trace completeness,not parity.",
-      "companion_source_warning": null,
-      "planning_anchor": "F06-protocol-base-mime",
-      "scope_status": "accepted_first_party_rust_outcome",
-      "implementation_status": "not_qualified_by_this_scope_acceptance",
-      "planning_owner": "eng-lead-1; @loks0n",
-      "evidence_target": "Exact actual embedded payload callers, unchanged original assertions and supplemental defined behavior; source-bound native/selected configurations; lifetime and optimized performance separately"
-    },
-    {
-      "payload": "core/FastCGI/Message.php",
-      "symbol": "swoole_library_source_core_fast_cgi_message",
-      "sha256": "f3ae65c9911dda23b3b20c5869b7ee4a6d4e7120c266a813692b3012c5c4322e",
-      "bytes": 1489,
-      "group": "fastcgi_php_record_message_policy",
-      "supporting_areas": [
-        "F09-bindings-http"
-      ],
-      "required_runtime_outcomes": "PHP record pack/unpack,params length/name/value encoding,incremental frame parsing,padding/request IDs,STDOUT/STDERR termination,messages and HTTP request/response projection. Native M13 FastCGI codec does not prove these PHP objects migrated.",
-      "declared_types": [
-        "Swoole\\FastCGI\\Message"
-      ],
-      "declared_functions": [],
-      "original_family_hints": "swoole_fastcgi,swoole_library",
-      "inference_limit": "References/family hints only,not assertions,execution or coverage;dynamic/inherited/helper calls may be missed. Counts are trace completeness,not parity.",
-      "companion_source_warning": null,
-      "planning_anchor": "F06-protocol-base-mime",
-      "scope_status": "accepted_first_party_rust_outcome",
-      "implementation_status": "not_qualified_by_this_scope_acceptance",
-      "planning_owner": "eng-lead-1; @loks0n",
-      "evidence_target": "Exact actual embedded payload callers, unchanged original assertions and supplemental defined behavior; source-bound native/selected configurations; lifetime and optimized performance separately"
-    },
-    {
-      "payload": "core/FastCGI/Request.php",
-      "symbol": "swoole_library_source_core_fast_cgi_request",
-      "sha256": "e706e2d7587b03a6e63d5474d07d965cdc7f60b96685b6ce7ba163990809234c",
-      "bytes": 1662,
-      "group": "fastcgi_php_record_message_policy",
-      "supporting_areas": [
-        "F09-bindings-http"
-      ],
-      "required_runtime_outcomes": "PHP record pack/unpack,params length/name/value encoding,incremental frame parsing,padding/request IDs,STDOUT/STDERR termination,messages and HTTP request/response projection. Native M13 FastCGI codec does not prove these PHP objects migrated.",
-      "declared_types": [
-        "Swoole\\FastCGI\\Request"
-      ],
-      "declared_functions": [],
-      "original_family_hints": "swoole_fastcgi,swoole_library",
-      "inference_limit": "References/family hints only,not assertions,execution or coverage;dynamic/inherited/helper calls may be missed. Counts are trace completeness,not parity.",
-      "companion_source_warning": null,
-      "planning_anchor": "F06-protocol-base-mime",
-      "scope_status": "accepted_first_party_rust_outcome",
-      "implementation_status": "not_qualified_by_this_scope_acceptance",
-      "planning_owner": "eng-lead-1; @loks0n",
-      "evidence_target": "Exact actual embedded payload callers, unchanged original assertions and supplemental defined behavior; source-bound native/selected configurations; lifetime and optimized performance separately"
-    },
-    {
-      "payload": "core/FastCGI/Response.php",
-      "symbol": "swoole_library_source_core_fast_cgi_response",
-      "sha256": "750fcbc52343be0568bdf1abe72ef11e0c28c7127d47ad10fb7ead859a93afcc",
-      "bytes": 1354,
-      "group": "fastcgi_php_record_message_policy",
-      "supporting_areas": [
-        "F09-bindings-http"
-      ],
-      "required_runtime_outcomes": "PHP record pack/unpack,params length/name/value encoding,incremental frame parsing,padding/request IDs,STDOUT/STDERR termination,messages and HTTP request/response projection. Native M13 FastCGI codec does not prove these PHP objects migrated.",
-      "declared_types": [
-        "Swoole\\FastCGI\\Response"
-      ],
-      "declared_functions": [],
-      "original_family_hints": "swoole_fastcgi,swoole_library",
-      "inference_limit": "References/family hints only,not assertions,execution or coverage;dynamic/inherited/helper calls may be missed. Counts are trace completeness,not parity.",
-      "companion_source_warning": null,
-      "planning_anchor": "F06-protocol-base-mime",
-      "scope_status": "accepted_first_party_rust_outcome",
-      "implementation_status": "not_qualified_by_this_scope_acceptance",
-      "planning_owner": "eng-lead-1; @loks0n",
-      "evidence_target": "Exact actual embedded payload callers, unchanged original assertions and supplemental defined behavior; source-bound native/selected configurations; lifetime and optimized performance separately"
-    },
-    {
-      "payload": "core/FastCGI/HttpRequest.php",
-      "symbol": "swoole_library_source_core_fast_cgi_http_request",
-      "sha256": "2e7437f8d9a15a3c5f89fd2a6122e13189422e42b7c2134dd8e4da9944cdd5a4",
-      "bytes": 10693,
-      "group": "fastcgi_php_record_message_policy",
-      "supporting_areas": [
-        "F09-bindings-http"
-      ],
-      "required_runtime_outcomes": "PHP record pack/unpack,params length/name/value encoding,incremental frame parsing,padding/request IDs,STDOUT/STDERR termination,messages and HTTP request/response projection. Native M13 FastCGI codec does not prove these PHP objects migrated.",
-      "declared_types": [
-        "Swoole\\FastCGI\\HttpRequest"
-      ],
-      "declared_functions": [],
-      "original_family_hints": "swoole_fastcgi,swoole_library",
-      "inference_limit": "References/family hints only,not assertions,execution or coverage;dynamic/inherited/helper calls may be missed. Counts are trace completeness,not parity.",
-      "companion_source_warning": null,
-      "planning_anchor": "F06-protocol-base-mime",
-      "scope_status": "accepted_first_party_rust_outcome",
-      "implementation_status": "not_qualified_by_this_scope_acceptance",
-      "planning_owner": "eng-lead-1; @loks0n",
-      "evidence_target": "Exact actual embedded payload callers, unchanged original assertions and supplemental defined behavior; source-bound native/selected configurations; lifetime and optimized performance separately"
-    },
-    {
-      "payload": "core/FastCGI/HttpResponse.php",
-      "symbol": "swoole_library_source_core_fast_cgi_http_response",
-      "sha256": "8b17a59fa26455350fb12e5530c48ce6e0f8df42af7506738a84cc6546c97154",
-      "bytes": 4031,
-      "group": "fastcgi_php_record_message_policy",
-      "supporting_areas": [
-        "F09-bindings-http"
-      ],
-      "required_runtime_outcomes": "PHP record pack/unpack,params length/name/value encoding,incremental frame parsing,padding/request IDs,STDOUT/STDERR termination,messages and HTTP request/response projection. Native M13 FastCGI codec does not prove these PHP objects migrated.",
-      "declared_types": [
-        "Swoole\\FastCGI\\HttpResponse"
-      ],
-      "declared_functions": [],
-      "original_family_hints": "swoole_fastcgi,swoole_library",
-      "inference_limit": "References/family hints only,not assertions,execution or coverage;dynamic/inherited/helper calls may be missed. Counts are trace completeness,not parity.",
-      "companion_source_warning": null,
-      "planning_anchor": "F06-protocol-base-mime",
-      "scope_status": "accepted_first_party_rust_outcome",
-      "implementation_status": "not_qualified_by_this_scope_acceptance",
-      "planning_owner": "eng-lead-1; @loks0n",
-      "evidence_target": "Exact actual embedded payload callers, unchanged original assertions and supplemental defined behavior; source-bound native/selected configurations; lifetime and optimized performance separately"
-    },
-    {
-      "payload": "core/Coroutine/FastCGI/Client.php",
-      "symbol": "swoole_library_source_core_coroutine_fast_cgi_client",
-      "sha256": "c4289f713a29c076bce9b3b70f7f6afa5d59d051a3286c298b8f23507101b0c2",
-      "bytes": 4966,
-      "group": "fastcgi_coroutine_client_proxy",
-      "supporting_areas": [
-        "F06-protocol-base-mime",
-        "F09-bindings-http"
-      ],
-      "required_runtime_outcomes": "FastCGI connect/request IDs/send/receive/EOF/error handling,response assembly,proxy HTTP conversion and lifetime/cancellation.",
-      "declared_types": [
-        "Swoole\\Coroutine\\FastCGI\\Client"
-      ],
-      "declared_functions": [],
-      "original_family_hints": "swoole_fastcgi,swoole_library",
-      "inference_limit": "References/family hints only,not assertions,execution or coverage;dynamic/inherited/helper calls may be missed. Counts are trace completeness,not parity.",
-      "companion_source_warning": null,
-      "planning_anchor": "F04-clients-resolver",
-      "scope_status": "accepted_first_party_rust_outcome",
-      "implementation_status": "not_qualified_by_this_scope_acceptance",
-      "planning_owner": "eng-lead-1; @loks0n",
-      "evidence_target": "Exact actual embedded payload callers, unchanged original assertions and supplemental defined behavior; source-bound native/selected configurations; lifetime and optimized performance separately"
-    },
-    {
-      "payload": "core/Coroutine/FastCGI/Client/Exception.php",
-      "symbol": "swoole_library_source_core_coroutine_fast_cgi_client_exception",
-      "sha256": "8ac2cc639d1507ba2e67dd3502ce418d9322db3424b001589d34ba991b6716c1",
-      "bytes": 293,
-      "group": "fastcgi_coroutine_client_proxy",
-      "supporting_areas": [
-        "F06-protocol-base-mime",
-        "F09-bindings-http"
-      ],
-      "required_runtime_outcomes": "FastCGI connect/request IDs/send/receive/EOF/error handling,response assembly,proxy HTTP conversion and lifetime/cancellation.",
-      "declared_types": [
-        "Swoole\\Coroutine\\FastCGI\\Client\\Exception"
-      ],
-      "declared_functions": [],
-      "original_family_hints": "swoole_fastcgi,swoole_library",
-      "inference_limit": "References/family hints only,not assertions,execution or coverage;dynamic/inherited/helper calls may be missed. Counts are trace completeness,not parity.",
-      "companion_source_warning": null,
-      "planning_anchor": "F04-clients-resolver",
-      "scope_status": "accepted_first_party_rust_outcome",
-      "implementation_status": "not_qualified_by_this_scope_acceptance",
-      "planning_owner": "eng-lead-1; @loks0n",
-      "evidence_target": "Exact actual embedded payload callers, unchanged original assertions and supplemental defined behavior; source-bound native/selected configurations; lifetime and optimized performance separately"
-    },
-    {
-      "payload": "core/Coroutine/FastCGI/Proxy.php",
-      "symbol": "swoole_library_source_core_coroutine_fast_cgi_proxy",
-      "sha256": "e46b43eee45298cdc14a2de49d7343514d8a7cfbaf86b7de28d8e308170fed0d",
-      "bytes": 6087,
-      "group": "fastcgi_coroutine_client_proxy",
-      "supporting_areas": [
-        "F06-protocol-base-mime",
-        "F09-bindings-http"
-      ],
-      "required_runtime_outcomes": "FastCGI connect/request IDs/send/receive/EOF/error handling,response assembly,proxy HTTP conversion and lifetime/cancellation.",
-      "declared_types": [
-        "Swoole\\Coroutine\\FastCGI\\Proxy"
-      ],
-      "declared_functions": [],
-      "original_family_hints": "swoole_fastcgi,swoole_library",
-      "inference_limit": "References/family hints only,not assertions,execution or coverage;dynamic/inherited/helper calls may be missed. Counts are trace completeness,not parity.",
-      "companion_source_warning": null,
-      "planning_anchor": "F04-clients-resolver",
-      "scope_status": "accepted_first_party_rust_outcome",
-      "implementation_status": "not_qualified_by_this_scope_acceptance",
-      "planning_owner": "eng-lead-1; @loks0n",
-      "evidence_target": "Exact actual embedded payload callers, unchanged original assertions and supplemental defined behavior; source-bound native/selected configurations; lifetime and optimized performance separately"
-    },
-    {
       "payload": "core/Process/Manager.php",
       "symbol": "swoole_library_source_core_process_manager",
-      "sha256": "4b713ee2d6ec1bf742a0956094baa6bd99f4c3306e7fb25754510a0c9fceca0d",
-      "bytes": 2099,
+      "sha256": "3cb9a14a1c861f22fa45c9ebbd20c1b645d9aa30c26280eb205b61c1c618ec5e",
+      "bytes": 2938,
       "group": "process_manager",
       "supporting_areas": [
         "F07-server-orchestration"
@@ -1269,8 +784,8 @@
     {
       "payload": "core/RemoteObject.php",
       "symbol": "swoole_library_source_core_remote_object",
-      "sha256": "69b9909f253a443c4641aa20b29010dfc1e0099713ee30a13c123bdb888a345a",
-      "bytes": 6257,
+      "sha256": "2169e1174459a703669ae9406880c2b2b891497bf4b7f014c5d5bc61cdda8c96",
+      "bytes": 7271,
       "group": "remote_object_rpc",
       "supporting_areas": [
         "F09-bindings-http",
@@ -1295,8 +810,8 @@
     {
       "payload": "core/RemoteObject/Server.php",
       "symbol": "swoole_library_source_core_remote_object_server",
-      "sha256": "c4cc4366e352777b6ec2af2b5deba27d16a8e0dd14f3fd1cdd2e50e5f308dfbd",
-      "bytes": 10272,
+      "sha256": "63c1f3ee4e2087ac411815c0bf54ecc03db2638f28b4fc40850ba52dc9839818",
+      "bytes": 15862,
       "group": "remote_object_rpc",
       "supporting_areas": [
         "F09-bindings-http",
@@ -1321,8 +836,8 @@
     {
       "payload": "core/RemoteObject/Context.php",
       "symbol": "swoole_library_source_core_remote_object_context",
-      "sha256": "66a3277aa7ec01afedbc82344777f2534a95822d21095ae65a0c8b02319eed4b",
-      "bytes": 1912,
+      "sha256": "c5d8fe277b96606899464b12b801f53096b8619c35ceb45d99371316ef9fb16e",
+      "bytes": 2850,
       "group": "remote_object_rpc",
       "supporting_areas": [
         "F09-bindings-http",
@@ -1347,8 +862,8 @@
     {
       "payload": "core/RemoteObject/Client.php",
       "symbol": "swoole_library_source_core_remote_object_client",
-      "sha256": "f41b6d672a618b894d55b1ccd31b056b948487f7e527db0377c523bafd6ff864",
-      "bytes": 2733,
+      "sha256": "7b38559302b4e848b4fe8760cdb6162ff2d64430089c439315ab1dcffb7c9c96",
+      "bytes": 8949,
       "group": "remote_object_rpc",
       "supporting_areas": [
         "F09-bindings-http",
@@ -1373,8 +888,8 @@
     {
       "payload": "core/RemoteObject/Exception.php",
       "symbol": "swoole_library_source_core_remote_object_exception",
-      "sha256": "0e8c249b219e8faedc3885f6517a887f7c80b47fcabba6dfed15f56135f397f4",
-      "bytes": 281,
+      "sha256": "01a52280928503fe067695fca1055c6a2360cad1680a59637efa538c835d6d5b",
+      "bytes": 1997,
       "group": "remote_object_rpc",
       "supporting_areas": [
         "F09-bindings-http",
@@ -1399,8 +914,8 @@
     {
       "payload": "core/RemoteObject/ProxyTrait.php",
       "symbol": "swoole_library_source_core_remote_object_proxy_trait",
-      "sha256": "cee941d49024d4391e1d8319b5d34bf69aee706e0c62f33ac70231c3457c0fae",
-      "bytes": 2012,
+      "sha256": "a8e8bc9e6ee574b82a235832904c844ab32ac677842e237a65c858bcdaae8a93",
+      "bytes": 2018,
       "group": "remote_object_rpc",
       "supporting_areas": [
         "F09-bindings-http",
@@ -1425,8 +940,8 @@
     {
       "payload": "core/Server/Admin.php",
       "symbol": "swoole_library_source_core_server_admin",
-      "sha256": "3228859cf32c702ae41376a6d6641136448829044632d9b5274538169850a8bd",
-      "bytes": 47660,
+      "sha256": "e2c2c5c93597eabbc3ef8d447467f75d9e3cbe46d29b5bcdcddbda4086ef2c67",
+      "bytes": 51250,
       "group": "server_admin_helper",
       "supporting_areas": [
         "F07-server-orchestration"
@@ -1448,8 +963,8 @@
     {
       "payload": "core/Server/Helper.php",
       "symbol": "swoole_library_source_core_server_helper",
-      "sha256": "1c31439617887f3d66788a084d4364e906c02f3915df479fe9bd2cf962a475dc",
-      "bytes": 11893,
+      "sha256": "dc147026c9c2766ffe2f6eed02f4d2b933aece82dae2e2ca23fc21c1086b07b9",
+      "bytes": 15898,
       "group": "server_admin_helper",
       "supporting_areas": [
         "F07-server-orchestration"
@@ -1471,8 +986,8 @@
     {
       "payload": "core/NameResolver.php",
       "symbol": "swoole_library_source_core_name_resolver",
-      "sha256": "f91c55aae0bda6b8a6990e29187542dc8b27650a0a86a1fddd796202cd4bf162",
-      "bytes": 3176,
+      "sha256": "fea4485b4d8b2a4474695562d41a5e760a74815e5bd8834c0fb7418101a31f0a",
+      "bytes": 17240,
       "group": "service_name_resolvers",
       "supporting_areas": [
         "F13-optional-integrations"
@@ -1494,8 +1009,8 @@
     {
       "payload": "core/NameResolver/Exception.php",
       "symbol": "swoole_library_source_core_name_resolver_exception",
-      "sha256": "04742e4c7a04936161478774f784c00970faae1caff92cd50aad3c7a1ee6ff1a",
-      "bytes": 456,
+      "sha256": "45803fcd7838296a0d8cbbfd6737a50d25b2df40b2dab32d6ff8fbd854c8a4b9",
+      "bytes": 281,
       "group": "service_name_resolvers",
       "supporting_areas": [
         "F13-optional-integrations"
@@ -1517,8 +1032,8 @@
     {
       "payload": "core/NameResolver/Cluster.php",
       "symbol": "swoole_library_source_core_name_resolver_cluster",
-      "sha256": "fc9f0f2c3d9c5fa4493cbd6fb4a2b9bbb037dd404113590da8f944fbf381fb89",
-      "bytes": 1242,
+      "sha256": "53030bdd9fe9c202ec7b9b6a829b3f1f717368865e4468cb64f7243ca783c66d",
+      "bytes": 2006,
       "group": "service_name_resolvers",
       "supporting_areas": [
         "F13-optional-integrations"
@@ -1540,8 +1055,8 @@
     {
       "payload": "core/NameResolver/Redis.php",
       "symbol": "swoole_library_source_core_name_resolver_redis",
-      "sha256": "0553263f1dd9efde2b5c8e97a394b296ff82e593faf972f88da4b42658e63145",
-      "bytes": 2084,
+      "sha256": "354966788b2aef5acd4fa1dfdeb8961c4b1e6a75cd38ea0f1202e1433d4fe3be",
+      "bytes": 8899,
       "group": "service_name_resolvers",
       "supporting_areas": [
         "F13-optional-integrations"
@@ -1563,8 +1078,8 @@
     {
       "payload": "core/NameResolver/Nacos.php",
       "symbol": "swoole_library_source_core_name_resolver_nacos",
-      "sha256": "c461357f4d49211ae78196abe93ef831df29593b19d30495393aba0b99cfcc11",
-      "bytes": 2496,
+      "sha256": "2b6dc14ae52aff48f155074541a079e95bd22eb37c637999a62c72d5979447b5",
+      "bytes": 7124,
       "group": "service_name_resolvers",
       "supporting_areas": [
         "F13-optional-integrations"
@@ -1584,10 +1099,56 @@
       "evidence_target": "Exact actual embedded payload callers, unchanged original assertions and supplemental defined behavior; source-bound native/selected configurations; lifetime and optimized performance separately"
     },
     {
+      "payload": "core/NameResolver/Registration.php",
+      "symbol": "swoole_library_source_core_name_resolver_registration",
+      "sha256": "8010a697a1b0b74e52371704877c7edf91c2fb2c58e92ea0d4babd9d91badf06",
+      "bytes": 6882,
+      "group": "service_name_resolvers",
+      "supporting_areas": [
+        "F13-optional-integrations"
+      ],
+      "required_runtime_outcomes": "join/leave/filter/cluster round-robin/lookup,error/response handling,Redis/Nacos/Consul backend policy and service discovery configuration. DNS migration alone does not cover service discovery.",
+      "declared_types": [
+        "Swoole\\NameResolver\\Registration"
+      ],
+      "declared_functions": [],
+      "original_family_hints": "swoole_library/name_resolver",
+      "inference_limit": "References/family hints only,not assertions,execution or coverage;dynamic/inherited/helper calls may be missed. Counts are trace completeness,not parity.",
+      "companion_source_warning": null,
+      "planning_anchor": "F04-clients-resolver",
+      "scope_status": "accepted_first_party_rust_outcome",
+      "implementation_status": "not_qualified_by_this_scope_acceptance",
+      "planning_owner": "eng-lead-1; @loks0n",
+      "evidence_target": "Exact actual embedded payload callers, unchanged original assertions and supplemental defined behavior; source-bound native/selected configurations; lifetime and optimized performance separately"
+    },
+    {
+      "payload": "core/NameResolver/ServiceRegistration.php",
+      "symbol": "swoole_library_source_core_name_resolver_service_registration",
+      "sha256": "520a39ef1e81172d4a1f4b3b5188bf3cdc180837628c6c7a3289c16e0d9f3da2",
+      "bytes": 7193,
+      "group": "service_name_resolvers",
+      "supporting_areas": [
+        "F13-optional-integrations"
+      ],
+      "required_runtime_outcomes": "join/leave/filter/cluster round-robin/lookup,error/response handling,Redis/Nacos/Consul backend policy and service discovery configuration. DNS migration alone does not cover service discovery.",
+      "declared_types": [
+        "Swoole\\NameResolver\\ServiceRegistration"
+      ],
+      "declared_functions": [],
+      "original_family_hints": "swoole_library/name_resolver",
+      "inference_limit": "References/family hints only,not assertions,execution or coverage;dynamic/inherited/helper calls may be missed. Counts are trace completeness,not parity.",
+      "companion_source_warning": null,
+      "planning_anchor": "F04-clients-resolver",
+      "scope_status": "accepted_first_party_rust_outcome",
+      "implementation_status": "not_qualified_by_this_scope_acceptance",
+      "planning_owner": "eng-lead-1; @loks0n",
+      "evidence_target": "Exact actual embedded payload callers, unchanged original assertions and supplemental defined behavior; source-bound native/selected configurations; lifetime and optimized performance separately"
+    },
+    {
       "payload": "core/NameResolver/Consul.php",
       "symbol": "swoole_library_source_core_name_resolver_consul",
-      "sha256": "76e0a26ca85911e010ed998560a48a0f85ce64f53ffc2ff9791fe7ad3bb04e55",
-      "bytes": 2668,
+      "sha256": "316af9739004996b1b731ec91233f98fa7c0961f77ab2de2f30cc2354c934880",
+      "bytes": 7322,
       "group": "service_name_resolvers",
       "supporting_areas": [
         "F13-optional-integrations"
@@ -1609,8 +1170,8 @@
     {
       "payload": "core/Thread/Pool.php",
       "symbol": "swoole_library_source_core_thread_pool",
-      "sha256": "f04da37a0e163b1d72b27995e6d2d2fe0e26563cd0e87f980642d5ecbc07b0d1",
-      "bytes": 6478,
+      "sha256": "f78f6845cc84953d04d33c83d36d35f956acceaae3dcc1b6f6a80dd1dbbf8331",
+      "bytes": 8151,
       "group": "thread_pool_runnable",
       "supporting_areas": [
         "F12-bindings-core"
@@ -1632,8 +1193,8 @@
     {
       "payload": "core/Thread/Runnable.php",
       "symbol": "swoole_library_source_core_thread_runnable",
-      "sha256": "2dd025fc2e47a94ec2b287ed9e8dd8b7963b68da38c9903405c3e387f1b4e34b",
-      "bytes": 709,
+      "sha256": "b41472f43b4e93dab3537e49ab5da4ef62df4f88943bced8cf132d20d43fc016",
+      "bytes": 720,
       "group": "thread_pool_runnable",
       "supporting_areas": [
         "F12-bindings-core"
@@ -1655,8 +1216,8 @@
     {
       "payload": "core/Coroutine/functions.php",
       "symbol": "swoole_library_source_core_coroutine_functions",
-      "sha256": "d3e75dd53db658677c20713b6363a60387dffc97df2a044231e604d830e99c1b",
-      "bytes": 3837,
+      "sha256": "432778fe90e1122ca4470bab14964bc47a753b74eb3665c7ee609e2de260f32d",
+      "bytes": 4828,
       "group": "coroutine_coordination_scheduler_helpers",
       "supporting_areas": [],
       "required_runtime_outcomes": "WaitGroup add/done/wait/timeout/reuse,Barrier lifetime completion,run scheduler hook-flag defaults,batch/map key preservation and timeout partial results,parallel exceptions,defer/deadlock reports. These PHP algorithms survive even if underlying coroutine primitives migrate.",
@@ -1682,8 +1243,8 @@
     {
       "payload": "ext/curl.php",
       "symbol": "swoole_library_source_ext_curl",
-      "sha256": "c37a97616ad9e7082189f1971b7a27e65d9a44cb2442a6bafa0bf435aa580a59",
-      "bytes": 2342,
+      "sha256": "31adf1bb07299f80de99a3fc4d7cd2070783351d02d989f2013be4849a60adfa",
+      "bytes": 2643,
       "group": "curl_emulation_wrappers",
       "supporting_areas": [
         "F09-bindings-http",
@@ -1716,8 +1277,8 @@
     {
       "payload": "ext/sockets.php",
       "symbol": "swoole_library_source_ext_sockets",
-      "sha256": "045079d699beb505c8c1a406053a1e81e49210355c2abcd54aca5720db00132b",
-      "bytes": 6613,
+      "sha256": "74fae652002bf10d2319e5ba5a76f1dc41064237155f77fc0991184d015316d8",
+      "bytes": 10680,
       "group": "sockets_compatibility_helpers",
       "supporting_areas": [
         "F04-clients-resolver"
@@ -1764,8 +1325,8 @@
     {
       "payload": "ext/standard.php",
       "symbol": "swoole_library_source_ext_standard",
-      "sha256": "0e5069109410432c2ee0c39bf1848f3079b456e41328e61c91d5373610e3c45f",
-      "bytes": 3408,
+      "sha256": "2394f6766727ac8ef874df8dba5413d7f94f781881da2c6affa4f29f921fa8de",
+      "bytes": 3948,
       "group": "standard_dns_mail_remote_helpers",
       "supporting_areas": [
         "F04-clients-resolver",
@@ -1821,8 +1382,8 @@
     {
       "payload": "functions.php",
       "symbol": "swoole_library_source_functions",
-      "sha256": "b12893b715fc74c5a57e347d1cc7d3c6d57524e4b09d466e7a2dab99d04d2e2f",
-      "bytes": 9566,
+      "sha256": "e8fed6a5005bbe0f919141a31cd2ef15dc946a8acb3f63bf25b833c939287ecf",
+      "bytes": 17563,
       "group": "global_factories_library_options_remote_bootstrap",
       "supporting_areas": [
         "F11-bindings-process-server",
@@ -1864,36 +1425,13 @@
     {
       "payload": "alias.php",
       "symbol": "swoole_library_source_alias",
-      "sha256": "2167c72c95ff856bac8f30a00ae0388afca0dc4efa2669e6b4bf22e7527990c2",
-      "bytes": 887,
+      "sha256": "298e7d400a8a771138ef3678ceb4182d716ee6535c466ddabc53f7562aa3373f",
+      "bytes": 1058,
       "group": "registration_constants_aliases",
       "supporting_areas": [],
       "required_runtime_outcomes": "Constant values,exception identity,function/class aliases,shortname on/off and library-load on/off must preserve PHP observable signatures and errors.",
       "declared_types": [],
       "declared_functions": [],
-      "original_family_hints": "swoole_function,swoole_feature,swoole_coroutine",
-      "inference_limit": "References/family hints only,not assertions,execution or coverage;dynamic/inherited/helper calls may be missed. Counts are trace completeness,not parity.",
-      "companion_source_warning": null,
-      "planning_anchor": "F12-bindings-core",
-      "scope_status": "accepted_first_party_rust_outcome",
-      "implementation_status": "not_qualified_by_this_scope_acceptance",
-      "planning_owner": "eng-lead-1; @loks0n",
-      "evidence_target": "Exact actual embedded payload callers, unchanged original assertions and supplemental defined behavior; source-bound native/selected configurations; lifetime and optimized performance separately"
-    },
-    {
-      "payload": "alias_ns.php",
-      "symbol": "swoole_library_source_alias_ns",
-      "sha256": "04b47d9d2d85585d31313a07ccf5c2462f342578e8949f41123f3c6613f3a979",
-      "bytes": 589,
-      "group": "registration_constants_aliases",
-      "supporting_areas": [],
-      "required_runtime_outcomes": "Constant values,exception identity,function/class aliases,shortname on/off and library-load on/off must preserve PHP observable signatures and errors.",
-      "declared_types": [],
-      "declared_functions": [
-        "Co\\run",
-        "Co\\go",
-        "Co\\defer"
-      ],
       "original_family_hints": "swoole_function,swoole_feature,swoole_coroutine",
       "inference_limit": "References/family hints only,not assertions,execution or coverage;dynamic/inherited/helper calls may be missed. Counts are trace completeness,not parity.",
       "companion_source_warning": null,

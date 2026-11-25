@@ -3,7 +3,7 @@ Copyright 2026 The swoole-rs authors
 
 This product is a Rust rewrite of Swoole (https://github.com/swoole/swoole-src),
 by Tianfeng Han and the Swoole team, licensed under the Apache License 2.0. Its PHP API,
-its behaviour and parts of its C headers and tests derive from Swoole v6.2.6.
+its behaviour and parts of its C headers and tests derive from Swoole, including v6.2.6 and v6.3.0.
 
 native/hooks holds what stays C of code Swoole bundles from PHP (https://www.php.net/)
 and PECL ssh2, Copyright (c) The PHP Group, under the PHP License 3.01

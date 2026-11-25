@@ -57,7 +57,7 @@ jobs:
         id: runs
         if: github.event_name != 'push'
         run: |
-          gates=(phpt phpt-zts phpt-stdext phpt-iouring phpt-cares phpt-threadcontext phpt-alpine phpt-root)
+          gates=(phpt phpt-zts phpt-iouring phpt-cares phpt-threadcontext phpt-alpine phpt-root)
           listed=$(gh run list --workflow merge.yml --branch main --status completed --limit 100 --json databaseId,headSha,conclusion -q '.[] | select(.conclusion != "cancelled") | "\(.databaseId):\(.headSha):\(.conclusion)"')
           # The merge badge: the newest finished run's result (GitHub's own badge counts the
           # cancelled runs latest-wins leaves, so it mostly reads failing).

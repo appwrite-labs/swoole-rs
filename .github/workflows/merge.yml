@@ -182,65 +182,6 @@ jobs:
   callgrind:
     uses: ./.github/workflows/callgrind.yml
 
-  # swoole_stdext needs the experimental --stdext build, which changes PHP itself
-  # (typed arrays, methods on scalars), so it gets its own engines and its own gate.
-  phpt-stdext:
-    runs-on: gcrunner=${{ github.run_id }}/runner=standard
-    timeout-minutes: 20
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-      - uses: ./.github/actions/install
-      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
-        with:
-          path: target/upstream
-          key: upstream-${{ runner.os }}-${{ hashFiles('tools/build_upstream.py') }}-${{ github.workspace }}
-      - name: Build upstream
-        if: hashFiles('target/upstream/src/run-tests.php') == ''
-        run: python3 tools/build_upstream.py
-      - name: Fetch crates
-        run: cargo fetch --locked
-      - name: Build stdext engines
-        run: |
-          python3 tools/build_upstream.py --stdext | tee upstream.log
-          python3 tools/build_ext.py --stdext
-          mkdir -p target/phpt
-          cp -L "$(sed -n 's/^\(Built\|Cached\) upstream: //p' upstream.log)" target/phpt/upstream.so
-          cp target/ext/swoole.so target/phpt/cargo.so
-      - name: List extensions
-        id: extensions
-        run: echo "args=$(sed -n 's/^extension=\(.*\)/--php-extension \1/p' /etc/php/*/cli/conf.d/*.ini | sed 's/\.so$//' | tr '\n' ' ')" >> "$GITHUB_OUTPUT"
-      # Re-run flagged tests as phpt-gate does: method.phpt's rand assertion fails ~10% (#368).
-      - name: Run and gate stdext PHPTs
-        run: >
-          corpus/upstream/families.sh target/phpt/stdext target/phpt/upstream.so target/phpt/cargo.so
-          --module swoole_stdext ${{ steps.extensions.outputs.args }}
-      # phphelpers' runtime fixtures call stdext helpers, so they run here, not in full-gates.
-      # They run after a failed gate, but not when setup failed before the reference was built:
-      # that would report its phases as failures.
-      - name: Run phphelpers stdext gates
-        if: ${{ !cancelled() && hashFiles('target/upstream/src/run-tests.php') != '' }}
-        run: >
-          python3 tools/dev.py integrate --module phphelpers --stdext
-          --php-extension pdo --php-extension pdo_sqlite --php-extension curl --php-extension sockets --php-extension tokenizer --php-extension ffi
-          --phase cargo-build --phase stdext-reference-build --phase phphelpers-runtime
-      # tools/ci.py reads phases* artifacts for new and fixed phases.
-      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
-        if: always()
-        with:
-          retention-days: ${{ github.ref != 'refs/heads/main' && 1 || 0 }}
-          name: phases-stdext
-          # Keep structured per-engine outcomes and logs; never SDK mirrors,
-          # compiled helpers, exported engines, archives or build caches.
-          path: |
-            target/reports/dev/*/*.json
-            target/reports/dev/*/*.log
-      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
-        if: always()
-        with:
-          retention-days: ${{ github.ref != 'refs/heads/main' && 1 || 0 }}
-          name: phpt-stdext
-          path: target/phpt/stdext/gate.json
-
   # The io_uring, c-ares, thread-safe PHP and thread-context build variants and their PHPTs.
   variant:
     name: ${{ matrix.variant }}
@@ -501,17 +442,15 @@ jobs:
             --output target/reports/alpine-phpt.json || [ $? -eq 1 ]
           python3 corpus/upstream/gate.py target/reports/alpine-phpt.json --output target/reports/alpine-gate.json >> "$GITHUB_STEP_SUMMARY"
       # What the Ubuntu shards' PHP 8.3 can't show (#1993, #2000): the swoole_ftp PHPTs' PHP 8.4+
-      # getaddrinfo wording, stdext's mb_* methods and the PHPTs that skip below PHP 8.4, on
-      # stdext builds of both engines, with phpt-stdext's re-runs. tools/badges.py counts its
-      # phpt-alpine.json.
-      - name: Run and gate stdext PHPTs
+      # getaddrinfo wording and the PHPTs that skip below PHP 8.4.
+      - name: Run and gate PHP 8.4+ PHPTs
         if: always()
         shell: bash
         run: |
-          python3 tools/build_upstream.py --php-sockets --stdext --configure=--enable-swoole-curl
-          python3 tools/build_ext.py --php-sockets --stdext --configure=--enable-swoole-curl
+          python3 tools/build_upstream.py --php-sockets --configure=--enable-swoole-curl
+          python3 tools/build_ext.py --php-sockets --configure=--enable-swoole-curl
           mkdir -p target/php85/engines target/php85/results
-          cp target/upstream-builds/php-sockets-stdext/src/modules/swoole.so target/php85/engines/upstream.so
+          cp target/upstream-builds/php-sockets/src/modules/swoole.so target/php85/engines/upstream.so
           cp target/ext/swoole.so target/php85/engines/cargo.so
           python3 corpus/upstream/inventory.py --output target/php85/manifest.json
           set -- --manifest target/php85/manifest.json --timeout 30 $PHP_EXTENSIONS
@@ -519,7 +458,7 @@ jobs:
             swoole_curl/reset_private swoole_curl/reset_private_destructor swoole_runtime/unsafe/http_get_last_response_headers; do
             echo --case tests/$t.phpt; done)
           for engine in upstream cargo; do
-            python3 corpus/upstream/run.py "$@" --module swoole_ftp --module swoole_stdext --engine $engine=target/php85/engines/$engine.so \
+            python3 corpus/upstream/run.py "$@" --module swoole_ftp --engine $engine=target/php85/engines/$engine.so \
               --output target/php85/results/$engine.json || [ $? -eq 1 ]
             # shellcheck disable=SC2086 # one --case per word
             python3 corpus/upstream/run.py "$@" $php84 --engine $engine=target/php85/engines/$engine.so \
@@ -547,7 +486,7 @@ jobs:
   # fails only what passes one run and fails the next.
   required:
     if: ${{ !cancelled() && (github.event_name == 'merge_group' || github.ref == 'refs/heads/main') }}
-    needs: [full-gates, phpt-build, callgrind, phpt-stdext, variant, h2spec, halfclose, phpt, phpt-root, library, autobahn, alpine]
+    needs: [full-gates, phpt-build, callgrind, variant, h2spec, halfclose, phpt, phpt-root, library, autobahn, alpine]
     # GitHub-hosted: one line of jq shouldn't wait 40 to 55 s for a VM at the end of every group.
     runs-on: ubuntu-26.04
     timeout-minutes: 5

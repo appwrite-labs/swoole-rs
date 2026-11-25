@@ -38,7 +38,6 @@ mod php {
 
     /// The build variants' features and what config.m4 defines for each.
     const VARIANTS: &[(&str, &[&str])] = &[
-        ("stdext", &["SW_STDEXT"]),
         ("iouring", &["SW_USE_IOURING"]),
         ("uring_socket", &["SW_USE_URING_SOCKET"]),
         ("cares", &["SW_USE_CARES", "HAVE_CARES"]),

@@ -1,5 +1,5 @@
 //! What configure builds in or leaves out, where upstream's `#ifdef`s ran it:
-//! the coroutine PDO drivers, stdext, the bundled ssh2 client and
+//! the coroutine PDO drivers, the bundled ssh2 client and
 //! ext/sockets' `Socket` (the cargo features of the same names, which the
 //! hybrid turns on with their configure switches) and `Swoole\Thread`
 //! (`SW_THREAD`, [`built_with`]).
@@ -138,7 +138,7 @@ pub fn socket_create(fd: c_int) -> (Owned, bool) {
     }
 }
 
-/// MINIT, after the servers: the drivers, `Swoole\Thread`, then stdext.
+/// MINIT, after the servers: the drivers and `Swoole\Thread`.
 pub(crate) fn minit() -> Vec<Step> {
     let drivers: Vec<Step> = Vec::from([
         #[cfg(feature = "pgsql")]
@@ -152,12 +152,8 @@ pub(crate) fn minit() -> Vec<Step> {
         #[cfg(feature = "firebird")]
         Step::Typed(swoole_rs_firebird::minit::minit),
     ]);
-    let stdext: Vec<Step> = Vec::from([
-        #[cfg(feature = "stdext")]
-        Step::Typed(swoole_rs_phpstdext::stdext_minit),
-    ]);
     let thread = built([(Switch::Thread, Step::Typed(thread_minit))]);
-    drivers.into_iter().chain(thread).chain(stdext).collect()
+    drivers.into_iter().chain(thread).collect()
 }
 
 /// MSHUTDOWN: the drivers that hold process state.
