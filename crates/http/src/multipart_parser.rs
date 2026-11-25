@@ -1,7 +1,6 @@
 //! The streaming `multipart/form-data` parser upstream bundled as
 //! `thirdparty/multipart_parser.c` (node-formidable's, by way of libcat), state for
 //! state: the same callbacks, results, quirks and error messages.
-use swoole_rs_corebase::CCast;
 
 /// A callback's result: upstream's 0 goes on, `MPPE_PAUSED` stops
 /// [`MultipartParser::execute`] where the parser is, any other value fails the call.
@@ -90,7 +89,7 @@ enum State {
 #[derive(Debug)]
 pub struct MultipartParser {
     /// `--` and the boundary.
-    boundary: Vec<u8>,
+    boundary: [u8; u8::MAX as usize],
     /// Upstream's `unsigned char` boundary length, two more than the boundary's.
     boundary_length: u8,
     index: usize,
@@ -110,16 +109,16 @@ enum Step {
 }
 
 impl MultipartParser {
-    /// `multipart_parser_init(boundary, length, settings)`.
+    /// Build the parser when the boundary and its two leading dashes fit the
+    /// upstream parser's one-byte boundary length.
     #[must_use]
-    pub fn new(boundary: &[u8]) -> Self {
-        let mut stored = b"--".to_vec();
-        stored.extend_from_slice(boundary);
-        // Upstream terminates the copy; the boundary match can read that NUL.
-        stored.push(0);
-        // Upstream's `unsigned char boundary_length`.
-        let boundary_length = boundary.len().wrapping_add(2).c_cast::<u8>();
-        MultipartParser {
+    pub fn new(boundary: &[u8]) -> Option<Self> {
+        let mut stored = [0; u8::MAX as usize];
+        let (prefix, rest) = stored.split_first_chunk_mut::<2>()?;
+        *prefix = *b"--";
+        rest.get_mut(..boundary.len())?.copy_from_slice(boundary);
+        let boundary_length = u8::try_from(boundary.len() + 2).ok()?;
+        Some(Self {
             boundary: stored,
             boundary_length,
             index: 0,
@@ -128,7 +127,7 @@ impl MultipartParser {
             error_reason: None,
             error_expected: 0,
             error_unexpected: 0,
-        }
+        })
     }
 
     /// `--` and the boundary, as long as upstream's `boundary_length` says.
@@ -508,7 +507,7 @@ mod tests {
     /// Pausing at event `pause` returns `consumed` and leaves the parser in `state`;
     /// resuming from there yields the same events as an unpaused parse.
     fn pause_and_resume(pause: usize, consumed: usize, state: State) {
-        let mut parser = MultipartParser::new(b"AB");
+        let mut parser = MultipartParser::new(b"AB").unwrap();
         let mut parts = Recorder {
             pause: Some(pause),
             ..Recorder::default()
@@ -538,7 +537,7 @@ mod tests {
 
     #[test]
     fn unpaused() {
-        let mut parser = MultipartParser::new(b"AB");
+        let mut parser = MultipartParser::new(b"AB").unwrap();
         let mut parts = Recorder::default();
         assert_eq!(
             parser
@@ -577,7 +576,7 @@ mod tests {
     #[test]
     fn pause_in_part_data_at_chunk_end() {
         // A data span flushed at a chunk's end: the whole chunk is consumed.
-        let mut parser = MultipartParser::new(b"AB");
+        let mut parser = MultipartParser::new(b"AB").unwrap();
         let mut parts = Recorder {
             pause: Some(4),
             ..Recorder::default()
@@ -619,7 +618,7 @@ mod tests {
             }
         }
         for prior in [None, Some(MultipartError::BadStartBoundary)] {
-            let mut parser = MultipartParser::new(b"AB");
+            let mut parser = MultipartParser::new(b"AB").unwrap();
             parser.error_reason = prior;
             parser.error_i = 7;
             parser.error_expected = b'x';
@@ -644,7 +643,7 @@ mod tests {
 
     #[test]
     fn syntax_failure_carries_its_reason_and_empty_input_consumes_zero() {
-        let mut parser = MultipartParser::new(b"AB");
+        let mut parser = MultipartParser::new(b"AB").unwrap();
         let mut parts = Recorder::default();
         assert_eq!(parser.execute(&mut parts, b""), Ok(0));
         assert_eq!(

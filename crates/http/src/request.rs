@@ -330,7 +330,10 @@ impl HttpRequest {
             return false;
         };
         let at = boundary.offset..boundary.offset + boundary.length;
-        form.parser = Some(MultipartParser::new(text.get(at).unwrap_or_default()));
+        let Some(parser) = text.get(at).and_then(MultipartParser::new) else {
+            return false;
+        };
+        form.parser = Some(parser);
         let mut body = boxed_sized_string(BUFFER_SIZE_BIG, None);
         body.append(input.get(header..).unwrap_or_default());
         buffer.truncate(header);

@@ -172,7 +172,7 @@ pub fn multipart(bytes: &[u8]) {
     let Some((boundary, body)) = rest.split_at_checked(usize::from(boundary % 70) + 1) else {
         return;
     };
-    let mut parser = MultipartParser::new(boundary);
+    let mut parser = MultipartParser::new(boundary).expect("RFC 2046 boundary fits");
     let mut parts = Parts::default();
     let step = usize::from(step).max(1);
     for chunk in body.chunks(step) {
