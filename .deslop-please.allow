@@ -222,6 +222,7 @@ shallow-module swoole_rs_corebase::lent
 shallow-module swoole_rs_corebase::locks
 shallow-module swoole_rs_corebase::log
 shallow-module swoole_rs_corebase::memory::members::pool
+shallow-module swoole_rs_corebase::reactor
 shallow-module swoole_rs_corebase::sys
 shallow-module swoole_rs_corebase::timer::wrapper
 shallow-module swoole_rs_curl_sys
