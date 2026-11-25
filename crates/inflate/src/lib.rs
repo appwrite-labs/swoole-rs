@@ -106,29 +106,36 @@ pub enum MessageFailure {
     Init(c_int),
     /// `inflate() failed, Error: %s[%d]`.
     Inflate(c_int),
+    /// The decoded message exceeded this byte limit.
+    Limit(usize),
 }
 
-/// Free space threshold for growing a permessage-deflate output buffer.
-pub const MESSAGE_HEADROOM: usize = 4096;
-
-/// `swoole::websocket::message_uncompress`: a permessage-deflate payload (RFC
-/// 7692, raw deflate) inflated with sync flushes into a buffer that starts at
-/// `input.len() + 1024` bytes and doubles when at most [`MESSAGE_HEADROOM`] bytes are free.
+/// Inflate a permessage-deflate payload up to `max` decoded bytes.
+///
 /// # Errors
-/// `inflateInit2` or `inflate` failed; the status says which.
-pub fn message(mut input: &[u8]) -> Result<Vec<u8>, MessageFailure> {
+/// Returns the configured limit on overflow or the zlib status on a codec error.
+pub fn message(mut input: &[u8], max: usize) -> Result<Vec<u8>, MessageFailure> {
     let mut stream = Stream::inflate(ENCODING_RAW).map_err(MessageFailure::Init)?;
-    let mut out = Vec::with_capacity(input.len() + 1024);
+    let ceiling = max.saturating_add(1);
+    let mut out = Vec::with_capacity(input.len().saturating_add(1024).min(ceiling));
     loop {
         let step = stream.run_into(&mut input, &mut out, Z_SYNC_FLUSH);
-        if step.status == Z_STREAM_END || (step.status == Z_OK && input.is_empty()) {
+        if out.len() > max {
+            return Err(MessageFailure::Limit(max));
+        }
+        if step.status == Z_STREAM_END
+            || (input.is_empty()
+                && (step.status == Z_OK && out.len() < out.capacity()
+                    || step.status == swoole_rs_zlib::Z_BUF_ERROR && !out.is_empty()))
+        {
             return Ok(out);
         }
         if step.status != Z_OK {
             return Err(MessageFailure::Inflate(step.status));
         }
-        if out.len() + MESSAGE_HEADROOM >= out.capacity() {
-            out.reserve_exact(2 * out.capacity() - out.len());
+        if out.len() == out.capacity() {
+            let next = out.capacity().saturating_mul(2).min(ceiling);
+            out.reserve_exact(next - out.len());
         }
     }
 }

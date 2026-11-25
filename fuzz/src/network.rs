@@ -369,7 +369,7 @@ pub fn http_rewrite(bytes: &[u8]) {
 /// `swoole_rs_inflate::message` return, and the first byte as a level (-1 to 9) with
 /// the rest as a message round-trips through `swoole_rs_deflate::message`.
 pub fn ws_inflate(bytes: &[u8]) {
-    let _ = swoole_rs_inflate::message(bytes);
+    let _ = swoole_rs_inflate::message(bytes, 64 * 1024);
     let Some((&level, data)) = bytes.split_first() else {
         return;
     };
@@ -377,7 +377,7 @@ pub fn ws_inflate(bytes: &[u8]) {
     let compressed = swoole_rs_deflate::message(data, level)
         .unwrap_or_else(|failure| panic!("deflate at {level}: {failure:?}"));
     assert_eq!(
-        swoole_rs_inflate::message(&compressed).as_deref(),
+        swoole_rs_inflate::message(&compressed, data.len()).as_deref(),
         Ok(data),
         "level {level}"
     );
