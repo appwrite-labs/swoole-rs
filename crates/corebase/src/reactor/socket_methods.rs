@@ -215,7 +215,7 @@ impl SocketFields {
     /// `Socket::has_kernel_nobufs`: the report that a send hit `ENOBUFS` since the last
     /// one is claimed, once: true the first time after the hit, false until the next.
     #[inline]
-    pub const fn claim_nobufs_report(&mut self) -> bool {
+    pub(crate) const fn claim_nobufs_report(&mut self) -> bool {
         std::mem::replace(&mut self.kernel_nobufs, false)
     }
 
@@ -340,6 +340,37 @@ impl SocketFields {
             traffic: self.traffic(),
         }
     }
+
+    /// What a hooked wait on the socket needs: `None` once close is deferred
+    /// (`close_wait`), else the state with the `ENOBUFS` report claimed.
+    #[must_use]
+    pub fn wait_state(&mut self) -> Option<WaitState> {
+        if self.close_deferred() {
+            return None;
+        }
+        let tls = !self.ssl().is_null();
+        let wants = self.tls_wants();
+        let rw = crate::reactor::Events::READ | crate::reactor::Events::WRITE;
+        Some(WaitState {
+            events: self.events & rw,
+            nobufs: self.claim_nobufs_report(),
+            want_read: tls && wants.contains(crate::reactor::Events::READ),
+            want_write: tls && wants.contains(crate::reactor::Events::WRITE),
+            removed: self.has_left_reactor(),
+        })
+    }
+}
+
+/// The state a hooked wait reads before it waits ([`SocketFields::wait_state`]).
+pub struct WaitState {
+    /// The read and write events the socket is registered for.
+    pub events: crate::reactor::Events,
+    /// A send hit `ENOBUFS` since the last report, so the wait backs off instead.
+    pub nobufs: bool,
+    /// The TLS session wants a read, or a write, before it can go on.
+    pub want_read: bool,
+    pub want_write: bool,
+    pub removed: bool,
 }
 
 /// A socket's row in a status report ([`SocketFields::status`]).

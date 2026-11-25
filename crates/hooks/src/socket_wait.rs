@@ -7,16 +7,7 @@
 use crate::co_io::{CLOSE_WAIT_ERROR, Timer, available, ops, set_err};
 use crate::co_socket::Co;
 use core::ffi::c_void;
-use swoole_rs_corebase::reactor::Events;
-
-/// The state read before a wait, after consuming the open socket's backoff flag.
-struct WaitState {
-    events: Events,
-    nobufs: bool,
-    want_read: bool,
-    want_write: bool,
-    removed: bool,
-}
+use swoole_rs_corebase::reactor::{Events, WaitState};
 
 fn slot(event: Events) -> usize {
     usize::from(event == Events::WRITE)
@@ -35,24 +26,11 @@ pub(crate) enum Retry {
 struct Wait(Co);
 
 impl Wait {
-    /// `close_wait`, else the claimed `ENOBUFS` report; the TLS
-    /// session's wants, `removed` and `events`.
+    /// [`SocketFields::wait_state`](swoole_rs_corebase::reactor::SocketFields::wait_state):
+    /// `None` once close is deferred.
     fn snapshot(&self) -> Option<WaitState> {
         self.0
-            .net(|record| {
-                if record.close_deferred() {
-                    return None;
-                }
-                let tls = !record.ssl().is_null();
-                let wants = record.tls_wants();
-                Some(WaitState {
-                    events: record.events & (Events::READ | Events::WRITE),
-                    nobufs: record.claim_nobufs_report(),
-                    want_read: tls && wants.contains(Events::READ),
-                    want_write: tls && wants.contains(Events::WRITE),
-                    removed: record.has_left_reactor(),
-                })
-            })
+            .net(swoole_rs_corebase::reactor::SocketFields::wait_state)
             .flatten()
     }
 
