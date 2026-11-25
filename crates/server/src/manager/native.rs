@@ -12,7 +12,7 @@ use process::process_pool::{Hooks, PoolRef, WORKER_MESSAGE_STOP};
 use process::reaper::{self, Reap, ReloadStart, Waited};
 use process::reload_task::{ReloadTask, Warn};
 use process::worker_record::{Worker, WorkerType};
-use swoole_rs_corebase::reactor::wait_upstream::swoole_waitpid;
+use swoole_rs_corebase::waits::wait_upstream::swoole_waitpid;
 use swoole_rs_corebase::{DataHead, log};
 use swoole_rs_error::ErrorCode as E;
 

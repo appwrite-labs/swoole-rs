@@ -485,7 +485,7 @@ impl PoolNative for Native {
     }
 
     fn waitpid(&self, pid: c_int) -> bool {
-        swoole_rs_corebase::reactor::wait_upstream::swoole_waitpid(pid, Some(&mut 0), 0) >= 0
+        swoole_rs_corebase::waits::wait_upstream::swoole_waitpid(pid, Some(&mut 0), 0) >= 0
     }
 
     fn new_pipe(&self, call: &PoolCall) -> Result<(), PipeError> {

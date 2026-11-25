@@ -3,7 +3,7 @@
 //! pipe, as upstream does, then reap the child.
 use core::ffi::{CStr, c_int};
 use swoole_rs_corebase::constants::SocketType;
-use swoole_rs_corebase::{coroutine, reactor, sys};
+use swoole_rs_corebase::{coroutine, reactor, sys, waits};
 
 /// The most one read takes from the pipe: a Linux pipe's default capacity.
 const CHUNK: usize = 1 << 16;
@@ -56,7 +56,7 @@ pub extern "C" fn system_waitpid_safe(
         return sys::waitpid(pid, status, options).map_or(-1, |pid| pid.unwrap_or(0));
     }
     if let Some(result) =
-        reactor::wait_upstream::iouring_waitpid(pid, status.as_deref_mut(), options, -1.0)
+        waits::wait_upstream::iouring_waitpid(pid, status.as_deref_mut(), options, -1.0)
     {
         return result;
     }

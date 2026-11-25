@@ -8,8 +8,8 @@
 use std::cell::Cell;
 use std::ffi::{c_int, c_void};
 use std::sync::atomic::{AtomicI32, Ordering};
-use swoole_rs_corebase::reactor::wait_upstream::{swoole_waitpid, system_wait, system_waitpid};
 use swoole_rs_corebase::swoole_rand;
+use swoole_rs_corebase::waits::wait_upstream::{swoole_waitpid, system_wait, system_waitpid};
 use swoole_rs_ffi::event_api::swoole_event_wait;
 use swoole_rs_ffi::swoole_event_init;
 
