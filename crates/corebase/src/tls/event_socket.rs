@@ -49,9 +49,16 @@ impl EventSocket {
         self.0.heap()
     }
 
+    /// Whether it is registered for any of `events`.
     #[must_use]
-    pub fn events(&self) -> crate::reactor::Events {
-        self.socket().read(|record| record.events)
+    pub fn registered_for(&self, events: crate::reactor::Events) -> bool {
+        self.socket().read(|record| record.registered_for(events))
+    }
+
+    /// Whether it is registered for any event at all.
+    #[must_use]
+    pub fn has_interest(&self) -> bool {
+        self.socket().read(SocketFields::has_interest)
     }
 
     #[must_use]

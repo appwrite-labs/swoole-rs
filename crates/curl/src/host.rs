@@ -132,9 +132,9 @@ impl ReactorSocket {
         });
     }
 
-    /// The events it is registered for.
-    pub(crate) fn events(&self) -> Events {
-        self.with(EventSocket::events)
+    /// Whether it is registered for any event at all.
+    pub(crate) fn has_interest(&self) -> bool {
+        self.with(EventSocket::has_interest)
     }
 
     /// Whether it is out of the reactor.
@@ -160,7 +160,7 @@ impl ReactorSocket {
         let Some(socket) = self.socket.take() else {
             return;
         };
-        if !socket.events().is_empty() && (self.ops.event_available)() {
+        if socket.has_interest() && (self.ops.event_available)() {
             socket.socket().edit(SocketFields::quiet_next_removal);
             _ = (self.ops.socket_del)(&socket);
         }

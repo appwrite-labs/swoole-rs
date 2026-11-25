@@ -147,8 +147,9 @@ mod descriptor {
         crate::tls::upstream::socket_free(Some(socket));
     }
 
-    pub(super) fn events() -> i32 {
-        with(|socket| socket.socket().read(|record| record.events.bits())).unwrap_or(0)
+    pub(super) fn reading() -> bool {
+        let read = crate::reactor::Events::READ;
+        with(|socket| socket.socket().read(|record| record.registered_for(read))).unwrap_or(false)
     }
 
     pub(super) fn add(events: i32) -> bool {
@@ -213,7 +214,7 @@ mod descriptor {
     pub(super) static OPS_DESCRIPTOR: DescriptorOps = DescriptorOps {
         make,
         free,
-        events,
+        reading,
         add,
         del,
         installed,

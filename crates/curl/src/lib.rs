@@ -409,10 +409,10 @@ impl Multi {
         socket.sockfd.set(sockfd);
         socket.action.set(action);
         let events = events(action);
-        if socket.socket.events().is_empty() {
-            socket.socket.add(events)
-        } else {
+        if socket.socket.has_interest() {
             socket.socket.set(events)
+        } else {
+            socket.socket.add(events)
         }
     }
 

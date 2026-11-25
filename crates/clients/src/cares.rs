@@ -212,10 +212,10 @@ extern "C" fn socket_state(data: *mut c_void, fd: i32, readable: i32, writable: 
     }
     query.sockets.with_taken(|sockets| {
         if let Some((_, wrapper)) = sockets.iter().find(|(watched, _)| *watched == fd) {
-            _ = if wrapper.events().is_empty() {
-                wrapper.add(events)
-            } else {
+            _ = if wrapper.has_interest() {
                 wrapper.set(events)
+            } else {
+                wrapper.add(events)
             };
         } else {
             let wrapper = EventSocket::adopt(Box::new(SocketRecord::with_fd(fd, FD)));

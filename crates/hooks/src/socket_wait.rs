@@ -7,15 +7,13 @@
 use crate::co_io::{CLOSE_WAIT_ERROR, Timer, available, ops, set_err};
 use crate::co_socket::Co;
 use core::ffi::c_void;
-use swoole_rs_corebase::reactor::Events;
+use swoole_rs_corebase::reactor::{ChangeOp, Events};
 
 /// The state read before a wait, after consuming the open socket's backoff flag.
 struct WaitState {
-    events: Events,
     nobufs: bool,
     want_read: bool,
     want_write: bool,
-    removed: bool,
 }
 
 fn slot(event: Events) -> usize {
@@ -35,8 +33,8 @@ pub(crate) enum Retry {
 struct Wait(Co);
 
 impl Wait {
-    /// `close_wait`, else `has_kernel_nobufs()` (which clears it); the TLS
-    /// session's wants, `removed` and `events`.
+    /// `close_wait`, else `has_kernel_nobufs()` (which clears it) and the TLS
+    /// session's wants.
     fn snapshot(&self) -> Option<WaitState> {
         self.0
             .net(|record| {
@@ -46,11 +44,9 @@ impl Wait {
                 let tls = !record.ssl().is_null();
                 let wants = record.tls_wants();
                 Some(WaitState {
-                    events: record.events & (Events::READ | Events::WRITE),
                     nobufs: record.has_kernel_nobufs(),
                     want_read: tls && wants.contains(Events::READ),
                     want_write: tls && wants.contains(Events::WRITE),
-                    removed: record.has_left_reactor(),
                 })
             })
             .flatten()
@@ -79,14 +75,13 @@ impl Wait {
     }
 
     /// `add_event`: add `event` to the reactor unless it is there already.
-    fn add(&self, state: &WaitState, event: Events) -> bool {
-        let events = if state.removed {
-            event
-        } else {
-            state.events | event
-        };
+    fn add(&self, event: Events) -> bool {
+        let change = self
+            .0
+            .net(|record| record.add_event_change(event))
+            .flatten();
         let added =
-            state.events.intersects(event) || (ops().reactor)(self.0, events, state.removed);
+            change.is_none_or(|(op, events)| (ops().reactor)(self.0, events, op == ChangeOp::Add));
         set_err(self.0, if added { 0 } else { crate::co_io::errno() });
         added
     }
@@ -117,15 +112,15 @@ impl Wait {
         set_err(self.0, 0);
         let mut added = event;
         if event == Events::READ && state.want_write || event == Events::WRITE && state.want_read {
-            if state.want_write && self.add(&state, Events::WRITE) {
+            if state.want_write && self.add(Events::WRITE) {
                 self.set_want(Events::WRITE);
-            } else if state.want_read && self.add(&state, Events::READ) {
+            } else if state.want_read && self.add(Events::READ) {
                 self.set_want(Events::READ);
             } else {
                 return false;
             }
             added = self.want();
-        } else if !self.add(&state, event) {
+        } else if !self.add(event) {
             return false;
         }
         if event == Events::WRITE

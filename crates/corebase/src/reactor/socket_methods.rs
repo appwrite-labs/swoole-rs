@@ -283,12 +283,6 @@ impl SocketFields {
         self.dont_restart = true;
     }
 
-    /// The socket joined its reactor's registry (`removed = 0`).
-    #[inline]
-    pub const fn note_joined_reactor(&mut self) {
-        self.removed = false;
-    }
-
     /// The socket left its reactor, or is to be treated as never in one
     /// (`removed = 1`): closing or freeing it skips the reactor.
     #[inline]
@@ -324,6 +318,13 @@ impl SocketFields {
     #[must_use]
     pub const fn registered_for(&self, events: crate::reactor::Events) -> bool {
         self.events.intersects(events)
+    }
+
+    /// Whether the socket is registered for any event at all.
+    #[inline]
+    #[must_use]
+    pub const fn has_interest(&self) -> bool {
+        !self.events.is_empty()
     }
 
     /// The socket's row in a status report: what it is, what it is registered for,

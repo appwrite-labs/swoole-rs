@@ -553,9 +553,9 @@ fn isset(call: &Call) {
         return;
     }
     let set = SOCKETS.with_taken(php, |sockets| {
-        sockets.get(fd).is_some_and(|r| {
-            !r.socket.removed() && i64::from(r.socket.events().bits()) & events != 0
-        })
+        sockets
+            .get(fd)
+            .is_some_and(|r| !r.socket.removed() && r.socket.registered_for(events_of(events)))
     });
     call.set_bool(set);
 }
@@ -690,17 +690,16 @@ fn ready(php: Php, fd: i32, write: bool) -> Result<bool, Bailout> {
 /// reported an error; then warn, free the fd's object and delete it.
 fn error_event(php: Php, fd: i32) -> Result<bool, Bailout> {
     let found = SOCKETS.with_taken(php, |sockets| {
-        sockets.get(fd).map(|r| (r.id, r.socket.events()))
+        sockets.get(fd).map(|r| {
+            let on = |events| r.socket.registered_for(events);
+            (r.id, on(Events::ERROR), on(Events::READ))
+        })
     });
-    let Some((id, events)) = found else {
+    let Some((id, error, read)) = found else {
         return Ok(true);
     };
-    if !events.intersects(swoole_rs_corebase::reactor::Events::ERROR) {
-        return ready(
-            php,
-            fd,
-            !events.intersects(swoole_rs_corebase::reactor::Events::READ),
-        );
+    if !error {
+        return ready(php, fd, !read);
     }
     match swoole_rs_corebase::reactor::socket_error(fd) {
         Ok(0) => {}

@@ -370,6 +370,38 @@ pub(crate) fn apply(
 }
 
 impl SocketFields {
+    /// The registry took `op` of the socket for `events` (`Reactor::_add`, `_set` and
+    /// `_del`): an add or set registers it for `events`, an add or delete moves it into
+    /// or out of the reactor.
+    #[inline]
+    pub const fn note_change(&mut self, op: ChangeOp, events: Events) {
+        match op {
+            ChangeOp::Add => {
+                self.events = events;
+                self.removed = false;
+            }
+            ChangeOp::Set => self.events = events,
+            ChangeOp::Del => self.note_deregistered(),
+        }
+    }
+
+    /// What upstream's coroutine `Socket::add_event` asks of [`apply`] to also wait for
+    /// `event`: `None` when the socket is registered for it already, an add of `event`
+    /// alone when it is out of the reactor, else a set of its events and `event`.
+    #[must_use]
+    pub const fn add_event_change(&self, event: Events) -> Option<(ChangeOp, Events)> {
+        if self.events.intersects(event) {
+            None
+        } else if self.removed {
+            Some((ChangeOp::Add, event))
+        } else {
+            Some((
+                ChangeOp::Set,
+                Events::from_bits(self.events.bits() | event.bits()),
+            ))
+        }
+    }
+
     /// What a `Reactor` interest helper asks of [`apply`], as upstream decides
     /// from the socket's events: the op and its events, or `None` when nothing changes.
     pub(crate) fn interest_change(
