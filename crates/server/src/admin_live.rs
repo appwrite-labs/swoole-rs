@@ -70,16 +70,15 @@ fn out_buffer_length(socket: &SocketFields) -> u64 {
 fn socket(handle: swoole_rs_corebase::reactor::Heap<'_>) -> Socket {
     let fd = handle.fd().into();
     handle.read(|s| {
-        let traffic = s.traffic();
-        let (events, fd_type) = s.registration();
+        let status = s.status();
         Socket {
             fd,
-            events: events.bits().into(),
-            socket_type: s.type_code().0.into(),
-            fd_type: fd_type.into(),
-            port: s.port().into(),
-            total_recv_bytes: traffic.received,
-            total_send_bytes: traffic.sent,
+            events: status.events.bits().into(),
+            socket_type: status.socket_type.0.into(),
+            fd_type: status.fd_type.into(),
+            port: status.port.into(),
+            total_recv_bytes: status.traffic.received,
+            total_send_bytes: status.traffic.sent,
             out_buffer_size: out_buffer_length(s),
             address: s.with_host(|host| Json::utf8(host.to_bytes())),
         }
