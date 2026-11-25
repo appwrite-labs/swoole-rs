@@ -668,3 +668,15 @@ fn decoded_string_limit_applies_to_indexed_and_fragmented_literals() {
     assert_eq!(decode(&Decoder::new(6), &[0x82], 1), Err(Error));
     assert!(decode(&Decoder::new(7), &[0x82], 1).is_ok());
 }
+
+#[test]
+fn reused_field_uses_the_current_decoders_limit() {
+    let mut field = Field::default();
+    let wide = Decoder::new(7);
+    let narrow = Decoder::new(6);
+    // Static index 2 has a seven-byte name. Reusing the caller's storage must
+    // still apply the second decoder's limit to that name.
+    assert!(wide.decode(&[0x82], true, &mut field).is_ok());
+    assert_eq!(narrow.decode(&[0x82], true, &mut field), Err(Error));
+    assert!(wide.decode(&[0x82], true, &mut field).is_ok());
+}

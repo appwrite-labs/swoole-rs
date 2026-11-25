@@ -3,6 +3,7 @@
 //! updates, limits and errors, so either peer sees the bytes it saw before.
 
 use std::cell::Cell;
+use swoole_rs_corebase::buffer::BoundedBytes;
 
 /// Bytes an entry costs beyond its name and value (RFC 7541 4.1).
 const ENTRY_OVERHEAD: usize = 32;
@@ -194,7 +195,7 @@ struct Bits {
 
 impl Bits {
     /// EOS fails as soon as its bytes arrive, as nghttp2's failure state does.
-    fn decode(&mut self, input: &[u8], out: &mut Vec<u8>, limit: usize) -> Result<(), Error> {
+    fn decode(&mut self, input: &[u8], out: &mut BoundedBytes) -> Result<(), Error> {
         for &byte in input {
             for shift in (0..8).rev() {
                 self.code = (self.code << 1) | u32::from((byte >> shift) & 1);
@@ -209,11 +210,9 @@ impl Bits {
                         .get(at + offset as usize)
                         .copied()
                         .ok_or(Error)?;
-                    if out.len() >= limit {
-                        return Err(Error);
-                    }
                     // EOS (256) is no byte.
-                    out.push(u8::try_from(symbol).map_err(|_| Error)?);
+                    out.append(&[u8::try_from(symbol).map_err(|_| Error)?])
+                        .map_err(|_| Error)?;
                     *self = Self::default();
                 }
             }
@@ -363,10 +362,25 @@ fn encode_string(out: &mut Vec<u8>, text: &[u8]) {
 /// The buffers `Decoder::decode` decodes a header field into. The caller owns
 /// them, so a field a step returns borrows them and not the decoder, and the
 /// decoder reuses their capacity field after field.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct Field {
-    name: Vec<u8>,
-    value: Vec<u8>,
+    name: BoundedBytes,
+    value: BoundedBytes,
+}
+
+impl Field {
+    fn new(limit: usize) -> Self {
+        Self {
+            name: BoundedBytes::new(limit, 0),
+            value: BoundedBytes::new(limit, 0),
+        }
+    }
+}
+
+impl Default for Field {
+    fn default() -> Self {
+        Self::new(MAX_DECODED_STRING)
+    }
 }
 
 /// One `decode` call's outcome.
@@ -476,10 +490,13 @@ impl Decoder {
         if self.bad.get() {
             return Err(Error);
         }
+        if field.name.limit() != self.string_limit {
+            *field = Field::new(self.string_limit);
+        }
         match self.step(input, last, field) {
             Ok((read, emitted)) => Ok(Step {
                 read,
-                header: emitted.then_some((field.name.as_slice(), field.value.as_slice())),
+                header: emitted.then_some((field.name.as_ref(), field.value.as_ref())),
                 done: last && !emitted && read == input.len(),
             }),
             Err(error) => {
@@ -531,13 +548,10 @@ impl Decoder {
                 };
                 let mut bits = self.huffman.get();
                 if huffman {
-                    bits.decode(text, out, self.string_limit)?;
+                    bits.decode(text, out)?;
                     self.huffman.set(bits);
                 } else {
-                    if text.len() > self.string_limit.saturating_sub(out.len()) {
-                        return Err(Error);
-                    }
-                    out.extend_from_slice(text);
+                    out.append(text).map_err(|_| Error)?;
                 }
                 let left = left - text.len();
                 self.state.set(State::Text {
@@ -633,23 +647,17 @@ impl Decoder {
                     self.dynamic(value, field, true)?;
                     return Ok(true);
                 };
-                if name.len().max(text.len()) > self.string_limit {
-                    return Err(Error);
-                }
                 field.name.clear();
-                field.name.extend_from_slice(name);
+                field.name.append(name).map_err(|_| Error)?;
                 field.value.clear();
-                field.value.extend_from_slice(text);
+                field.value.append(text).map_err(|_| Error)?;
                 return Ok(true);
             }
             Integer::Name if value == 0 => self.state.set(State::Length { value: false }),
             Integer::Name => {
                 if let Some(&(name, _)) = STATIC.get(value - 1) {
-                    if name.len() > self.string_limit {
-                        return Err(Error);
-                    }
                     field.name.clear();
-                    field.name.extend_from_slice(name);
+                    field.name.append(name).map_err(|_| Error)?;
                 } else {
                     self.dynamic(value, field, false)?;
                 }
@@ -684,23 +692,22 @@ impl Decoder {
     /// and its value too if `value`.
     fn dynamic(&self, index: usize, field: &mut Field, value: bool) -> Result<(), Error> {
         self.with_table(|table| {
-            let (name, text) = table.get(index)?;
+            let (name, text) = table.get(index).ok_or(Error)?;
             field.name.clear();
-            field.name.extend_from_slice(name);
+            field.name.append(name).map_err(|_| Error)?;
             if value {
                 field.value.clear();
-                field.value.extend_from_slice(text);
+                field.value.append(text).map_err(|_| Error)?;
             }
-            Some(())
+            Ok(())
         })
-        .ok_or(Error)
     }
 
     /// A literal is complete: index it if asked.
     fn emit(&self, field: &Field) -> bool {
         self.state.set(State::Opcode);
         if self.indexing.get() {
-            self.with_table(|table| table.insert(&field.name, &field.value));
+            self.with_table(|table| table.insert(field.name.as_ref(), field.value.as_ref()));
         }
         true
     }

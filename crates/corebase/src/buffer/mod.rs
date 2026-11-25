@@ -7,6 +7,7 @@ use std::mem;
 pub use typed::{Detached as TypedDetached, Front as TypedFront, Kind as EntryKind};
 
 /// Contiguous peer input with a byte limit fixed at construction.
+#[derive(Debug)]
 pub struct BoundedBytes {
     bytes: Vec<u8>,
     limit: usize,
@@ -34,6 +35,7 @@ impl BoundedBytes {
     /// Append a whole chunk.
     /// # Errors
     /// Returns the configured byte limit and leaves the buffer intact if the chunk cannot fit.
+    #[inline]
     pub fn append(&mut self, chunk: &[u8]) -> Result<(), usize> {
         let len = self.bytes.len();
         if chunk.len() > self.limit - len {
