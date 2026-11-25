@@ -60,6 +60,12 @@ impl BoundedBytes {
         Ok(self.bytes.split_at_mut(length).0)
     }
 
+    /// Transfer the allocation to the caller after writing the buffer.
+    #[must_use]
+    pub fn into_vec(self) -> Vec<u8> {
+        self.bytes
+    }
+
     fn reserve_to(&mut self, needed: usize) {
         if needed > self.bytes.capacity() {
             let capacity = self
