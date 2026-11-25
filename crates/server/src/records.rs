@@ -41,14 +41,10 @@ pub struct ConnectionRecord {
     pub http_upgrade: Cell<bool>,
     pub http2_stream: Cell<bool>,
     pub websocket_compression: Cell<bool>,
-    pub close_actively: Cell<bool>,
-    pub close_queued: Cell<bool>,
-    pub closing: Cell<bool>,
-    pub close_reset: Cell<bool>,
-    pub peer_closed: Cell<bool>,
     pub protect: Cell<bool>,
-    pub close_notify: Cell<bool>,
-    pub close_force: Cell<bool>,
+    /// The close flags, a bit each ([`CloseFlag`]): packed so the record stays a power
+    /// of two bytes.
+    close_flags: Cell<u8>,
     pub reactor_id: Cell<u8>,
     pub close_errno: Cell<u16>,
     pub recv_queued_bytes: AtomicU32,
@@ -83,6 +79,25 @@ pub struct ConnectionRecord {
     pub closed: AtomicU32,
     pub server_fd: Cell<c_int>,
 }
+
+/// [`ConnectionRecord`]'s close flags, upstream's `uint8_t` fields of the same names.
+struct CloseFlag;
+
+impl CloseFlag {
+    const CLOSE_ACTIVELY: u8 = 1 << 0;
+    const CLOSE_QUEUED: u8 = 1 << 1;
+    const CLOSING: u8 = 1 << 2;
+    const CLOSE_RESET: u8 = 1 << 3;
+    const PEER_CLOSED: u8 = 1 << 4;
+    const CLOSE_NOTIFY: u8 = 1 << 5;
+    const CLOSE_FORCE: u8 = 1 << 6;
+}
+
+// A power of two, so indexing the table by fd scales with one shift.
+const _: () = assert!(
+    size_of::<ConnectionRecord>().is_power_of_two(),
+    "the connection record is a power of two bytes"
+);
 
 impl Drop for ConnectionRecord {
     fn drop(&mut self) {
@@ -119,17 +134,11 @@ impl ConnectionRecord {
             &self.http_upgrade,
             &self.http2_stream,
             &self.websocket_compression,
-            &self.close_actively,
-            &self.close_queued,
-            &self.closing,
-            &self.close_reset,
-            &self.peer_closed,
             &self.protect,
-            &self.close_notify,
-            &self.close_force,
         ] {
             flag.set(false);
         }
+        self.close_flags.set(0);
         self.reactor_id.set(0);
         self.close_errno.set(0);
         self.recv_queued_bytes.store(0, Relaxed);
@@ -232,6 +241,17 @@ macro_rules! field {
     ($field:ident, $set:ident: $ty:ty) => {
         field!(@[pub] $field = $field, $set: $ty);
     };
+    (close $get:ident, $set:ident: $bit:ident) => {
+        #[must_use]
+        pub fn $get(self) -> bool {
+            self.record.close_flags.get() & CloseFlag::$bit != 0
+        }
+
+        pub fn $set(self, value: bool) {
+            let flags = self.record.close_flags.get() & !CloseFlag::$bit;
+            self.record.close_flags.set(flags | if value { CloseFlag::$bit } else { 0 });
+        }
+    };
     (atomic $field:ident: $ty:ty) => {
         #[must_use]
         pub fn $field(self) -> &'a $ty {
@@ -264,14 +284,14 @@ impl<'a> Connection<'a> {
     field!(http_upgrade, set_http_upgrade: bool);
     field!(http2_stream, set_http2_stream: bool);
     field!(websocket_compression, set_websocket_compression: bool);
-    field!(close_actively, set_close_actively: bool);
-    field!(close_queued, set_close_queued: bool);
-    field!(closing, set_closing: bool);
-    field!(close_reset, set_close_reset: bool);
-    field!(peer_closed, set_peer_closed: bool);
     field!(protect, set_protect: bool);
-    field!(close_notify, set_close_notify: bool);
-    field!(close_force, set_close_force: bool);
+    field!(close close_actively, set_close_actively: CLOSE_ACTIVELY);
+    field!(close close_queued, set_close_queued: CLOSE_QUEUED);
+    field!(close closing, set_closing: CLOSING);
+    field!(close close_reset, set_close_reset: CLOSE_RESET);
+    field!(close peer_closed, set_peer_closed: PEER_CLOSED);
+    field!(close close_notify, set_close_notify: CLOSE_NOTIFY);
+    field!(close close_force, set_close_force: CLOSE_FORCE);
     field!(reactor_id, set_reactor_id: u8);
     field!(close_errno, set_close_errno: u16);
     field!(send_queued_bytes, set_send_queued_bytes: u32);
