@@ -11,6 +11,7 @@ use crate::{
 use core::ffi::c_int;
 use std::fs::File;
 use std::io::{BufWriter, Write};
+use swoole_rs_corebase::buffer::BoundedBytes;
 use swoole_rs_corebase::buffer::string::{StringBuffer, boxed_sized_string};
 use swoole_rs_corebase::log::LogLevel::{SW_LOG_NOTICE as NOTICE, SW_LOG_WARNING as WARNING};
 use swoole_rs_corebase::ossupport::TempFile;
@@ -57,7 +58,7 @@ pub struct HttpForm {
     /// `upload_tmp_dir + "/swoole.upfile.XXXXXX"`.
     template: Vec<u8>,
     /// The part header's name, copied: it may arrive split across reads.
-    header_name: Vec<u8>,
+    header_name: BoundedBytes,
     upload_size: usize,
     upload_max: usize,
 }
@@ -230,7 +231,7 @@ impl HttpRequest {
                 uploads: Vec::new(),
                 body: None,
                 template: Vec::new(),
-                header_name: Vec::new(),
+                header_name: BoundedBytes::new(0, 0),
                 upload_size: 0,
                 upload_max: 0,
             }));
@@ -333,6 +334,7 @@ impl HttpRequest {
         let Some(parser) = text.get(at).and_then(MultipartParser::new) else {
             return false;
         };
+        form.header_name = BoundedBytes::new(self.max_length as usize, 0);
         form.parser = Some(parser);
         let mut body = boxed_sized_string(BUFFER_SIZE_BIG, None);
         body.append(input.get(header..).unwrap_or_default());
@@ -434,22 +436,20 @@ struct Rewrite<'a> {
 impl Parts<'_> for Rewrite<'_> {
     fn on_header_field(&mut self, data: &[u8]) -> Flow {
         let r = &mut *self.request;
-        let max_length = r.max_length as usize;
-        let form = form_of(r);
-        if form.header_name.len().saturating_add(data.len()) > max_length {
+        if form_of(r).header_name.append(data).is_err() {
             (r.excepted, r.too_large) = (true, true);
             return Flow::Pause;
         }
-        form.header_name.extend_from_slice(data);
         Flow::Go
     }
 
     fn on_header_value(&mut self, data: &[u8]) -> Flow {
         let form = form_of(self.request);
         // The value callback means the name is complete.
-        let name = core::mem::take(&mut form.header_name);
+        let name = form.header_name.as_ref();
         // Only the reactor may write this header; a client never names a part header so.
-        if case_equal(&name, UPLOAD_FILE) {
+        if case_equal(name, UPLOAD_FILE) {
+            form.header_name.clear();
             log::error_log(
                 WARNING,
                 INVALID_REQUEST,
@@ -460,10 +460,12 @@ impl Parts<'_> for Rewrite<'_> {
             );
             return Flow::Fail;
         }
-        for part in [&name[..], b": ", data, b"\r\n"] {
+        for part in [name, b": ", data, b"\r\n"] {
             self.saved.append(part);
         }
-        if !case_equal(&name, b"content-disposition") {
+        let disposition = case_equal(name, b"content-disposition");
+        form.header_name.clear();
+        if !disposition {
             return Flow::Go;
         }
         // `parse_cookie` over a NUL-terminated copy, stopping at the first `filename`.
@@ -1082,31 +1084,14 @@ mod tests {
     /// boundary `b`, fed through the multipart parser as the reactor feeds it.
     struct Fixture {
         input: Input,
-        request: Box<HttpRequest>,
+        request: HttpRequest,
     }
 
     impl Fixture {
         fn new() -> Self {
-            // The header buffer holds the boundary parameter, as the reactor's does.
-            let boundary = b"boundary=b";
-            let mut input = input(boundary);
-            let mut request = Box::new(HttpRequest::default());
+            let (mut input, mut request) =
+                parsed(b"POST / HTTP/1.1\r\nContent-Type: multipart/form-data; boundary=b\r\n\r\n");
             request.max_length = u32::try_from(BUFFER_SIZE_BIG).unwrap();
-            request.header_length = u32::try_from(boundary.len()).unwrap();
-            request.form = Some(Box::new(HttpForm {
-                boundary: HttpSpan {
-                    offset: 0,
-                    length: boundary.len(),
-                },
-                parser: None,
-                fp: None,
-                uploads: Vec::new(),
-                body: None,
-                template: Vec::new(),
-                header_name: Vec::new(),
-                upload_size: 0,
-                upload_max: 0,
-            }));
             assert!(request.init_multipart_parser(input.get_mut(), b"/tmp", 1024 * 1024));
             Self { input, request }
         }
@@ -1155,6 +1140,18 @@ mod tests {
                 assert!(!f.request.tried_to_dispatch, "{trace}");
             }
         }
+    }
+
+    #[test]
+    fn multipart_header_name_limit_spans_reads() {
+        let mut f = Fixture::new();
+        assert!(f.feed(b"--b\r\n"));
+        let name = vec![b'X'; BUFFER_SIZE_BIG - 1];
+        assert!(f.feed(&name));
+        assert!(f.feed(b"Y"));
+        assert!(!f.request.too_large && !f.request.excepted);
+        assert!(f.feed(b"Z"));
+        assert!(f.request.too_large && f.request.excepted);
     }
 
     // core-tests/src/server/http_upload_provenance.cpp: header_name_split_across_reads_is_assembled.
