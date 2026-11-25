@@ -1,9 +1,7 @@
 # swoole-rs-phpstdext
 
-Swoole's experimental stdext (`--enable-swoole-stdext`, native `SW_STDEXT`):
-typed arrays and methods on arrays, strings and streams. The crate is live with
-the `php` and `active` features; `crates/ffi`'s `stdext` feature turns on
-`active`, and `tools/build_ext.py --stdext` turns it on.
+This crate holds the experimental stdext implementation removed from Swoole in v6.3.0.
+The PHP extension no longer links it.
 
 ## The C remainder
 

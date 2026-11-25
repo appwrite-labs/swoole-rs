@@ -1,5 +1,5 @@
 // upstream/ holds unmodified Swoole files: src/protocol/http.cc is from v6.2.6
-// (13d2f336), the remaining snapshots from v6.2.5 (76c657d8). candidate/
+// (13d2f336), swoole_version.h from v6.3.0, and the rest from v6.2.5 (76c657d8). candidate/
 // holds base.cc as the hybrid shipped it before Rust replaced the file outright: its
 // bodies call Rust, so its oracle runs Rust against upstream through the same C++.
 #![expect(

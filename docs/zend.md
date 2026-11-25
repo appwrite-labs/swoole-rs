@@ -284,12 +284,6 @@ A shim that fits none of these is a port waiting to happen: write it in
 `swr_zend_module_loaded`. `tools/budget.py` counts these lines,
 and a PR that adds some names the reasons in a `Stays C: <reason>` line of its body.
 
-## Stdext
-
-The `stdext` feature of `crates/ffi` (`phpstdext/active`) tracks native
-`SW_STDEXT`; `tools/build_ext.py --stdext` turns it on.
-Feature-enabled Rust checks use `--features php,active`.
-
 ## Checks
 
 - `cargo clippy --workspace --all-targets --all-features` and `cargo test
