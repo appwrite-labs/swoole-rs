@@ -5,6 +5,9 @@ import socket
 import struct
 import subprocess
 import threading
+import zlib
+
+import pytest
 
 PREFACE = b'PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n'
 
@@ -95,7 +98,8 @@ def test_coroutines_share_a_client(engine):
     ], php.stdout + php.stderr
 
 
-def test_response_body_limit_is_per_stream(engine):
+@pytest.mark.parametrize("compressed", [False, True], ids=["plain", "gzip"])
+def test_response_body_limit_is_per_stream(engine, compressed):
     """A 129-byte body fails and its 128-byte sibling succeeds on the same connection."""
     from concurrent.futures import ThreadPoolExecutor
 
@@ -112,9 +116,17 @@ def test_response_body_limit_is_per_stream(engine):
                     kind, _, _ = read_frame(conn)
                     requests += kind == 1
                 ok = b'\x88'  # :status: 200
-                conn.sendall(frame(4, 0, 0) + frame(1, 4, 1, ok) + frame(1, 4, 3, ok)
-                             + frame(0, 0, 1, b'a' * 64) + frame(0, 0, 3, b'b' * 64)
-                             + frame(0, 0, 1, b'a' * 65) + frame(0, 1, 1)
+                headers = ok
+                first, second = b'a' * 64, b'a' * 65
+                if compressed:
+                    # Literal content-encoding (static index 26), value gzip.
+                    headers += b'\x0f\x0b\x04gzip'
+                    encoder = zlib.compressobj(wbits=31)
+                    first = encoder.compress(first) + encoder.flush(zlib.Z_SYNC_FLUSH)
+                    second = encoder.compress(second) + encoder.flush()
+                conn.sendall(frame(4, 0, 0) + frame(1, 4, 1, headers) + frame(1, 4, 3, ok)
+                             + frame(0, 0, 1, first) + frame(0, 0, 3, b'b' * 64)
+                             + frame(0, 0, 1, second) + frame(0, 1, 1)
                              + frame(0, 1, 3, b'b' * 64))
                 while conn.recv(4096):
                     pass

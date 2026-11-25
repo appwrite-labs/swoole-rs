@@ -34,11 +34,17 @@ def main():
             report['results'].append(dict(engine=engine.name,exit=result.returncode,stdout=result.stdout,stderr=result.stderr))
             if result.returncode!=255 or not BOUND.match(result.stdout) or 'unreachable' in result.stdout:
                 raise ValueError(f'{engine.name}: websocket recv from a second coroutine did not stop with the bound-socket error')
-            for fixture in ('php_websocket_fragment_limit.php', 'php_http_body_limit.php'):
+            for fixture in ('php_websocket_fragment_limit.php', 'php_http_body_limit.php', 'php_http_compressed_limit.php'):
                 result = run_isolated(engine.command(Path(__file__).with_name(fixture)), timeout=35)
                 report['results'].append(dict(engine=engine.name, fixture=fixture, exit=result.returncode,
                                               stdout=result.stdout, stderr=result.stderr))
-                if result.returncode or result.stdout.strip() != 'passed' or result.stderr:
+                lines = result.stdout.splitlines()
+                if fixture == 'php_http_compressed_limit.php':
+                    warning = 'WARNING\tClient::decompress_response(): decoded response exceeds 128 bytes'
+                    if len(lines) != 7 or not all(line.endswith(warning) for line in lines[:-1]):
+                        raise ValueError(f'{engine.name}: expected six decoded response limit warnings')
+                    lines = lines[-1:]
+                if result.returncode or lines != ['passed'] or result.stderr:
                     raise ValueError(f'{engine.name}: {fixture} failed')
         report['passed']=True
     except Exception as error:report['error']=f'{type(error).__name__}: {error}'
