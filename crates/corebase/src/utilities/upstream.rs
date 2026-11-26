@@ -217,7 +217,8 @@ fn spinlock_across_threads_and_a_fork() {
 // Compare the Rust operations with the pinned functions' integer results.
 #[cfg(target_os = "linux")]
 fn wait_result(word: &AtomicU32, timeout: f64) -> i32 {
-    if super::misc::futex_wait(word, timeout) {
+    let deadline = crate::timer::Deadline::from_futex_timeout(timeout);
+    if super::misc::futex_wait(word, deadline) {
         0
     } else {
         -1
@@ -252,7 +253,13 @@ fn futex_wait_and_wake_match_the_pin() {
         }
         // Nonpositive waits on zero are indefinite; exercise only immediate paths.
         let nonpositive: &[f64] = if word == 0 { &[] } else { &[-123.0, -0.0, 0.0] };
-        for &timeout in [0.000_001, 0.001, 0.0015].iter().chain(nonpositive) {
+        // Infinity and 1e19 make a timespec the syscall refuses at once (`EINVAL`).
+        let refused = [f64::INFINITY, 1e19];
+        for &timeout in [0.000_001, 0.001, 0.0015]
+            .iter()
+            .chain(nonpositive)
+            .chain(&refused)
+        {
             assert_eq!(
                 call(word, &|a| unsafe { pinned::wait(a.as_ptr(), timeout) }),
                 call(word, &|a| wait_result(a, timeout)),

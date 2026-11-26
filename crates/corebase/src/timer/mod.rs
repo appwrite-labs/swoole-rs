@@ -1059,4 +1059,32 @@ mod tests {
             );
         }
     }
+
+    /// `Lock::lock`'s `int` milliseconds, and `sw_atomic_futex_wait`'s seconds to the
+    /// nanosecond: only a positive one ends.
+    #[test]
+    fn deadline_of_a_lock_or_futex_timeout() {
+        for forever in [0, -1, i32::MIN] {
+            assert_eq!(Deadline::from_msec(forever), Deadline::never(), "{forever}");
+        }
+        // 2^63 seconds is still a valid `timespec`, which the kernel saturates.
+        for forever in [-1.0, -0.0, 0.0, f64::NAN, 1e12, 2f64.powi(63)] {
+            let deadline = Deadline::from_futex_timeout(forever);
+            assert_eq!(deadline, Some(Deadline::never()), "{forever}");
+        }
+        for invalid in [f64::INFINITY, 1e19] {
+            assert_eq!(Deadline::from_futex_timeout(invalid), None, "{invalid}");
+        }
+        let futex = |seconds| Deadline::from_futex_timeout(seconds).unwrap();
+        let deadlines = [
+            (Deadline::from_msec(1500), 1_500_000_000),
+            (futex(0.0015), 1_500_000),
+            (futex(1.000_000_001), 1_000_000_001),
+        ];
+        for (deadline, nanos) in deadlines {
+            let left = deadline.remaining().unwrap();
+            let nanos = std::time::Duration::from_nanos(nanos);
+            assert!(left <= nanos && left > nanos / 2, "{nanos:?}: {left:?}");
+        }
+    }
 }

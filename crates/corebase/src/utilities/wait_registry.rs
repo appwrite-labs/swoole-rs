@@ -11,10 +11,11 @@
     )
 )]
 
+use crate::timer::Deadline;
 use std::ffi::c_int;
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 const ENTRIES: usize = 1024;
 
@@ -108,14 +109,10 @@ impl Registry {
         reusable.map(|entry| reset(entry, address))
     }
 
-    fn wait(&self, word: &AtomicU32, timeout: f64) -> Result<(), c_int> {
+    fn wait(&self, word: &AtomicU32, deadline: Deadline) -> Result<(), c_int> {
         if acquire(word) {
             return Ok(());
         }
-        let deadline = (timeout > 0.0)
-            .then(|| Duration::try_from_secs_f64(timeout).ok())
-            .flatten()
-            .and_then(|timeout| Instant::now().checked_add(timeout));
         let address = word.as_ptr() as usize;
         let locked = self.lock();
         // Close the race between the first acquire and registering this waiter.
@@ -142,7 +139,7 @@ impl Registry {
                 entry[WAITERS].fetch_sub(1, R);
                 return Ok(());
             }
-            if deadline.is_some_and(|deadline| Instant::now() >= deadline) {
+            if deadline.remaining().is_some_and(|left| left.is_zero()) {
                 entry[WAITERS].fetch_sub(1, R);
                 return Err(libc::ETIMEDOUT);
             }
@@ -231,11 +228,11 @@ fn record_error(code: c_int) {
 }
 
 /// `sw_atomic_futex_wait` without futex: take the word's token (1 -> 0),
-/// polling every millisecond until a wakeup or `timeout` (seconds, <= 0 for
-/// none). Whether it took the token; a failure's error is recorded as the last error.
+/// polling every millisecond until a wakeup or `deadline` passes. Whether it took
+/// the token; a failure's error is recorded as the last error.
 #[cfg(not(target_os = "linux"))]
-pub(crate) fn registry_wait(word: &AtomicU32, timeout: f64) -> bool {
-    with(word, |registry, word| registry.wait(word, timeout))
+pub(crate) fn registry_wait(word: &AtomicU32, deadline: Deadline) -> bool {
+    with(word, |registry, word| registry.wait(word, deadline))
         .map_err(record_error)
         .is_ok()
 }
@@ -255,9 +252,11 @@ pub(crate) fn registry_wakeup(word: &AtomicU32, n: c_int) -> Option<u32> {
 mod tests {
     use super::*;
     use std::sync::Arc;
+    use std::time::Instant;
 
     fn wait(word: &AtomicU32, timeout: f64) -> (c_int, c_int) {
-        match with(word, |registry, word| registry.wait(word, timeout)) {
+        let deadline = Deadline::from_futex_timeout(timeout).unwrap();
+        match with(word, |registry, word| registry.wait(word, deadline)) {
             Ok(()) => (0, 0),
             Err(code) => (-1, code),
         }

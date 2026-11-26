@@ -9,7 +9,7 @@ use crate::CCast;
 use crate::timer::owner::{Owner as Timer, TimerNode};
 pub use crate::timer_key::Held;
 use crate::{log, swoole_print_backtrace};
-use std::ffi::{CStr, c_long, c_void};
+use std::ffi::{CStr, c_int, c_long, c_void};
 use std::num::NonZeroU64;
 use std::rc::Rc;
 use std::time::Duration;
@@ -149,10 +149,50 @@ impl Deadline {
             && let Ok(ms) = u64::try_from(sec2msec(seconds))
             && let Some(after) = ms.checked_mul(1_000_000)
         {
-            Self(now_nanos().checked_add(after).and_then(NonZeroU64::new))
+            Self::after(after)
         } else {
             Self::never()
         }
+    }
+
+    /// Upstream's `int timeout_msec`, as `Lock::lock` reads it: a positive one ends
+    /// that many milliseconds from now; zero or a negative one is [`Deadline::never`].
+    #[must_use]
+    pub fn from_msec(ms: c_int) -> Self {
+        match u64::try_from(ms) {
+            Ok(ms) if ms > 0 => Self::after(ms * 1_000_000),
+            _ => Self::never(),
+        }
+    }
+
+    /// Upstream's `timeout` seconds, as `sw_atomic_futex_wait` reads them: a positive
+    /// one ends its whole seconds and truncated nanoseconds from now; zero, a negative
+    /// one or NaN is [`Deadline::never`], as is one past what the clock holds. None for
+    /// one whose `timespec` is invalid (infinity, or past 2^63 seconds), which Linux's
+    /// futex refuses with `EINVAL`.
+    #[must_use]
+    pub fn from_futex_timeout(seconds: f64) -> Option<Self> {
+        if seconds > 0.0 {
+            let sec = seconds.c_cast::<i64>();
+            let nsec = ((seconds - sec.c_cast::<f64>()) * 1000.0 * 1000.0 * 1000.0).c_cast::<i64>();
+            if nsec >= 1_000_000_000 {
+                return None;
+            }
+            let nanos = u64::try_from(sec)
+                .ok()
+                .and_then(|sec| sec.checked_mul(1_000_000_000));
+            if let Some(nanos) = nanos.and_then(|nanos| nanos.checked_add(nsec.cast_unsigned())) {
+                return Some(Self::after(nanos));
+            }
+        }
+        Some(Self::never())
+    }
+
+    /// `nanos` from now; never when the clock can't hold it. Kept out of line, so a
+    /// caller whose usual wait never ends doesn't make room for the clock read.
+    #[inline(never)]
+    fn after(nanos: u64) -> Self {
+        Self(now_nanos().checked_add(nanos).and_then(NonZeroU64::new))
     }
 
     /// The time left until the deadline, zero once it passed; none when it never comes.

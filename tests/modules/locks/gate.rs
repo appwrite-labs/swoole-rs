@@ -14,6 +14,7 @@ use swoole_rs_corebase::locks::{
     Barrier, Kind, Lock, SharedMutex, TIMED_LOCK_CAPABILITIES, barrier_destroy, barrier_init,
     barrier_wait, coroutine_backoff, swr_v1_locks_atomic32, swr_v1_locks_atomic64,
 };
+use swoole_rs_corebase::timer::Deadline;
 use swoole_rs_error::ErrorCode;
 use swoole_rs_oracle::locks as reference;
 
@@ -75,8 +76,9 @@ impl RustLock {
         Self(lock)
     }
     fn lock(&self, operation: i32, timeout: i32) -> i32 {
+        let deadline = Deadline::from_msec(timeout);
         self.0
-            .lock(operation, timeout, TIMED_LOCK_CAPABILITIES)
+            .lock(operation, deadline, TIMED_LOCK_CAPABILITIES)
             .err()
             .unwrap_or(0)
     }
@@ -420,7 +422,7 @@ fn wait_and_wake() {
     #[cfg(target_os = "linux")]
     wait_wake(
         |word, timeout| {
-            if swoole_rs_corebase::locks::wait(word, timeout) {
+            if swoole_rs_corebase::locks::wait(word, Deadline::from_futex_timeout(timeout)) {
                 0
             } else {
                 -1
@@ -474,16 +476,17 @@ fn coroutine_policy() {
     let word = || WORD.load(Ordering::Relaxed);
     let lock = CoroutineLock::new(true, &HOST);
     CID.set(7);
-    assert_eq!(lock.acquire(true), Ok(()));
+    let never = Some(Deadline::never());
+    assert_eq!(lock.acquire(never), Ok(()));
     assert_eq!(word(), 1);
-    assert_eq!(lock.acquire(true), Ok(()));
+    assert_eq!(lock.acquire(never), Ok(()));
     assert_eq!((word(), SLEEPS.get()), (1, 0));
     CID.set(8);
-    assert_eq!(lock.acquire(false), Err(EBUSY));
+    assert_eq!(lock.acquire(None), Err(EBUSY));
     assert_eq!(word(), 1);
     CID.set(9);
     assert_eq!(
-        lock.acquire(true),
+        lock.acquire(never),
         Err(ErrorCode::SW_ERROR_CO_CANCELED as i32)
     );
     assert_eq!((word(), SLEEPS.get()), (1, 1));
@@ -494,12 +497,12 @@ fn coroutine_policy() {
     assert_eq!(word(), 0);
     // Pinned owner reentrancy precedes CAS even if the shared word is already zero, as
     // after another process's unlock.
-    assert_eq!(lock.acquire(false), Ok(()));
+    assert_eq!(lock.acquire(None), Ok(()));
     WORD.store(0, Ordering::Relaxed);
-    assert_eq!(lock.acquire(false), Ok(()));
+    assert_eq!(lock.acquire(None), Ok(()));
     assert_eq!(word(), 0);
     CID.set(8);
-    assert_eq!(lock.acquire(false), Ok(()));
+    assert_eq!(lock.acquire(None), Ok(()));
     assert_eq!(word(), 1);
     let mut second = 0.001;
     for expected in [0.002, 0.004, 0.008, 0.016, 0.032, 0.064, 0.1, 0.001] {
