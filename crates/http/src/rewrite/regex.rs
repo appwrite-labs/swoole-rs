@@ -154,19 +154,35 @@ impl Parser<'_> {
         Some(byte)
     }
     fn alternation(&mut self) -> Option<Node> {
-        let mut alternatives = vec![self.concat()?];
-        while self.eat(b'|') {
-            alternatives.push(self.concat()?);
+        let first = self.concat()?;
+        if !self.eat(b'|') {
+            return Some(first);
         }
-        Some(if alternatives.len() == 1 {
-            alternatives.remove(0)
-        } else {
-            Node::Alt(alternatives)
-        })
+        let mut alternatives = vec![first];
+        loop {
+            #[cfg_attr(
+                protocol_buffer_lint,
+                expect(
+                    clippy::disallowed_methods,
+                    reason = "each alternative after the first consumes a separator from the configured pattern"
+                )
+            )]
+            alternatives.push(self.concat()?);
+            if !self.eat(b'|') {
+                return Some(Node::Alt(alternatives));
+            }
+        }
     }
     fn concat(&mut self) -> Option<Node> {
         let mut terms = Vec::new();
         while !matches!(self.rest.first(), None | Some(b'|' | b')')) {
+            #[cfg_attr(
+                protocol_buffer_lint,
+                expect(
+                    clippy::disallowed_methods,
+                    reason = "each concatenation term consumes at least one byte of the configured pattern"
+                )
+            )]
             terms.push(self.term()?);
         }
         Some(Node::Concat(terms))
@@ -237,6 +253,13 @@ impl Parser<'_> {
         } else {
             self.groups += 1;
             let index = self.groups;
+            #[cfg_attr(
+                protocol_buffer_lint,
+                expect(
+                    clippy::disallowed_methods,
+                    reason = "one open capture per enclosing group, checked against NESTING"
+                )
+            )]
             self.open.push(index);
             let body = self.alternation()?;
             self.open.pop();
@@ -462,6 +485,13 @@ impl Regex {
         if parser.unsupported {
             return Err(Rejected::Unsupported);
         }
+        #[cfg_attr(
+            protocol_buffer_lint,
+            expect(
+                clippy::disallowed_methods,
+                reason = "exactly two final instructions fit the reservation made during emission"
+            )
+        )]
         regex.program.extend([Inst::Save(1), Inst::Match]);
         Ok(regex)
     }
@@ -472,9 +502,26 @@ impl Regex {
         }
     }
 
+    #[cfg_attr(
+        protocol_buffer_lint,
+        expect(
+            clippy::disallowed_methods,
+            reason = "at most LIMIT emitted instructions and two reserved final slots"
+        )
+    )]
     fn push(&mut self, inst: Inst) -> Option<usize> {
+        let index = self.program.len();
+        if index >= LIMIT {
+            return None;
+        }
+        // Keep room for the final Save and Match. Cap geometric growth at the
+        // admitted instruction count even when the next doubling would pass it.
+        if self.program.capacity() < index + 3 {
+            let capacity = (index * 2).min(LIMIT) + 2;
+            self.program.try_reserve_exact(capacity - index).ok()?;
+        }
         self.program.push(inst);
-        (self.program.len() <= LIMIT).then_some(self.program.len() - 1)
+        Some(index)
     }
 
     fn emit(&mut self, node: &Node) -> Option<()> {
@@ -507,6 +554,13 @@ impl Regex {
                 for node in init {
                     let split = self.push(Inst::Split(0, 0))?;
                     self.emit(node)?;
+                    #[cfg_attr(
+                        protocol_buffer_lint,
+                        expect(
+                            clippy::disallowed_methods,
+                            reason = "one pending jump per successfully emitted alternation jump"
+                        )
+                    )]
                     jumps.push(self.push(Inst::Jmp(0))?);
                     self.patch(split, Inst::Split(split + 1, self.program.len()));
                 }
@@ -543,6 +597,13 @@ impl Regex {
                 }
                 let mut splits = Vec::new();
                 for _ in 0..optional {
+                    #[cfg_attr(
+                        protocol_buffer_lint,
+                        expect(
+                            clippy::disallowed_methods,
+                            reason = "one pending split per successfully emitted optional instruction"
+                        )
+                    )]
                     splits.push(self.push(Inst::Split(0, 0))?);
                     self.emit(node)?;
                 }
@@ -636,6 +697,13 @@ impl Regex {
                 pc = match inst {
                     Inst::Jmp(to) => to,
                     Inst::Split(first, second) => {
+                        #[cfg_attr(
+                            protocol_buffer_lint,
+                            expect(
+                                clippy::disallowed_methods,
+                                reason = "seen admits each split instruction once per input position"
+                            )
+                        )]
                         pending.push((second, slots.clone()));
                         first
                     }
@@ -648,6 +716,13 @@ impl Regex {
                     Inst::Look(look) if look.holds(hay, begin, at) => pc + 1,
                     Inst::Look(_) => break,
                     Inst::Set(_) | Inst::Match => {
+                        #[cfg_attr(
+                            protocol_buffer_lint,
+                            expect(
+                                clippy::disallowed_methods,
+                                reason = "seen admits each consuming instruction or match once per input position"
+                            )
+                        )]
                         list.push((pc, slots));
                         break;
                     }
@@ -656,5 +731,23 @@ impl Regex {
             let Some(next) = pending.pop() else { break };
             (pc, slots) = next;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn counted_repeat_keeps_room_for_both_final_instructions() {
+        let at_limit = format!("a{{{}}}", LIMIT - 1);
+        let regex = Regex::new(at_limit.as_bytes()).unwrap();
+        assert_eq!(regex.program.len(), LIMIT + 2);
+        assert_eq!(regex.program.capacity(), LIMIT + 2);
+        let over_limit = format!("a{{{LIMIT}}}");
+        assert!(matches!(
+            Regex::new(over_limit.as_bytes()),
+            Err(Rejected::Invalid)
+        ));
     }
 }
