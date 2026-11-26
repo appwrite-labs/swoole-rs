@@ -725,7 +725,10 @@ impl<'a> Alias<'a> {
     /// internal function, or when `info` misses one of its parameters.
     fn new(function: Option<Function<'_>>, alias: &'a CStr, info: Info) -> Option<(Self, u8)> {
         let function = function?;
-        let (kind, args) = (function.kind(), function.num_args());
+        let kind = function.kind();
+        // Registered functions exclude the variadic parameter from num_args.
+        let variadic = function.flags() & crate::sys::ZEND_ACC_VARIADIC != 0;
+        let args = function.num_args().checked_add(u32::from(variadic))?;
         let handler = function.internal_handler()?;
         // Zend reads the return row and the `args` rows after it.
         if !info.start.is_null() && info.rows <= args as usize {

@@ -83,7 +83,6 @@ PENDING_PORTS = {
     5655: [
         'swoole_coroutine/empty_settings.phpt',
         'swoole_coroutine/error_reporting_configuration.phpt',
-        'swoole_coroutine/shortname_variadic.phpt',
         'swoole_table/conditional_stats.phpt',
         'swoole_table/conditional_types.phpt',
         'swoole_table/getdel.phpt',
