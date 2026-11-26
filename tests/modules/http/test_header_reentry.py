@@ -125,15 +125,26 @@ def test_url_rewrite_rules_warn_only_for_patterns_upstream_runs_and_this_server_
     assert rows == {**{pattern: [] for pattern in rows}, **warned}
 
 
-def test_incremental_request_byte_limit(engine):
+@pytest.mark.parametrize("mode", ["configured", "default"])
+def test_incremental_request_byte_limit(engine, mode):
     code = r'''
-    $prefix = "POST / HTTP/1.1\r\nContent-Length: 3\r\n\r\n";
-    $r = Swoole\Http\Request::create(['package_max_length' => strlen($prefix) + 3]);
-    var_dump($r->parse($prefix) === strlen($prefix));
-    var_dump($r->parse("abcd") === false, swoole_last_error() === SWOOLE_ERROR_PACKAGE_LENGTH_TOO_LARGE);
-    var_dump($r->getData() === $prefix, !$r->isCompleted());
-    var_dump($r->parse("abc") === 3, $r->isCompleted(), $r->getContent() === "abc");
+    $header = "POST / HTTP/1.1\r\nContent-Length: %d\r\n\r\n";
+    if ($argv[1] === 'default') {
+        $limit = 2 * 1024 * 1024;
+        // Both the full request and its body have seven-digit lengths.
+        $body = str_repeat('a', $limit - strlen(sprintf($header, $limit)));
+        $r = Swoole\Http\Request::create();
+    } else {
+        $body = 'abc';
+        $limit = strlen(sprintf($header, strlen($body))) + strlen($body);
+        $r = Swoole\Http\Request::create(['package_max_length' => $limit]);
+    }
+    $head = sprintf($header, strlen($body));
+    var_dump($r->parse($head) === strlen($head));
+    var_dump($r->parse($body . 'x') === false, swoole_last_error() === SWOOLE_ERROR_PACKAGE_LENGTH_TOO_LARGE);
+    var_dump($r->getData() === $head, !$r->isCompleted());
+    var_dump($r->parse($body) === strlen($body), $r->isCompleted(), strlen($r->getData()) === $limit, $r->getContent() === $body);
     '''
-    result = subprocess.run(engine.command('-r', code), capture_output=True, text=True, timeout=10)
+    result = subprocess.run(engine.command('-r', code, mode), capture_output=True, text=True, timeout=10)
     assert result.returncode == 0, result.stdout + result.stderr
-    assert result.stdout.splitlines() == ['bool(true)'] * 8
+    assert result.stdout.splitlines() == ['bool(true)'] * 9
