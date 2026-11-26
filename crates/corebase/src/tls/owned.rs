@@ -568,11 +568,11 @@ impl Lent<'_> {
     pub fn set_text(&mut self, which: Text, value: &[u8]) -> bool {
         // The slot, and for a file its setter's log origin and name.
         let (slot, file) = match which {
-            Text::CertFile => (4, Some((c"set_cert_file", "cert"))),
-            Text::KeyFile => (5, Some((c"set_key_file", "key"))),
+            Text::CertFile => (4, Some((c"SSLContext::set_cert_file", "cert"))),
+            Text::KeyFile => (5, Some((c"SSLContext::set_key_file", "key"))),
             Text::ClientCertFile => (
                 CLIENT_CERT_FILE,
-                Some((c"set_client_cert_file", "client cert")),
+                Some((c"SSLContext::set_client_cert_file", "client cert")),
             ),
             Text::Passphrase => (PASSPHRASE, None),
             Text::HostName => (TLS_HOST_NAME, None),

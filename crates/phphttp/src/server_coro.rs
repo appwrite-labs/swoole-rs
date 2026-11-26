@@ -28,8 +28,8 @@ use swoole_rs_http2::FRAME_HEADER_SIZE as HTTP2_FRAME_HEADER_SIZE;
 use swoole_rs_httpbindings::Setting;
 use swoole_rs_phpclients::{NewSocket, get_socket, is_socket_closed, socket_settings};
 use swoole_rs_phpstubs::http_server_coro;
-use swoole_rs_phpswoole::MinitArgs;
 use swoole_rs_phpswoole::SocketSettings;
+use swoole_rs_phpswoole::{MinitArgs, invalid_setting, nonnegative_setting, setting_ok};
 use swoole_rs_zend::{
     Array, ArrayMut, Call, Custom, CustomClass, Key as ArrayKey, Minit, Owned, OwnedArray, Props,
     Value, ZString, Zvals, bailout, handlers,
@@ -170,19 +170,6 @@ impl HttpServer {
         found.or(default)
     }
 
-    /// A flag's or a number's setting.
-    fn apply(&self, kind: Setting, value: i64) {
-        match kind {
-            Setting::Cookie => self.parse_cookie.set(value != 0),
-            Setting::Post => self.parse_post.set(value != 0),
-            Setting::Files => self.parse_files.set(value != 0),
-            Setting::Compression => self.compression.set(value != 0),
-            Setting::Level => self.compression_level.set(value.c_cast::<i8>()),
-            Setting::Minimum => self.compression_min_length.set(value.c_cast::<u32>()),
-            Setting::Types | Setting::Websocket | Setting::Upload => {}
-        }
-    }
-
     /// `create_context`: the settings, the socket and the parser.
     fn context(&self, socket: Co, zconn: &Value) -> Hold {
         let hold = context::context_new(i64::from(socket.sock_fd()));
@@ -220,26 +207,6 @@ impl Drop for HttpServer {
             bailout::defer(listener.co().free_length_callable());
             bailout::defer(listener.free());
         }
-    }
-}
-
-/// A text setting: `http_compression_types`
-/// (reset by `None`, then one type per call) or `upload_tmp_dir`.
-fn text_setting(server: &HttpServer, kind: Setting, text: Option<&[u8]>) {
-    if kind != Setting::Types {
-        server
-            .upload_tmp_dir
-            .set(context::directory(text.unwrap_or_default()));
-        return;
-    }
-    if let Some(kind) = text {
-        server.compression_types.with_taken(|types| {
-            if let Some(types) = types {
-                Rc::make_mut(types).insert(kind.into());
-            }
-        });
-    } else {
-        server.compression_types.set(Some(Rc::default()));
     }
 }
 
@@ -485,12 +452,13 @@ fn run_start(call: &Call) -> Result<Option<bool>, bailout::Bailout> {
     let Some(settings) = props.edit_array(c"settings", |settings| settings.copy()) else {
         return Ok(None);
     };
-    if !socket_settings(socket, &settings, SocketSettings::Protocol)? {
+    if !socket_settings(socket, &settings, SocketSettings::All)? {
         props.long(c"errCode", EINVAL);
         let message = swoole_rs_phpruntime::strerror(libc::EINVAL);
         props.bytes(c"errMsg", message.to_bytes());
         server.running.set(false);
-        return Ok(Some(false));
+        invalid_setting(c"failed to apply HTTP server socket settings");
+        return Ok(None);
     }
     let Some(table) = settings.array() else {
         return Ok(None);
@@ -498,14 +466,14 @@ fn run_start(call: &Call) -> Result<Option<bool>, bailout::Bailout> {
     for (kind, keys) in swoole_rs_httpbindings::settings(crate::parse::enabled_codecs() != 0) {
         if kind == Setting::Websocket {
             server.apply_websocket(table);
-            continue;
+        } else if let Some(value) = keys.iter().find_map(|key| table.get(key)) {
+            setting(server, kind, value);
         }
-        let Some(value) = keys.iter().find_map(|key| table.get(key)) else {
-            continue;
-        };
-        match setting(server, kind, value)? {
-            Some(value) => server.apply(kind, value),
-            None => return Ok(None),
+        if bailout::pending() {
+            return Err(bailout::Bailout);
+        }
+        if !setting_ok() {
+            return Ok(None);
         }
     }
     server.running.set(true);
@@ -530,72 +498,63 @@ fn run_start(call: &Call) -> Result<Option<bool>, bailout::Bailout> {
     Ok(Some(accepted))
 }
 
-/// One `start` setting from its value: a
-/// flag's or a number's value for [`HttpServer::apply`], or `None` (no
-/// return value); an `E_ERROR` bails out.
-fn setting(
-    server: &HttpServer,
-    kind: Setting,
-    value: &Value,
-) -> Result<Option<i64>, bailout::Bailout> {
-    let fatal = |message: String| {
-        host::set_last_error(host::PHP_FATAL_ERROR);
-        let message = CString::new(message).unwrap_or_default();
-        swoole_rs_zend::report(swoole_rs_zend::E_ERROR, &message)
-    };
-    let compression = crate::parse::enabled_codecs() != 0;
-    let result = match kind {
-        Setting::Cookie | Setting::Post | Setting::Files | Setting::Compression => {
-            Some(i64::from(value.truthy()))
+/// Apply one HTTP option before accepting connections.
+fn setting(server: &HttpServer, kind: Setting, value: &Value) {
+    match kind {
+        Setting::Cookie => server.parse_cookie.set(value.truthy()),
+        Setting::Post => server.parse_post.set(value.truthy()),
+        Setting::Files => server.parse_files.set(value.truthy()),
+        Setting::Compression => server.compression.set(value.truthy()),
+        Setting::Level => {
+            let level = value.long();
+            if setting_ok() {
+                let level = swoole_rs_httpbindings::swr_v1_httpbindings_server_level(level);
+                server.compression_level.set(level.c_cast::<i8>());
+            }
         }
-        Setting::Level if compression => Some(i64::from(
-            swoole_rs_httpbindings::swr_v1_httpbindings_server_level(value.long()),
-        )),
-        Setting::Minimum if compression => Some(value.long()),
-        Setting::Types if compression => {
-            text_setting(server, kind, None);
+        Setting::Minimum => {
+            if let Some(length) = nonnegative_setting(c"compression_min_length", value.long()) {
+                server.compression_min_length.set(length);
+            }
+        }
+        Setting::Types => {
+            server.compression_types.set(Some(Rc::default()));
             let Some(types) = value.array() else {
-                fatal("http_compression_types must be array".into())?;
-                return Ok(None);
+                invalid_setting(c"http_compression_types must be array");
+                return;
             };
-            for (_, kind) in types.entries() {
-                let kind = kind.string();
-                if bailout::pending() {
-                    break;
+            for (_, item) in types.entries() {
+                let item = item.string();
+                if !setting_ok() {
+                    return;
                 }
-                if !kind.bytes().is_empty() {
-                    text_setting(server, Setting::Types, Some(kind.bytes()));
+                if !item.bytes().is_empty() {
+                    server.compression_types.with_taken(|types| {
+                        if let Some(types) = types {
+                            Rc::make_mut(types).insert(item.bytes().into());
+                        }
+                    });
                 }
             }
-            Some(0)
         }
         Setting::Upload => {
             let dir = value.string();
-            if bailout::pending() {
-                return Err(bailout::Bailout);
+            if !setting_ok() {
+                return;
             }
             let text = dir.bytes();
-            let created = swoole_rs_phpserver::php_swoole_create_dir(text);
-            if created {
-                text_setting(server, kind, Some(text));
+            if swoole_rs_phpserver::php_swoole_create_dir(text) {
+                server.upload_tmp_dir.set(context::directory(text));
+            } else {
+                let message = swoole_rs_zend::message!(
+                    "Unable to create upload_tmp_dir[{}]",
+                    String::from_utf8_lossy(nul_terminated(text))
+                );
+                invalid_setting(message.as_cstr());
             }
-            let message = format!(
-                "Unable to create upload_tmp_dir[{}]",
-                String::from_utf8_lossy(nul_terminated(text))
-            );
-            drop(dir);
-            if !created {
-                fatal(message)?;
-                return Ok(None);
-            }
-            Some(0)
         }
-        _ => None,
-    };
-    if bailout::pending() {
-        return Err(bailout::Bailout);
+        Setting::Websocket => {}
     }
-    Ok(result)
 }
 
 /// The `start` frame the accept loop drives.

@@ -376,24 +376,25 @@ fn set_ssl(s: &Array, socket: Co) -> Result<bool, Stop> {
     {
         owner.set_value(tls::Value::DisableCompress(!v.truthy()));
     }
-    for (key, which, what) in [
-        (b"ssl_cert_file".as_slice(), Text::CertFile, "cert"),
-        (b"ssl_key_file", Text::KeyFile, "key"),
-    ] {
-        if let Some(v) = s.get(key) {
-            let file = string(v)?;
-            if !owner.set_text(which, &file) {
-                let message = [
-                    format!("ssl {what} file[").as_bytes(),
-                    &self::text(&file).into_bytes(),
-                    b"] not found",
-                ]
-                .concat();
-                invalid_setting(&self::text(&message));
-                return Ok(false);
+    let file_setting =
+        |owner: &mut tls::Lent<'_>, key: &[u8], which, what: &str| -> Result<(), Stop> {
+            if let Some(v) = s.get(key) {
+                let file = string(v)?;
+                if !owner.set_text(which, &file) {
+                    let message = [
+                        format!("ssl {what} file[").as_bytes(),
+                        &self::text(&file).into_bytes(),
+                        b"] not found",
+                    ]
+                    .concat();
+                    invalid_setting(&self::text(&message));
+                    return Err(Stop);
+                }
             }
-        }
-    }
+            Ok(())
+        };
+    file_setting(&mut owner, b"ssl_cert_file", Text::CertFile, "cert")?;
+    file_setting(&mut owner, b"ssl_key_file", Text::KeyFile, "key")?;
     let missing = match tls::has_files(&context) {
         (true, false) => Some(c"ssl require key file"),
         (false, true) => Some(c"ssl require cert file"),
@@ -417,6 +418,12 @@ fn set_ssl(s: &Array, socket: Co) -> Result<bool, Stop> {
     if let Some(v) = s.get(b"ssl_allow_self_signed") {
         owner.set_value(tls::Value::AllowSelfSigned(v.truthy()));
     }
+    file_setting(
+        &mut owner,
+        b"ssl_client_cert_file",
+        Text::ClientCertFile,
+        "client cert",
+    )?;
     if let Some(v) = s.get(b"ssl_cafile") {
         text(&mut owner, Text::Cafile, v)?;
     }
