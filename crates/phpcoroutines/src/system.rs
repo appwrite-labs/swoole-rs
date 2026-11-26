@@ -202,6 +202,10 @@ fn gethostbyname(call: &Call) {
         call.set_bool(false);
         return;
     }
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "System::gethostbyname's timeout, from PHP"
+    )]
     let address = system_gethostbyname(domain, saturated(family), Deadline::from_timeout(timeout));
     if address.is_empty() {
         call.set_bool(false);
@@ -245,6 +249,10 @@ fn getaddrinfo(call: &Call) {
         call.set_bool(false);
         return;
     }
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "System::getaddrinfo's timeout, from PHP"
+    )]
     let addresses = system_getaddrinfo(
         until_nul(host_name),
         saturated(family),

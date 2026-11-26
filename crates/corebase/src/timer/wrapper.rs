@@ -129,12 +129,23 @@ fn held(ms: c_long, persistent: bool, node: TimerNode) -> Option<Held> {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Deadline(Option<NonZeroU64>);
 
+#[expect(
+    clippy::disallowed_methods,
+    reason = "the PHP-boundary readers of a timeout, whose -1 waits forever as upstream's"
+)]
 impl Deadline {
     /// A wait that only its waker, a cancel or a close ends. Only the PHP-API
-    /// boundary, where upstream's API waits forever, reaches it.
+    /// boundary, where upstream's API waits forever, reaches it; elsewhere clippy.toml
+    /// bans it, so each caller states what ends its wait.
     #[must_use]
     pub const fn never() -> Self {
         Self(None)
+    }
+
+    /// Whether this is [`Deadline::never`].
+    #[must_use]
+    pub const fn is_never(self) -> bool {
+        self.0.is_none()
     }
 
     /// Upstream's `timeout` seconds, as `Coroutine::yield_ex` reads them: a positive

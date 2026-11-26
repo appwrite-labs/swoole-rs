@@ -249,6 +249,7 @@ pub(crate) fn registry_wakeup(word: &AtomicU32, n: c_int) -> Option<u32> {
 }
 
 #[cfg(test)]
+#[expect(clippy::disallowed_methods, reason = "tests wake their own waits")]
 mod tests {
     use super::*;
     use std::sync::Arc;

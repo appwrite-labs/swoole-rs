@@ -262,6 +262,10 @@ pub(crate) fn wait_with<S>(
             .map_or(libc::ETIMEDOUT, |error| error.raw_os_error().unwrap_or(0));
         return Err(WaitError::Poll(error));
     }
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "waitEvent's timeout, from its PHP caller"
+    )]
     let deadline = Deadline::from_timeout(timeout);
     let fired = park(fd, events, deadline, ops).map_err(WaitError::Coroutine)?;
     // Error readiness becomes the requested read/write bits.

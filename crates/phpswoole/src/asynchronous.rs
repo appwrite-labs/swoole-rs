@@ -225,6 +225,10 @@ fn dns_lookup(call: &Call) {
     }
     crate::check_reactor();
     // The coroutine yields.
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "swoole_async_dns_lookup_coro's timeout"
+    )]
     let mut answers = swoole_rs_hooks::resolve::dns_lookup(
         name,
         family.c_cast::<i32>(),

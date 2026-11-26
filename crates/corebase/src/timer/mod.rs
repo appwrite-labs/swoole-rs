@@ -519,6 +519,7 @@ impl<T: Default> Pair<T> for Result<T, Status> {
 mod kernel;
 
 #[cfg(test)]
+#[expect(clippy::disallowed_methods, reason = "tests wake their own waits")]
 mod tests {
     use super::*;
     use crate::test_allocator::FAIL_ONCE_AFTER as FAIL_AFTER;

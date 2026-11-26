@@ -468,6 +468,10 @@ impl Multi {
     }
 
     /// `Multi::exec`: run one easy handle to completion (`curl_exec`).
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "curl's own timers end the transfer, as upstream's yield_ex(-1)"
+    )]
     fn exec(&self, handle: &Handle) -> CURLcode {
         if self.add_handle(handle) != CURLM_OK {
             return CURLE_FAILED_INIT;
@@ -646,7 +650,12 @@ impl Multi {
         let waiter = Waiter::running(co, (self.host.current_cid)());
         self.co.set(waiter);
         let mut arm = |waker| self.co.set(waiter.map(|waiter| waiter.parked(waker)));
-        (self.host.yield_)(co, Deadline::from_timeout(timeout), &mut arm);
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "curl_multi_select's timeout, from PHP"
+        )]
+        let deadline = Deadline::from_timeout(timeout);
+        (self.host.yield_)(co, deadline, &mut arm);
         self.co.set(None);
         self.ready()
     }

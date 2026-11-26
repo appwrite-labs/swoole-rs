@@ -401,6 +401,10 @@ impl Co {
         let mut address = SocketAddress::default();
         let mut assigned = assign(&mut address, kind, host, port);
         if !assigned && log::last_error() == BAD_HOST_ADDR {
+            #[expect(
+                clippy::disallowed_methods,
+                reason = "the socket's dns_timeout, set from PHP"
+            )]
             let ip =
                 crate::resolve::system_gethostbyname(host, domain, Deadline::from_timeout(timeout));
             if !ip.is_empty() {

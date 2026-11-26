@@ -143,6 +143,10 @@ fn set_yielded(cid: c_long, yielded: bool) -> bool {
 }
 
 /// `Co::yield()`/`Co::suspend()`.
+#[expect(
+    clippy::disallowed_methods,
+    reason = "PHP's Co::resume or a cancel ends it, as upstream's"
+)]
 fn yield_(call: &Call) {
     let Some(co) = host::require_coroutine() else {
         return;
@@ -294,7 +298,9 @@ fn join(call: &Call) {
     });
     // This frame lives on the running coroutine's stack, which no bailout
     // unwinds while it waits.
-    if !host::yield_ex(co, Deadline::from_timeout(timeout)) {
+    #[expect(clippy::disallowed_methods, reason = "Co::join's timeout, from PHP")]
+    let deadline = Deadline::from_timeout(timeout);
+    if !host::yield_ex(co, deadline) {
         join.forget();
         join.canceled.set(true);
         call.set_bool(false);

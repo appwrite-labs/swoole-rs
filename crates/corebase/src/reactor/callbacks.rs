@@ -307,7 +307,19 @@ pub(crate) fn wait(reactor: Running<'_>) -> bool {
     fn begin(reactor: Running<'_>) {
         run_task(reactor.with(|state| state.fields.future_task.clone()));
     }
-    crate::reactor::wait_loop::wait(reactor, begin, execute_end)
+    if reactor.with(|state| std::mem::replace(&mut state.fields.waiting, true)) {
+        crate::log::error_log(
+            crate::log::LogLevel::SW_LOG_WARNING,
+            swoole_rs_error::ErrorCode::SW_ERROR_WRONG_OPERATION as c_int,
+            c"Reactor::wait",
+            format_args!("event loop is already running"),
+        );
+        crate::sys::set_errno(libc::EBUSY);
+        return false;
+    }
+    let result = crate::reactor::wait_loop::wait(reactor, begin, execute_end);
+    reactor.with(|state| state.fields.waiting = false);
+    result
 }
 
 #[cfg(test)]

@@ -154,6 +154,10 @@ pub fn system_sleep(sec: f64) -> bool {
         let co = swoole_rs_corebase::coroutine::current_safe();
         let timeout =
             swoole_rs_corebase::offload::sleep_timeout(sec, swoole_rs_corebase::timer::MIN_SEC);
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "sleep_timeout is at least MIN_SEC"
+        )]
         let deadline = swoole_rs_corebase::timer::Deadline::from_timeout(timeout);
         let code = swoole_rs_corebase::coroutine::yield_timed(co, deadline);
         let resumed = swoole_rs_corebase::coroutine::yield_resumed(code);

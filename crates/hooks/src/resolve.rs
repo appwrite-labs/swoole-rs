@@ -90,6 +90,10 @@ pub fn name_resolver_lookup(name: &[u8], ctx: &mut NameResolverContext, out: &mu
     *out = if swoole_rs_corebase::coroutine::current().is_null() {
         resolver::gethostbyname(ctx.options.get().0, name)
     } else {
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "the context's timeout, set from PHP"
+        )]
         let deadline = Deadline::from_timeout(ctx.timeout);
         system_gethostbyname(name, ctx.options.get().0, deadline)
     };
