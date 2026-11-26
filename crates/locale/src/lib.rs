@@ -34,8 +34,8 @@ impl<'a> From<&'a CStr> for Text<'a> {
 unsafe extern "C" {
     #[link_name = "strptime"]
     safe fn libc_strptime(date: Text<'_>, format: Text<'_>, tm: &mut Tm) -> *mut c_char;
-    #[link_name = "mktime"]
-    safe fn libc_mktime(tm: &mut Tm) -> i64;
+    #[link_name = "timegm"]
+    safe fn libc_timegm(tm: &mut Tm) -> i64;
     safe fn gmtime_r(time: &i64, tm: &mut Tm) -> *mut Tm;
     /// Writes at most the lent count of bytes.
     #[link_name = "strftime"]
@@ -82,13 +82,15 @@ pub fn zeroed() -> Tm {
         tm_zone: std::ptr::null_mut(),
     }
 }
-/// `strptime(date, format, tm)`: whether `date` parsed.
+/// Whether `strptime` consumed the entire date.
 pub fn strptime(date: &CStr, format: &CStr, tm: &mut Tm) -> bool {
-    !libc_strptime(date.into(), format.into(), tm).is_null()
+    libc_strptime(date.into(), format.into(), tm).cast_const()
+        == date.as_ptr().wrapping_add(date.count_bytes())
 }
-/// `mktime(tm)`, normalizing `tm`.
-pub fn mktime(tm: &mut Tm) -> i64 {
-    libc_mktime(tm)
+/// Interpret the calendar fields in UTC, preserving the original fields.
+#[must_use]
+pub fn timegm(mut tm: Tm) -> i64 {
+    libc_timegm(&mut tm)
 }
 /// `gmtime(&time)`'s calendar, through `gmtime_r` so no other call shares it; None
 /// when `time` has no calendar date.

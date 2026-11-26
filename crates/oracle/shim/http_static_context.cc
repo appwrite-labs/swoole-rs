@@ -2,7 +2,7 @@
 // pinned swoole_static_handler.h, its method bodies and Server::apply_rewrite_rules
 // from the pinned static_handler.cc and url_decode from the pinned http.cc unchanged.
 // The filesystem, MIME table and random strings answer from the caller's script and
-// trace each call, and strptime, mktime and gmtime are libc's, recorded as calendar
+// trace each call, and strptime, timegm and gmtime are libc's, recorded as calendar
 // events, as the retired tests/modules/http/context_gate.py and conditional_gate.py
 // oracles did.
 #include <algorithm>
@@ -62,16 +62,16 @@ std::string fields(const tm *value) {
 }  // namespace
 
 extern "C" {
-bool swr_oracle_calendar_parse(const char *text, const char *format, void *value) {
+char *swr_oracle_calendar_parse(const char *text, const char *format, void *value) {
     char *end = ::strptime(text, format, static_cast<tm *>(value));
     int saved = errno;
     calendar_events.push_back(std::string("parse:") + format + ":" + (end ? std::to_string(end - text) : "null") + ":" +
                               fields(static_cast<tm *>(value)) + ":" + std::to_string(saved));
     errno = saved;
-    return end != nullptr;
+    return end;
 }
 int64_t swr_oracle_calendar_time(void *value) {
-    time_t result = ::mktime(static_cast<tm *>(value));
+    time_t result = ::timegm(static_cast<tm *>(value));
     int saved = errno;
     calendar_events.push_back("make:" + std::to_string(result) + ":" + fields(static_cast<tm *>(value)) + ":" +
                               std::to_string(saved));
@@ -272,8 +272,12 @@ static const std::string &get(const std::string &path) {
 #define opendir scripted_opendir
 #define readdir scripted_readdir
 #define closedir scripted_closedir
-#define strptime(text, format, value) (char *) (swr_oracle_calendar_parse(text, format, value) ? text : nullptr)
-#define mktime(value) ((time_t) swr_oracle_calendar_time(value))
+#define strptime(text, format, value) swr_oracle_calendar_parse(text, format, value)
+static time_t make_utc_time(tm value) { return swr_oracle_calendar_time(&value); }
+static tm get_utc_tm(time_t value) {
+    tm *result = static_cast<tm *>(swr_oracle_calendar_gmt(value));
+    return result ? *result : tm{};
+}
 #define gmtime(value) ((tm *) swr_oracle_calendar_gmt(*(value)))
 
 class StaticHandler;

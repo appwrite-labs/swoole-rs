@@ -70,6 +70,7 @@ class StaticHandler {
     bool try_serve();
     bool try_serve_index_file();
 
+    std::string get_etag() const;
     bool is_modified(const std::string &date_if_modified_since) const;
     bool is_modified_range(const std::string &date_range) const;
     size_t make_index_page(String *buffer);

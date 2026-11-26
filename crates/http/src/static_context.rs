@@ -48,6 +48,7 @@ pub enum StaticFileKind {
 pub struct HttpStaticObservation {
     pub filesize: usize,
     pub mtime: i64,
+    pub mtime_nsec: i64,
     pub content_length: usize,
     pub directory_count: usize,
     pub task_count: usize,
@@ -232,6 +233,7 @@ impl HttpStaticContext {
     fn observed(&mut self, input: &HttpStaticObservation) {
         self.facts.filesize = input.filesize;
         self.facts.mtime = input.mtime;
+        self.facts.mtime_nsec = input.mtime_nsec;
         self.facts.kind = input.kind;
         self.facts.file_ready = true;
     }

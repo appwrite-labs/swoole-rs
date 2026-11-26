@@ -174,7 +174,7 @@ impl StaticEffects for Scripted {
         out[count] = 0;
     }
     fn modified_range(&self, if_range: &[u8], mtime: i64) -> bool {
-        swoole_rs_http::conditional(if_range, swoole_rs_http::Conditional::Range, mtime, 0, self)
+        swoole_rs_http::conditional(if_range, swoole_rs_http::Conditional::Range, mtime, self)
     }
     fn overflow(&self) {
         set_errno(libc::EOVERFLOW);
@@ -191,11 +191,13 @@ impl Calendar for Scripted {
                 format.as_ptr(),
                 ptr::from_mut(tm).cast(),
             )
+            .cast_const()
+                == date.as_ptr().wrapping_add(date.count_bytes())
         }
     }
-    fn to_time(&self, tm: &mut Tm) -> i64 {
+    fn to_time(&self, mut tm: Tm) -> i64 {
         // SAFETY: an exclusive, initialized tm.
-        unsafe { oracle::swr_oracle_calendar_time(ptr::from_mut(tm).cast()) }
+        unsafe { oracle::swr_oracle_calendar_time(ptr::from_mut(&mut tm).cast()) }
     }
     fn to_gmt(&self, time: i64) -> Option<Tm> {
         // SAFETY: null or libc's static tm, copied before another calendar call.
@@ -746,6 +748,9 @@ fn conditional_dates() -> Vec<Vec<u8>> {
     let mut dates: Vec<Vec<u8>> = [
         "",
         "invalid",
+        "\"0-11-0\"",
+        "\"0-11-1\"",
+        "W/\"0-11-0\"",
         "Sun, 06 Nov 1994 08:49:37 GMT",
         "Sun, 06 Nov 1994 08:49:37 UTC",
         "Sunday, 06-Nov-94 08:49:37 GMT",
@@ -795,7 +800,14 @@ fn compare_conditional(old: &Upstream, server: &Server, file: i64, date: &[u8], 
         assert!(handler.try_serve(), "file selection");
         observed(|| handler.is_modified(date))
     } else {
-        observed(|| Scripted.modified_range(date, file))
+        observed(|| {
+            HttpStaticObservation {
+                mtime: file,
+                filesize: 17,
+                ..Default::default()
+            }
+            .modified_range(date, &Scripted)
+        })
     };
     assert_eq!(
         original, candidate,
@@ -873,7 +885,7 @@ fn random_dates() -> Vec<Vec<u8>> {
 
 /// The zone sweep runs in a child per `TZ`, since the environment is
 /// process-wide; this process then runs the random dates and the two cases
-/// where the original's arithmetic misbehaves and only the correction runs.
+/// at the limits of the modification time and timezone fields.
 #[test]
 #[cfg_attr(miri, ignore = "Miri has no posix_spawnattr_init")]
 fn former_conditional_gate() {
@@ -905,29 +917,24 @@ fn former_conditional_gate() {
             compare_conditional(&old, &server, 784_111_777, &date, kind);
         }
     }
-    // An mtime gmtime can't represent.
-    conditional_script(i64::MAX);
-    let mut handler = server.handler(b"/file.txt");
-    assert!(handler.try_serve(), "file selection");
-    let (modified, _, events) = observed(|| {
-        handler.parse_range(Some(b"bytes=0-0"), Some(b"Sun, 06 Nov 1994 08:49:37 GMT"));
-        handler.status() == 200
-    });
-    assert!(!modified, "an unrepresentable mtime is not modified");
-    assert!(
-        events.len() == 2 && events[1].windows(6).any(|w| w == b":null:"),
-        "one parse, then gmtime's null"
-    );
-    // A timezone whose subtraction overflows.
-    conditional_script(0);
-    let server = Server::new(&Config {
-        timezone: c_long::MIN,
-        ..Config::default()
-    });
-    let mut handler = server.handler(b"/file.txt");
-    assert!(handler.try_serve(), "file selection");
-    assert!(
-        !handler.is_modified(b"Sun, 06 Nov 1994 08:49:37 GMT"),
-        "an overflowing timezone is not modified"
-    );
+    // Compare the boundary values directly with v6.3 in UTC.
+    for mtime in [i64::MAX, i64::MIN] {
+        conditional_script(mtime);
+        let config = Config {
+            timezone: c_long::MIN,
+            ..Config::default()
+        };
+        let upstream = Upstream::new(&config, b"/file.txt");
+        assert!(upstream.try_serve());
+        let server = Server::new(&config);
+        for kind in [0, 1] {
+            compare_conditional(
+                &upstream,
+                &server,
+                mtime,
+                b"Sun, 06 Nov 1994 08:49:37 GMT",
+                kind,
+            );
+        }
+    }
 }
