@@ -82,7 +82,6 @@ PENDING_PORTS = {
     5655: [
         'swoole_table/conditional_stats.phpt',
         'swoole_table/conditional_types.phpt',
-        'swoole_table/getdel.phpt',
     ],
     5656: ['swoole_function/name_resolver_contract.phpt'],
 }

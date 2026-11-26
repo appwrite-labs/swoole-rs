@@ -12,7 +12,10 @@ use std::{
 };
 use swoole_rs_corebase::memory::{
     members::SharedTable,
-    table::{Column, ColumnType, Current, KEY_SIZE, Locked, TYPE_FLOAT, TYPE_INT, TYPE_STRING},
+    table::{
+        Column, ColumnType, Current, KEY_SIZE, Locked, TYPE_FLOAT, TYPE_INT, TYPE_STRING,
+        field_bytes, field_number,
+    },
 };
 use swoole_rs_corebase::{CCast, CellExt};
 use swoole_rs_phpstubs::table;
@@ -78,6 +81,7 @@ method_table! {
         c"destroy" => zim_swoole_table_destroy, &table::arginfo_class_Swoole_Table_destroy, ZEND_ACC_PUBLIC;
         c"set" => zim_swoole_table_set, &table::arginfo_class_Swoole_Table_set, ZEND_ACC_PUBLIC;
         c"get" => zim_swoole_table_get, &table::arginfo_class_Swoole_Table_get, ZEND_ACC_PUBLIC;
+        c"getdel" => zim_swoole_table_getdel, &table::arginfo_class_Swoole_Table_getdel, ZEND_ACC_PUBLIC;
         c"count" => zim_swoole_table_count, &table::arginfo_class_Swoole_Table_count, ZEND_ACC_PUBLIC;
         c"del" => zim_swoole_table_del, &table::arginfo_class_Swoole_Table_del, ZEND_ACC_PUBLIC;
         c"delete" => zim_swoole_table_del, &table::arginfo_class_Swoole_Table_del, ZEND_ACC_PUBLIC;
@@ -459,30 +463,6 @@ fn decr(call: &Call) {
     update(call, true);
 }
 
-/// A locked row, or the iterator's copy of one.
-trait Row {
-    fn number(&self, column: &Column) -> u64;
-    fn bytes(&self, column: &Column) -> &[u8];
-}
-
-impl Row for Locked<'_> {
-    fn number(&self, column: &Column) -> u64 {
-        Locked::number(self, column)
-    }
-    fn bytes(&self, column: &Column) -> &[u8] {
-        Locked::bytes(self, column)
-    }
-}
-
-impl Row for Current {
-    fn number(&self, column: &Column) -> u64 {
-        Current::number(self, column)
-    }
-    fn bytes(&self, column: &Column) -> &[u8] {
-        Current::bytes(self, column)
-    }
-}
-
 /// A column's value in a row.
 enum Field<'a> {
     Long(i64),
@@ -490,20 +470,20 @@ enum Field<'a> {
     Bytes(&'a [u8]),
 }
 
-fn read<'a>(row: &'a impl Row, column: &Column) -> Field<'a> {
+fn read<'a>(data: &'a [u8], column: &Column) -> Field<'a> {
     match column.kind {
-        ColumnType::String => Field::Bytes(row.bytes(column)),
-        ColumnType::Float => Field::Double(f64::from_bits(row.number(column))),
-        ColumnType::Int => Field::Long(row.number(column).c_cast::<i64>()),
+        ColumnType::String => Field::Bytes(field_bytes(data)),
+        ColumnType::Float => Field::Double(f64::from_bits(field_number(data))),
+        ColumnType::Int => Field::Long(field_number(data).c_cast::<i64>()),
     }
 }
 
 /// `table_row2array`: every column of a row, as the result.
-fn row_array(call: &Call, table: &SharedTable, row: &impl Row) {
+fn row_array(call: &Call, table: &SharedTable, row: &[u8]) {
     let mut array = OwnedArray::default();
     for column in table.columns() {
         let name = column.name();
-        match read(row, column) {
+        match read(column.field(row), column) {
             Field::Long(value) => array.insert_long(name, value),
             Field::Double(value) => array.insert_double(name, value),
             Field::Bytes(bytes) => array.insert_bytes(name, Some(bytes)),
@@ -518,6 +498,14 @@ fn set_bytes(call: &Call, bytes: &[u8]) {
 
 /// `get(string $key, ?string $field = null): mixed`.
 fn get(call: &Call) {
+    fetch(call, false);
+}
+
+fn getdel(call: &Call) {
+    fetch(call, true);
+}
+
+fn fetch(call: &Call, delete: bool) {
     let Some(table) = created(call) else { return };
     let Ok((key, field)) = table::parse_class_swoole_table_get(call) else {
         call.set_bool(false);
@@ -526,21 +514,38 @@ fn get(call: &Call) {
     if !valid_key(call, key) {
         return;
     }
-    let Some(row) = table.lock_get(key).filter(Locked::found) else {
-        call.set_bool(false);
-        return;
+    let column = match field {
+        Some(name) => {
+            let Some(column) = table.column(name) else {
+                return call.set_bool(false);
+            };
+            Some(column)
+        }
+        None => None,
     };
-    if let Some(field) = field {
-        match table.column(field) {
-            None => call.set_bool(false),
-            Some(column) => match read(&row, column) {
-                Field::Long(value) => call.set_long(value),
-                Field::Double(value) => set_double(call, value),
-                Field::Bytes(bytes) => set_bytes(call, bytes),
-            },
+    let snapshot;
+    let locked;
+    let data = if delete {
+        let Some(row) = table.getdel(key, column) else {
+            return call.set_bool(false);
+        };
+        snapshot = row;
+        &snapshot[..]
+    } else {
+        let Some(row) = table.lock_get(key).filter(Locked::found) else {
+            return call.set_bool(false);
+        };
+        locked = row;
+        column.map_or(locked.data(), |c| c.field(locked.data()))
+    };
+    if let Some(column) = column {
+        match read(data, column) {
+            Field::Long(value) => call.set_long(value),
+            Field::Double(value) => set_double(call, value),
+            Field::Bytes(bytes) => set_bytes(call, bytes),
         }
     } else {
-        row_array(call, &table, &row);
+        row_array(call, &table, data);
     }
 }
 
@@ -656,7 +661,7 @@ fn valid(call: &Call) {
 
 fn current(call: &Call) {
     match current_row(call) {
-        Some((table, row)) if !row.key().is_empty() => row_array(call, &table, &row),
+        Some((table, row)) if !row.key().is_empty() => row_array(call, &table, row.data()),
         Some(_) => call.set_null(),
         None => {}
     }
@@ -677,6 +682,7 @@ swoole_rs_zend::handlers! {
     zim_swoole_table_destroy => destroy;
     zim_swoole_table_set => set;
     zim_swoole_table_get => get;
+    zim_swoole_table_getdel => getdel;
     zim_swoole_table_count => count;
     zim_swoole_table_del => del;
     zim_swoole_table_exists => exists;

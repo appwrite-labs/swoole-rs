@@ -250,6 +250,12 @@ pub struct Column {
 }
 
 impl Column {
+    /// The column's packed field in a row snapshot.
+    #[must_use]
+    pub fn field<'a>(&self, row: &'a [u8]) -> &'a [u8] {
+        field(row, self).unwrap_or_default()
+    }
+
     #[must_use]
     pub fn name(&self) -> &[u8] {
         &self.name
@@ -636,19 +642,27 @@ impl Table {
     /// `Table::get`: the active row for `key` or null, with `lock` set to the
     /// bucket's row, which is locked either way.
     pub fn get(&self, key: &[u8], lock: &mut *mut Row) -> *mut Row {
-        let Some(mut row) = self.bucket(key) else {
+        let Some(root) = self.bucket(key) else {
             *lock = ptr::null_mut();
             return ptr::null_mut();
         };
-        *lock = row.0;
-        row.lock(self.warning);
-        while !row.key_is(key) {
-            match row.next() {
-                Some(next) => row = next,
-                None => return ptr::null_mut(),
-            }
+        *lock = root.0;
+        root.lock(self.warning);
+        Self::find(root, key).map_or(ptr::null_mut(), |(row, _)| row.0)
+    }
+
+    /// Find a row and its predecessor under the bucket lock.
+    fn find(root: Live, key: &[u8]) -> Option<(Live, Option<Live>)> {
+        if !root.active() {
+            return None;
         }
-        if row.active() { row.0 } else { ptr::null_mut() }
+        let mut row = root;
+        let mut previous = None;
+        while !row.key_is(key) {
+            previous = Some(row);
+            row = row.next()?;
+        }
+        Some((row, previous))
     }
 
     /// `Table::exists`.
@@ -664,47 +678,38 @@ impl Table {
 
     /// `Table::del`. Deleting a bucket's own row moves its first collision row in.
     pub fn del(&self, key: &[u8]) -> bool {
-        let Some(root) = self.bucket(key) else {
-            return false;
-        };
-        if !root.active() {
-            return false;
-        }
-        root.lock(self.warning);
-        let deleted = self.unlink(root, key);
-        if deleted {
-            self.delete_count.fetch_add(1, Ordering::Relaxed);
-            self.row_num.fetch_sub(1, Ordering::Relaxed);
-        }
-        root.unlock();
-        deleted
+        self.remove(key, |_| ()).is_some()
     }
 
-    /// Delete `key` from a locked bucket.
-    fn unlink(&self, root: Live, key: &[u8]) -> bool {
-        let Some(mut next) = root.next() else {
-            if !root.key_is(key) {
-                return false;
-            }
-            root.clear();
-            return true;
+    /// Copy the requested column or whole row and delete it under the same bucket lock.
+    #[must_use]
+    pub fn getdel(&self, key: &[u8], column: Option<&Column>) -> Option<Vec<u8>> {
+        self.remove(key, |data| column.map_or(data, |c| c.field(data)).to_vec())
+    }
+
+    fn remove<T>(&self, key: &[u8], snapshot: impl FnOnce(&[u8]) -> T) -> Option<T> {
+        let root = self.bucket(key)?;
+        root.lock(self.warning);
+        let Some((row, previous)) = Self::find(root, key) else {
+            root.unlock();
+            return None;
         };
-        if root.key_is(key) {
+        let mut locked = self.locked(Some(root), Some(row), 0)?;
+        let (_, data) = locked.row.take()?;
+        let value = snapshot(data);
+        if let Some(previous) = previous {
+            previous.set_next(row.next());
+            self.free_row(row);
+        } else if let Some(next) = row.next() {
             root.set_next(next.next());
             root.take(next, self.item_size);
+            self.free_row(next);
         } else {
-            let mut previous = root;
-            while !next.key_is(key) {
-                previous = next;
-                let Some(after) = next.next() else {
-                    return false;
-                };
-                next = after;
-            }
-            previous.set_next(next.next());
+            root.clear();
         }
-        self.free_row(next);
-        true
+        self.delete_count.fetch_add(1, Ordering::Relaxed);
+        self.row_num.fetch_sub(1, Ordering::Relaxed);
+        Some(value)
     }
 
     fn alloc_row(&self) -> Option<Live> {
@@ -1013,15 +1018,16 @@ fn field_mut<'d>(data: &'d mut [u8], column: &Column) -> Option<&'d mut [u8]> {
 }
 
 /// A number column's 8 bytes.
-fn number(data: &[u8], column: &Column) -> u64 {
-    field(data, column)
-        .and_then(<[u8]>::first_chunk)
+#[must_use]
+pub fn field_number(data: &[u8]) -> u64 {
+    data.first_chunk()
         .map_or(0, |bytes| u64::from_ne_bytes(*bytes))
 }
 
 /// A string column's bytes: as many as its length word counts, at most its capacity.
-fn bytes<'d>(data: &'d [u8], column: &Column) -> &'d [u8] {
-    let Some((length, text)) = field(data, column).and_then(<[u8]>::split_first_chunk) else {
+#[must_use]
+pub fn field_bytes(data: &[u8]) -> &[u8] {
+    let Some((length, text)) = data.split_first_chunk() else {
         return &[];
     };
     let length = u32::from_ne_bytes(*length) as usize;
@@ -1093,20 +1099,22 @@ impl Locked<'_> {
         self.flags & NEW_ROW != 0
     }
 
-    fn data(&self) -> &[u8] {
+    /// The row's packed column data.
+    #[must_use]
+    pub fn data(&self) -> &[u8] {
         self.row.as_ref().map_or(&[], |(_, data)| &**data)
     }
 
     /// A number column's 8 bytes (0 without a row).
     #[must_use]
     pub fn number(&self, column: &Column) -> u64 {
-        number(self.data(), column)
+        field_number(column.field(self.data()))
     }
 
     /// A string column's bytes (empty without a row).
     #[must_use]
     pub fn bytes(&self, column: &Column) -> &[u8] {
-        bytes(self.data(), column)
+        field_bytes(column.field(self.data()))
     }
 
     /// `TableRow::set_value` of a number column's 8 bytes.
@@ -1157,7 +1165,9 @@ pub struct Current {
 }
 
 impl Current {
-    fn data(&self) -> &[u8] {
+    /// The row's packed column data.
+    #[must_use]
+    pub fn data(&self) -> &[u8] {
         self.row.get(ROW..ROW + self.size).unwrap_or_default()
     }
 
@@ -1173,13 +1183,13 @@ impl Current {
     /// A number column's 8 bytes.
     #[must_use]
     pub fn number(&self, column: &Column) -> u64 {
-        number(self.data(), column)
+        field_number(column.field(self.data()))
     }
 
     /// A string column's bytes.
     #[must_use]
     pub fn bytes(&self, column: &Column) -> &[u8] {
-        bytes(self.data(), column)
+        field_bytes(column.field(self.data()))
     }
 }
 

@@ -49,14 +49,14 @@ unsafe fn data<'a>(row: *const Row, column: &Column) -> &'a mut [u8] {
 /// # Safety
 /// As `data`.
 unsafe fn get_number(row: *const Row, column: &Column) -> u64 {
-    number(unsafe { data(row, column) }, column)
+    field_number(column.field(unsafe { data(row, column) }))
 }
 
 /// A string column's bytes, valid while the row is locked.
 /// # Safety
 /// As `data`.
 unsafe fn get_string<'a>(row: *const Row, column: &Column) -> &'a [u8] {
-    bytes(unsafe { data(row, column) }, column)
+    field_bytes(column.field(unsafe { data(row, column) }))
 }
 
 /// A string column's text up to its NUL, as `ASSERT_STREQ` reads it: within the
@@ -65,7 +65,7 @@ unsafe fn get_string<'a>(row: *const Row, column: &Column) -> &'a [u8] {
 /// As `data`.
 unsafe fn get_c_string<'a>(row: *const Row, column: &Column) -> &'a std::ffi::CStr {
     let field: &'a [u8] = unsafe { data(row, column) };
-    let start = bytes(field, column).as_ptr().addr() - field.as_ptr().addr();
+    let start = field_bytes(column.field(field)).as_ptr().addr() - field.as_ptr().addr();
     std::ffi::CStr::from_bytes_until_nul(&field[start..]).unwrap()
 }
 
@@ -339,10 +339,13 @@ fn collisions_chain_and_deleting_the_root_promotes_the_next() {
     let stats = t.stats();
     assert_eq!((stats.conflict_count, stats.conflict_max_level), (2, 2));
     assert_eq!(t.available_slices() + 2, t.total_slices());
-    assert!(t.del(b"k0"));
+    let id = t.column(b"id").unwrap();
+    let root = t.getdel(b"k0", None).unwrap();
+    assert_eq!(field_number(id.field(&root)), 0);
     assert_eq!(unsafe { row_key(t.by_index(0)) }, b"k1");
     assert_eq!((read(t, b"k1"), read(t, b"k2")), (Some(1), Some(5)));
-    assert!(t.del(b"k2") && t.del(b"k1"));
+    assert_eq!(t.getdel(b"k2", Some(id)).unwrap(), 5_i64.to_ne_bytes());
+    assert!(t.del(b"k1"));
     assert_eq!((t.count(), t.available_slices()), (0, t.total_slices()));
     assert!(t.by_index(0).is_null());
 }
