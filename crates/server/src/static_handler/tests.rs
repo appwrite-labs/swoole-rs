@@ -783,8 +783,7 @@ fn observed(verdict: impl FnOnce() -> bool) -> (bool, i32, Vec<Vec<u8>>) {
 }
 
 /// `is_modified` (kind 0) or `is_modified_range` (kind 1) of `date` on a file of
-/// `file` mtime, with timezone `offset`, on both sides. The candidate's If-Range
-/// verdict is `parse_range`'s: a 206 for `bytes=0-0` keeps the range.
+/// `file` mtime, with timezone `offset`, on both sides. Compare the conditional itself, including when the header is empty.
 fn compare_conditional(old: &Upstream, server: &Server, file: i64, date: &[u8], kind: u32) {
     let original = if kind == 0 {
         observed(|| old.is_modified(date))
@@ -796,13 +795,7 @@ fn compare_conditional(old: &Upstream, server: &Server, file: i64, date: &[u8], 
         assert!(handler.try_serve(), "file selection");
         observed(|| handler.is_modified(date))
     } else {
-        conditional_script(file);
-        let mut handler = server.handler(b"/file.txt");
-        assert!(handler.try_serve(), "file selection");
-        observed(|| {
-            handler.parse_range(Some(b"bytes=0-0"), Some(date));
-            handler.status() == 200
-        })
+        observed(|| Scripted.modified_range(date, file))
     };
     assert_eq!(
         original, candidate,
