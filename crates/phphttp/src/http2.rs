@@ -356,7 +356,13 @@ impl Ctx<'_> {
         }
     }
 
-    /// `ctx->request.path`: the `:path` up to its query.
+    /// Original HTTP/2 request target, including its query.
+    #[must_use]
+    pub fn request_target(mut self) -> Option<Box<[u8]>> {
+        self.state().request.path.clone()
+    }
+
+    /// Store the complete `:path` header.
     pub fn set_path(mut self, path: &[u8]) {
         let state = self.state();
         state.request.path = Some(path.into());
