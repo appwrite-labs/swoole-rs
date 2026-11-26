@@ -731,6 +731,12 @@ impl Client {
                     has_length = true;
                     continue;
                 }
+                if key.eq_ignore_ascii_case(b"Transfer-Encoding") {
+                    swoole_rs_zend::value_error(
+                        c"Transfer-Encoding is not supported for HTTP request bodies",
+                    );
+                    return false;
+                }
                 if key.eq_ignore_ascii_case(b"Accept-Encoding") {
                     if compression.is_none() {
                         warn(
