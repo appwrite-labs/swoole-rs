@@ -39,10 +39,7 @@ typedef struct swr_zend_coroutine_vm {
         struct php_unserialize_data *data;
         unsigned level;
     } unserialize;
-    /* error control `@` */
-    bool in_silence;
-    int ori_error_reporting;
-    int tmp_error_reporting;
+    int error_reporting;
 } swr_zend_coroutine_vm;
 
 /* save_context: the executor, output and serializer globals into `vm`. */
@@ -75,8 +72,8 @@ int swr_zend_coroutine_run(swr_zend_callable *(*enter)(void *context), void (*de
  * running one) (get_stack_usage). */
 size_t swr_zend_coroutine_stack_usage(const swr_zend_coroutine_vm *vm);
 
-/* EG(error_reporting). */
-int swr_zend_error_reporting(void);
+/* Snapshot the configured reporting level for a new coroutine environment. */
+void swr_zend_coroutine_snapshot_reporting(void);
 
 typedef void (*swr_zend_interrupt_handler)(zend_execute_data *execute_data);
 /* zend_interrupt_function = handler; returns the previous one. */
@@ -92,10 +89,8 @@ void swr_zend_autoload_forget(zend_string *lc_name);
 int swr_zend_autoload_try(swr_zend_autoload_handler handler, zend_string *name, zend_string *lc_name,
                           zend_class_entry **result);
 
-/* zend_set_user_opcode_handler for ZEND_EXIT (before PHP 8.4, else ignored),
- * ZEND_BEGIN_SILENCE and ZEND_END_SILENCE. */
-void swr_zend_coroutine_opcodes(user_opcode_handler_t exit_handler, user_opcode_handler_t begin_silence,
-                                user_opcode_handler_t end_silence);
+/* zend_set_user_opcode_handler for ZEND_EXIT (before PHP 8.4, else ignored). */
+void swr_zend_coroutine_opcodes(user_opcode_handler_t exit_handler);
 /* The exit opcode's operand, dereferenced and duplicated into `status`
  * (ZVAL_DUP), or null when it has none. */
 void swr_zend_exit_status(zend_execute_data *execute_data, zval *status);

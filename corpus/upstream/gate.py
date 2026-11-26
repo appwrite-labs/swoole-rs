@@ -82,7 +82,6 @@ PENDING_PORTS = {
     5654: ['swoole_timer/defer_next_round.phpt'],
     5655: [
         'swoole_coroutine/empty_settings.phpt',
-        'swoole_coroutine/error_reporting_configuration.phpt',
         'swoole_table/conditional_stats.phpt',
         'swoole_table/conditional_types.phpt',
         'swoole_table/getdel.phpt',

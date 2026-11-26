@@ -171,6 +171,7 @@ pub(crate) fn create(
 
 /// `PHPCoroutine::activate`.
 fn activate(php: Php<'_>) -> Result<(), Bailout> {
+    php.snapshot_coroutine_reporting();
     if !crate::leased::library_loaded(php) {
         swoole_rs_phpswoole::load_library()?;
     }

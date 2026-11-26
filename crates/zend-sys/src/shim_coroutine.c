@@ -12,6 +12,8 @@
 #include "SAPI.h"
 #include <stdio.h>
 
+ZEND_TLS int default_error_reporting = E_ALL;
+
 #define SWR_COROUTINE_PAGE_SIZE 8192
 #define SWR_INVALID_PTR ((void *) -1)
 
@@ -28,10 +30,7 @@ static void save_vm_stack(swr_zend_coroutine_vm *vm) {
     vm->exception_class = EG(exception_class);
     vm->exception = EG(exception);
     vm->opline_before_exception = EG(opline_before_exception);
-    if (UNEXPECTED(vm->in_silence)) {
-        vm->tmp_error_reporting = EG(error_reporting);
-        EG(error_reporting) = vm->ori_error_reporting;
-    }
+    vm->error_reporting = EG(error_reporting);
 #ifdef ZEND_CHECK_STACK_LIMIT
     vm->stack_base = EG(stack_base);
     vm->stack_limit = EG(stack_limit);
@@ -51,9 +50,7 @@ static void restore_vm_stack(swr_zend_coroutine_vm *vm) {
     EG(exception_class) = vm->exception_class;
     EG(exception) = vm->exception;
     EG(opline_before_exception) = vm->opline_before_exception;
-    if (UNEXPECTED(vm->in_silence)) {
-        EG(error_reporting) = vm->tmp_error_reporting;
-    }
+    EG(error_reporting) = vm->error_reporting;
 #ifdef ZEND_CHECK_STACK_LIMIT
     EG(stack_base) = vm->stack_base;
     EG(stack_limit) = vm->stack_limit;
@@ -112,6 +109,7 @@ static zend_function frame_function = {ZEND_INTERNAL_FUNCTION};
 void swr_zend_coroutine_start(swr_zend_coroutine_vm *from, swr_zend_coroutine_vm *vm, void *stack,
                               size_t stack_size) {
     swr_zend_coroutine_save(from);
+    EG(error_reporting) = default_error_reporting;
     EG(vm_stack) = zend_vm_stack_new_page(SWR_COROUTINE_PAGE_SIZE, NULL);
     EG(vm_stack_top) = EG(vm_stack)->top + ZEND_CALL_FRAME_SLOT;
     EG(vm_stack_end) = EG(vm_stack)->end;
@@ -230,9 +228,13 @@ size_t swr_zend_coroutine_stack_usage(const swr_zend_coroutine_vm *vm) {
     return usage;
 }
 
-/* globals: read EG(error_reporting) for this PHP thread. */
-int swr_zend_error_reporting(void) {
-    return EG(error_reporting);
+/* globals: a new environment uses the configured level even when activated under @. */
+void swr_zend_coroutine_snapshot_reporting(void) {
+    if (!EG(error_reporting_ini_entry)) {
+        EG(error_reporting_ini_entry) = zend_hash_find_ptr(EG(ini_directives), ZSTR_KNOWN(ZEND_STR_ERROR_REPORTING));
+    }
+    const zend_ini_entry *entry = EG(error_reporting_ini_entry);
+    default_error_reporting = entry && entry->value ? atoi(ZSTR_VAL(entry->value)) : E_ALL;
 }
 
 /* budget: replacing Zend's writable function pointer in Rust requires unsafe. */
@@ -276,16 +278,13 @@ int swr_zend_autoload_try(swr_zend_autoload_handler handler, zend_string *name, 
 }
 
 /* version: ZEND_EXIT has an opcode handler only before PHP 8.4. */
-void swr_zend_coroutine_opcodes(user_opcode_handler_t exit_handler, user_opcode_handler_t begin_silence,
-                                user_opcode_handler_t end_silence) {
+void swr_zend_coroutine_opcodes(user_opcode_handler_t exit_handler) {
 #if PHP_VERSION_ID < 80400
     _Static_assert(ZEND_EXIT == 79, "crates/phpcoroutines' Exit::OPCODE");
     zend_set_user_opcode_handler(ZEND_EXIT, exit_handler);
 #else
     (void) exit_handler;
 #endif
-    zend_set_user_opcode_handler(ZEND_BEGIN_SILENCE, begin_silence);
-    zend_set_user_opcode_handler(ZEND_END_SILENCE, end_silence);
 }
 
 /* budget: the opcode selects a raw literal or frame slot before ZVAL_DUP. */

@@ -61,8 +61,7 @@ unsafe extern "C" {
     safe fn swr_zend_coroutine_restore(to: Suspended);
     /// `save_context(from)`, then a fresh VM stack for the new coroutine,
     /// bounded by its C stack (`stack`, `size`, only compared with the stack
-    /// pointer; null: none), saved into `vm` too, which it writes without
-    /// reading but for `in_silence`.
+    /// pointer; null: none), saved into `vm` too, which it initializes.
     safe fn swr_zend_coroutine_start(
         from: Running,
         vm: &mut swr_zend_coroutine_vm,
@@ -437,16 +436,6 @@ impl Ctx {
         if redirect {
             swr_zend_coroutine_redirect(suspended);
         }
-    }
-
-    /// `@`'s state: on with the reporting level a switch restores, or off.
-    pub(crate) fn set_silence(self, reporting: Option<c_int>) {
-        self.with_vm(|vm| {
-            vm.in_silence = reporting.is_some();
-            if let Some(reporting) = reporting {
-                vm.ori_error_reporting = reporting;
-            }
-        });
     }
 
     /// Whether a `Co::join()` waits for this context to close.
@@ -896,6 +885,6 @@ mod tests {
         assert_eq!(context.context.kind(), IS_UNDEF);
         assert_eq!(context.callable.kind(), IS_UNDEF);
         assert_eq!(context.return_value.kind(), IS_UNDEF);
-        assert!(!context.vm.in_silence && context.vm.output_ptr.is_null());
+        assert!(context.vm.output_ptr.is_null());
     }
 }
