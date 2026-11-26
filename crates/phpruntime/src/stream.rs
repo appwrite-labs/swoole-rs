@@ -674,10 +674,7 @@ fn xport_api(stream: Stream<'_>, socket: &Socket, xport: Xport<'_>) -> Result<()
             p.outputs.returncode = code;
         }
         xport::GET_PEER_NAME => {
-            let mut unwanted = 0;
-            let (textaddr, addr, addrlen) = name_slots(p, &mut unwanted);
-            let code = php_network_get_peer_name(socket.fd(), textaddr, addr, addrlen);
-            p.outputs.returncode = code;
+            p.outputs.returncode = peer_name(socket.fd(), p);
         }
         xport::SEND => {
             if p.inputs.flags & STREAM_OOB == STREAM_OOB {
@@ -841,23 +838,26 @@ fn accept(
         }
         return Ok(false);
     };
-    // The peer's name, as upstream reports it: from an empty address.
-    let peer = SocketAddress::default();
-    populate_name(param, &peer.addr, SocketAddress::CAPACITY);
+    if param.want_textaddr() != 0 || param.want_addr() != 0 {
+        peer_name(client.fd(), param);
+    }
     if nodelay {
         client.set_nodelay(1);
     }
-    let connection = alloc(Rc::new(client), None, false)?;
-    if let Some(connection) = &connection {
-        // The new stream, which names no context yet, counts its reference.
-        connection.stream().fields(|client| {
-            stream.fields(|server| {
-                swr_zend_stream_share_context(client, server);
-            });
-        });
-    }
-    param.outputs.client = connection.map_or(ptr::null_mut(), Fresh::into_ptr);
+    let Some(connection) = alloc(Rc::new(client), None, false)? else {
+        return Ok(false);
+    };
+    connection.stream().fields(|client| {
+        stream.fields(|server| swr_zend_stream_share_context(client, server));
+    });
+    param.outputs.client = connection.into_ptr();
     Ok(true)
+}
+
+fn peer_name(fd: c_int, param: &mut php_stream_xport_param) -> c_int {
+    let mut unwanted = 0;
+    let (textaddr, addr, addrlen) = name_slots(param, &mut unwanted);
+    php_network_get_peer_name(fd, textaddr, addr, addrlen)
 }
 
 /// The output slots of the names the transport parameter wants: `textaddr` and
