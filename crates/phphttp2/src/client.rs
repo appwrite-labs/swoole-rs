@@ -198,6 +198,7 @@ enum Buffered {
     Nothing,
     /// The body did not decompress.
     Failed,
+    ExceededWindow,
     Limit(usize, Http2WindowPlan),
     /// Buffered: the stream's window plan.
     Window(Http2WindowPlan),
@@ -259,6 +260,17 @@ fn frame_header(kind: FrameType, length: usize, flags: u32, stream: u32) -> [u8;
 
 fn window(current: u32, amount: usize, initial: u32, credit: bool) -> Http2WindowPlan {
     sw_rs_http2_window_plan(current, amount, initial, credit)
+}
+
+fn receive_window(remaining: u32, target: u32) -> Http2WindowPlan {
+    Http2WindowPlan {
+        value: remaining,
+        increment: if remaining <= target / 2 {
+            target - remaining
+        } else {
+            0
+        },
+    }
 }
 
 /// The HPACK header list upstream's `HeaderSet` builds (names lowercased),
@@ -567,7 +579,17 @@ impl Client {
     fn send_setting(&self) -> bool {
         let mut frame = [0_u8; swoole_rs_http2::SETTINGS_FRAME_SIZE];
         let length = sw_rs_http2_pack_settings(&mut frame, &self.local, false);
-        self.send(frame.get(..length).unwrap_or(&frame))
+        if !self.send(frame.get(..length).unwrap_or(&frame)) {
+            return false;
+        }
+        let initial = self.local.init_window_size;
+        if initial > swoole_rs_http2::INITIAL_CONNECTION_WINDOW {
+            if !self.send_window_update(0, initial - swoole_rs_http2::INITIAL_CONNECTION_WINDOW) {
+                return false;
+            }
+            self.local_window.set(initial);
+        }
+        true
     }
 
     fn send_window_update(&self, stream: u32, size: u32) -> bool {
@@ -1096,8 +1118,14 @@ impl Client {
         if payload.is_empty() {
             return Buffered::Nothing;
         }
-        stream.local_window = window(stream.local_window, payload.len(), 0, false).value;
-        let credit = window(stream.local_window, 0, self.local.init_window_size, false);
+        let Ok(length) = u32::try_from(payload.len()) else {
+            return Buffered::ExceededWindow;
+        };
+        if length > stream.local_window.min(self.local_window.get()) {
+            return Buffered::ExceededWindow;
+        }
+        stream.local_window -= length;
+        let credit = receive_window(stream.local_window, self.local.init_window_size);
         if let Some(buffer) = &mut stream.buffer {
             let bytes = match &mut stream.gzip {
                 Some(gzip) => gzip.decode(payload),
@@ -1121,6 +1149,14 @@ impl Client {
         let initial = self.local.init_window_size;
         let stream_window = match buffered {
             Buffered::Nothing => return Ok(()),
+            Buffered::ExceededWindow => {
+                self.close();
+                self.update_error(
+                    error_code::FLOW_CONTROL_ERROR.cast_signed(),
+                    b"response DATA exceeded receive window",
+                );
+                return Err(Frame::Fail);
+            }
             Buffered::Failed => {
                 swoole_rs_corebase::log::warning(
                     c"Client::parse_frame",
@@ -1130,13 +1166,17 @@ impl Client {
             }
             Buffered::Window(window) | Buffered::Limit(_, window) => window,
         };
-        let connection = window(self.local_window.get(), length, initial, false);
+        let target = initial.max(swoole_rs_http2::INITIAL_CONNECTION_WINDOW);
+        let connection = receive_window(
+            self.local_window.get() - u32::try_from(length).map_err(|_| Frame::Fail)?,
+            target,
+        );
         self.local_window.set(connection.value);
         if connection.increment != 0 {
             if !self.send_window_update(0, connection.increment) {
                 return Err(Frame::Fail);
             }
-            self.local_window.set(initial);
+            self.local_window.set(target);
         }
         if stream_window.increment != 0 {
             if !self.send_window_update(id, stream_window.increment) {
@@ -1345,7 +1385,10 @@ const CONSTANTS: [(&CStr, i64); 24] = [
         c"SWOOLE_HTTP2_ERROR_INTERNAL_ERROR",
         error_code::INTERNAL_ERROR as i64,
     ),
-    (c"SWOOLE_HTTP2_ERROR_FLOW_CONTROL_ERROR", 3),
+    (
+        c"SWOOLE_HTTP2_ERROR_FLOW_CONTROL_ERROR",
+        error_code::FLOW_CONTROL_ERROR as i64,
+    ),
     (c"SWOOLE_HTTP2_ERROR_SETTINGS_TIMEOUT", 4),
     (c"SWOOLE_HTTP2_ERROR_STREAM_CLOSED", 5),
     (
