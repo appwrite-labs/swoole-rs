@@ -29,6 +29,8 @@ pub enum StaticText {
     End,
 }
 pub use crate::static_meta::BOUNDARY_SIZE;
+/// The pinned rewrite oracle includes an expansion above 8 MiB.
+const MAX_REWRITTEN_URL: usize = 16 * 1024 * 1024;
 use StaticText::{Boundary, Content, Directory, End, Filename, Index, Original, Url};
 
 /// The mutually exclusive file kinds returned by `lstat`, as path-policy bits.
@@ -105,12 +107,13 @@ impl HttpStaticContext {
     /// applies. True when one did.
     ///
     /// # Errors
-    /// An expanded URL beyond the HTTP header limit sets the static response to 404.
+    /// An expanded URL beyond 16 MiB sets the static response to 404.
     pub fn rewrite(&mut self, rules: &crate::RewriteRules) -> Result<bool, usize> {
-        let limit = swoole_rs_corebase::constants::SW_HTTP_HEADER_MAX_SIZE as usize;
-        let rewritten = rules.apply(self.url(), limit).inspect_err(|_| {
-            self.facts.status = crate::status::NOT_FOUND;
-        })?;
+        let rewritten = rules
+            .apply(self.url(), MAX_REWRITTEN_URL)
+            .inspect_err(|_| {
+                self.facts.status = crate::status::NOT_FOUND;
+            })?;
         if let Some(url) = rewritten {
             self.rewritten = Some(url);
             return Ok(true);
@@ -270,7 +273,7 @@ mod tests {
     #[test]
     fn oversized_rewrite_sets_not_found_and_keeps_original_url() {
         let mut owner = make();
-        let limit = swoole_rs_corebase::constants::SW_HTTP_HEADER_MAX_SIZE as usize;
+        let limit = MAX_REWRITTEN_URL;
         let mut rules = crate::RewriteRules::default();
         rules.add(b"/files", &vec![b'x'; limit]).unwrap();
         assert_eq!(owner.rewrite(&rules), Err(limit));
