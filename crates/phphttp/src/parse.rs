@@ -10,7 +10,7 @@ use std::fs::File;
 use std::io::{BufWriter, IoSlice, Write};
 use std::sync::atomic::{AtomicU32, Ordering::Relaxed};
 use swoole_rs_corebase::CCast;
-use swoole_rs_corebase::buffer::string::find_delimiter;
+use swoole_rs_corebase::buffer::{BoundedBytes, string::find_delimiter};
 use swoole_rs_corebase::lent::{Count, In, lend_in};
 use swoole_rs_corebase::sys::Text;
 use swoole_rs_corebase::{WebSocketStatus, log};
@@ -88,11 +88,11 @@ const UPLOAD_FILE_READY: i64 = 8;
 /// The server's llhttp callbacks, over a context's state, with the current
 /// header's name, a span of the call's input, and the input, which holds the
 /// whole body.
-struct Server<'a, 'i>(&'a mut State, &'i [u8], &'i [u8]);
+struct Server<'a, 'i>(&'a mut State, &'i [u8], &'i [u8], usize);
 
 /// `Request::parse()`'s: input arrives in pieces appended to `request.zdata`,
 /// whose bytes so far hold the whole body.
-struct Pieces<'a, 'b>(&'a mut State, &'b [u8]);
+struct Pieces<'a, 'b>(&'a mut State, &'b [u8], usize);
 
 impl<'i> Callbacks<'i> for Server<'_, 'i> {
     fn parser(&mut self) -> &mut Parser {
@@ -125,7 +125,7 @@ impl<'i> Callbacks<'i> for Server<'_, 'i> {
     }
 
     fn on_body(&mut self, data: &[u8]) -> Step {
-        on_body(self.0, data, self.2)
+        on_body(self.0, data, self.2, self.3)
     }
 
     fn on_message_complete(&mut self) -> Step {
@@ -155,7 +155,7 @@ impl Callbacks<'_> for Pieces<'_, '_> {
     }
 
     fn on_body(&mut self, data: &[u8]) -> Step {
-        on_body(self.0, data, self.1)
+        on_body(self.0, data, self.1, self.2)
     }
 
     fn on_message_complete(&mut self) -> Step {
@@ -513,10 +513,10 @@ pub(crate) fn parse_cookie(array: Option<Separated<'_>>, bytes: &[u8]) {
 
 /// `swoole_llhttp_parser_execute` of `input`, the end of `pieces` for
 /// `Request::parse()`.
-fn execute(state: &mut State, pieces: Option<&[u8]>, input: &[u8]) -> usize {
+fn execute(state: &mut State, pieces: Option<&[u8]>, input: &[u8], limit: usize) -> usize {
     let result = match pieces {
-        Some(bytes) => llhttp::execute(&mut Pieces(state, bytes), input),
-        None => llhttp::execute(&mut Server(state, &[], input), input),
+        Some(bytes) => llhttp::execute(&mut Pieces(state, bytes, limit), input),
+        None => llhttp::execute(&mut Server(state, &[], input, limit), input),
     };
     let Err(error) = result else {
         return input.len();
@@ -531,8 +531,8 @@ fn execute(state: &mut State, pieces: Option<&[u8]>, input: &[u8]) -> usize {
 }
 
 /// `Context::parse`: the bytes parsed, by the context's initialised parser.
-pub(crate) fn parse_request(state: &mut State, data: &[u8]) -> usize {
-    execute(state, None, data)
+pub(crate) fn parse_request(state: &mut State, data: &[u8], limit: usize) -> usize {
+    execute(state, None, data, limit)
 }
 
 /// `Request::parse()`: append to `request.zdata` and parse what was appended.
@@ -556,7 +556,7 @@ pub(crate) fn parse_piece(state: &mut State, data: &[u8]) -> Option<usize> {
     let held = zdata.copy();
     let bytes = held.bytes().unwrap_or_default();
     let appended = bytes.get(bytes.len() - data.len()..).unwrap_or_default();
-    Some(execute(state, Some(bytes), appended))
+    Some(execute(state, Some(bytes), appended, limit))
 }
 
 /// The `length` bytes of `zdata` that end where the piece at `at` does: a span's
@@ -790,32 +790,29 @@ pub(crate) fn add_protocol(state: &mut State, protocol: Key) {
 }
 
 /// A span of the body, which `input` holds.
-fn on_body(state: &mut State, span: &[u8], input: &[u8]) -> Step {
+fn on_body(state: &mut State, span: &[u8], input: &[u8], limit: usize) -> Step {
     let length = span.len();
     if length == 0 {
         return Step::Go;
     }
-    let received = state
-        .parse
-        .chunked_body
-        .as_ref()
-        .map_or(state.request.body_length, |body| body.len());
-    let beginning = received == 0;
     if state.recv_chunked {
-        state
+        let body = state
             .parse
             .chunked_body
-            .get_or_insert_with(|| Box::new(Vec::with_capacity(BUFFER_SIZE_STD)))
-            .extend_from_slice(span);
+            .get_or_insert_with(|| Box::new(BoundedBytes::new(limit, BUFFER_SIZE_STD)));
+        if body.append(span).is_err() {
+            return Step::Fail;
+        }
     } else {
+        let beginning = state.request.body_length == 0;
         let at = span.as_ptr().addr().wrapping_sub(input.as_ptr().addr());
         state.request.body_at = at.wrapping_sub(state.request.body_length);
         state.request.body_length += length;
-    }
-    if state.mt_parser.is_some() && !state.recv_chunked {
-        let prefix = body_prefix(span, beginning);
-        if !multipart_parse(state, span.get(prefix..).unwrap_or_default()) {
-            return Step::Fail;
+        if state.mt_parser.is_some() {
+            let prefix = body_prefix(span, beginning);
+            if !multipart_parse(state, span.get(prefix..).unwrap_or_default()) {
+                return Step::Fail;
+            }
         }
     }
     if state.completed {
@@ -828,14 +825,16 @@ fn on_body(state: &mut State, span: &[u8], input: &[u8]) -> Step {
 /// The message is complete: `input` holds its body, unless it was chunked.
 fn on_message_complete(state: &mut State, input: &[u8]) -> Step {
     let chunked = state.parse.chunked_body.is_some();
-    if chunked && state.mt_parser.is_some() {
+    if state.mt_parser.is_some()
+        && let Some(body) = state.parse.chunked_body.take()
+    {
         // The bundled multipart parser rejects calls that end inside a part header. llhttp body spans can end at
         // receive boundaries, so parse the dechunked body in one pass here instead of parsing each span. The body
         // is out of the state while the parser's callbacks take it, as `http2::Ctx::multipart`'s, then back for
         // `getContent()`.
-        let body = state.parse.chunked_body.take().unwrap_or_default();
-        let prefix = body_prefix(&body, true);
-        let parsed = multipart_parse(state, body.get(prefix..).unwrap_or_default());
+        let bytes: &[u8] = (*body).as_ref();
+        let prefix = body_prefix(bytes, true);
+        let parsed = multipart_parse(state, bytes.get(prefix..).unwrap_or_default());
         state.parse.chunked_body = Some(body);
         if !parsed {
             return Step::Fail;
@@ -851,7 +850,7 @@ fn on_message_complete(state: &mut State, input: &[u8]) -> Step {
     match source {
         Some(FormSource::Chunked) => {
             let body = state.parse.chunked_body.as_deref();
-            let text = Copied::of(body.map_or(&[], Vec::as_slice));
+            let text = Copied::of(body.map_or(&[], BoundedBytes::as_ref));
             edit(&mut state.request, Property::Post, |array| {
                 treat_data(PARSE_STRING, text, array.separate());
             });
@@ -1239,6 +1238,7 @@ pub(crate) fn body(state: &State) -> Option<&[u8]> {
         .parse
         .chunked_body
         .as_deref()
+        .map(BoundedBytes::as_ref)
         .filter(|body| !body.is_empty())
     {
         return Some(chunked);

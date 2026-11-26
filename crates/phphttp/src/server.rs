@@ -478,7 +478,7 @@ fn handle(
     let zdata = ctx.state().request.zdata.copy();
     let data = zdata.bytes().unwrap_or_default();
     // The parser `receive` initialised.
-    let parsed = parse_request(ctx.state(), data);
+    let parsed = parse_request(ctx.state(), data, data.len());
     if ctx.state().parser.error != HPE_OK || !ctx.state().completed {
         context::send(ctx, SW_HTTP_BAD_REQUEST_PACKET.as_bytes());
         context::close(ctx);
