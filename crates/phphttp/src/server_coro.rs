@@ -452,12 +452,13 @@ fn run_start(call: &Call) -> Result<Option<bool>, bailout::Bailout> {
     let Some(settings) = props.edit_array(c"settings", |settings| settings.copy()) else {
         return Ok(None);
     };
-    if !socket_settings(socket, &settings, SocketSettings::Protocol)? {
+    if !socket_settings(socket, &settings, SocketSettings::All)? {
         props.long(c"errCode", EINVAL);
         let message = swoole_rs_phpruntime::strerror(libc::EINVAL);
         props.bytes(c"errMsg", message.to_bytes());
         server.running.set(false);
-        return Ok(Some(false));
+        invalid_setting(c"failed to apply HTTP server socket settings");
+        return Ok(None);
     }
     let Some(table) = settings.array() else {
         return Ok(None);
