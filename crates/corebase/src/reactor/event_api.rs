@@ -10,14 +10,9 @@ use std::ffi::{c_int, c_void};
 use std::io::IoSlice;
 use std::rc::Rc;
 
-/// `SwooleTG.reactor`.
-fn current() -> *mut c_void {
-    crate::thread_reactor()
-}
-
 /// The thread's `Reactor` as a handle for the caller's call, or `None` without one.
 pub(crate) fn running<'a>() -> Option<crate::reactor::Running<'a>> {
-    let reactor = current();
+    let reactor = crate::reactor::thread_reactor();
     // SAFETY: the thread's reactor stays live until `swoole_event_free`, which no
     // caller's use of the handle spans.
     (!reactor.is_null()).then(|| unsafe { crate::reactor::Running::new(reactor) })
@@ -46,7 +41,7 @@ pub fn swr_v1_event_reactor() -> *mut c_void {
 /// The thread's `Reactor`, available or not (`sw_reactor()`).
 #[must_use]
 pub fn swr_v1_event_current() -> *mut c_void {
-    current()
+    crate::reactor::thread_reactor()
 }
 
 /// The thread's live reactor for the current operation.
@@ -178,7 +173,7 @@ fn with_registry<T>(f: impl FnOnce(Option<&crate::reactor::Registry>) -> T) -> O
 /// The thread's `Reactor`'s prepared views (`SwooleTG.reactor`), or `None` without one.
 #[must_use]
 pub fn current_prepared() -> Option<crate::reactor::ReactorPrepared> {
-    let reactor = current();
+    let reactor = crate::reactor::thread_reactor();
     (!reactor.is_null()).then(|| crate::reactor::ReactorPrepared::of(reactor))
 }
 
@@ -413,7 +408,7 @@ mod tests {
     impl CycleTask for Reentrant {
         fn run(self: Rc<Self>) {
             swoole_event_cycle(false, None);
-            let owner = crate::thread_reactor().cast::<crate::reactor::ReactorState>();
+            let owner = crate::reactor::thread_reactor().cast::<crate::reactor::ReactorState>();
             crate::reactor::deferred::run_defer(running(owner));
             push(&self.0);
         }
@@ -433,14 +428,14 @@ mod tests {
     #[test]
     fn a_task_cleared_in_its_run_outlives_a_nested_pass() {
         let state = crate::reactor::reactor_state::tests::state(3, 1);
-        crate::set_thread_reactor(state.owner.cast());
+        crate::reactor::set_thread_reactor(state.owner.cast());
         swoole_event_cycle(false, Some(Rc::new(Reentrant("ran".to_owned()))));
         run_idle(state.fields);
         assert_eq!(take(), ["ran"]);
         assert!(unsafe { (*state.fields).idle_task.is_none() });
         crate::reactor::deferred::run_defer(running(state.owner));
         assert_eq!(take(), ["retired"]);
-        crate::set_thread_reactor(std::ptr::null_mut());
+        crate::reactor::set_thread_reactor(std::ptr::null_mut());
         unsafe { crate::reactor::reactor_state::tests::free(state.owner) };
     }
 
@@ -456,12 +451,12 @@ mod tests {
     #[test]
     fn wait_keeps_a_bailed_reactor_for_request_teardown() {
         let state = crate::reactor::reactor_state::tests::state(3, 1);
-        crate::set_thread_reactor(state.owner.cast());
+        crate::reactor::set_thread_reactor(state.owner.cast());
         swoole_event_cycle(true, Some(Rc::new(Stops)));
         assert_eq!(swoole_event_wait(), Err(crate::reactor::LoopError::Bailout));
-        assert_eq!(crate::thread_reactor(), state.owner.cast());
+        assert_eq!(crate::reactor::thread_reactor(), state.owner.cast());
         assert!(unsafe { (*state.fields).bailout });
-        crate::set_thread_reactor(std::ptr::null_mut());
+        crate::reactor::set_thread_reactor(std::ptr::null_mut());
         unsafe { crate::reactor::reactor_state::tests::free(state.owner) };
     }
 
@@ -478,7 +473,7 @@ mod tests {
         fn drop(&mut self) {
             // Dropped as `swoole_event_free` deletes the reactor: the thread names
             // none, and none is made meanwhile.
-            let refused = crate::thread_reactor().is_null()
+            let refused = crate::reactor::thread_reactor().is_null()
                 && crate::reactor::swoole_event_deleting()
                 && crate::reactor::swoole_event_init(0) == Err(crate::reactor::InitError::Deleting);
             push(if refused { self.0 } else { "reached" });
@@ -538,12 +533,12 @@ mod tests {
     #[test]
     fn freeing_the_reactor_drops_a_cycle_task_whose_run_left_the_loop() {
         let state = crate::reactor::reactor_state::tests::state(3, 1);
-        crate::set_thread_reactor(state.owner.cast());
+        crate::reactor::set_thread_reactor(state.owner.cast());
         swoole_event_cycle(false, Some(Rc::new(Escapes)));
         let fields = std::panic::AssertUnwindSafe(state.fields);
         assert!(std::panic::catch_unwind(move || run_idle(*fields)).is_err());
         assert_eq!(take(), Vec::<String>::new());
-        crate::set_thread_reactor(std::ptr::null_mut());
+        crate::reactor::set_thread_reactor(std::ptr::null_mut());
         unsafe { crate::reactor::reactor_state::tests::free(state.owner) };
         assert_eq!(take(), ["idle"]);
     }
@@ -555,7 +550,7 @@ mod tests {
     #[test]
     fn field_mut_refuses_a_nested_borrow() {
         let state = crate::reactor::reactor_state::tests::state(3, 1);
-        crate::set_thread_reactor(state.owner.cast());
+        crate::reactor::set_thread_reactor(state.owner.cast());
         let nested = std::panic::catch_unwind(|| {
             field_mut(|fields| {
                 on_destroy(noop);
@@ -563,7 +558,7 @@ mod tests {
             })
         });
         assert!(nested.is_err());
-        crate::set_thread_reactor(std::ptr::null_mut());
+        crate::reactor::set_thread_reactor(std::ptr::null_mut());
         unsafe { crate::reactor::reactor_state::tests::free(state.owner) };
     }
 

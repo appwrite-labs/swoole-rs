@@ -123,17 +123,18 @@ impl Callbacks {
     }
 }
 
-/// Installs the built-ins upstream's constructor sets, after its create hook.
-pub(crate) fn install_builtins(callbacks: &mut Callbacks) {
+/// Installs the built-ins upstream's constructor sets, after its create hook: signal
+/// dispatch and malloc trimming only on the main thread.
+pub(crate) fn install_builtins(callbacks: &mut Callbacks, main_thread: bool) {
     callbacks.set_end(Priority::DeferTask, Some(End::Defer));
     callbacks.set_exit(ExitCondition::DeferTask, Some(Exit::Defer));
     callbacks.set_end(Priority::IdleTask, Some(End::Idle));
-    if crate::swoole_is_main_thread() {
+    if main_thread {
         callbacks.set_end(Priority::SignalCallback, Some(End::Signal));
     }
     callbacks.set_end(Priority::TryExit, Some(End::TryExit));
     #[cfg(all(target_os = "linux", target_env = "gnu"))]
-    if crate::swoole_is_main_thread() {
+    if main_thread {
         callbacks.set_end(Priority::MallocTrim, Some(End::MallocTrim));
     }
     callbacks.set_exit(ExitCondition::Default, Some(Exit::Default));
@@ -499,7 +500,7 @@ mod tests {
     #[test]
     fn builtins_defer_idle_and_exit() {
         with_state(|owner| unsafe {
-            install_builtins(callbacks());
+            install_builtins(callbacks(), false);
             let fields = &raw mut (*owner).fields;
             assert!(if_exit(running(owner)));
             crate::reactor::deferred::tests::defer(

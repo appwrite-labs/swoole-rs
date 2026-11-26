@@ -176,7 +176,7 @@ fn on_start(pool: PoolRef<'_>, worker: Worker<'_>) {
     }
     swoole_rs_corebase::swr_v1_core_set_enable_signalfd(coroutine);
     if !coroutine {
-        swoole_rs_corebase::set_thread_reactor(core::ptr::null_mut());
+        swoole_rs_corebase::reactor::set_thread_reactor(core::ptr::null_mut());
     }
     signal_init(serv);
     worker_start_callback(serv, worker);

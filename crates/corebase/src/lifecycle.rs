@@ -27,13 +27,13 @@ const FORK_PRECHECK: c_int = crate::constants::ForkType::SW_FORK_PRECHECK as c_i
 const OPERATION_NOT_SUPPORT: c_int =
     swoole_rs_error::ErrorCode::SW_ERROR_OPERATION_NOT_SUPPORT as c_int;
 
-/// `swoole::ThreadGlobal`, `SwooleTG`: each thread's, which only Rust reads.
+/// `swoole::ThreadGlobal`, `SwooleTG`: each thread's, which only Rust reads. Its
+/// `reactor` is the reactor's own ([`crate::reactor::thread_reactor`]).
 struct ThreadGlobal {
     id: Cell<u16>,
     kind: Cell<u8>,
     main_thread: Cell<bool>,
     buffer_stack: Cell<*mut c_void>,
-    reactor: Cell<*mut c_void>,
     timer: Cell<*mut c_void>,
     async_threads: Cell<*mut c_void>,
 }
@@ -45,7 +45,6 @@ thread_local! {
             kind: Cell::new(0),
             main_thread: Cell::new(false),
             buffer_stack: Cell::new(ptr::null_mut()),
-            reactor: Cell::new(ptr::null_mut()),
             timer: Cell::new(ptr::null_mut()),
             async_threads: Cell::new(ptr::null_mut()),
         }
@@ -68,12 +67,6 @@ fn with<T>(field: impl FnOnce(&ThreadGlobal) -> T) -> T {
     THREAD.with(field)
 }
 
-/// `SwooleTG.reactor`.
-#[must_use]
-pub fn thread_reactor() -> *mut c_void {
-    with(|thread| thread.reactor.get())
-}
-
 /// `swoole_get_thread_type()`: `SwooleTG.type`.
 #[must_use]
 pub fn thread_kind() -> u8 {
@@ -92,11 +85,6 @@ pub fn set_thread(kind: u8, id: u16) {
 #[must_use]
 pub fn thread_id() -> u16 {
     with(|thread| thread.id.get())
-}
-
-/// Sets `SwooleTG.reactor`.
-pub fn set_thread_reactor(reactor: *mut c_void) {
-    with(|thread| thread.reactor.set(reactor));
 }
 
 /// `SwooleTG.async_threads`.
@@ -153,7 +141,8 @@ pub fn swr_v1_core_swoole_init(fatal_error: Option<crate::FatalError>) {
 }
 
 /// Registers the reactor's upper-layer entries ([`crate::reactor::UpperLayer`]) once:
-/// the write path over TLS and the reactor create and destroy hooks. `swoole_init`
+/// the write path over TLS, the reactor create and destroy hooks and whether this is
+/// the main thread. `swoole_init`
 /// calls it before any reactor exists; a test making a reactor without it calls it.
 pub fn register_upper_layer() {
     use crate::tls::reactor_write as write;
@@ -164,6 +153,7 @@ pub fn register_upper_layer() {
         writable: write::reactor_writable_callback,
         created: |reactor| crate::hook::call(crate::hook::Hook::ReactorCreate(reactor)),
         destroyed: |reactor| crate::hook::call(crate::hook::Hook::ReactorDestroy(reactor)),
+        main_thread: swoole_is_main_thread,
     });
 }
 
@@ -189,7 +179,7 @@ pub fn swoole_thread_clean(_main_thread: bool) {
     if with(|thread| !thread.timer.get().is_null()) {
         crate::timer::swoole_timer_free();
     }
-    if with(|thread| !thread.reactor.get().is_null()) {
+    if !crate::reactor::thread_reactor().is_null() {
         crate::reactor::swoole_event_free();
     }
     if with(|thread| !thread.buffer_stack.get().is_null()) {
@@ -337,7 +327,7 @@ pub fn shared_thread() -> SharedThread {
     SharedThread(with(|thread| {
         [
             thread.buffer_stack.get(),
-            thread.reactor.get(),
+            crate::reactor::thread_reactor(),
             thread.timer.get(),
             thread.async_threads.get(),
         ]
@@ -353,10 +343,10 @@ pub fn adopt_shared_thread(shared: &SharedThread) {
         .map(|member| member.load(Ordering::Relaxed));
     with(|thread| {
         thread.buffer_stack.set(buffer_stack);
-        thread.reactor.set(reactor);
         thread.timer.set(timer);
         thread.async_threads.set(async_threads);
     });
+    crate::reactor::set_thread_reactor(reactor);
 }
 
 #[cfg(test)]

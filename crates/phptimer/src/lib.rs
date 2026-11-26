@@ -8,7 +8,7 @@
 use std::ffi::{CStr, c_int};
 use swoole_rs_corebase::CCast;
 use swoole_rs_corebase::timer::{MIN_MS, MIN_SEC, php};
-use swoole_rs_corebase::{log::set_last_error, thread_reactor};
+use swoole_rs_corebase::{log::set_last_error, reactor::thread_reactor};
 use swoole_rs_phpstubs::timer;
 use swoole_rs_zend::{
     Call, Callable, Class, E_WARNING, Minit, OwnedArray,
