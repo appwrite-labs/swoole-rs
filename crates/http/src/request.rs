@@ -936,17 +936,19 @@ mod tests {
         r.form = None;
     }
 
-    /// One part header through the callbacks.
-    fn field(parts: &mut Rewrite<'_>, name: &[u8], value: &[u8]) {
-        parts.on_header_field(name);
-        parts.on_header_value(value);
-    }
-
-    /// Streams a two-part body, one part a file, through the callbacks.
+    /// Streams a form field and a file through the reactor's multipart parser.
     #[test]
     fn multipart_bodies_are_rewritten_with_uploads_on_disk() {
-        let head = b"POST / HTTP/1.1\r\nContent-Type: multipart/form-data; boundary=AB\r\nContent-Length: 999\r\n\r\n";
-        let (mut i, mut r) = parsed(head);
+        let wire = concat!(
+            "--AB\r\nContent-Disposition: form-data; name=\"a\"\r\n\r\n1\r\n",
+            "--AB\r\nContent-Disposition: form-data; name=\"f\"; filename=\"x.txt\"\r\n\r\n",
+            "file\r\n--AB--\r\n",
+        );
+        let head = format!(
+            "POST / HTTP/1.1\r\nContent-Type: multipart/form-data; boundary=AB\r\nContent-Length: {}\r\n\r\n",
+            wire.len()
+        );
+        let (mut i, mut r) = parsed(head.as_bytes());
         r.max_length = 1 << 20;
         let dir = std::env::temp_dir();
         assert!(
@@ -958,25 +960,10 @@ mod tests {
             head.len(),
             "the receive buffer keeps the header"
         );
-        let mut parts = Rewrite {
-            request: &mut r,
-            saved: i.get_mut(),
-        };
-        parts.on_part_data_begin(b"--AB");
-        field(&mut parts, b"Content-Disposition", b"form-data; name=\"a\"");
-        parts.on_headers_complete();
-        parts.on_part_data(b"1");
-        parts.on_part_data_end();
-        parts.on_part_data_begin(b"--AB");
-        field(
-            &mut parts,
-            b"Content-Disposition",
-            b"form-data; name=\"f\"; filename=\"x.txt\"",
-        );
-        parts.on_headers_complete();
-        parts.on_part_data(b"file");
-        parts.on_part_data_end();
-        parts.on_body_end(b"--AB");
+        for chunk in wire.as_bytes().chunks(7) {
+            r.body().unwrap().append(chunk);
+            assert!(r.parse_multipart_data(i.get_mut()));
+        }
         let body = &i.bytes()[head.len()..];
         let marker = b"Swoole-Upload-File: ";
         let at = body
