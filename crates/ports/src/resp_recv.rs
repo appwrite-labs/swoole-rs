@@ -25,6 +25,7 @@ fn requests<R>(f: impl FnOnce(&mut Vec<(c_long, RespRequest)>) -> R) -> R {
 struct Connection<'a, D> {
     socket: Socket<'a>,
     buffer: &'a mut StringBuffer,
+    maximum: usize,
     request: RespRequest,
     fd: c_int,
     dispatch: D,
@@ -33,8 +34,13 @@ struct Connection<'a, D> {
 impl<D: FnMut(SendData<'_>) -> bool> RespConnection for Connection<'_, D> {
     fn recv(&mut self) -> Received {
         let socket = self.socket;
-        if let Some(received) = swoole_rs_corebase::tls::upstream::recv_append(socket, self.buffer)
-        {
+        let remaining = self.maximum.saturating_sub(self.buffer.len());
+        if remaining == 0 {
+            return Received::Closed;
+        }
+        if let Some(received) = self.buffer.fill_within(remaining, |spare| {
+            swoole_rs_corebase::tls::upstream::recv_spare(socket, spare, 0)
+        }) {
             return Received::Bytes(received);
         }
         let error = std::io::Error::last_os_error().raw_os_error().unwrap_or(0);
@@ -49,7 +55,11 @@ impl<D: FnMut(SendData<'_>) -> bool> RespConnection for Connection<'_, D> {
     }
 
     fn view(&mut self) -> (&[u8], usize, &mut RespRequest) {
-        (self.buffer.view(), self.buffer.size(), &mut self.request)
+        (
+            self.buffer.view(),
+            self.buffer.size().min(self.maximum),
+            &mut self.request,
+        )
     }
 
     fn set_offset(&mut self, offset: i64) {
@@ -98,6 +108,7 @@ pub(crate) fn recv_packet<'a>(
     let mut connection = Connection {
         socket,
         buffer,
+        maximum: max_length as usize,
         request,
         fd,
         dispatch,
@@ -127,6 +138,39 @@ mod tests {
     use swoole_rs_clients::protocol::Protocol;
     use swoole_rs_corebase::reactor::SocketRecord;
     use swoole_rs_server::ConnectionRecord;
+
+    #[test]
+    fn package_limit_bounds_each_socket_read() {
+        let command = b"*1\r\n$4\r\nPING\r\n";
+        let (mut peer, reader) = UnixStream::pair().unwrap();
+        peer.write_all(&command.repeat(2)).unwrap();
+        peer.shutdown(std::net::Shutdown::Write).unwrap();
+
+        let mut socket = SocketRecord::new();
+        socket.fd = reader.as_raw_fd();
+        socket.socket_type = 5;
+        let socket = Socket::new(&mut socket);
+        let mut conn = ConnectionRecord::default();
+        conn.fd.set(reader.as_raw_fd());
+        let mut buffer = StringBuffer::EMPTY;
+        buffer.alloc(4096, None);
+        let mut packages = 0;
+        for _ in 0..2 {
+            assert!(recv_packet(
+                u32::try_from(command.len()).unwrap(),
+                (&mut conn).into(),
+                socket,
+                &mut buffer,
+                |packet| {
+                    assert_eq!(packet.payload(), command);
+                    packages += 1;
+                    true
+                },
+            ));
+        }
+        buffer.dispose();
+        assert_eq!(packages, 2);
+    }
 
     /// `core-tests/src/protocol/redis.cpp`, `TEST(redis, recv_packet_with_partially_filled_buffer)`.
     #[test]
