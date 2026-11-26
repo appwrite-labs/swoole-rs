@@ -123,3 +123,17 @@ def test_url_rewrite_rules_warn_only_for_patterns_upstream_runs_and_this_server_
         for pattern in ('~(a)\\1~', '~a(?=b)~')
     }
     assert rows == {**{pattern: [] for pattern in rows}, **warned}
+
+
+def test_incremental_request_byte_limit(engine):
+    code = r'''
+    $prefix = "POST / HTTP/1.1\r\nContent-Length: 3\r\n\r\n";
+    $r = Swoole\Http\Request::create(['package_max_length' => strlen($prefix) + 3]);
+    var_dump($r->parse($prefix) === strlen($prefix));
+    var_dump($r->parse("abcd") === false, swoole_last_error() === SWOOLE_ERROR_PACKAGE_LENGTH_TOO_LARGE);
+    var_dump($r->getData() === $prefix, !$r->isCompleted());
+    var_dump($r->parse("abc") === 3, $r->isCompleted(), $r->getContent() === "abc");
+    '''
+    result = subprocess.run(engine.command('-r', code), capture_output=True, text=True, timeout=10)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert result.stdout.splitlines() == ['bool(true)'] * 8

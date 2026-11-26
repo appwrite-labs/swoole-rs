@@ -73,6 +73,8 @@ pub(crate) struct Request {
 /// The parser's own bookkeeping (`ContextState::parse_`). All zeroes is the
 /// initial state, which `context::alloc` writes.
 pub(crate) struct Parse {
+    /// Raw byte limit for incremental `Request::parse` calls.
+    pub(crate) package_max_length: Option<u32>,
     pub(crate) header_value_len: usize,
     /// `Request::parse()`: spans llhttp flushed at the end of an input buffer.
     pub(crate) url_length: usize,
