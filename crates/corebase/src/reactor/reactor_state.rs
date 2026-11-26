@@ -14,6 +14,42 @@ use std::sync::atomic::{AtomicU32, Ordering};
 pub type ReactorClose =
     extern "C-unwind" fn(crate::reactor::Running<'_>, crate::reactor::OwnedSocket) -> c_int;
 
+/// The upper layer's entries into the loop: the default write path, which sends over
+/// TLS, and the create and destroy hooks. `swoole_init` registers them through
+/// [`set_upper_layer`] before any reactor exists, so the loop never names that layer.
+pub struct UpperLayer {
+    /// `Reactor::_write`: the bytes written or queued.
+    pub write: fn(crate::reactor::Running<'_>, crate::reactor::Heap<'_>, &[u8]) -> Option<usize>,
+    /// `Reactor::_writev`.
+    pub writev: fn(
+        crate::reactor::Running<'_>,
+        crate::reactor::Heap<'_>,
+        &[std::io::IoSlice<'_>],
+    ) -> Option<usize>,
+    /// `Reactor::_close`, a new reactor's `close`.
+    pub close: ReactorClose,
+    /// `Reactor::_writable_callback`, a new reactor's default write handler.
+    pub writable: crate::reactor::Handler,
+    /// `SW_GLOBAL_HOOK_ON_REACTOR_CREATE` (`DESTROY`), given the reactor.
+    pub created: fn(crate::reactor::Running<'_>),
+    pub destroyed: fn(crate::reactor::Running<'_>),
+}
+
+static UPPER_LAYER: std::sync::OnceLock<UpperLayer> = std::sync::OnceLock::new();
+
+/// Registers the upper layer's entries once; later ones are ignored.
+pub fn set_upper_layer(entries: UpperLayer) {
+    UPPER_LAYER.get_or_init(|| entries);
+}
+
+/// The upper layer's entries, which every reactor [`swr_v1_reactor_new`] makes needs:
+/// making one before `swoole_init` registered them is fatal.
+pub(crate) fn upper_layer() -> &'static UpperLayer {
+    UPPER_LAYER
+        .get()
+        .unwrap_or_else(|| crate::fatal("swoole_init has not registered the reactor's write path"))
+}
+
 pub struct ReactorFields {
     pub kind: c_int,
     pub ptr: *mut c_void,
@@ -310,17 +346,19 @@ impl OwnedReactor {
 
 /// `new Reactor(max_event, type)`: the state `ReactorState::open` makes and, once
 /// ready, upstream's close and default write handler, the create hook and then the
-/// built-in end callbacks and exit conditions. Socket I/O is corebase's TLS module.
+/// built-in end callbacks and exit conditions, the first three the upper layer's
+/// ([`UpperLayer`]).
 pub fn swr_v1_reactor_new(max_event: c_int, kind: c_int) -> OwnedReactor {
+    let upper = upper_layer();
     let mut owner = ReactorState::open(kind, max_event);
     if !owner.fields.ready {
         return OwnedReactor(crate::reactor::Running::leak(owner));
     }
     owner.fields.timeout_msec = -1;
-    owner.fields.close = Some(crate::tls::reactor_write::reactor_close);
-    owner.handlers.defaults[0].set(Some(crate::tls::reactor_write::reactor_writable_callback));
+    owner.fields.close = Some(upper.close);
+    owner.handlers.defaults[0].set(Some(upper.writable));
     let reactor = crate::reactor::Running::leak(owner);
-    crate::hook::call(crate::hook::Hook::ReactorCreate(reactor));
+    (upper.created)(reactor);
     // The hook has returned.
     reactor.with(|state| crate::reactor::callbacks::install_builtins(&mut state.callbacks));
     OwnedReactor(reactor)
@@ -345,7 +383,10 @@ pub fn swr_v1_reactor_delete(OwnedReactor(handle): OwnedReactor) {
         state.release_sockets();
         state.close_backend();
     });
-    crate::hook::call(crate::hook::Hook::ReactorDestroy(handle));
+    // Registered before `swr_v1_reactor_new` made it; a test's bare state has none.
+    if let Some(upper) = UPPER_LAYER.get() {
+        (upper.destroyed)(handle);
+    }
     // A disposer can defer again through the reactor (a PHP destructor calling
     // `Event::defer`), so the queues are detached and freed until they stay empty, and
     // no reference to the state (a `Drop`'s `&mut self` included) is live meanwhile.

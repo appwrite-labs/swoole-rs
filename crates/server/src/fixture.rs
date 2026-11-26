@@ -99,6 +99,7 @@ impl LiveServer {
         slot.set_socket_type(SocketTypeCode(SOCK_TCP));
 
         // The thread's reactor, with corebase's socket I/O and without coroutine/client handlers.
+        swoole_rs_corebase::register_upper_layer();
         let reactor = swoole_rs_corebase::reactor::swr_v1_reactor_new(4096, 0);
         swoole_rs_corebase::set_thread_reactor(reactor.as_ptr());
         Self {

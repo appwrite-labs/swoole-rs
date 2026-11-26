@@ -126,7 +126,7 @@ pub fn add_or_update(socket: crate::reactor::Heap<'_>, event: Events) -> bool {
 #[must_use]
 pub fn event_write(socket: crate::reactor::Heap<'_>, data: &[u8]) -> Option<usize> {
     let reactor = running().unwrap_or_else(|| crate::fatal("the reactor has no write function"));
-    crate::tls::reactor_write::reactor_write(reactor, socket, data)
+    (crate::reactor::upper_layer().write)(reactor, socket, data)
 }
 
 /// `ssize_t swoole_event_writev(Socket *socket, const iovec *iov, size_t iovcnt)` of
@@ -138,7 +138,7 @@ pub fn swoole_event_writev(
     vectors: &[IoSlice<'_>],
 ) -> Option<usize> {
     let reactor = running().unwrap_or_else(|| crate::fatal("the reactor has no write function"));
-    crate::tls::reactor_write::reactor_writev(reactor, socket, vectors)
+    (crate::reactor::upper_layer().writev)(reactor, socket, vectors)
 }
 
 /// Register a descriptor type on the current thread's reactor, when present.
@@ -498,6 +498,7 @@ mod tests {
 
     #[test]
     fn freeing_the_reactor_drops_its_cycle_tasks() {
+        crate::register_upper_layer();
         assert_eq!(crate::reactor::swoole_event_init(0), Ok(()));
         let mut fds = [0; 2];
         assert_eq!(unsafe { libc::pipe(fds.as_mut_ptr()) }, 0);

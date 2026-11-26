@@ -123,6 +123,7 @@ pub fn init_with_default_fatal_handler() {
 /// The archive supplies the C variadic fatal handler; Rust callers may omit it.
 pub fn swr_v1_core_swoole_init(fatal_error: Option<crate::FatalError>) {
     crate::log::init();
+    register_upper_layer();
     if !crate::swr_v1_core_init() {
         return;
     }
@@ -149,6 +150,21 @@ pub fn swr_v1_core_swoole_init(fatal_error: Option<crate::FatalError>) {
     crate::bug_report_init();
     swoole_thread_init(true);
     crate::config_state::init();
+}
+
+/// Registers the reactor's upper-layer entries ([`crate::reactor::UpperLayer`]) once:
+/// the write path over TLS and the reactor create and destroy hooks. `swoole_init`
+/// calls it before any reactor exists; a test making a reactor without it calls it.
+pub fn register_upper_layer() {
+    use crate::tls::reactor_write as write;
+    crate::reactor::set_upper_layer(crate::reactor::UpperLayer {
+        write: write::reactor_write,
+        writev: write::reactor_writev,
+        close: write::reactor_close,
+        writable: write::reactor_writable_callback,
+        created: |reactor| crate::hook::call(crate::hook::Hook::ReactorCreate(reactor)),
+        destroyed: |reactor| crate::hook::call(crate::hook::Hook::ReactorDestroy(reactor)),
+    });
 }
 
 /// `void swoole_thread_init(bool main_thread)`.
@@ -383,6 +399,7 @@ mod tests {
     }
 
     fn reactor() {
+        register_upper_layer();
         assert_eq!(crate::reactor::swoole_event_init(0), Ok(()));
         crate::reactor::event_api::on_destroy(|_| {
             std::thread::sleep(std::time::Duration::from_millis(200));
