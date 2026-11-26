@@ -73,6 +73,7 @@ pub fn request_minit(args: &MinitArgs) {
     }
     for name in [
         c"header",
+        c"trailer",
         c"server",
         c"cookie",
         c"get",
