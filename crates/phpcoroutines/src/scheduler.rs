@@ -385,16 +385,18 @@ fn can_exit() -> Result<bool, Bailout> {
     let Some(handle) = EXIT_CONDITION.with(|c| c.with_taken(|handle| handle.clone())) else {
         return Ok(true);
     };
-    let retval = std::mem::ManuallyDrop::new(swoole_rs_zend::Owned::null());
-    // The result slot is, as upstream's, not released.
+    // A PHP bailout skips the result destructor. On normal return it may run PHP.
+    let retval = ManuallyDrop::new(Owned::null());
     if !handle.call(swoole_rs_zend::Zvals::owned(&[]), Some(&retval), false)? {
         host::try_fatal_error(E_ERROR, c"Coroutine can_exit callback handler error")?;
     }
     swoole_rs_zend::host::uncaught_exception()?;
-    // The last reference once the condition replaced itself: a bailout its
-    // destructor deferred is raised by the reactor's callback.
+    let exit = retval.kind() != IS_FALSE;
+    drop(ManuallyDrop::into_inner(retval));
     drop(handle);
-    bailout::outcome(retval.kind() != IS_FALSE)
+    bailout::outcome(())?;
+    swoole_rs_zend::host::uncaught_exception()?;
+    Ok(exit)
 }
 
 /// RSHUTDOWN: drop the PHP name resolvers and the exit condition.
