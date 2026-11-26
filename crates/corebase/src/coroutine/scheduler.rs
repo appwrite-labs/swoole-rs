@@ -2,11 +2,12 @@
 // Compatibility derived from Swoole v6.2.4 src/coroutine/base.cc (Swoole contributors).
 //! This thread's scheduler (`Coroutine::scheduler_`) over [`Native`] records, and
 //! the operations Rust callers run on it by path: the current coroutine, resume,
-//! the cancelable yield and bailout. The facade builds the timed operations on these primitives.
+//! the yields, each until a [`Deadline`], and bailout.
 use crate::coroutine::context::{self, Native};
 use crate::coroutine::state::{self as ops, Co, Sched};
-use crate::coroutine::{Bailout, Coroutine, CoroutineTask, Hooks, Scheduler};
+use crate::coroutine::{Bailout, Coroutine, CoroutineTask, Hooks, Resume, Scheduler};
 use crate::log;
+use crate::timer::Deadline;
 use core::cell::UnsafeCell;
 use core::ffi::{c_long, c_void};
 use core::ptr::{self, NonNull};
@@ -271,7 +272,7 @@ pub unsafe fn resume(cid: c_long) {
 }
 
 /// `co->yield()` of `co`, the running coroutine (aborting otherwise), until it
-/// is resumed.
+/// is resumed or `deadline` passes: how the park ended.
 ///
 /// A yield asks nothing of its caller. `co` is only compared with the running
 /// coroutine. A coroutine nothing resumes (a bailout abandons every suspended one)
@@ -279,25 +280,35 @@ pub unsafe fn resume(cid: c_long) {
 /// frees one, and only once its entry returned. So what the caller's frames own is
 /// leaked, as by a thread that never wakes, and never freed under them. Freeing a
 /// suspended coroutine anywhere (at shutdown, say) would make this `unsafe` again.
-pub fn suspend(co: *mut c_void) {
-    park(co, |_| ());
+pub fn suspend(co: *mut c_void, deadline: Deadline) -> Resume {
+    park(co, deadline, |_| ())
 }
 
 /// [`suspend`], handing `arm` the [`Waker`](crate::coroutine::Waker) that ends this park before
 /// `co` switches out.
 #[inline]
-pub fn park(co: *mut c_void, arm: impl FnOnce(crate::coroutine::Waker)) {
+pub fn park(
+    co: *mut c_void,
+    deadline: Deadline,
+    arm: impl FnOnce(crate::coroutine::Waker),
+) -> Resume {
     let s = Sched::this();
-    ops::yield_armed(s, Co::running(s, co.cast()), arm);
+    let running = Co::running(s, co.cast());
+    until(running, deadline, || ops::yield_armed(s, running, arm))
 }
 
 /// `co->yield(&cancel_fn)` of `co`, the running coroutine (aborting
-/// otherwise), where `cancel_fn` calls `cancel()` once `co` is marked canceled.
+/// otherwise), until it is resumed or `deadline` passes, where `cancel_fn` calls
+/// `cancel()` once `co` is marked canceled: how the park ended.
 ///
 /// As [`suspend`], it asks nothing of its caller: the coroutine holds a copy of
 /// `cancel` (at most two words) while parked, and drops it before this returns.
-pub fn yield_with_cancel<F: Fn() -> bool + Copy + 'static>(co: *mut c_void, cancel: F) {
-    yield_with_cancel_armed(co, cancel, |_| ());
+pub fn yield_with_cancel<F: Fn() -> bool + Copy + 'static>(
+    co: *mut c_void,
+    deadline: Deadline,
+    cancel: F,
+) -> Resume {
+    yield_with_cancel_armed(co, deadline, cancel, |_| ())
 }
 
 /// [`yield_with_cancel`], handing `arm` the [`Waker`](crate::coroutine::Waker) that ends this
@@ -305,11 +316,44 @@ pub fn yield_with_cancel<F: Fn() -> bool + Copy + 'static>(co: *mut c_void, canc
 #[inline]
 pub fn yield_with_cancel_armed<F: Fn() -> bool + Copy + 'static>(
     co: *mut c_void,
+    deadline: Deadline,
     cancel: F,
     arm: impl FnOnce(crate::coroutine::Waker),
-) {
+) -> Resume {
     let s = Sched::this();
-    ops::yield_cancelable(s, Co::running(s, co.cast()), cancel, arm);
+    let running = Co::running(s, co.cast());
+    until(running, deadline, || {
+        ops::yield_cancelable(s, running, cancel, arm);
+    })
+}
+
+/// `yield_ex`'s timer around `park`, a park of `co`: how it ended. A deadline that
+/// never comes arms nothing and reads no clock.
+#[inline]
+fn until(co: Co, deadline: Deadline, park: impl FnOnce()) -> Resume {
+    let cid = co.with(|co| co.cid);
+    // It fires only while `co` waits in `park`, or is deleted first.
+    let timer = deadline.add_fn(move || timed_out(cid));
+    park();
+    // `co` runs again.
+    let code = co.with(|co| co.resume_code);
+    if let Some(timer) = timer
+        && code != Resume::TimedOut
+    {
+        crate::timer::del_id(timer);
+    }
+    code
+}
+
+/// [`until`]'s timer: the park of coroutine `cid`, which waits there until this
+/// resumes it, timed out.
+fn timed_out(cid: c_long) {
+    let s = Sched::this();
+    let Some(co) = s.with(|s| s.live_co(cid)) else {
+        return;
+    };
+    co.with(Coroutine::mark_timed_out);
+    ops::resume_parked(s, co);
 }
 
 /// `static void Coroutine::bailout(callback)`: inside a coroutine the

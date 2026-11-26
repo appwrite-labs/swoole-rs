@@ -8,6 +8,7 @@ use std::{
 };
 use swoole_rs_corebase::CCast;
 use swoole_rs_corebase::coroutine::Resume;
+use swoole_rs_corebase::timer::Deadline;
 use swoole_rs_zend::{E_ERROR, Zvals, bailout};
 
 /// `Co::stats()`'s native counts.
@@ -297,17 +298,17 @@ pub(crate) fn stack(co: Co) -> (*mut c_void, usize) {
 /// Switch out of `co`, the running coroutine. What the caller's frames own is
 /// leaked if nothing resumes it (a bailout abandons every suspended coroutine).
 pub(crate) fn yield_(co: Co) {
-    swoole_rs_corebase::coroutine::suspend(co.raw());
+    _ = swoole_rs_corebase::coroutine::suspend(co.raw(), Deadline::never());
 }
 
-/// `Coroutine::yield_ex(timeout)`: false when it timed out or was canceled.
-pub(crate) fn yield_ex(co: Co, timeout: f64) -> bool {
-    swoole_rs_corebase::coroutine::yield_resumed(wait(co, timeout))
+/// `Coroutine::yield_ex(timeout)` until `deadline`: false when it timed out or was canceled.
+pub(crate) fn yield_ex(co: Co, deadline: Deadline) -> bool {
+    swoole_rs_corebase::coroutine::yield_resumed(wait(co, deadline))
 }
 
 /// [`yield_ex`] without its last error: how the yield ended.
-pub(crate) fn wait(co: Co, timeout: f64) -> Resume {
-    swoole_rs_corebase::coroutine::yield_timed(co.raw(), timeout)
+pub(crate) fn wait(co: Co, deadline: Deadline) -> Resume {
+    swoole_rs_corebase::coroutine::yield_timed(co.raw(), deadline)
 }
 
 /// `Coroutine::count()` and `Coroutine::get_peak_num()`.
@@ -366,11 +367,11 @@ pub fn suspend() {
     }
 }
 
-/// `co->yield_ex(timeout)` of the running coroutine, as [`suspend`]: false
-/// when it timed out or was canceled, or outside a coroutine.
+/// `co->yield_ex(timeout)` of the running coroutine until `deadline`, as
+/// [`suspend`]: false when it timed out or was canceled, or outside a coroutine.
 #[must_use]
-pub fn suspend_for(timeout: f64) -> bool {
-    current().is_some_and(|co| yield_ex(co, timeout))
+pub fn suspend_for(deadline: Deadline) -> bool {
+    current().is_some_and(|co| yield_ex(co, deadline))
 }
 
 /// One wait that someone else ends: [`Waiter::wait`] (or [`Waiter::wait_for`])
@@ -387,12 +388,12 @@ impl Waiter {
         self.0.set(None);
     }
 
-    /// [`suspend_for`] `timeout` while published: false when it timed out or
+    /// [`suspend_for`] `deadline` while published: false when it timed out or
     /// was canceled, or outside a coroutine.
     #[must_use]
-    pub fn wait_for(&self, timeout: f64) -> bool {
+    pub fn wait_for(&self, deadline: Deadline) -> bool {
         self.0.set(Coroutine::current());
-        let done = suspend_for(timeout);
+        let done = suspend_for(deadline);
         self.0.set(None);
         done
     }

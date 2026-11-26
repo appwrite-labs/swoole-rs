@@ -152,10 +152,10 @@ pub fn system_sleep(sec: f64) -> bool {
         const CANCELED: i32 = swoole_rs_error::ErrorCode::SW_ERROR_CO_CANCELED as i32;
         // `co->yield_ex(timeout)` of the current coroutine (fatal outside one).
         let co = swoole_rs_corebase::coroutine::current_safe();
-        let code = swoole_rs_corebase::coroutine::yield_timed(
-            co,
-            swoole_rs_corebase::offload::sleep_timeout(sec, swoole_rs_corebase::timer::MIN_SEC),
-        );
+        let timeout =
+            swoole_rs_corebase::offload::sleep_timeout(sec, swoole_rs_corebase::timer::MIN_SEC);
+        let deadline = swoole_rs_corebase::timer::Deadline::from_timeout(timeout);
+        let code = swoole_rs_corebase::coroutine::yield_timed(co, deadline);
         let resumed = swoole_rs_corebase::coroutine::yield_resumed(code);
         resumed || swoole_rs_corebase::log::last_error() != CANCELED
     }

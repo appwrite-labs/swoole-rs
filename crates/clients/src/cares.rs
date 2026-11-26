@@ -335,7 +335,8 @@ pub(crate) fn lookup(domain: &CStr, family: i32, timeout: f64) -> Vec<Vec<u8>> {
             // one; no Rust reference spans the suspension. The code is the resume code
             // the coroutine holds as it runs again.
             let arm = |waker| query.waker.set(Some(waker));
-            let code = co::yield_timed_armed(coroutine, timeout, arm);
+            let deadline = swoole_rs_corebase::timer::Deadline::from_timeout(timeout);
+            let code = co::yield_timed_armed(coroutine, deadline, arm);
             _ = co::yield_resumed(code);
             if code == co::Resume::Canceled {
                 // Runs only callbacks on this live query, synchronously.

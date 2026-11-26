@@ -30,6 +30,7 @@ use swoole_rs_corebase::process::{
     task_file::{Packed, TaskBuffer},
     task_sync::{Bailed, MultiTask, TaskHost, Tasks, Waiting},
 };
+use swoole_rs_corebase::timer::Deadline;
 use swoole_rs_corebase::tls::socket_pair::{self, SocketPair};
 use swoole_rs_corebase::{DataHead, log};
 use swoole_rs_phpcoroutines::{Coroutine, Waiter};
@@ -479,7 +480,7 @@ fn taskwait(call: &Call) {
     }
     crate::lifecycle::with_tasks(|p| p.coroutines.insert(id, (Rc::downgrade(&task_co), None)));
     // onFinish resumes it.
-    let done = task_co.waiter.wait_for(timeout);
+    let done = task_co.waiter.wait_for(Deadline::from_timeout(timeout));
     crate::lifecycle::with_tasks(|p| p.coroutines.remove(&id));
     if done {
         call.set_owned(task_co.result.take());
@@ -621,7 +622,7 @@ fn task_co(call: &Call, fill_false: bool) {
     let complete = task_co
         .result
         .with_taken(|result| result.array().is_some_and(|array| array.count() == n_task));
-    if !complete && !task_co.waiter.wait_for(timeout) {
+    if !complete && !task_co.waiter.wait_for(Deadline::from_timeout(timeout)) {
         task_co.result.with_taken(|result| {
             let Some(array) = result.array_mut() else {
                 return;

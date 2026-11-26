@@ -4,7 +4,7 @@
 //! operations.
 //!
 //! The host runs the coroutines through [`Effects`]: suspending the current one
-//! (with its timeout timer and cancel function) and resuming a waiter. No Rust
+//! (until its deadline, cancelable) and resuming a waiter. No Rust
 //! reference into the channel lives across an effect: other coroutines use the
 //! channel while this one is suspended, and a resumed waiter may delete it, so
 //! an operation never touches it after a resume that ends it. The operations
@@ -12,6 +12,8 @@
 use core::ffi::c_void;
 use std::cell::UnsafeCell;
 use std::collections::VecDeque;
+
+use crate::timer::Deadline;
 
 /// Which queue a waiter is in.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -53,10 +55,10 @@ pub trait Effects {
     /// The current coroutine, queued as a waiter.
     fn current(&self) -> Self::Waiter;
     /// Suspends the current coroutine, already queued as a waiter, until it
-    /// is resumed, canceled or its timeout fires. The timer is deleted before
+    /// is resumed, canceled or `deadline` passes. The timer is deleted before
     /// this returns `CANCELED` and/or `TIMEDOUT` bits; the operation then
     /// removes the waiter ([`Channel::remove`]) before anything else runs.
-    fn wait(&mut self) -> u32;
+    fn wait(&mut self, deadline: Deadline) -> u32;
     /// Resumes a waiter just taken from a queue.
     fn resume(&mut self, co: Self::Waiter);
 }
@@ -161,10 +163,11 @@ fn wait<T, F: Effects>(
     ch: &UnsafeCell<Channel<T, F::Waiter>>,
     fx: &mut F,
     role: Role,
+    deadline: Deadline,
 ) -> Result<(), Error> {
     let co = fx.current();
     with(ch, |c| c.queue(role).push_back(co));
-    let flags = fx.wait();
+    let flags = fx.wait(deadline);
     if flags != 0 {
         with(ch, |c| c.remove(role, co));
     }
@@ -183,9 +186,13 @@ fn wait<T, F: Effects>(
     })
 }
 
-/// `Channel::pop`: the oldest item, or None with the error set. After the
-/// final resume the channel is not touched.
-pub fn pop<T, F: Effects>(ch: &UnsafeCell<Channel<T, F::Waiter>>, fx: &mut F) -> Option<T> {
+/// `Channel::pop`: the oldest item, waiting until `deadline` for one, or None
+/// with the error set. After the final resume the channel is not touched.
+pub fn pop<T, F: Effects>(
+    ch: &UnsafeCell<Channel<T, F::Waiter>>,
+    fx: &mut F,
+    deadline: Deadline,
+) -> Option<T> {
     let (closed, wait_first) = with(ch, |c| {
         (
             c.closed && c.data.is_empty(),
@@ -196,7 +203,7 @@ pub fn pop<T, F: Effects>(ch: &UnsafeCell<Channel<T, F::Waiter>>, fx: &mut F) ->
         with(ch, |c| c.error = Some(Error::Closed));
         return None;
     }
-    if wait_first && wait(ch, fx, Role::Consumer).is_err() {
+    if wait_first && wait(ch, fx, Role::Consumer, deadline).is_err() {
         return None;
     }
     let (data, producer) = with(ch, |c| (c.pop_data(), c.producers.pop_front()));
@@ -206,21 +213,22 @@ pub fn pop<T, F: Effects>(ch: &UnsafeCell<Channel<T, F::Waiter>>, fx: &mut F) ->
     data
 }
 
-/// `Channel::push`: `data` back, with the error set, when it fails. After the
-/// final resume the channel is not touched.
+/// `Channel::push`, waiting until `deadline` for room: `data` back, with the
+/// error set, when it fails. After the final resume the channel is not touched.
 /// # Errors
 /// `data`, not queued: the channel is closed, or the wait timed out or was canceled.
 pub fn push<T, F: Effects>(
     ch: &UnsafeCell<Channel<T, F::Waiter>>,
     fx: &mut F,
     data: T,
+    deadline: Deadline,
 ) -> Result<(), T> {
     let (closed, wait_first) = with(ch, |c| (c.closed, c.is_full() || !c.producers.is_empty()));
     if closed {
         with(ch, |c| c.error = Some(Error::Closed));
         return Err(data);
     }
-    if wait_first && wait(ch, fx, Role::Producer).is_err() {
+    if wait_first && wait(ch, fx, Role::Producer, deadline).is_err() {
         return Err(data);
     }
     let consumer = with(ch, |c| {

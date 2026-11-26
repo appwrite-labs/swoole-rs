@@ -85,7 +85,8 @@ mod registry {
         let co = crate::coroutine::current();
         if !co.is_null() {
             // `co->yield_ex(timeout)` of the running coroutine, its waker armed first.
-            let code = crate::coroutine::yield_timed_armed(co.cast(), timeout, |waker| {
+            let deadline = crate::timer::Deadline::from_timeout(timeout);
+            let code = crate::coroutine::yield_timed_armed(co.cast(), deadline, |waker| {
                 let (cid, park) = waker.parts();
                 arm(Wake { cid, park });
             });

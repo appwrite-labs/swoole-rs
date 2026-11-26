@@ -4,13 +4,15 @@
 //! patch deletes): this thread's `SwooleTG.timer`, its lazy creation, unit
 //! conversion and warnings, over the Rust-owned timer (`owner.rs`). Timer
 //! callbacks own their captures and operations use issued timer IDs.
-use super::MIN_SEC;
+use super::{MIN_MS, MIN_SEC};
 use crate::CCast;
 use crate::timer::owner::{Owner as Timer, TimerNode};
 pub use crate::timer_key::Held;
 use crate::{log, swoole_print_backtrace};
 use std::ffi::{CStr, c_long, c_void};
+use std::num::NonZeroU64;
 use std::rc::Rc;
+use std::time::Duration;
 
 pub(crate) fn timer() -> *mut Timer {
     crate::thread_timer().cast()
@@ -119,6 +121,71 @@ fn held(ms: c_long, persistent: bool, node: TimerNode) -> Option<Held> {
         timer.remove(id);
     }
     held
+}
+
+/// When a wait ends: an instant on the timer's monotonic clock, in nanoseconds, or
+/// never. Every wait takes one, so a wait with no end is written
+/// [`Deadline::never`] where it is made. One word, so it passes in a register.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Deadline(Option<NonZeroU64>);
+
+impl Deadline {
+    /// A wait that only its waker, a cancel or a close ends. Only the PHP-API
+    /// boundary, where upstream's API waits forever, reaches it.
+    #[must_use]
+    pub const fn never() -> Self {
+        Self(None)
+    }
+
+    /// Upstream's `timeout` seconds, as `Coroutine::yield_ex` reads them: a positive
+    /// one ends its `sec2msec` milliseconds from now (truncated, at least
+    /// `SW_TIMER_MIN_SEC`), so a timer armed at once gets upstream's milliseconds;
+    /// zero, a negative one or NaN is [`Deadline::never`], as is one past what the
+    /// clock holds. Only the PHP-API boundary passes it a timeout of its user's.
+    #[must_use]
+    #[inline]
+    pub fn from_timeout(seconds: f64) -> Self {
+        if seconds > 0.0
+            && let Ok(ms) = u64::try_from(sec2msec(seconds))
+            && let Some(after) = ms.checked_mul(1_000_000)
+        {
+            Self(now_nanos().checked_add(after).and_then(NonZeroU64::new))
+        } else {
+            Self::never()
+        }
+    }
+
+    /// The time left until the deadline, zero once it passed; none when it never comes.
+    #[must_use]
+    pub fn remaining(self) -> Option<Duration> {
+        Some(Duration::from_nanos(
+            self.0?.get().saturating_sub(now_nanos()),
+        ))
+    }
+
+    /// A one-shot `f` (as [`add_fn`]) at the deadline: the time left, rounded up
+    /// to the millisecond (a whole number of them from [`Deadline::from_timeout`],
+    /// less any that passed) and at least `SW_TIMER_MIN_SEC`; none when it never comes.
+    /// The timer counts that from its own clock, truncated to the millisecond as
+    /// upstream's is, so `f` may run up to a millisecond before the deadline.
+    #[must_use]
+    pub fn add_fn(self, f: impl Fn() + 'static) -> Option<Held> {
+        let left = self.remaining()?;
+        let ms = c_long::try_from(left.as_nanos().div_ceil(1_000_000)).unwrap_or(c_long::MAX);
+        add_fn(ms.max(MIN_MS.into()), false, f)
+    }
+}
+
+/// The timer's clock (`Timer::get_absolute_msec`'s) in nanoseconds.
+fn now_nanos() -> u64 {
+    #[cfg(target_vendor = "apple")]
+    let clock = libc::CLOCK_UPTIME_RAW;
+    #[cfg(not(target_vendor = "apple"))]
+    let clock = libc::CLOCK_MONOTONIC;
+    let now = crate::sys::clock_time(clock);
+    let (sec, nsec) = (u64::try_from(now.tv_sec), u64::try_from(now.tv_nsec));
+    let (sec, nsec) = (sec.unwrap_or(0), nsec.unwrap_or(0));
+    sec.saturating_mul(1_000_000_000).saturating_add(nsec)
 }
 
 /// [`add_fn`] of `timeout` seconds, at least `SW_TIMER_MIN_SEC`.
