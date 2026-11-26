@@ -48,7 +48,8 @@ pub use memory::{received_string, zend_string_allocator};
 pub use module::{
     EventSteps, Families, Globals, Hook, Http, HttpMinit, Minit, MinitArgs, ProcessSteps,
     ReqStatus, RuntimeSteps, SocketSettings, codecs, display_errors, enable_library, globals,
-    load_library, php_swoole_register_shutdown_function, zif_swoole_set_process_name,
+    load_library, php_swoole_register_shutdown_function, temporary_directory,
+    zif_swoole_set_process_name,
 };
 pub use optional::{set_blocking, socket_cast, socket_create};
 pub use options::{

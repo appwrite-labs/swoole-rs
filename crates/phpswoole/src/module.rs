@@ -21,6 +21,12 @@ use swoole_rs_zend::{
     sys::{HashTable, swr_zend_after_fork, swr_zend_fatal_error, zend_class_entry},
 };
 
+/// PHP's configured temporary directory, copied for storage on an extension object.
+#[must_use]
+pub fn temporary_directory() -> std::ffi::CString {
+    swr_zend_temporary_directory().get().to_owned()
+}
+
 unsafe extern "C" {
     /// `php_get_temporary_directory()`: PHP's temporary directory, which it
     /// works out once and keeps until PHP shuts down.
