@@ -37,8 +37,8 @@ pub use rewrite::{RewriteRules, Unsupported};
 mod static_context;
 pub use static_context::*;
 mod tasks;
-pub use tasks::HttpStaticTask;
 use tasks::HttpTasks;
+pub use tasks::{HttpStaticTask, MAX_RANGE_TASKS};
 mod static_meta;
 /// Status codes shared by the PHP HTTP client and server (`swoole_http.h`).
 pub mod status {

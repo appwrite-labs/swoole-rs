@@ -1004,7 +1004,6 @@ fn range_candidate(
     filesize: u64,
     mime: &[u8],
     flags: u8,
-    capacity: usize,
 ) -> (http_range::Outcome, Vec<u8>) {
     let facade = RangeFacade {
         filesize: usize::try_from(filesize).unwrap_or(usize::MAX),
@@ -1026,8 +1025,9 @@ fn range_candidate(
     };
     let shown = end.len().min(outcome.end_part.len());
     outcome.end_part[..shown].copy_from_slice(&end[..shown]);
+    assert!(context.tasks().len() <= swoole_rs_http::MAX_RANGE_TASKS);
     let mut tasks = Vec::new();
-    for task in context.tasks().iter().take(capacity) {
+    for task in context.tasks() {
         tasks.extend_from_slice(&task.offset.cast_unsigned().to_ne_bytes());
         tasks.extend_from_slice(&(task.length as u64).to_ne_bytes());
         let header = c_text(&task.part_header);
@@ -1069,16 +1069,51 @@ pub fn http_range(bytes: &[u8]) {
             .map(|&byte| byte as c_char)
             .collect()
     };
-    let capacity = range.len() + 3;
-    let want = range_upstream(
-        &terminated(range),
-        filesize,
-        &terminated(&mime),
-        flags,
-        capacity,
-    );
-    let got = range_candidate(range, filesize, &mime, flags, capacity);
-    assert_eq!(got, want, "range for {bytes:?}");
+    let limit = swoole_rs_http::MAX_RANGE_TASKS;
+    let capacity = 1 + range
+        .iter()
+        .filter(|&&byte| byte == b',')
+        .take(limit - 1)
+        .count();
+    let (header, mime_c) = (terminated(range), terminated(&mime));
+    let upstream = |flags, capacity| range_upstream(&header, filesize, &mime_c, flags, capacity);
+    let want = upstream(flags, capacity);
+    let got = range_candidate(range, filesize, &mime, flags);
+    // A modified If-Range can replace the parsed list with one full-file task.
+    // In that case ask for just the count before replacement, without copying its tasks.
+    let count = if flags & 3 == 3 && capacity == limit && want.0.status_code == 200 {
+        upstream(0, 0).0.tasks
+    } else {
+        want.0.tasks
+    };
+    if count > limit {
+        let rejected = http_range::Outcome {
+            status_code: swoole_rs_http::status::RANGE_NOT_SATISFIABLE,
+            ..http_range::Outcome::default()
+        };
+        assert_eq!(got, (rejected, Vec::new()));
+    } else {
+        assert_eq!(got, want, "range for {bytes:?}");
+    }
+}
+
+#[cfg(test)]
+mod range_limit_tests {
+    #[test]
+    fn compare_the_task_limit_before_if_range_replacement() {
+        for flags in [0, 1, 3] {
+            for count in [
+                swoole_rs_http::MAX_RANGE_TASKS,
+                swoole_rs_http::MAX_RANGE_TASKS + 1,
+            ] {
+                let mut input = vec![flags, 0];
+                input.extend_from_slice(&1u64.to_le_bytes());
+                input.extend_from_slice(b"bytes=");
+                input.extend_from_slice(vec!["0-0"; count].join(",").as_bytes());
+                super::http_range(&input);
+            }
+        }
+    }
 }
 
 /// One engine's log for a stream case (see `framing_stream::Run`,

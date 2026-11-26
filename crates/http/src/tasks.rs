@@ -3,7 +3,7 @@
 use crate::range_response::{HttpRangeFormat, range_format};
 
 /// Maximum number of file sends retained by a static response.
-pub(crate) const MAX_RANGE_TASKS: usize = 256;
+pub const MAX_RANGE_TASKS: usize = 256;
 const PART_HEADER: usize = 256;
 #[cfg(test)]
 const _: () = assert!(
