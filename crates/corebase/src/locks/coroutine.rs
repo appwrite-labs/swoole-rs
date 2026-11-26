@@ -169,6 +169,7 @@ impl CoroutineLock {
 }
 
 #[cfg(test)]
+#[expect(clippy::disallowed_methods, reason = "tests wake their own waits")]
 mod tests {
     use super::*;
     use std::cell::RefCell;

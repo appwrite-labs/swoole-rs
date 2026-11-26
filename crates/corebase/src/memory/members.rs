@@ -721,4 +721,5 @@ impl Drop for SharedTable {
 
 #[cfg(test)]
 #[path = "../../../../tests/modules/memory/members.rs"]
+#[expect(clippy::disallowed_methods, reason = "tests wake their own waits")]
 mod tests;

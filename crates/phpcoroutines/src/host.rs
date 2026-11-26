@@ -297,6 +297,11 @@ pub(crate) fn stack(co: Co) -> (*mut c_void, usize) {
 
 /// Switch out of `co`, the running coroutine. What the caller's frames own is
 /// leaked if nothing resumes it (a bailout abandons every suspended coroutine).
+#[expect(
+    clippy::disallowed_methods,
+    reason = "local wakes end it, as upstream's: the interrupt's deferred resume on the next \
+              tick, or the autoload this coroutine waits on finishing"
+)]
 pub(crate) fn yield_(co: Co) {
     _ = swoole_rs_corebase::coroutine::suspend(co.raw(), Deadline::never());
 }

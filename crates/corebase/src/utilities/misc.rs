@@ -16,6 +16,10 @@ pub fn futex_wait(word: &AtomicU32, deadline: Option<Deadline>) -> bool {
     }
     #[cfg(not(target_os = "linux"))]
     {
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "a timeout past what a timespec holds waits forever, as upstream's"
+        )]
         let deadline = deadline.unwrap_or(Deadline::never());
         crate::utilities::wait_registry::registry_wait(word, deadline)
     }
@@ -35,6 +39,7 @@ pub fn futex_wakeup(word: &AtomicU32, n: c_int) -> Option<u32> {
 }
 
 #[cfg(test)]
+#[expect(clippy::disallowed_methods, reason = "tests wake their own waits")]
 mod tests {
     use super::*;
 

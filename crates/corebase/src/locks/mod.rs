@@ -597,7 +597,7 @@ impl Lock {
         // A blocking mutex lock, the common case, is small enough to inline.
         if let Live::Mutex(mutex) = lock
             && operation & LOCK_NB == 0
-            && deadline == Deadline::never()
+            && deadline.is_never()
         {
             pthread_result(pthread_mutex_lock(mutex))
         } else {
@@ -941,6 +941,7 @@ pub fn coroutine_backoff(second: f64, initial: f64, maximum: f64) -> f64 {
 // and SpinLock classes left the build), with the same inputs and expected values.
 // The coroutine-lock TESTs are in coroutine.rs.
 #[cfg(test)]
+#[expect(clippy::disallowed_methods, reason = "tests wake their own waits")]
 mod tests {
     use super::*;
     use std::{

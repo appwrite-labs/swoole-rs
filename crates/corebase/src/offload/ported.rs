@@ -228,6 +228,10 @@ fn async_event(
 ) -> bool {
     CALLER_REQUEST.set(request.cloned());
     TIMEOUT.set(timeout);
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "upstream's timeout, from its PHP caller"
+    )]
     let deadline = crate::timer::Deadline::from_timeout(timeout);
     let result = swr_v1_hook_async(event, handler, deadline, &OPS);
     drop(CALLER_REQUEST.take());
