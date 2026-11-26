@@ -237,6 +237,85 @@ macro_rules! field {
     };
 }
 
+/// A connection's place in the WebSocket upgrade ([`Connection::websocket`]).
+pub enum WebSocket<'a> {
+    /// No upgrade (`STATUS_NONE`).
+    Http,
+    /// An upgrade request parsed, its handshake not begun (`STATUS_CONNECTION`).
+    Requested(Requested<'a>),
+    /// Its handshake running, until the response goes (`STATUS_HANDSHAKE`): what it
+    /// receives is still read as HTTP.
+    Handshaking(Handshaking<'a>),
+    /// The 101 sent: what it receives is frames (`STATUS_ACTIVE`).
+    Open(Open<'a>),
+    /// `disconnect` sent its close frame (`STATUS_CLOSING`).
+    Closing,
+    /// Its handshake was answered with another status (`STATUS_HANDSHAKE_FAILED`).
+    Failed,
+}
+
+/// A connection whose upgrade request was parsed: it can only begin its handshake.
+pub struct Requested<'a>(Connection<'a>);
+
+/// A connection whose handshake is running: it can only complete or fail it.
+pub struct Handshaking<'a>(Connection<'a>);
+
+/// An open WebSocket connection: the only one with frames.
+#[derive(Clone, Copy)]
+pub struct Open<'a>(Connection<'a>);
+
+impl<'a> Requested<'a> {
+    /// `onHandshake`, or the default handshake, begins.
+    #[expect(
+        clippy::must_use_candidate,
+        reason = "a transition, made for its effect"
+    )]
+    pub fn handshake(self) -> Handshaking<'a> {
+        self.0.mark(WebSocketStatus::Handshake);
+        Handshaking(self.0)
+    }
+}
+
+impl<'a> Handshaking<'a> {
+    /// The 101 goes next: the client may send frames as soon as it is on the wire, so
+    /// they are read from here on (upstream 7bd6134c4).
+    #[expect(
+        clippy::must_use_candidate,
+        reason = "a transition, made for its effect"
+    )]
+    pub fn open(self) -> Open<'a> {
+        self.0.mark(WebSocketStatus::Active);
+        Open(self.0)
+    }
+
+    /// The handshake was answered with another status.
+    pub fn fail(self) {
+        self.0.mark(WebSocketStatus::HandshakeFailed);
+    }
+}
+
+impl<'a> Open<'a> {
+    /// The connection.
+    #[must_use]
+    pub fn connection(self) -> Connection<'a> {
+        self.0
+    }
+
+    /// The fragmented message being reassembled, taken out while a frame works on it.
+    #[must_use]
+    pub fn take_fragment(self) -> Option<Box<swoole_rs_corebase::buffer::string::StringBuffer>> {
+        self.0.take_websocket_buffer()
+    }
+
+    /// The connection reassembles `buffer`, which must hold none (one it held is
+    /// freed).
+    pub fn keep_fragment(self, buffer: Box<swoole_rs_corebase::buffer::string::StringBuffer>) {
+        if let Some(mut held) = self.0.record.websocket_buffer.replace(Some(buffer)) {
+            held.dispose();
+        }
+    }
+}
+
 impl Session<'_> {
     field!(id, set_id: libc::c_long);
     field!(fd, set_fd: c_int);
@@ -283,7 +362,6 @@ impl<'a> Connection<'a> {
     field!(last_send_time, set_last_send_time: f64);
     field!(last_dispatch_time, set_last_dispatch_time: f64);
     field!(uid, set_uid: u32);
-    field!(websocket_status, set_websocket_status: WebSocketStatus);
 
     /// The connection's socket, if it holds one.
     #[must_use]
@@ -328,22 +406,52 @@ impl<'a> Connection<'a> {
     }
 
     /// The WebSocket message being reassembled, taken out of the connection.
-    #[must_use]
-    pub fn take_websocket_buffer(
+    pub(crate) fn take_websocket_buffer(
         self,
     ) -> Option<Box<swoole_rs_corebase::buffer::string::StringBuffer>> {
         self.record.websocket_buffer.take()
     }
 
-    /// The connection reassembles `buffer`, which must hold none (one it held is
-    /// freed).
-    pub fn set_websocket_buffer(
-        self,
-        buffer: Box<swoole_rs_corebase::buffer::string::StringBuffer>,
-    ) {
-        if let Some(mut held) = self.record.websocket_buffer.replace(Some(buffer)) {
-            held.dispose();
+    /// The stored WebSocket status, as `getClientInfo` reports it. Routing and
+    /// dispatch read [`Self::websocket`].
+    #[must_use]
+    pub fn websocket_status(self) -> WebSocketStatus {
+        self.record.websocket_status.get()
+    }
+
+    /// Where the connection is in the WebSocket upgrade, read once: a handle per
+    /// state, carrying only what that state allows.
+    #[must_use]
+    #[inline]
+    pub fn websocket(self) -> WebSocket<'a> {
+        match self.record.websocket_status.get() {
+            WebSocketStatus::None => WebSocket::Http,
+            WebSocketStatus::Connection => WebSocket::Requested(Requested(self)),
+            WebSocketStatus::Handshake => WebSocket::Handshaking(Handshaking(self)),
+            WebSocketStatus::Active => WebSocket::Open(Open(self)),
+            WebSocketStatus::Closing => WebSocket::Closing,
+            WebSocketStatus::HandshakeFailed => WebSocket::Failed,
         }
+    }
+
+    /// An upgrade request was parsed on a WebSocket port: its handshake comes next.
+    #[expect(
+        clippy::must_use_candidate,
+        reason = "a transition, made for its effect"
+    )]
+    pub fn websocket_requested(self) -> Requested<'a> {
+        self.mark(WebSocketStatus::Connection);
+        Requested(self)
+    }
+
+    /// `disconnect` sent the close frame.
+    pub fn websocket_closing(self) {
+        self.mark(WebSocketStatus::Closing);
+    }
+
+    /// Stores the status its state moved to.
+    fn mark(self, status: WebSocketStatus) {
+        self.record.websocket_status.set(status);
     }
 
     /// `OP_STORE_CLIENT_CERT`: `cert` is the connection's client certificate, which
@@ -777,7 +885,7 @@ pub(crate) mod tests {
         conn.set_close_force(true);
         conn.set_last_recv_time(1.5);
         conn.set_uid(6);
-        conn.set_websocket_status(WebSocketStatus::Active);
+        conn.websocket_requested().handshake().open();
         record.lock.store(1, Relaxed);
         conn.clear();
         assert!(conn.is_active());
@@ -786,7 +894,7 @@ pub(crate) mod tests {
         assert_eq!((conn.fd(), conn.session_id(), conn.uid()), (0, 0, 0));
         assert!(!conn.close_force());
         assert_eq!(conn.last_recv_time().to_bits(), 0);
-        assert_eq!(conn.websocket_status(), WebSocketStatus::None);
+        assert!(matches!(conn.websocket(), WebSocket::Http));
         assert_eq!(record.lock.load(Relaxed), 0);
     }
 

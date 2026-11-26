@@ -250,8 +250,9 @@ pub struct DataHead {
 }
 
 /// `swoole::websocket::Status`: how far a connection is through the WebSocket
-/// upgrade. The order is upstream's, which its `>=` checks rely on.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
+/// upgrade, as a connection record stores it. Routing reads it once, as
+/// `swoole_rs_server::WebSocket`'s typed states, and never compares it.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 #[repr(u8)]
 pub enum WebSocketStatus {
     #[default]

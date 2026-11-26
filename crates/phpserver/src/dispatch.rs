@@ -14,12 +14,12 @@ use std::{
     sync::Arc,
 };
 use swoole_rs_clients::address::{address_port, with_host};
+use swoole_rs_corebase::ServerEvent;
 use swoole_rs_corebase::constants::{SW_IPC_BUFFER_SIZE, SocketType};
 use swoole_rs_corebase::process::methods::ExitStatus;
 use swoole_rs_corebase::process::task_file::Packed;
 use swoole_rs_corebase::process::worker_record::Worker;
 use swoole_rs_corebase::{DataHead, log, net_types::SocketAddress};
-use swoole_rs_corebase::{ServerEvent, WebSocketStatus};
 use swoole_rs_server::Connection;
 use swoole_rs_server::callbacks::{Callback, CallbackError, CallbackKind, CallbackResult};
 use swoole_rs_zend::host::callable;
@@ -753,7 +753,7 @@ fn close(server: view::Server<'_>, info: &DataHead) {
     let Some(conn) = server.by_session(session_id) else {
         return;
     };
-    if conn.websocket_status() != WebSocketStatus::Active {
+    if !matches!(conn.websocket(), swoole_rs_server::WebSocket::Open(_)) {
         let port = server.port_by_server_fd(c_int::from(info.server_fd));
         let websocket = port.is_some_and(|port| port.config().open_websocket_protocol.get());
         if websocket

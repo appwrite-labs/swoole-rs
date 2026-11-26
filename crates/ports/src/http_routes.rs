@@ -1,5 +1,5 @@
 //! `swoole::http_server`'s request and frame routing from `src/protocol/http.cc`:
-//! the callbacks `init_protocol` puts on an HTTP port. A connection past the WebSocket handshake goes to WebSocket, an HTTP/2 one to
+//! the callbacks `init_protocol` puts on an HTTP port. An open WebSocket connection goes to WebSocket, an HTTP/2 one to
 //! HTTP/2, and any other is a protocol error. WebSocket's own length and frame
 //! dispatch from `src/protocol/websocket.cc` live here too.
 
@@ -11,20 +11,23 @@ use swoole_rs_clients::address::host_port;
 use swoole_rs_corebase::log;
 use swoole_rs_corebase::log::LogLevel::SW_LOG_WARNING as LOG_WARNING;
 use swoole_rs_error::ErrorCode;
-use swoole_rs_server::Connection;
+use swoole_rs_server::{Connection, Open, WebSocket};
 
-/// `conn`'s branch: `websocket` past the handshake, else `http2` for an HTTP/2
-/// stream, else upstream's `protocol_status_error` warning and `error`.
-fn route<T>(
-    conn: Connection<'_>,
-    websocket: impl FnOnce() -> T,
+/// `conn`'s branch: `websocket` once it is open, else `http2` for an HTTP/2 stream,
+/// else upstream's `protocol_status_error` warning and `error`.
+fn route<'a, T>(
+    conn: Connection<'a>,
+    websocket: impl FnOnce(Open<'a>) -> T,
     http2: impl FnOnce() -> T,
     error: T,
 ) -> T {
-    match length_size(conn, exports::get_package_length_size) {
-        WEBSOCKET_FRAME_HEADER_SIZE => websocket(),
-        HTTP2_FRAME_HEADER_SIZE => http2(),
-        _ => error,
+    match conn.websocket() {
+        WebSocket::Open(open) => websocket(open),
+        _ if conn.http2_stream() => http2(),
+        _ => {
+            warn_protocol_status(conn);
+            error
+        }
     }
 }
 
@@ -49,7 +52,8 @@ pub fn length_size(
     conn: Connection<'_>,
     size: swoole_rs_clients::protocol::GetPackageLengthSize,
 ) -> u8 {
-    let header = size(conn.websocket_status(), conn.http2_stream());
+    let open = matches!(conn.websocket(), WebSocket::Open(_));
+    let header = size(open, conn.http2_stream());
     if header == 0 {
         warn_protocol_status(conn);
     }
@@ -84,10 +88,10 @@ pub mod exports {
     use swoole_rs_corebase::DataHead;
     use swoole_rs_corebase::buffer::string::boxed_string;
     use swoole_rs_corebase::lent::lend_spare;
+    use swoole_rs_corebase::log;
     use swoole_rs_corebase::net_types::PacketLength;
     use swoole_rs_corebase::reactor::Socket;
-    use swoole_rs_corebase::{WebSocketStatus, log};
-    use swoole_rs_server::{Connection, view};
+    use swoole_rs_server::{Connection, Open, WebSocket, view};
     use swoole_rs_websocket::{
         Action, Context, FrameFlags, Opcode, PolicyError, decide_frame, encode_frame,
     };
@@ -139,9 +143,13 @@ pub mod exports {
 
     /// `websocket::dispatch_frame` over a session's whole frame: decode it (unmasking
     /// it in place), let [`decide_frame`] choose, and carry out its action on the
-    /// connection's fragment buffer, the server and the socket. Whether the connection
-    /// reads on.
-    pub(crate) fn websocket_frame(s: Session<'_>, mut package: Package<'_>) -> bool {
+    /// connection's fragment buffer, the server and the socket. Only an open
+    /// connection has frames. Whether the connection reads on.
+    pub(crate) fn websocket_frame(
+        s: Session<'_>,
+        open: Open<'_>,
+        mut package: Package<'_>,
+    ) -> bool {
         let length = package.len();
         let bytes = package.bytes();
         let Ok(frame) = decode_frame(bytes) else {
@@ -150,10 +158,10 @@ pub mod exports {
         let bytes: &[u8] = bytes;
         let conn = s.conn;
         // Out of the connection while this frame works on it.
-        let fragment = conn.take_websocket_buffer();
+        let fragment = open.take_fragment();
+        // Not `closing`: a closing connection's input is no longer read as frames.
         let mut context = Context {
             has_fragment: fragment.is_some(),
-            closing: conn.websocket_status() == WebSocketStatus::Closing,
             ..Context::default()
         };
         if let Some(fragment) = fragment.as_deref() {
@@ -171,7 +179,7 @@ pub mod exports {
         }
         let Some(decision) = decide_frame(&frame, length, &context) else {
             if let Some(fragment) = fragment {
-                conn.set_websocket_buffer(fragment);
+                open.keep_fragment(fragment);
             }
             return false;
         };
@@ -199,12 +207,12 @@ pub mod exports {
                 s.task(swoole_rs_server::SendData::new(head, buffer.view()));
                 buffer.dispose();
             } else {
-                conn.set_websocket_buffer(buffer);
+                open.keep_fragment(buffer);
             }
             return true;
         }
         if let Some(fragment) = fragment {
-            conn.set_websocket_buffer(fragment);
+            open.keep_fragment(fragment);
         }
         let task = |payload: Option<&[u8]>| {
             s.task(match payload {
@@ -213,11 +221,12 @@ pub mod exports {
             })
         };
         match decision.action {
-            Action::Reject => return false,
+            // `ServerClose` answers `closing`, which an open connection never is.
+            Action::Reject | Action::ServerClose => return false,
             Action::Start => {
                 let mut buffer = boxed_string(payload.unwrap_or_default());
                 buffer.set_offset(ext_flags.into());
-                conn.set_websocket_buffer(buffer);
+                open.keep_fragment(buffer);
             }
             Action::Append | Action::Finish => {}
             Action::Control | Action::Dispatch => {
@@ -235,10 +244,6 @@ pub mod exports {
                         }
                     });
                 }
-                return false;
-            }
-            Action::ServerClose => {
-                conn.set_websocket_status(WebSocketStatus::None);
                 return false;
             }
             Action::Unknown => {
@@ -274,19 +279,22 @@ pub mod exports {
 
     impl Handler for WebSocketFrame {
         fn handle(s: Session<'_>, package: Package<'_>, _: DataHead) -> bool {
-            websocket_frame(s, package)
+            match s.conn.websocket() {
+                WebSocket::Open(open) => websocket_frame(s, open, package),
+                _ => false,
+            }
         }
     }
 
     /// `int dispatch_frame(const Protocol *, Socket *, const RecvData *)`: a frame to
-    /// WebSocket past the handshake, else to the workers for an HTTP/2 stream.
+    /// an open WebSocket, else to the workers for an HTTP/2 stream.
     pub(crate) struct HttpFrame;
 
     impl Handler for HttpFrame {
         fn handle(s: Session<'_>, package: Package<'_>, info: DataHead) -> bool {
-            match route(s.conn, || Some(true), || Some(false), None) {
-                Some(true) => WebSocketFrame::handle(s, package, info),
-                Some(false) => Task::handle(s, package, info),
+            match route(s.conn, |open| Some(Some(open)), || Some(None), None) {
+                Some(Some(open)) => websocket_frame(s, open, package),
+                Some(None) => Task::handle(s, package, info),
                 None => false,
             }
         }
@@ -392,10 +400,10 @@ pub mod exports {
         }
     }
 
-    /// A WebSocket connection's frames, measured by `frame_length` and handed to
+    /// An open WebSocket connection's frames, measured by `frame_length` and handed to
     /// [`websocket_frame`] directly: an HTTP port's own callbacks route each frame
-    /// through the connection's status to the same two.
-    pub(crate) struct Frames<'a>(pub(crate) Session<'a>);
+    /// through the connection's state to the same two.
+    pub(crate) struct Frames<'a>(pub(crate) Session<'a>, pub(crate) Open<'a>);
 
     impl Packages for Frames<'_> {
         const HEAD: Option<u32> = Some(WEBSOCKET_FRAME_HEADER_SIZE as u32);
@@ -410,7 +418,7 @@ pub mod exports {
         }
         #[inline(always)]
         fn dispatch(&self, _: &Recv<'_, impl Source>, package: Package<'_>) -> bool {
-            websocket_frame(self.0, package)
+            websocket_frame(self.0, self.1, package)
         }
         fn paused(&self) -> bool {
             paused(self.0.conn)
@@ -438,8 +446,8 @@ pub mod exports {
     // The native protocol table and its callers compare this callback by address.
     #[inline(never)]
     #[must_use]
-    pub fn get_package_length_size(status: WebSocketStatus, http2: bool) -> u8 {
-        if status >= WebSocketStatus::Handshake {
+    pub fn get_package_length_size(websocket_open: bool, http2: bool) -> u8 {
+        if websocket_open {
             WEBSOCKET_FRAME_HEADER_SIZE
         } else if http2 {
             super::HTTP2_FRAME_HEADER_SIZE
@@ -455,10 +463,10 @@ mod tests {
     use swoole_rs_corebase::WebSocketStatus;
     use swoole_rs_server::ConnectionRecord;
 
-    /// Pinned `http.cc`'s branch for a connection: 1 WebSocket, 2 HTTP/2, 0 error.
+    /// 6.3's `http.cc` branch for a connection: 1 WebSocket, 2 HTTP/2, 0 error.
     fn pinned(websocket_status: WebSocketStatus, http2_stream: bool) -> u32 {
-        // `conn->websocket_status >= websocket::STATUS_HANDSHAKE`, then `conn->http2_stream`.
-        if websocket_status.code() >= 2 {
+        // `conn->is_websocket_active()`, then `conn->http2_stream`.
+        if websocket_status == WebSocketStatus::Active {
             1
         } else if http2_stream {
             2
@@ -484,7 +492,7 @@ mod tests {
                 let conn = Connection::from(&mut conn);
                 let length = route(
                     conn,
-                    || {
+                    |_| {
                         calls.0 += 1;
                         -11
                     },
@@ -506,7 +514,7 @@ mod tests {
                     length_size(conn, exports::get_package_length_size),
                     [0, WEBSOCKET_FRAME_HEADER_SIZE, HTTP2_FRAME_HEADER_SIZE][expected as usize]
                 );
-                let frame = route(conn, || -22, || 55, -1);
+                let frame = route(conn, |_| -22, || 55, -1);
                 assert_eq!(frame, [-1, -22, 55][expected as usize]);
                 cases += 3;
             }

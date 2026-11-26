@@ -1,6 +1,10 @@
 """Independent response-barrier diagnostic; never substitutes for original PHPT."""
 from pathlib import Path
+import socket
 import struct
+import time
+
+import pytest
 
 from corpus.run import WebSocket, expect
 from tools.harness import request, server
@@ -66,3 +70,47 @@ def test_close(engine):
             expect(body, b'healthy')
         finally:
             client.close()
+
+
+UPGRADE = ('GET / HTTP/1.1\r\nHost: localhost\r\nConnection: Upgrade\r\nUpgrade: websocket\r\n'
+           'Sec-WebSocket-Version: 13\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nX-Token: {}\r\n\r\n')
+
+
+def early(port, token):
+    """Sends an upgrade, then a frame while `onHandshake` yields; returns the socket and
+    what it read up to the end of the response head."""
+    client = socket.create_connection(('127.0.0.1', port), timeout=2)
+    client.sendall(UPGRADE.format(token).encode())
+    time.sleep(.05)
+    client.sendall(frame(b'hi'))
+    head = b''
+    while not head.endswith(b'\r\n\r\n') and (byte := client.recv(1)):
+        head += byte
+    return client, head
+
+
+@pytest.mark.parametrize('mode', ['base', 'process'])
+def test_frame_during_handshake(engine, mode):
+    """6.3's ordering (7bd6134c4, its early_frame_before_handshake.phpt): a frame sent while
+    a custom onHandshake yields is read as HTTP, so onMessage never sees it before the 101.
+    A rejected handshake's frame is never a message. An accepted one's, shorter than a
+    request line, waits as an incomplete request, and after the open it is the first frame
+    the next read parses, as in 6.3."""
+    if engine.name == 'upstream':
+        pytest.skip('the v6.2.6 pin dispatches it during the handshake')
+    with server(engine, Path(__file__).with_name('close_probe.php'), {'TEST_HANDSHAKE': mode}) as (port, _):
+        client, head = early(port, 'bad')
+        with client:
+            assert head.startswith(b'HTTP/1.1 403'), head
+            client.recv(4096)
+            expect(client.recv(1), b'')
+        expect(request(port, '/messages')[2], b'0')
+        client, head = early(port, 'good')
+        with client:
+            assert head.startswith(b'HTTP/1.1 101'), head
+            time.sleep(.1)
+            expect(request(port, '/messages')[2], b'0')
+            client.sendall(frame(b'ok'))
+            expect(client.recv(4), b'\x81\x02hi')
+            expect(client.recv(4), b'\x81\x02ok')
+        expect(request(port, '/messages')[2], b'2')

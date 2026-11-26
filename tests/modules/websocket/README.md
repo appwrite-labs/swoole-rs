@@ -69,7 +69,9 @@ python3 -m pytest tests/modules/websocket/test_differential.py \
 - `test_invalid.py` (`websocket-invalid`): malformed and boundary frames on fresh
   sockets; rejected connections must terminate and HTTP must stay healthy.
 - `test_close.py` (`websocket-close`): close and text frames behind a response
-  barrier, then post-close health.
+  barrier, then post-close health. Its `test_frame_during_handshake` is 6.3's ordering
+  (7bd6134c4): a frame sent while a custom `onHandshake` yields never reaches
+  `onMessage` before the 101, in base and process mode; the v6.2.6 control skips it.
 
 The original `tests/swoole_websocket_server` PHPTs run in the PHPT gate.
 `send_close_frame.phpt` is racy on upstream too and `corpus/upstream/run.py`
