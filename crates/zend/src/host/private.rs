@@ -21,9 +21,9 @@ unsafe extern "C" {
     ) -> c_int;
     /// `EG(exception)`: one pointer of the executor's is read; null for none.
     safe fn swr_zend_facade_exception() -> *mut zend_object;
-    /// `zend_exception_error(EG(exception), E_ERROR)` inside `zend_try`, as
-    /// `swr_zend_try` returns: nothing without an exception.
-    safe fn swr_zend_try_uncaught_exception() -> c_int;
+    /// Inspect the pending exception. Leave `UnwindExit` in the executor and
+    /// report other exceptions inside `zend_try`.
+    safe fn swr_zend_try_uncaught_exception(unwind_exit: &mut bool) -> c_int;
     /// `sw_callable_warning(message)` inside `zend_try` (nonzero for a
     /// bailout): it records the error and raises the warning, whose user
     /// handler runs PHP code.
@@ -90,15 +90,19 @@ pub fn exception_owned() -> Option<Owned> {
     Some(crate::Value::of(&mut value).copy())
 }
 
-/// `zend_exception_error(EG(exception), E_ERROR)` of a pending exception,
-/// inside the C trap: what a callback outside the VM does about an exception
-/// nothing caught; nothing when none is pending. Like [`exception`] it takes
-/// nothing from its caller: it reads the executor's slot itself.
+/// Finish an uncaught callback exception. `UnwindExit` stops the reactor and
+/// stays pending for the VM. Other exceptions go through Zend’s fatal report.
 /// # Errors
 /// The report bailed out, as an `E_ERROR` does.
 pub fn uncaught_exception() -> Result<(), bailout::Bailout> {
-    // Observed only after the preceding call returned.
-    bailout::trapped(swr_zend_try_uncaught_exception())
+    let mut unwind_exit = false;
+    bailout::trapped(swr_zend_try_uncaught_exception(&mut unwind_exit))?;
+    if unwind_exit {
+        // Leave the exit object with Zend and stop dispatching callbacks while
+        // the native loop releases its resources and returns to the VM.
+        swoole_rs_corebase::reactor::event_api::swoole_event_bail_out();
+    }
+    Ok(())
 }
 
 /// [`uncaught_exception`], its bailout deferred.
