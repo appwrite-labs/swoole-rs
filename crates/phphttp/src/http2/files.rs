@@ -71,6 +71,13 @@ pub(crate) fn static_file(server: view::Server<'_>, ctx: Ctx) -> Result<bool, ba
 }
 
 fn serve(server: view::Server<'_>, ctx: Ctx) -> bool {
+    let Some(method) = entry(ctx, Value::Server, b"request_method") else {
+        return false;
+    };
+    let head = method.eq_ignore_ascii_case(b"HEAD");
+    if !head && !method.eq_ignore_ascii_case(b"GET") {
+        return false;
+    }
     let Some(uri) = entry(ctx, Value::Server, b"request_uri") else {
         return false;
     };
@@ -146,9 +153,7 @@ fn serve(server: view::Server<'_>, ctx: Ctx) -> bool {
             ctx.set_header(b"Accept-Ranges", b"bytes");
         }
     }
-    if entry(ctx, Value::Server, b"request_method")
-        .is_some_and(|method| method.eq_ignore_ascii_case(b"HEAD"))
-    {
+    if head {
         respond(ctx, &[]);
         return true;
     }

@@ -533,6 +533,10 @@ fn peek(call: &Call) {
         return;
     };
     let length = usize::try_from(length).unwrap_or(0);
+    if length == 0 {
+        warn(true, "length must be greater than 0");
+        return call.set_bool(false);
+    }
     let mut buffer = ZBuf::with_capacity(length);
     if socket
         .receive(Transfer::Peek(0), &mut buffer, 0.0)
@@ -584,11 +588,11 @@ fn getpeername(call: &Call) {
     set_endpoint(call, &address, port);
 }
 
-/// `exportSocket(): Socket|null`: the client's `Coroutine\Socket`, shared.
+/// `exportSocket(): Socket|false`: the client's `Coroutine\Socket`, shared.
 fn export_socket(call: &Call) {
     match this(call).and_then(Data::zsocket) {
         Some(zsocket) => call.set_owned(zsocket),
-        None => call.set_null(),
+        None => call.set_bool(false),
     }
 }
 
