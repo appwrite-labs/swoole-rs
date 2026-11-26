@@ -16,6 +16,8 @@ pub enum SleepOutcome {
     Done(i64),
     /// This argument is negative (or out of range, for `sleep_until`).
     Negative(u32),
+    /// Nanoseconds exceeded the fractional second accepted by PHP.
+    InvalidNanoseconds,
     /// Interrupted, with the time left.
     Interrupted { seconds: i64, nanoseconds: i64 },
     /// `time_nanosleep`: invalid nanoseconds, then true; `time_sleep_until`: the
@@ -79,6 +81,9 @@ pub fn swr_v1_hooks_nanosleep(
     }
     if nanoseconds < 0 {
         return SleepOutcome::Negative(2);
+    }
+    if nanoseconds >= 1_000_000_000 {
+        return SleepOutcome::InvalidNanoseconds;
     }
     if let Some(sleep) = coroutine_sleep {
         _ = sleep(seconds.c_cast::<f64>() + nanoseconds.c_cast::<f64>() / 1_000_000_000.00);
@@ -211,10 +216,18 @@ mod tests {
         assert_eq!(swr_v1_hooks_sleep(0, None), DONE);
         assert_eq!(swr_v1_hooks_usleep(1, None), DONE);
         assert_eq!(swr_v1_hooks_nanosleep(0, 1, None), DONE);
-        assert_eq!(
-            swr_v1_hooks_nanosleep(0, 1_000_000_000, None),
-            SleepOutcome::Warn
-        );
+    }
+
+    #[test]
+    fn nanoseconds_must_fit_within_one_second() {
+        let sleepers: [Option<CoroutineSleep>; 2] = [None, Some(slept)];
+        for sleeper in sleepers {
+            assert_eq!(
+                swr_v1_hooks_nanosleep(0, 1_000_000_000, sleeper),
+                SleepOutcome::InvalidNanoseconds
+            );
+        }
+        assert_eq!(swr_v1_hooks_nanosleep(0, 999_999_999, Some(slept)), DONE);
     }
 
     #[test]

@@ -36,7 +36,7 @@ fn sleep(call: &Call) {
     match swr_v1_hooks_sleep(seconds, sleeper()) {
         SleepOutcome::Negative(number) => negative(call, number),
         SleepOutcome::Done(value) => call.set_long(value),
-        SleepOutcome::Interrupted { .. } | SleepOutcome::Warn => call.set_long(0),
+        _ => call.set_long(0),
     }
 }
 
@@ -64,6 +64,12 @@ fn time_nanosleep(call: &Call) {
     let outcome = swr_v1_hooks_nanosleep(seconds, nanoseconds, sleeper());
     if let SleepOutcome::Negative(number) = outcome {
         negative(call, number);
+        return;
+    }
+    if outcome == SleepOutcome::InvalidNanoseconds {
+        swoole_rs_zend::value_error(
+            c"Nanoseconds was not in the range 0 to 999 999 999 or seconds was negative",
+        );
         return;
     }
     if outcome == SleepOutcome::Warn {
@@ -97,6 +103,6 @@ fn time_sleep_until(call: &Call) {
             ));
             call.set_bool(false);
         }
-        SleepOutcome::Done(_) | SleepOutcome::Interrupted { .. } => call.set_bool(true),
+        _ => call.set_bool(true),
     }
 }
