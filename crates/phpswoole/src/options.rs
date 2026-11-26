@@ -51,7 +51,9 @@ fn clamp(timeout: f64) -> f64 {
     }
 }
 
-fn setting_ok() -> bool {
+/// Whether PHP can continue applying settings.
+#[must_use]
+pub fn setting_ok() -> bool {
     !bailout::pending() && swoole_rs_zend::host::exception().is_null()
 }
 
@@ -63,6 +65,24 @@ pub fn invalid_setting(message: &CStr) {
             swoole_rs_error::ErrorCode::SW_ERROR_INVALID_PARAMS as i64,
         );
     }
+}
+
+/// Resolve a configuration callback before its caller replaces the active one.
+pub fn setting_callable(
+    value: &Value,
+) -> Option<std::rc::Rc<swoole_rs_zend::host::callable::Callable>> {
+    use swoole_rs_zend::host::callable::{self, Callable};
+    let resolve = || {
+        if !callable::is_callable(value)? || !setting_ok() {
+            invalid_setting(c"configuration callback must be callable");
+            return Ok(None);
+        }
+        Callable::new(value)
+    };
+    resolve().unwrap_or_else(|bailed| {
+        bailed.defer();
+        None
+    })
 }
 
 /// Parse a PHP size setting, including ini quantities such as "64M".
@@ -111,8 +131,9 @@ fn text_option(options: &Array, key: &CStr, set: impl FnOnce(&ZStr)) {
 const OPERATION_NOT_SUPPORT: i64 =
     swoole_rs_error::ErrorCode::SW_ERROR_OPERATION_NOT_SUPPORT as i64;
 
-/// Convert a socket or HTTP/2 setting without wrapping its unsigned destination.
-fn nonnegative_setting(key: &CStr, value: i64) -> Option<u32> {
+/// Convert a configuration value without wrapping its unsigned destination.
+#[must_use]
+pub fn nonnegative_setting(key: &CStr, value: i64) -> Option<u32> {
     if !setting_ok() {
         return None;
     }

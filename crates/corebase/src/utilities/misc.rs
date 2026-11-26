@@ -55,7 +55,7 @@ mod tests {
 
     #[cfg(target_os = "linux")]
     #[test]
-    #[expect(clippy::disallowed_methods, reason = "the test wakes its own wait")]
+    #[expect(clippy::disallowed_methods, reason = "tests wake their own waits")]
     fn a_wakeup_publishes_the_token_a_wait_takes() {
         let word = AtomicU32::new(0);
         assert!(!futex_wait(&word, Deadline::from_futex_timeout(0.01)));

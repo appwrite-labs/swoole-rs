@@ -166,6 +166,13 @@ fn huffman_length(text: &[u8]) -> usize {
     bits.div_ceil(8)
 }
 
+#[cfg_attr(
+    protocol_buffer_lint,
+    expect(
+        clippy::disallowed_methods,
+        reason = "the encoded byte count is huffman_length(text), checked to be shorter than the literal"
+    )
+)]
 fn huffman_encode(text: &[u8], out: &mut Vec<u8>) {
     let (mut bits, mut pending) = (0_u64, 0_u32);
     for &byte in text {
@@ -304,6 +311,13 @@ impl Table {
         let room = ENTRY_OVERHEAD + name.len() + value.len();
         self.evict(room);
         if room <= self.max {
+            #[cfg_attr(
+                protocol_buffer_lint,
+                expect(
+                    clippy::disallowed_methods,
+                    reason = "eviction keeps total entry sizes within the HPACK table limit, including 32 bytes per entry"
+                )
+            )]
             self.entries.push((name.into(), value.into()));
             self.size += room;
         }
@@ -330,6 +344,13 @@ fn continue_integer(value: u32, shift: u32, byte: u8) -> Result<u32, Error> {
     value.checked_add(add << shift).ok_or(Error)
 }
 
+#[cfg_attr(
+    protocol_buffer_lint,
+    expect(
+        clippy::disallowed_methods,
+        reason = "one prefix byte and at most usize::BITS.div_ceil(7) continuation bytes"
+    )
+)]
 fn encode_integer(out: &mut Vec<u8>, bits: u8, prefix: u32, value: usize) {
     // Each byte pushed holds at most eight bits of `value`: its low byte.
     let low = |value: usize| value.to_le_bytes()[0];
@@ -355,6 +376,13 @@ fn encode_string(out: &mut Vec<u8>, text: &[u8]) {
         huffman_encode(text, out);
     } else {
         encode_integer(out, 0, 7, text.len());
+        #[cfg_attr(
+            protocol_buffer_lint,
+            expect(
+                clippy::disallowed_methods,
+                reason = "the literal copies exactly the input string length written in its prefix"
+            )
+        )]
         out.extend_from_slice(text);
     }
 }
@@ -806,10 +834,9 @@ impl Encoder {
             (false, true) => (0x10, 4),
             (false, false) => (0, 4),
         };
-        if let Some(index) = index {
-            encode_integer(out, bits, prefix, index);
-        } else {
-            out.push(bits);
+        // A zero name index introduces a literal name.
+        encode_integer(out, bits, prefix, index.unwrap_or(0));
+        if index.is_none() {
             encode_string(out, name);
         }
         encode_string(out, value);

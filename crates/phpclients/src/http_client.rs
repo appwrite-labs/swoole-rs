@@ -23,6 +23,7 @@ use swoole_rs_http::llhttp::{self, Callbacks, EndOfInput, Flow, Parser};
 use swoole_rs_http::status::{BAD_GATEWAY, NO_CONTENT, SERVICE_UNAVAILABLE, SWITCHING_PROTOCOLS};
 use swoole_rs_inflate::{DecodeError, Inflate, brotli, zstd};
 use swoole_rs_phpstubs::http_client_coro;
+use swoole_rs_phpswoole::{nonnegative_setting, setting_callable, setting_ok};
 use swoole_rs_websocket::{ENCODED_KEY_LEN, KEY_LEN, Opcode};
 use swoole_rs_zend::{
     Array, ArrayMut, Call, Class, Custom, CustomClass, Minit, Owned, OwnedArray, Props, Value,
@@ -485,32 +486,31 @@ impl Client {
         true
     }
 
-    fn apply_setting(&self, settings: &Value, check_all: bool) {
+    fn apply_setting(&self, settings: &Value, check_all: bool) -> bool {
         let Some(array) = settings.array().filter(|array| array.count() > 0) else {
-            return;
+            return true;
         };
         if check_all {
             let get = |key: &[u8]| array.get(key);
             let truthy = Value::truthy;
-            // A conversion's bailout stops the settings, as upstream's did.
-            if let Some(found) = get(b"connect_timeout") {
-                let Some(timeout) = found.applied_double() else {
-                    return;
-                };
-                self.connect_timeout.set(timeout);
-            }
-            if let Some(found) = get(b"timeout") {
-                let Some(timeout) = found.applied_double() else {
-                    return;
-                };
-                self.response_timeout.set(timeout);
+            for (key, destination) in [
+                (b"connect_timeout".as_slice(), &self.connect_timeout),
+                (b"timeout".as_slice(), &self.response_timeout),
+            ] {
+                if let Some(found) = get(key) {
+                    let timeout = found.double();
+                    if !setting_ok() {
+                        return false;
+                    }
+                    destination.set(timeout);
+                }
             }
             if let Some(found) = get(b"max_retries") {
-                let Some(retries) = found.applied_long() else {
-                    return;
+                let Some(retries) = nonnegative_setting(c"max_retries", found.long()) else {
+                    return false;
                 };
-                let retries = retries.min(i64::from(u8::MAX));
-                self.max_retries.set(retries.c_cast::<u8>());
+                self.max_retries
+                    .set(u8::try_from(retries).unwrap_or(u8::MAX));
             }
             if let Some(found) = get(b"defer") {
                 self.defer.set(truthy(found));
@@ -528,32 +528,35 @@ impl Client {
                 self.body_decompression.set(truthy(found));
             }
             if let Some(found) = get(b"write_func") {
-                drop(self.write_func.take());
-                if bailout::pending() {
-                    return;
-                }
-                let created = Callable::new(found).unwrap_or_else(|bailed| {
-                    bailed.defer();
-                    None
-                });
-                // The old callable's destructor may have set a write_func: this one replaces it.
-                drop(self.write_func.replace(created));
-                if bailout::pending() {
-                    return;
+                let Some(callback) = setting_callable(found) else {
+                    return false;
+                };
+                drop(self.write_func.replace(Some(callback)));
+                if !setting_ok() {
+                    return false;
                 }
             }
             self.ws.apply(array);
-        }
-        if let Some(socket) = self.co() {
-            crate::socket_options::apply(socket, array, swoole_rs_phpswoole::SocketSettings::All);
-            if !swoole_rs_zend::bailout::pending() {
-                if array.get(b"package_max_length").is_some() {
-                    self.package_max_length
-                        .set(Some(socket.handle().protocol().package_max_length as usize));
-                }
-                socket.skip_proxy_handshake();
+            if !setting_ok() {
+                return false;
             }
         }
+        if let Some(socket) = self.co() {
+            if !crate::socket_options::apply(
+                socket,
+                array,
+                swoole_rs_phpswoole::SocketSettings::All,
+            ) || !setting_ok()
+            {
+                return false;
+            }
+            if array.get(b"package_max_length").is_some() {
+                self.package_max_length
+                    .set(Some(socket.handle().protocol().package_max_length as usize));
+            }
+            socket.skip_proxy_handshake();
+        }
+        setting_ok()
     }
 
     fn set_basic_auth(&self, username: &[u8], password: &[u8]) {
@@ -590,7 +593,10 @@ impl Client {
             return false;
         }
         let settings = self.property(c"setting");
-        self.apply_setting(&settings, false);
+        if !self.apply_setting(&settings, false) {
+            self.close(true);
+            return false;
+        }
         self.websocket.set(false);
         self.accept_websocket_compression.set(false);
         let conn = Rc::clone(&self.conn);
@@ -1748,8 +1754,11 @@ fn set(call: &Call) {
     let Ok(settings) = call.arity(1, 1).and_then(|()| call.array(1)) else {
         return call.set_bool(false);
     };
+    if !client.apply_setting(settings, true) {
+        swoole_rs_phpswoole::invalid_setting(c"failed to apply HTTP client settings");
+        return;
+    }
     crate::net::merge_setting(call, &CLIENT, settings);
-    client.apply_setting(settings, true);
     call.set_bool(true);
 }
 

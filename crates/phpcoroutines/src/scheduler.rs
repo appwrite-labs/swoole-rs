@@ -346,18 +346,7 @@ fn set(call: &Call) {
 
 /// Validate the replacement before releasing the active reactor callback.
 fn set_exit_condition(condition: &Value) -> Result<(), Bailout> {
-    let valid = kept::is_callable(condition)?;
-    if !swoole_rs_zend::host::exception().is_null() {
-        return Ok(());
-    }
-    if !valid {
-        swoole_rs_phpswoole::exception().throw(
-            c"configuration callback must be callable",
-            i64::from(host::SW_ERROR_INVALID_PARAMS),
-        );
-        return bailout::outcome(());
-    }
-    if let Some(handle) = kept::Callable::new(condition)? {
+    if let Some(handle) = swoole_rs_phpswoole::setting_callable(condition) {
         drop(EXIT_CONDITION.with(|slot| slot.replace(Some(handle))));
         bailout::outcome(())?;
         host::set_exit_condition(true);
