@@ -743,6 +743,8 @@ impl CoSocket {
             self.kind.get(),
             SocketFlag::SW_SOCK_NONBLOCK | SocketFlag::SW_SOCK_CLOEXEC,
         );
+        let connected = SocketAddress::default().peer_name(fd).is_ok();
+        owner.with_state(|state| state.update_flags(|flags| flags.connected = connected));
         self.attach(Some(Box::new(record)), owner)
     }
 
