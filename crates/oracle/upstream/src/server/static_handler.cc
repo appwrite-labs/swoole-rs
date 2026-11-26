@@ -290,159 +290,158 @@ bool StaticHandler::set_filename(const std::string &_filename) {
 }
 
 void StaticHandler::parse_range(const char *range, const char *if_range) {
-    task_t _task{};
-    _task.length = 0;
-    // range
-    if (range && '\0' != *range) {
-        const char *p = range;
-        // bytes=
-        if (!SW_STR_ISTARTS_WITH(p, strlen(range), "bytes=")) {
-            _task.offset = 0;
-            _task.length = content_length = get_filesize();
-            tasks.push_back(_task);
+    // Publish a plan only after the complete header has been validated. A malformed
+    // later range must never leave executable tasks or multipart lengths behind.
+    tasks.clear();
+    end_part.clear();
+    content_length = 0;
+    status_code = SW_HTTP_OK;
+    const size_t file_size = get_filesize();
+    const auto full_response = [&]() {
+        task_t task{};
+        task.length = content_length = file_size;
+        tasks.clear();
+        tasks.push_back(task);
+        status_code = SW_HTTP_OK;
+    };
+    if (!range || !*range || !SW_STR_ISTARTS_WITH(range, strlen(range), "bytes=") || file_size == 0) {
+        full_response();
+        return;
+    }
+
+    if (if_range && *if_range && is_modified_range(if_range)) {
+        full_response();
+        return;
+    }
+
+    static constexpr size_t max_ranges = 16;
+    size_t range_count = 0;
+    size_t selected_bytes = 0;
+    bool excessive = false;
+    std::vector<task_t> ranges;
+    const char *p = range + 6;
+    const auto skip_space = [&]() {
+        while (*p == ' ' || *p == '\t') {
+            ++p;
+        }
+    };
+    const auto number = [&](size_t &value) {
+        if (*p < '0' || *p > '9') {
+            return false;
+        }
+        value = 0;
+        do {
+            const size_t digit = *p++ - '0';
+            if (value > (SIZE_MAX - digit) / 10) {
+                return false;
+            }
+            value = value * 10 + digit;
+        } while (*p >= '0' && *p <= '9');
+        return true;
+    };
+    for (;;) {
+        skip_space();
+        size_t start = 0, end = 0;
+        if (*p == '-') {
+            ++p;
+            if (!number(end)) {
+                status_code = SW_HTTP_RANGE_NOT_SATISFIABLE;
+                return;
+            }
+            start = end < file_size ? file_size - end : 0;
+            end = file_size;
+        } else {
+            if (!number(start)) {
+                status_code = SW_HTTP_RANGE_NOT_SATISFIABLE;
+                return;
+            }
+            skip_space();
+            if (*p != '-') {
+                status_code = SW_HTTP_RANGE_NOT_SATISFIABLE;
+                return;
+            }
+            ++p;
+            skip_space();
+            if (*p == ',' || *p == '\0') {
+                end = file_size;
+            } else if (!number(end) || start > end) {
+                status_code = SW_HTTP_RANGE_NOT_SATISFIABLE;
+                return;
+            } else {
+                end = end >= file_size ? file_size : end + 1;
+            }
+        }
+        skip_space();
+        if (*p != ',' && *p != '\0') {
+            status_code = SW_HTTP_RANGE_NOT_SATISFIABLE;
             return;
         }
-        p += 6;
-        size_t start, end, size = 0, cutoff = SIZE_MAX / 10, cutlim = SIZE_MAX % 10, suffix,
-                           _content_length = get_filesize();
-        content_length = 0;
-        for (;;) {
-            start = 0;
-            end = 0;
-            suffix = 0;
-
-            while (*p == ' ') {
-                p++;
-            }
-
-            if (*p != '-') {
-                if (*p < '0' || *p > '9') {
-                    status_code = SW_HTTP_RANGE_NOT_SATISFIABLE;
-                    return;
-                }
-
-                while (*p >= '0' && *p <= '9') {
-                    if (start >= cutoff && (start > cutoff || (size_t) (*p - '0') > cutlim)) {
-                        status_code = SW_HTTP_RANGE_NOT_SATISFIABLE;
-                        return;
-                    }
-
-                    start = start * 10 + (*p++ - '0');
-                }
-
-                while (*p == ' ') {
-                    p++;
-                }
-
-                if (*p++ != '-') {
-                    status_code = SW_HTTP_RANGE_NOT_SATISFIABLE;
-                    return;
-                }
-
-                while (*p == ' ') {
-                    p++;
-                }
-
-                if (*p == ',' || *p == '\0') {
-                    end = _content_length;
-                    goto found;
-                }
-
+        if (++range_count > max_ranges) {
+            excessive = true;
+        }
+        if (start < end) {
+            if (end - start > file_size - selected_bytes) {
+                excessive = true;
             } else {
-                suffix = 1;
-                p++;
+                selected_bytes += end - start;
             }
-
-            if (*p < '0' || *p > '9') {
-                status_code = SW_HTTP_RANGE_NOT_SATISFIABLE;
-                return;
-            }
-
-            while (*p >= '0' && *p <= '9') {
-                if (end >= cutoff && (end > cutoff || (size_t) (*p - '0') > cutlim)) {
-                    status_code = SW_HTTP_RANGE_NOT_SATISFIABLE;
-                    return;
-                }
-
-                end = end * 10 + (*p++ - '0');
-            }
-
-            while (*p == ' ') {
-                p++;
-            }
-
-            if (*p != ',' && *p != '\0' && *p != '\r') {
-                status_code = SW_HTTP_RANGE_NOT_SATISFIABLE;
-                return;
-            }
-
-            if (suffix) {
-                start = (end < _content_length) ? _content_length - end : 0;
-                end = _content_length - 1;
-            }
-
-            if (end >= _content_length) {
-                end = _content_length;
-
-            } else {
-                end++;
-            }
-
-        found:
-            if (start < end) {
-                if (size > SIZE_MAX - (end - start)) {
-                    status_code = SW_HTTP_RANGE_NOT_SATISFIABLE;
-                    return;
-                }
-                size += end - start;
-                _task.offset = start;
-                _task.length = end - start;
-                content_length += sw_snprintf(_task.part_header,
-                                              sizeof(_task.part_header),
-                                              "%s--%s\r\n"
-                                              "Content-Type: %s\r\n"
-                                              "Content-Range: bytes %zu-%zu/%zu\r\n\r\n",
-                                              tasks.empty() ? "" : "\r\n",
-                                              get_boundary().c_str(),
-                                              get_mimetype().c_str(),
-                                              (size_t) _task.offset,
-                                              end - 1,
-                                              get_filesize()) +
-                                  _task.length;
-                tasks.push_back(_task);
-            } else if (start == 0) {
-                break;
-            }
-
-            if (*p++ != ',' || '\r' == *p || '\0' == *p) {
-                break;
+            task_t task{};
+            task.offset = start;
+            task.length = end - start;
+            if (!excessive) {
+                ranges.push_back(task);
             }
         }
+        if (!*p) {
+            break;
+        }
+        ++p;
     }
-    if (_task.length > 0) {
-        if (1 == tasks.size()) {
-            content_length = _task.length;
-        } else {
-            end_part = std::string("\r\n--") + get_boundary() + "--\r\n";
-            content_length += end_part.size();
-        }
-        status_code = SW_HTTP_PARTIAL_CONTENT;
+    if (excessive) {
+        full_response();
+        return;
+    }
+    if (ranges.empty()) {
+        status_code = SW_HTTP_RANGE_NOT_SATISFIABLE;
+        return;
+    }
+
+    size_t length = 0;
+    if (ranges.size() == 1) {
+        length = ranges.front().length;
     } else {
-        _task.offset = 0;
-        _task.length = content_length = get_filesize();
-        tasks.push_back(_task);
-    }
-    // if-range
-    if (if_range) {
-        if (is_modified_range(if_range)) {
-            tasks.clear();
-            _task.offset = 0;
-            _task.length = content_length = get_filesize();
-            tasks.push_back(_task);
-            status_code = SW_HTTP_OK;
+        for (auto &task : ranges) {
+            const int n = snprintf(task.part_header,
+                                   sizeof(task.part_header),
+                                   "%s--%s\r\nContent-Type: %s\r\n"
+                                   "Content-Range: bytes %zu-%zu/%zu\r\n\r\n",
+                                   &task == &ranges.front() ? "" : "\r\n",
+                                   get_boundary().c_str(),
+                                   get_mimetype().c_str(),
+                                   static_cast<size_t>(task.offset),
+                                   static_cast<size_t>(task.offset) + task.length - 1,
+                                   file_size);
+            if (n < 0 || static_cast<size_t>(n) >= sizeof(task.part_header) ||
+                task.length > SIZE_MAX - static_cast<size_t>(n) ||
+                length > SIZE_MAX - task.length - static_cast<size_t>(n)) {
+                status_code = SW_HTTP_RANGE_NOT_SATISFIABLE;
+                return;
+            }
+            length += task.length + n;
         }
+        const std::string terminator = "\r\n--" + get_boundary() + "--\r\n";
+        if (length > SIZE_MAX - terminator.length()) {
+            status_code = SW_HTTP_RANGE_NOT_SATISFIABLE;
+            return;
+        }
+        end_part = terminator;
+        length += end_part.length();
     }
+    tasks = std::move(ranges);
+    content_length = length;
+    status_code = SW_HTTP_PARTIAL_CONTENT;
 }
+
 }  // namespace http_server
 
 void Server::add_rewrite_rule(const std::string &pattern, const std::string &replacement) {

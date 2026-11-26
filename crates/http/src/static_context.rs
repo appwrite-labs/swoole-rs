@@ -67,7 +67,6 @@ pub struct HttpStaticContext {
     content: Vec<u8>,
     end: Vec<u8>,
     path: HttpStaticPath,
-    range: range::HttpContextRange,
     serve: serve::Serve,
     facts: HttpStaticObservation,
     directory: Vec<Vec<u8>>,
@@ -93,7 +92,6 @@ impl HttpStaticContext {
             content: Vec::new(),
             end: Vec::new(),
             path: HttpStaticPath::default(),
-            range: range::HttpContextRange::default(),
             serve: serve::Serve::default(),
             facts: HttpStaticObservation {
                 status: 200,
