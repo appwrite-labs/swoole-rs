@@ -3,7 +3,7 @@
 //! filesystem, MIME, random and calendar effects are the caller's [`StaticEffects`].
 use crate::static_meta::joined;
 use crate::static_path::{self, Action};
-use crate::{HttpDirectory, HttpStaticPath, HttpStaticTask, HttpTasks, INVALID, OVERFLOW};
+use crate::{HttpStaticPath, HttpStaticTask, HttpTasks, INVALID, OVERFLOW};
 mod filesystem;
 pub use filesystem::StaticEffects;
 mod range;
@@ -71,7 +71,7 @@ pub struct HttpStaticContext {
     range: range::HttpContextRange,
     serve: serve::Serve,
     facts: HttpStaticObservation,
-    directory: HttpDirectory,
+    directory: Vec<Vec<u8>>,
     tasks: HttpTasks,
 }
 impl HttpStaticContext {
@@ -100,7 +100,7 @@ impl HttpStaticContext {
                 status: 200,
                 ..HttpStaticObservation::default()
             },
-            directory: HttpDirectory::default(),
+            directory: Vec::new(),
             tasks: HttpTasks::default(),
         })
     }
@@ -329,10 +329,7 @@ mod tests {
         let facts = owner.observe();
         assert_eq!(facts.status, 200);
         assert_eq!(u32::from(facts.file_ready), 0);
-        for name in [b"z".as_slice(), b"a", b"z"] {
-            assert_eq!(owner.directory.scan_append(name), Ok(()));
-        }
-        owner.directory.scan_finish();
+        owner.directory = vec![b"a".to_vec(), b"z".to_vec()];
         owner.tasks.begin();
         owner.tasks.prepare_full(17, 23);
         assert_eq!(owner.tasks.push(), Ok(()));
