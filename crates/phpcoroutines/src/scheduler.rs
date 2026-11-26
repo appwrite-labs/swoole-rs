@@ -167,6 +167,11 @@ fn parallel(call: &Call) {
         call.set_bool(false);
         return;
     };
+    if count <= 0 {
+        callable.discard();
+        call.argument_value_error(1, c"must be greater than 0");
+        return;
+    }
     queue(scheduler, callable, count);
 }
 
@@ -180,31 +185,38 @@ fn start(call: &Call) {
         call.set_bool(false);
         return;
     }
-    scheduler.started.set(true);
     if scheduler.list.with_taken(|list| list.is_empty()) {
         host::fatal_error(E_WARNING, c"no coroutine task");
         call.set_bool(false);
         return;
     }
-    // Each step pops before creating, so no frame here owns a task while a
-    // coroutine runs.
-    let next = || scheduler.list.with_taken(Tasks::pop_front);
-    while let Some(task) = next() {
-        for _ in 0..task.count {
-            let (fcc, argc, argv, name) = task.callable.parts();
-            if runtime::create(call.php(), Some(fcc), argc, argv, name).is_err() {
-                Bailout.defer();
-                return;
-            }
-        }
-        bailout::defer(task.callable.release());
-        if bailout::pending() {
-            return;
-        }
+    scheduler.started.set(true);
+    let result = start_tasks(scheduler, call);
+    if result.is_ok() && !bailout::pending() && swoole_rs_zend::host::exception().is_null() {
+        host::event_wait();
     }
-    host::event_wait();
     scheduler.started.set(false);
-    call.set_bool(true);
+    match result {
+        Ok(success) => call.set_bool(success),
+        Err(bailed) => bailed.defer(),
+    }
+}
+
+fn start_tasks(scheduler: &Scheduler, call: &Call) -> Result<bool, Bailout> {
+    while let Some(mut task) = scheduler.list.with_taken(Tasks::pop_front) {
+        while task.count > 0 {
+            let (fcc, argc, argv, name) = task.callable.parts();
+            let created = runtime::create(call.php(), Some(fcc), argc, argv, name);
+            if !matches!(created, Ok(cid) if cid >= 0) {
+                scheduler.list.with_taken(|list| list.push_front(task));
+                return created.map(|_| false);
+            }
+            task.count -= 1;
+        }
+        task.callable.release()?;
+        bailout::outcome(())?;
+    }
+    Ok(true)
 }
 
 /// `php_swoole_set_coroutine_option`. It stops at a deferred bailout, where
