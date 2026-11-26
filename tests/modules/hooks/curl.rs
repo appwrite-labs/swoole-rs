@@ -83,7 +83,7 @@ mod recording {
     }
     pub(crate) fn yield_(
         _co: *mut c_void,
-        _timeout: f64,
+        _deadline: swoole_rs_corebase::timer::Deadline,
         _arm: &mut dyn FnMut(swoole_rs_corebase::coroutine::Waker),
     ) -> bool {
         false

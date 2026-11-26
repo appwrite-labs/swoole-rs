@@ -58,9 +58,9 @@ pub struct Coroutines {
     pub current: fn() -> *mut c_void,
     /// Registers the SIGCHLD reaper and the reactor callbacks, once.
     pub signal_init: fn(),
-    /// `co->yield_ex(timeout)` of the current coroutine, if any, handing its waker to
-    /// the callback before it switches out.
-    pub yield_for: fn(f64, &dyn Fn(Wake)),
+    /// `co->yield_ex(timeout)` of the current coroutine, if any, until the deadline,
+    /// handing its waker to the callback before it switches out.
+    pub yield_for: fn(crate::timer::Deadline, &dyn Fn(Wake)),
     /// `co->is_timedout()` of the current coroutine, if any.
     pub timed_out: fn() -> bool,
     /// `co->resume()` of the park a [`Wake`] names, if it still waits there.
@@ -78,12 +78,12 @@ pub struct Waited {
 
 /// `System::waitpid(pid, status, options, timeout)`: an already reaped child first;
 /// outside a coroutine, or with `WNOHANG`, plain waitpid; otherwise the coroutine
-/// yields until the reaper hands it a child or `timeout` passes.
+/// yields until the reaper hands it a child or `deadline` passes.
 pub fn wait_pid(
     pid: libc::pid_t,
     status: &mut c_int,
     options: c_int,
-    timeout: f64,
+    deadline: crate::timer::Deadline,
     ops: &Coroutines,
 ) -> Waited {
     let exited = waits(|waits| {
@@ -130,7 +130,7 @@ pub fn wait_pid(
     });
     // The reaper hands `task` a child, and wakes this park, while this frame is
     // suspended here.
-    (ops.yield_for)(timeout, &|wake| {
+    (ops.yield_for)(deadline, &|wake| {
         *task.wake.lock().unwrap_or_else(PoisonError::into_inner) = wake;
     });
     let child = task.pid();
@@ -226,7 +226,7 @@ pub(crate) mod tests {
         false
     }
     /// Stands in for a suspension during which the child exits and SIGCHLD is reaped.
-    fn reap_while_yielded(_: f64, _: &dyn Fn(Wake)) {
+    fn reap_while_yielded(_: crate::timer::Deadline, _: &dyn Fn(Wake)) {
         YIELDED.set(true);
         while wait_count() > 0 {
             wait_reap(libc::SIGCHLD, &PLAIN);
@@ -277,7 +277,13 @@ pub(crate) mod tests {
     fn waits_of_this_process_alone() {
         let child = spawn(3);
         let mut status = 0;
-        let waited = wait_pid(child, &mut status, 0, -1.0, &PLAIN);
+        let waited = wait_pid(
+            child,
+            &mut status,
+            0,
+            crate::timer::Deadline::never(),
+            &PLAIN,
+        );
         assert_eq!(
             (waited.pid.unwrap().unwrap(), libc::WEXITSTATUS(status)),
             (child, 3)
@@ -288,7 +294,13 @@ pub(crate) mod tests {
             ..PLAIN
         };
         let child = spawn(5);
-        let waited = wait_pid(-1, &mut status, 0, -1.0, &coroutine);
+        let waited = wait_pid(
+            -1,
+            &mut status,
+            0,
+            crate::timer::Deadline::never(),
+            &coroutine,
+        );
         assert_eq!(
             (waited.pid.unwrap().unwrap(), waited.timed_out),
             (child, false)
@@ -299,7 +311,13 @@ pub(crate) mod tests {
         let child = spawn(7);
         unsafe { libc::usleep(50_000) };
         wait_reap(libc::SIGCHLD, &coroutine);
-        let waited = wait_pid(child, &mut status, 0, -1.0, &coroutine);
+        let waited = wait_pid(
+            child,
+            &mut status,
+            0,
+            crate::timer::Deadline::never(),
+            &coroutine,
+        );
         assert_eq!(
             (waited.pid.unwrap().unwrap(), libc::WEXITSTATUS(status)),
             (child, 7)

@@ -7,7 +7,7 @@ use std::ffi::{CStr, CString, c_int, c_long};
 use swoole_rs_corebase::CCast;
 use swoole_rs_corebase::log::last_error;
 use swoole_rs_corebase::reactor::Events;
-use swoole_rs_corebase::timer::MIN_SEC as TIMER_MIN_SEC;
+use swoole_rs_corebase::timer::{Deadline, MIN_SEC as TIMER_MIN_SEC};
 use swoole_rs_corebase::waits::wait_upstream::{system_wait, system_waitpid};
 use swoole_rs_hooks::exec::exec as exec_into;
 use swoole_rs_phpstubs::coroutine_system;
@@ -202,7 +202,7 @@ fn gethostbyname(call: &Call) {
         call.set_bool(false);
         return;
     }
-    let address = system_gethostbyname(domain, saturated(family), timeout);
+    let address = system_gethostbyname(domain, saturated(family), Deadline::from_timeout(timeout));
     if address.is_empty() {
         call.set_bool(false);
     } else {
@@ -251,7 +251,7 @@ fn getaddrinfo(call: &Call) {
         saturated(socktype),
         saturated(protocol),
         until_nul(service),
-        timeout,
+        Deadline::from_timeout(timeout),
     );
     if addresses.is_empty() {
         call.set_bool(false);

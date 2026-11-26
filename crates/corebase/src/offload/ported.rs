@@ -59,6 +59,8 @@ thread_local! {
     static KNOBS: Cell<Knobs> = const { Cell::new(DEFAULTS) };
     static QUEUED: Cell<bool> = const { Cell::new(false) };
     static LAST_ERROR: Cell<c_int> = const { Cell::new(0) };
+    /// The seconds `async_event` turned into the offload's deadline.
+    static TIMEOUT: Cell<f64> = const { Cell::new(0.0) };
     /// The pool's copy of the event, and the request its `data` shares.
     static WORKER: UnsafeCell<AsyncEvent> = const { UnsafeCell::new(empty()) };
     static WORKER_REQUEST: RefCell<Option<Rc<Request>>> = const { RefCell::new(None) };
@@ -149,6 +151,16 @@ fn park_for(seconds: f64, waker: &WakerSlot) -> bool {
     }
     ok
 }
+/// The offload's park: upstream's `yield_ex` of the seconds the deadline came from.
+fn park_until(deadline: crate::timer::Deadline, waker: &WakerSlot) -> bool {
+    let seconds = TIMEOUT.get();
+    assert!(
+        deadline
+            .remaining()
+            .is_some_and(|left| left.as_secs_f64() <= seconds)
+    );
+    park_for(seconds, waker)
+}
 fn resume(_: Waker) {
     record("resume".into());
 }
@@ -171,7 +183,7 @@ const OPS: AsyncOps = AsyncOps {
     current,
     dispatch,
     park,
-    park_for,
+    park_for: park_until,
     resume,
     last_error,
 };
@@ -215,7 +227,9 @@ fn async_event(
     timeout: f64,
 ) -> bool {
     CALLER_REQUEST.set(request.cloned());
-    let result = swr_v1_hook_async(event, handler, timeout, &OPS);
+    TIMEOUT.set(timeout);
+    let deadline = crate::timer::Deadline::from_timeout(timeout);
+    let result = swr_v1_hook_async(event, handler, deadline, &OPS);
     drop(CALLER_REQUEST.take());
     result
 }

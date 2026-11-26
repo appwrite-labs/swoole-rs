@@ -18,12 +18,12 @@ pub fn park(waker: &WakerSlot) {
     _ = crate::coroutine::park(co, Deadline::never(), |park| waker.set(Some(park)));
 }
 
-/// `co->yield_ex(timeout)` of the current coroutine (fatal outside one), its waker
-/// in `waker`.
-pub fn park_for_armed(timeout: f64, waker: &WakerSlot) -> bool {
+/// `co->yield_ex(timeout)` of the current coroutine (fatal outside one) until
+/// `deadline`, its waker in `waker`.
+pub fn park_for_armed(deadline: Deadline, waker: &WakerSlot) -> bool {
     let arm = |park| waker.set(Some(park));
     let co = crate::coroutine::current_safe().cast();
-    let code = crate::coroutine::yield_timed_armed(co, Deadline::from_timeout(timeout), arm);
+    let code = crate::coroutine::yield_timed_armed(co, deadline, arm);
     crate::coroutine::yield_resumed(code)
 }
 
@@ -154,9 +154,9 @@ pub struct AsyncOps {
     pub(crate) dispatch: fn(&AsyncEvent) -> *mut AsyncEvent,
     /// `co->yield()` of the current coroutine, its waker stored first.
     pub(crate) park: fn(&WakerSlot),
-    /// `co->yield_ex(timeout)` of the current coroutine, its waker stored first:
-    /// false on timeout or cancellation.
-    pub(crate) park_for: fn(f64, &WakerSlot) -> bool,
+    /// `co->yield_ex(timeout)` of the current coroutine until the deadline, its waker
+    /// stored first: false on timeout or cancellation.
+    pub(crate) park_for: fn(Deadline, &WakerSlot) -> bool,
     /// `co->resume()` of a parked coroutine.
     pub(crate) resume: fn(Waker),
     /// `swoole_get_last_error()`.
@@ -220,7 +220,7 @@ extern "C" fn completed(event: &AsyncEvent) {
 }
 
 /// `coroutine::async(handler, event, timeout)`, inside a coroutine (`ops.current` is
-/// fatal outside one): runs `handler` on the pool and waits up to `timeout`. True with
+/// fatal outside one): runs `handler` on the pool and waits until `deadline`. True with
 /// the pool's result in `event`; false if refused, or on timeout or cancellation
 /// (`event` canceled, -1, and the last error as errno). While `handler` runs, `event`'s
 /// object is the waiting task, which only this module's handlers read: a handler can
@@ -228,7 +228,7 @@ extern "C" fn completed(event: &AsyncEvent) {
 pub fn swr_v1_hook_async(
     event: &mut AsyncEvent,
     handler: Handler,
-    timeout: f64,
+    deadline: Deadline,
     ops: &AsyncOps,
 ) -> bool {
     let waker = WakerSlot::new(None);
@@ -241,7 +241,7 @@ pub fn swr_v1_hook_async(
         return false;
     }
     // Parks this coroutine until `completed`, a timeout or a cancel.
-    let parked = (ops.park_for)(timeout, &waker);
+    let parked = (ops.park_for)(deadline, &waker);
     // SAFETY: the pool's copy lives until its completion on this thread returns:
     // resumed by `completed`, which has not returned, or pending after a timeout or cancel.
     let done = unsafe { &*dispatched };
@@ -331,7 +331,7 @@ mod tests {
             }
         }
     }
-    fn park_for(_: f64, waker: &WakerSlot) -> bool {
+    fn park_for(_: Deadline, waker: &WakerSlot) -> bool {
         if TIME_OUT.get() {
             return false;
         }
@@ -385,7 +385,12 @@ mod tests {
     fn handler_result_or_timeout_reaches_the_event() {
         RESUMED.set(0);
         let mut event = empty();
-        assert!(swr_v1_hook_async(&mut event, handler, 1.0, &OPS));
+        assert!(swr_v1_hook_async(
+            &mut event,
+            handler,
+            Deadline::never(),
+            &OPS
+        ));
         assert_eq!(
             (
                 event.result().0,
@@ -399,7 +404,12 @@ mod tests {
 
         TIME_OUT.set(true);
         let mut event = empty();
-        assert!(!swr_v1_hook_async(&mut event, handler, 1.0, &OPS));
+        assert!(!swr_v1_hook_async(
+            &mut event,
+            handler,
+            Deadline::never(),
+            &OPS
+        ));
         TIME_OUT.set(false);
         assert_eq!(
             (
