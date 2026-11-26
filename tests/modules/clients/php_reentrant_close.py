@@ -13,7 +13,7 @@ from tools.harness import parse_engines,run_isolated,write_report
 
 EXPECTED=dict(outer=dict(received=False,errCode=5001,connected=False),fresh=dict(reuse=False,reuse_count=0),
               peer=dict(accepts=2,eof=True),
-              http=dict(get=dict(ok=True,status=200,first=['a'],second=[['b',0,False],['c',0,False]],
+              http=dict(get=dict(ok=True,status=200,first=['a'],second=[['b',200,False],['c',200,False]],
                                  nested=dict(get=[False,True],post=[False,True],recv=[False,True])),
                         download=dict(ok=True,status=200,body='abc'),used_while_yielded=True),warnings=[])
 BOUND=re.compile(r'second recv\n\nFatal error: Uncaught Swoole\\Error: Socket#\d+ has already been bound to another coroutine#\d+, '
