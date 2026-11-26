@@ -828,18 +828,35 @@ fn sendto(call: &Call) {
     call.set_bool(sent);
 }
 
-/// `sendfile(string $filename, int $offset = 0, int $length = 0): bool`.
-fn sendfile(call: &Call) {
-    let parsed = call
-        .arity(1, 3)
-        .and_then(|()| Ok((call.string(1, b"")?, call.long(2, 0)?, call.long(3, 0)?)));
-    let Ok((file, offset, length)) = parsed else {
-        return call.set_bool(false);
-    };
+pub(crate) fn nonnegative_file_argument(name: &str, value: i64) -> bool {
+    if value >= 0 {
+        return true;
+    }
+    warn(
+        ErrorKind::Error,
+        &format!("parameter ${name}[{value}] must be greater than or equal to 0"),
+    );
+    false
+}
+
+pub(crate) fn sendfile_args<'a>(call: &'a Call) -> Option<(&'a [u8], i64, i64)> {
+    call.arity(1, 3).ok()?;
+    let file = call.string(1, b"").ok()?;
+    let offset = call.long(2, 0).ok()?;
+    let length = call.long(3, 0).ok()?;
     if file.is_empty() {
         warn(ErrorKind::Fatal, "file to send is empty");
-        return call.set_bool(false);
+        return None;
     }
+    (nonnegative_file_argument("offset", offset) && nonnegative_file_argument("length", length))
+        .then_some((file, offset, length))
+}
+
+/// `sendfile(string $filename, int $offset = 0, int $length = 0): bool`.
+fn sendfile(call: &Call) {
+    let Some((file, offset, length)) = sendfile_args(call) else {
+        return call.set_bool(false);
+    };
     let Some(conn) = connected(call) else {
         return call.set_bool(false);
     };

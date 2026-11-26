@@ -4,6 +4,7 @@ use crate::{
     http_native as native,
     http_request::{self as request, Compress},
     native::{Co, swoole_rs_php_error},
+    net::nonnegative_file_argument,
     socket::Sock,
     websocket::{CLOSE_NORMAL, ClientWebSocket, FLAG_FIN, FLAGS_ALL, PushError},
 };
@@ -2102,15 +2103,6 @@ enum Upload<'a> {
     String(&'a ZStr),
     Text(&'a [u8]),
     Number(i64),
-}
-
-fn nonnegative_file_argument(name: &str, value: i64) -> bool {
-    if value >= 0 {
-        return true;
-    }
-    let message = format!("parameter ${name}[{value}] must be greater than or equal to 0");
-    warn(false, &CString::new(message).unwrap_or_default());
-    false
 }
 
 /// `addFile(string $path, string $name, ?string $type = null, ?string $filename = null, int $offset = 0, int $length = 0): bool`.

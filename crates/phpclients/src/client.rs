@@ -457,16 +457,9 @@ fn recvfrom(call: &mut Call) {
 
 /// `sendfile(string $filename, int $offset = 0, int $length = 0): bool`.
 fn sendfile(call: &Call) {
-    let parsed = call
-        .arity(1, 3)
-        .and_then(|()| Ok((call.string(1, b"")?, call.long(2, 0)?, call.long(3, 0)?)));
-    let Ok((file, offset, length)) = parsed else {
+    let Some((file, offset, length)) = crate::net::sendfile_args(call) else {
         return call.set_bool(false);
     };
-    if file.is_empty() {
-        warn(true, "file to send is empty");
-        return call.set_bool(false);
-    }
     let Some((socket, _hold)) = connected(call) else {
         return;
     };
