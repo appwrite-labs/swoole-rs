@@ -156,6 +156,12 @@ fn option(state: &mut State, name: &[u8], value: &Value) {
     let option = request_option(name, wanted);
     let truth = || value.truthy();
     match option {
+        Some(RequestOption::PackageMaxLength) => {
+            if let Some(size) = swoole_rs_phpswoole::php_swoole_parse_to_size(value) {
+                state.parse.package_max_length =
+                    Some(u32::try_from(size.max(0)).unwrap_or(u32::MAX));
+            }
+        }
         Some(RequestOption::ParseCookie) => state.parse_cookie = truth(),
         Some(RequestOption::ParseBody) => state.parse_body = truth(),
         Some(RequestOption::ParseFiles) => state.parse_files = truth(),
@@ -180,7 +186,10 @@ fn parse(call: &Call) {
     let Ok(Some(data)) = call.arity(1, 1).and_then(|()| call.string_opt(1)) else {
         return call.set_bool(false);
     };
-    let parsed = parse::parse_piece(ctx.state(), data);
+    let Some(parsed) = parse::parse_piece(ctx.state(), data) else {
+        host::set_last_error(swoole_rs_error::ErrorCode::SW_ERROR_PACKAGE_LENGTH_TOO_LARGE as i32);
+        return call.set_bool(false);
+    };
     call.set_long(i64::try_from(parsed).unwrap_or(i64::MAX));
 }
 

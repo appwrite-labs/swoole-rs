@@ -536,16 +536,27 @@ pub(crate) fn parse_request(state: &mut State, data: &[u8]) -> usize {
 }
 
 /// `Request::parse()`: append to `request.zdata` and parse what was appended.
-pub(crate) fn parse_piece(state: &mut State, data: &[u8]) -> usize {
+pub(crate) fn parse_piece(state: &mut State, data: &[u8]) -> Option<usize> {
     let zdata = &mut state.request.zdata;
-    let joined = [zdata.bytes().unwrap_or_default(), data].concat();
-    *zdata = Owned::string(ZString::new(&joined));
+    let old = zdata.bytes().unwrap_or_default();
+    let limit = state
+        .parse
+        .package_max_length
+        .unwrap_or(swoole_rs_corebase::constants::SW_INPUT_BUFFER_SIZE) as usize;
+    let length = old
+        .len()
+        .checked_add(data.len())
+        .filter(|&len| len <= limit)?;
+    let mut joined = swoole_rs_zend::string::ZBuf::with_capacity(length);
+    joined.extend_from_slice(old);
+    joined.extend_from_slice(data);
+    *zdata = Owned::string(joined.into_zstring());
     // A reference of its own to `zdata`, which the callbacks read but neither
     // write nor replace: the appended bytes are its end.
     let held = zdata.copy();
     let bytes = held.bytes().unwrap_or_default();
     let appended = bytes.get(bytes.len() - data.len()..).unwrap_or_default();
-    execute(state, Some(bytes), appended)
+    Some(execute(state, Some(bytes), appended))
 }
 
 /// The `length` bytes of `zdata` that end where the piece at `at` does: a span's
