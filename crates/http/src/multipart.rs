@@ -60,6 +60,8 @@ mod tests {
             &b"form-data; name=x; filename=one; filename=two\0"[..],
             b"FiLeNaMe;next=x\0",
             b"filename =x;other=y\0",
+            b"name=filename; \x0b\x0cFILENAME=value\0",
+            b"name=x\0;filename=y",
             b"=bad; filename=\0",
             b"filename\0;ignored=value",
             b"name=x\0",
@@ -79,6 +81,7 @@ mod tests {
                     Err(status) => break Err(status),
                 }
             };
+            assert_eq!(Ok(crate::multipart_has_filename(input)), result);
             assert_eq!(multipart_filename(&mut actual), result);
             assert_eq!(actual, expected);
         }

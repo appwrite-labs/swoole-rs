@@ -131,12 +131,8 @@ fn in_chunk(at: *const c_char, length: usize) {
     );
 }
 
-/// The multipart callbacks: header spans checked, the current part's header value
-/// kept for the filename scan.
-#[derive(Default)]
-struct Parts {
-    value: Vec<u8>,
-}
+/// Check the spans and filename scan on the same fragments as the reactor.
+struct Parts;
 
 impl swoole_rs_http::multipart_parser::Parts<'_> for Parts {
     fn on_header_field(&mut self, data: &[u8]) -> Flow {
@@ -146,17 +142,14 @@ impl swoole_rs_http::multipart_parser::Parts<'_> for Parts {
 
     fn on_header_value(&mut self, data: &[u8]) -> Flow {
         in_chunk(data.as_ptr().cast(), data.len());
-        self.value.extend_from_slice(data);
-        Flow::Go
-    }
-
-    fn on_headers_complete(&mut self) -> Flow {
-        let mut value = std::mem::take(&mut self.value);
-        value.push(0);
-        // The scan reads the value through its first NUL.
-        let end = value.iter().position(|&byte| byte == 0).unwrap_or_default();
-        let status = swoole_rs_http::multipart_filename(&mut value[..=end]);
-        assert!(status.is_ok(), "filename status {status:?}");
+        let found = swoole_rs_http::multipart_has_filename(data);
+        // Compare short values with the original destructive tokenizer.
+        let mut scratch = [0; 1024];
+        if data.len() < scratch.len() {
+            let (token, _) = scratch.split_at_mut(data.len());
+            token.copy_from_slice(data);
+            assert_eq!(swoole_rs_http::multipart_filename(&mut scratch), Ok(found));
+        }
         Flow::Go
     }
 }
@@ -173,7 +166,7 @@ pub fn multipart(bytes: &[u8]) {
         return;
     };
     let mut parser = MultipartParser::new(boundary).expect("RFC 2046 boundary fits");
-    let mut parts = Parts::default();
+    let mut parts = Parts;
     let step = usize::from(step).max(1);
     for chunk in body.chunks(step) {
         let start = chunk.as_ptr() as usize;
