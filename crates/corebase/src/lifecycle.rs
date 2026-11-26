@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
-// Compatibility derived from Swoole v6.2.4 src/core/base.cc (Swoole contributors).
-//! base.cc's init, thread, clean and fork sequences, and `SwooleTG`.
+// Compatibility derived from Swoole v6.2.4 src/core/base.cc and src/os/base.cc
+// (Swoole contributors).
+//! core/base.cc's init, thread, clean and fork sequences, and `SwooleTG`; os/base.cc's
+//! `swoole_daemon`, which forks.
 //! Runtime resources are initialized and cleaned through their owners in this crate.
 use crate::buffer::string::StringBuffer;
 use crate::constants::SW_STACK_BUFFER_SIZE;
@@ -285,6 +287,100 @@ pub extern "C-unwind" fn swoole_fork(flags: c_int) -> libc::pid_t {
     crate::signal_mask::restore_after_fork(previous, true);
     crate::hook::call(crate::hook::Hook::AfterFork);
     0
+}
+
+// libc's own declarations, each a call over plain values that reads and writes no
+// caller memory.
+unsafe extern "C" {
+    #[cfg(target_vendor = "apple")]
+    safe fn setsid() -> libc::pid_t;
+    /// Leaves the process at once, running no exit handler and no destructor.
+    #[cfg(target_vendor = "apple")]
+    safe fn _exit(status: c_int) -> !;
+    /// Forks and leaves the parent, as `daemon(3)`.
+    #[cfg(not(target_vendor = "apple"))]
+    safe fn daemon(nochdir: c_int, noclose: c_int) -> c_int;
+}
+
+/// `swoole_daemon`'s Darwin steps before the fork: `chdir("/")` unless `nochdir`,
+/// then stdin/stdout/stderr onto `/dev/null` unless `noclose`. Logs the failed step.
+#[cfg(target_vendor = "apple")]
+fn daemon_detach(nochdir: bool, noclose: bool) -> bool {
+    use crate::sys;
+    if !nochdir && sys::chdir(c"/").is_err() {
+        log::sys_warning(c"swoole_daemon", format_args!("chdir() failed"));
+        return false;
+    }
+    if noclose {
+        return true;
+    }
+    let Ok(fd) = sys::open(c"/dev/null", libc::O_RDWR, 0) else {
+        log::sys_warning(c"swoole_daemon", format_args!("open() failed"));
+        return false;
+    };
+    // dup2 onto the standard descriptors, as upstream.
+    let redirected = (0..3).all(|target| sys::dup2(fd, target).is_ok());
+    if !redirected {
+        log::sys_warning(c"swoole_daemon", format_args!("dup2() failed"));
+    }
+    _ = sys::close(fd);
+    redirected
+}
+
+/// The operation that prevented the process from becoming a daemon.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum DaemonError {
+    /// Detaching from the working directory or standard streams failed.
+    Detach,
+    /// The fork precheck or fork failed.
+    Fork,
+    /// The child could not create a new session.
+    #[cfg(target_vendor = "apple")]
+    Session,
+}
+
+/// `int swoole_daemon(int nochdir, int noclose)`. Darwin's `daemon(3)` is
+/// deprecated, so it detaches, forks and calls `setsid` itself.
+#[cfg(target_vendor = "apple")]
+/// # Errors
+/// Returns the step that prevented daemonization.
+pub fn swoole_daemon(nochdir: c_int, noclose: c_int) -> Result<(), DaemonError> {
+    if !daemon_detach(nochdir != 0, noclose != 0) {
+        return Err(DaemonError::Detach);
+    }
+    // Upstream's fork; it rejects a coroutine or async-thread caller itself.
+    let pid = swoole_fork(FORK_DAEMON);
+    if pid < 0 {
+        log::sys_warning(c"swoole_daemon", format_args!("fork() failed"));
+        return Err(DaemonError::Fork);
+    }
+    if pid > 0 {
+        // The parent leaves without running exit handlers, as upstream.
+        _exit(0);
+    }
+    if setsid() < 0 {
+        log::sys_warning(c"swoole_daemon", format_args!("setsid() failed"));
+        return Err(DaemonError::Session);
+    }
+    Ok(())
+}
+
+/// `int swoole_daemon(int nochdir, int noclose)`: `daemon(3)`, then the
+/// after-fork hooks, since the pid changed (PHP 8.5 refreshes its memory
+/// manager after a fork, and `daemon(3)` forks behind its back).
+#[cfg(not(target_vendor = "apple"))]
+/// # Errors
+/// Returns the step that prevented daemonization.
+pub fn swoole_daemon(nochdir: c_int, noclose: c_int) -> Result<(), DaemonError> {
+    // Upstream's fork precheck; it forks nothing (-1 before `swoole_init`).
+    if swoole_fork(FORK_PRECHECK) < 0 {
+        return Err(DaemonError::Fork);
+    }
+    if daemon(nochdir, noclose) != 0 {
+        return Err(DaemonError::Detach);
+    }
+    crate::hook::call(crate::hook::Hook::AfterFork);
+    Ok(())
 }
 
 /// `swoole_fork_exec`: the child runs `child` and exits 0; the parent gets the

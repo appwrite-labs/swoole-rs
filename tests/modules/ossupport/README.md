@@ -17,7 +17,7 @@ values (`cargo test -p swoole-rs-corebase --all-features os_`):
 
 | Upstream TEST | Rust test or reason |
 | --- | --- |
-| `os.daemon` | `os.daemon` in `tests/modules/hooks/system/src/os.rs` (`hooks-system-rust`), since it needs `swoole_init` |
+| `os.daemon` | `os.daemon` in `tests/modules/hooks/system/src/os.rs` (`hooks-system-rust`), since it needs `swoole_init`; `swoole_daemon` forks, so it lives with `swoole_fork` in `crates/corebase/src/lifecycle.rs` |
 | `os.cpu_affinity` | `ossupport::system::tests::os_cpu_affinity` (Linux). `swoole_set_cpu_affinity` and `swoole_get_cpu_affinity` left the build (corebase::process `affinity.rs` pins workers and nothing called the getter), so the case sets and gets through their bodies, `sched_setaffinity(getpid())` and `sched_getaffinity(getpid())`, as `CpuSet::set_process` and `CpuSet::get_process` make them |
 | `os.thread_name` | `ossupport::system::tests::os_thread_name` (Linux, whose 15-byte limit fails the second name) |
 | `os.thread_id` | none: `swoole_thread_id_to_str` left the build with its one caller, the async-thread warnings, so there is no function to test |

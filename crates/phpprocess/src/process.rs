@@ -826,8 +826,7 @@ fn daemon(call: &Call) {
         }
     }
     call.set_bool(
-        swoole_rs_corebase::ossupport::swoole_daemon(c_int::from(nochdir), c_int::from(noclose))
-            .is_ok(),
+        swoole_rs_corebase::swoole_daemon(c_int::from(nochdir), c_int::from(noclose)).is_ok(),
     );
 }
 
