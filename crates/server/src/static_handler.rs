@@ -138,6 +138,28 @@ impl<'a, E: Effects> StaticHandler<'a, E> {
         http_date(Some(self.context.mtime()))
     }
 
+    #[must_use]
+    pub fn etag(&self) -> String {
+        self.context.observe().etag()
+    }
+
+    #[must_use]
+    pub fn preconditions(
+        &self,
+        if_match: &[u8],
+        unmodified: &[u8],
+        none_match: &[u8],
+        modified: &[u8],
+    ) -> swoole_rs_http::PreconditionStatus {
+        self.context.observe().preconditions(
+            if_match,
+            unmodified,
+            none_match,
+            modified,
+            &self.effects,
+        )
+    }
+
     /// The file changed since `date` (an `If-Modified-Since`).
     #[must_use]
     pub fn is_modified(&self, date: &[u8]) -> bool {

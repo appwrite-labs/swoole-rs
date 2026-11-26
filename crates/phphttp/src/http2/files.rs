@@ -7,7 +7,8 @@ use crate::http2::{Ctx, Field};
 use std::ffi::CString;
 use swoole_rs_corebase::CCast;
 use swoole_rs_corebase::offload::async_job;
-use swoole_rs_http::status::{NOT_FOUND, NOT_MODIFIED, PARTIAL_CONTENT};
+use swoole_rs_http::PreconditionStatus;
+use swoole_rs_http::status::{NOT_FOUND, PARTIAL_CONTENT, RANGE_NOT_SATISFIABLE};
 use swoole_rs_http2::{FileMode, sw_rs_http2_file_length, sw_rs_http2_file_mode};
 use swoole_rs_server::static_handler::{StaticHandler, page_404};
 use swoole_rs_server::view;
@@ -52,10 +53,6 @@ fn c_text(text: &[u8]) -> &[u8] {
     text.split(|&byte| byte == 0).next().unwrap_or_default()
 }
 
-fn set_header(ctx: Ctx, name: &[u8], value: &[u8]) {
-    ctx.set_header(name, value);
-}
-
 /// A string entry of one of the request's arrays (`$server`, `$header`).
 fn entry(ctx: Ctx, array: Value, key: &[u8]) -> Option<Vec<u8>> {
     Some(ctx.entry(array, key)?.bytes()?.to_vec())
@@ -94,17 +91,27 @@ fn serve(server: view::Server<'_>, ctx: Ctx) -> bool {
     if !handler.try_serve_index_file() {
         return false;
     }
-    // no index file in the directory: with http_autoindex, list the directory.
-    if handler.lists_directory() {
-        respond(ctx, &handler.index_page());
+    ctx.unhook();
+    set(ctx, Field::AcceptCompression, 0);
+    ctx.set_header(b"Last-Modified", &handler.date_last_modified());
+    ctx.set_header(b"ETag", handler.etag().as_bytes());
+    let header = |key: &[u8]| entry(ctx, Value::Header, key).unwrap_or_default();
+    let condition = handler.preconditions(
+        &header(b"if-match"),
+        &header(b"if-unmodified-since"),
+        &header(b"if-none-match"),
+        &header(b"if-modified-since"),
+    );
+    if condition != PreconditionStatus::Ok {
+        set(ctx, Field::Status, condition as u32);
+        if condition != PreconditionStatus::NotModified {
+            ctx.set_header(b"Content-Length", b"0");
+        }
+        respond(ctx, &[]);
         return true;
     }
-    set_header(ctx, b"Last-Modified", &handler.date_last_modified());
-    if let Some(since) = entry(ctx, Value::Header, b"if-modified-since")
-        && !since.is_empty()
-        && handler.is_modified(&since)
-    {
-        set(ctx, Field::Status, NOT_MODIFIED.cast_unsigned());
+    if handler.lists_directory() {
+        respond(ctx, &handler.index_page());
         return true;
     }
     let (range, if_range) = (
@@ -121,32 +128,41 @@ fn serve(server: view::Server<'_>, ctx: Ctx) -> bool {
         Field::Status,
         u32::try_from(status).unwrap_or_default(),
     );
+    if status == RANGE_NOT_SATISFIABLE {
+        ctx.set_header(
+            b"Content-Range",
+            format!("bytes */{}", handler.filesize()).as_bytes(),
+        );
+        ctx.set_header(b"Content-Length", b"0");
+        respond(ctx, &[]);
+        return true;
+    }
     let tasks = handler.tasks();
     if let [task] = tasks.as_slice() {
         if status == PARTIAL_CONTENT {
             let range = content_range(task.offset, task.length, handler.filesize());
-            set_header(ctx, b"Content-Range", range.as_bytes());
+            ctx.set_header(b"Content-Range", range.as_bytes());
         } else {
-            set_header(ctx, b"Accept-Ranges", b"bytes");
+            ctx.set_header(b"Accept-Ranges", b"bytes");
         }
     }
-    ctx.unhook();
     if entry(ctx, Value::Server, b"request_method")
         .is_some_and(|method| method.eq_ignore_ascii_case(b"HEAD"))
     {
         respond(ctx, &[]);
         return true;
     }
-    send_ranges(ctx, handler)
+    send_ranges(ctx, handler);
+    true
 }
 
 /// The single range's `Content-Range`, as upstream's stringstream writes it
-/// (`length + offset - 1` in `size_t`, and its trailing CRLF).
+/// (`length + offset - 1` in `size_t`, as in v6.3).
 fn content_range(offset: i64, length: usize, size: usize) -> String {
     let last = (length as u64)
         .wrapping_add(offset.c_cast::<u64>())
         .wrapping_sub(1);
-    format!("bytes {offset}-{last}/{size}\r\n")
+    format!("bytes {offset}-{last}/{size}")
 }
 
 /// `http2_server_send_range_file`: the file's ranges, the stream (and so the
@@ -261,11 +277,8 @@ mod tests {
 
     #[test]
     fn a_range_is_written_as_upstreams_stringstream_writes_it() {
-        assert_eq!(content_range(0, 100, 1000), "bytes 0-99/1000\r\n");
-        assert_eq!(content_range(900, 100, 1000), "bytes 900-999/1000\r\n");
-        assert_eq!(
-            content_range(0, 0, 1),
-            format!("bytes 0-{}/1\r\n", u64::MAX)
-        );
+        assert_eq!(content_range(0, 100, 1000), "bytes 0-99/1000");
+        assert_eq!(content_range(900, 100, 1000), "bytes 900-999/1000");
+        assert_eq!(content_range(0, 0, 1), format!("bytes 0-{}/1", u64::MAX));
     }
 }

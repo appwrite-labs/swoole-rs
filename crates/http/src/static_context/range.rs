@@ -9,11 +9,7 @@ impl crate::HttpStaticObservation {
     /// A quoted If-Range validator must match the file's strong entity tag exactly.
     pub fn modified_range(&self, value: &[u8], effects: &impl StaticEffects) -> bool {
         if value.starts_with(b"\"") {
-            let tag = format!(
-                "\"{:x}-{:x}-{:x}\"",
-                self.mtime, self.filesize, self.mtime_nsec
-            );
-            value != tag.as_bytes()
+            value != self.etag().as_bytes()
         } else {
             effects.modified_range(value, self.mtime)
         }

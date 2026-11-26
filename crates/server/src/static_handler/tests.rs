@@ -938,3 +938,36 @@ fn former_conditional_gate() {
         }
     }
 }
+
+#[test]
+fn preconditions_and_if_range_share_validators() {
+    let file = HttpStaticObservation {
+        mtime: 1_730_000_000,
+        filesize: 10,
+        ..Default::default()
+    };
+    let tag = file.etag();
+    let weak = format!("W/{tag}");
+    let date = "Sun, 27 Oct 2024 03:33:20 GMT";
+    let status = |m: &str, u: &str, n: &str, d: &str| {
+        file.preconditions(
+            m.as_bytes(),
+            u.as_bytes(),
+            n.as_bytes(),
+            d.as_bytes(),
+            &Scripted,
+        ) as u32
+    };
+    assert_eq!(status("*", "", "", ""), 200);
+    assert_eq!(status(&tag, "invalid", "", ""), 200);
+    assert_eq!(status(&weak, "", "", ""), 412);
+    assert_eq!(status("\"other\"", "", "*", ""), 412);
+    assert_eq!(status("", "", &weak, ""), 304);
+    assert_eq!(status("", "", &format!("\"other\", {tag}"), ""), 304);
+    assert_eq!(status("", "", "\"other\"", date), 200);
+    assert_eq!(status("", "Sun, 27 Oct 2024 02:33:20 GMT", "", ""), 412);
+    assert!(!file.modified_range(tag.as_bytes(), &Scripted));
+    assert!(file.modified_range(weak.as_bytes(), &Scripted));
+    assert!(file.modified_range(b"\"other\"", &Scripted));
+    assert_eq!(status("", "", "   ", ""), 200);
+}

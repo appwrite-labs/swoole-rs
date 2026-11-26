@@ -7,7 +7,7 @@ const OVERFLOW: i32 = -2;
 mod chunked;
 pub use chunked::{ChunkState, HttpChunked, HttpChunks};
 mod conditional;
-pub use conditional::{Calendar, Conditional, Tm, conditional, http_date};
+pub use conditional::{Calendar, Conditional, PreconditionStatus, Tm, conditional, http_date};
 mod dispatch;
 mod framing;
 pub use framing::{HttpFrame, expect as has_expect_header, header_delimiter, header_value};
