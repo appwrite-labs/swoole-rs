@@ -20,7 +20,7 @@ use swoole_rs_corebase::memory::{
 use swoole_rs_corebase::{CCast, CellExt};
 use swoole_rs_phpstubs::table;
 use swoole_rs_zend::{
-    Call, Custom, CustomClass, E_ERROR, E_WARNING, Message, Minit, Owned, OwnedArray, Value,
+    Array, Call, Custom, CustomClass, E_ERROR, E_WARNING, Message, Minit, Owned, OwnedArray, Value,
     ZString,
     bailout::{self, Bailout},
     method_table,
@@ -81,6 +81,8 @@ method_table! {
         c"destroy" => zim_swoole_table_destroy, &table::arginfo_class_Swoole_Table_destroy, ZEND_ACC_PUBLIC;
         c"set" => zim_swoole_table_set, &table::arginfo_class_Swoole_Table_set, ZEND_ACC_PUBLIC;
         c"add" => zim_swoole_table_add, &table::arginfo_class_Swoole_Table_add, ZEND_ACC_PUBLIC;
+        c"cmpset" => zim_swoole_table_cmpset, &table::arginfo_class_Swoole_Table_cmpset, ZEND_ACC_PUBLIC;
+        c"cmpdel" => zim_swoole_table_cmpdel, &table::arginfo_class_Swoole_Table_cmpdel, ZEND_ACC_PUBLIC;
         c"update" => zim_swoole_table_update, &table::arginfo_class_Swoole_Table_update, ZEND_ACC_PUBLIC;
         c"get" => zim_swoole_table_get, &table::arginfo_class_Swoole_Table_get, ZEND_ACC_PUBLIC;
         c"getdel" => zim_swoole_table_getdel, &table::arginfo_class_Swoole_Table_getdel, ZEND_ACC_PUBLIC;
@@ -350,25 +352,9 @@ fn write(call: &Call, lock: for<'a> fn(&'a Table, &[u8]) -> Option<Locked<'a>>, 
     if !valid_key(call, key) {
         return;
     }
-    let values = convert(call, || {
-        let mut values = Vec::new();
-        for (name, value) in array.entries() {
-            let Some(column) = name.and_then(|name| table.column(name)) else {
-                continue;
-            };
-            let converted = match column.kind {
-                ColumnType::String => ColumnValue::String(write_string(value, key, column)?),
-                ColumnType::Float => ColumnValue::Number(value.applied_double()?.to_bits()),
-                ColumnType::Int => ColumnValue::Number(value.applied_long()?.c_cast::<u64>()),
-            };
-            if !swoole_rs_zend::host::exception().is_null() {
-                return None;
-            }
-            values.push((column, converted));
-        }
-        Some(values)
-    });
-    let Some(values) = values else { return };
+    let Some(values) = marshal(call, &table, key, array, false) else {
+        return call.set_bool(false);
+    };
     let Some(mut row) = lock(&table, key) else {
         return call.set_bool(false);
     };
@@ -381,14 +367,115 @@ fn write(call: &Call, lock: for<'a> fn(&'a Table, &[u8]) -> Option<Locked<'a>>, 
     if row.is_new() {
         row.clear_row(table.columns());
     }
-    for (column, value) in &values {
+    apply_values(&mut row, &values);
+    call.set_bool(true);
+}
+
+type Values<'a> = Vec<(&'a Column, ColumnValue)>;
+
+fn apply_values(row: &mut Locked<'_>, values: &[(&Column, ColumnValue)]) {
+    for (column, value) in values {
         match value {
             ColumnValue::Number(number) => row.set_number(column, *number),
             ColumnValue::String(string) => row.set_bytes(column, string.bytes()),
         }
     }
-    drop(row);
+}
+
+fn marshal<'a>(
+    call: &Call,
+    table: &'a SharedTable,
+    key: &[u8],
+    array: &Array,
+    expected: bool,
+) -> Option<Values<'a>> {
+    if expected {
+        if array.count() == 0 {
+            fatal(E_WARNING, c"expected values must not be empty");
+            return None;
+        }
+        for (name, _) in array.entries() {
+            let Some(name) = name else {
+                fatal(E_WARNING, c"expected values must use column names");
+                return None;
+            };
+            if table.column(name).is_none() {
+                missing_column(name);
+                return None;
+            }
+        }
+    }
+    convert(call, || {
+        let mut values = Vec::new();
+        for (name, value) in array.entries() {
+            let Some(column) = name.and_then(|name| table.column(name)) else {
+                continue;
+            };
+            let converted = match column.kind {
+                ColumnType::String if expected => ColumnValue::String(value.applied_string()?),
+                ColumnType::String => ColumnValue::String(write_string(value, key, column)?),
+                ColumnType::Float => ColumnValue::Number(value.applied_double()?.to_bits()),
+                ColumnType::Int => ColumnValue::Number(value.applied_long()?.c_cast::<u64>()),
+            };
+            if !swoole_rs_zend::host::exception().is_null() {
+                return None;
+            }
+            values.push((column, converted));
+        }
+        Some(values)
+    })
+}
+
+fn compare(call: &Call, delete: bool) {
+    let argc = if delete { 2 } else { 3 };
+    let parsed = call.arity(argc, argc).and_then(|()| {
+        Ok((
+            call.string(1, b"")?,
+            call.array_ref(2)?,
+            if delete {
+                None
+            } else {
+                Some(call.array_ref(3)?)
+            },
+        ))
+    });
+    let Ok((key, conditions, changes)) = parsed else {
+        return call.set_bool(false);
+    };
+    let Some(table) = created(call) else { return };
+    if !valid_key(call, key) {
+        return;
+    }
+    let Some(expected) = marshal(call, &table, key, conditions, true) else {
+        return call.set_bool(false);
+    };
+    let matches = |data: &[u8]| {
+        expected.iter().all(|(column, value)| {
+            let field = column.field(data);
+            match value {
+                ColumnValue::Number(number) => field_number(field) == *number,
+                ColumnValue::String(string) => field_bytes(field) == string.bytes(),
+            }
+        })
+    };
+    let Some(changes) = changes else {
+        return call.set_bool(table.delete_if(key, matches));
+    };
+    let Some(values) = marshal(call, &table, key, changes, false) else {
+        return call.set_bool(false);
+    };
+    let Some(mut row) = table.lock_update_if(key, matches) else {
+        return call.set_bool(false);
+    };
+    apply_values(&mut row, &values);
     call.set_bool(true);
+}
+
+fn cmpset(call: &Call) {
+    compare(call, false);
+}
+fn cmpdel(call: &Call) {
+    compare(call, true);
 }
 
 /// Convert and cap string columns before acquiring the shared bucket lock.
@@ -412,6 +499,14 @@ fn write_string(value: &Value, key: &[u8], column: &Column) -> Option<ZString> {
     Some(ZString::new(string.bytes().get(..capacity)?))
 }
 
+fn missing_column(name: &[u8]) {
+    let mut message = Message::new();
+    message.push(b"column[");
+    message.push(name.split(|&b| b == 0).next().unwrap_or_default());
+    message.push(b"] does not exist");
+    fatal(E_WARNING, message.as_cstr());
+}
+
 /// `incr()`/`decr()`: `(string $key, string $column, mixed $incrby = 1)`.
 fn increment(call: &Call, subtract: bool) {
     let Some(table) = created(call) else { return };
@@ -427,11 +522,7 @@ fn increment(call: &Call, subtract: bool) {
     }
     let by = call.value(3);
     let Some(column) = table.column(name) else {
-        let mut message = Message::new();
-        message.push(b"column[");
-        message.push(name.split(|&b| b == 0).next().unwrap_or_default());
-        message.push(b"] does not exist");
-        fatal(E_WARNING, message.as_cstr());
+        missing_column(name);
         call.set_bool(false);
         return;
     };
@@ -718,6 +809,8 @@ swoole_rs_zend::handlers! {
     zim_swoole_table_destroy => destroy;
     zim_swoole_table_set => set;
     zim_swoole_table_add => add;
+    zim_swoole_table_cmpset => cmpset;
+    zim_swoole_table_cmpdel => cmpdel;
     zim_swoole_table_update => update;
     zim_swoole_table_get => get;
     zim_swoole_table_getdel => getdel;

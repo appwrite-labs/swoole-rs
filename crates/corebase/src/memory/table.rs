@@ -693,16 +693,25 @@ impl Table {
 
     /// `Table::del`. Deleting a bucket's own row moves its first collision row in.
     pub fn del(&self, key: &[u8]) -> bool {
-        self.remove(key, |_| ()).is_some()
+        self.delete_if(key, |_| true)
+    }
+
+    /// Test the packed row and delete it under one bucket lock. The predicate
+    /// must only inspect the row and must never reenter the table.
+    pub fn delete_if(&self, key: &[u8], matches: impl FnOnce(&[u8]) -> bool) -> bool {
+        self.remove(key, |data| matches(data).then_some(()))
+            .is_some()
     }
 
     /// Copy the requested column or whole row and delete it under the same bucket lock.
     #[must_use]
     pub fn getdel(&self, key: &[u8], column: Option<&Column>) -> Option<Vec<u8>> {
-        self.remove(key, |data| column.map_or(data, |c| c.field(data)).to_vec())
+        self.remove(key, |data| {
+            Some(column.map_or(data, |c| c.field(data)).to_vec())
+        })
     }
 
-    fn remove<T>(&self, key: &[u8], snapshot: impl FnOnce(&[u8]) -> T) -> Option<T> {
+    fn remove<T>(&self, key: &[u8], snapshot: impl FnOnce(&[u8]) -> Option<T>) -> Option<T> {
         let root = self.bucket(key)?;
         root.lock(self.warning);
         let Some((row, previous)) = Self::find(root, key) else {
@@ -711,7 +720,7 @@ impl Table {
         };
         let mut locked = self.locked(Some(root), Some(row), 0)?;
         let (_, data) = locked.row.take()?;
-        let value = snapshot(data);
+        let value = snapshot(data)?;
         if let Some(previous) = previous {
             previous.set_next(row.next());
             self.free_row(row);
@@ -837,7 +846,20 @@ impl Table {
     /// Lock an existing row for a counted update.
     #[must_use]
     pub fn lock_update(&self, key: &[u8]) -> Option<Locked<'_>> {
-        let row = self.lock_get(key).filter(Locked::found)?;
+        self.lock_update_if(key, |_| true)
+    }
+
+    /// Keep the row locked for a counted update only if it matches. The
+    /// predicate must only inspect the packed row without reentering the table.
+    #[must_use]
+    pub fn lock_update_if(
+        &self,
+        key: &[u8],
+        matches: impl FnOnce(&[u8]) -> bool,
+    ) -> Option<Locked<'_>> {
+        let row = self
+            .lock_get(key)
+            .filter(|row| row.found() && matches(row.data()))?;
         self.update_count.fetch_add(1, Ordering::Relaxed);
         Some(row)
     }
