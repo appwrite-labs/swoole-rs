@@ -155,7 +155,9 @@ impl<'a, E: Effects> StaticHandler<'a, E> {
     /// Whether the static handler answers the request.
     #[must_use]
     pub fn try_serve(&mut self) -> bool {
-        self.server.static_rewrite(&mut self.context);
+        if self.server.static_rewrite(&mut self.context).is_err() {
+            return true; // The static context has prepared a 404.
+        }
         let root = self.server.document_root();
         let has_index = self
             .server

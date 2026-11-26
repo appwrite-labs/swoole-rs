@@ -58,7 +58,9 @@ fn compare(url: &[u8], rules: &[Rule]) -> Result<(), String> {
             .map_err(|_| "a rule upstream runs and Rust can't")?;
     }
     let mut context = HttpStaticContext::new(url, 4096).ok_or("no static context")?;
-    let now = context.rewrite(&candidate);
+    let now = context
+        .rewrite(&candidate)
+        .map_err(|_| "rewrite limit exceeded")?;
     let now_url = context.text(StaticText::Url);
     let now_original = context.text(StaticText::Original);
     if (old != 0) == now

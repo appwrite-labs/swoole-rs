@@ -133,7 +133,10 @@ pub(crate) fn add_rewrite_rule(
     owner(configs).rewrite_rules.add(pattern, replacement)
 }
 /// Upstream's `Server::apply_rewrite_rules` over the server's rules.
-pub(crate) fn apply_rewrite_rules(configs: &Configs, context: &mut HttpStaticContext) -> bool {
+pub(crate) fn apply_rewrite_rules(
+    configs: &Configs,
+    context: &mut HttpStaticContext,
+) -> Result<bool, usize> {
     context.rewrite(&owner(configs).rewrite_rules)
 }
 
@@ -212,12 +215,12 @@ mod tests {
     fn rewrite_rules_rewrite_the_context_url() {
         let state = Configs::new();
         let mut context = HttpStaticContext::new(b"/view/post/3", 128).unwrap();
-        assert!(!apply_rewrite_rules(&state, &mut context));
+        assert!(!apply_rewrite_rules(&state, &mut context).unwrap());
         assert!(add_rewrite_rule(&state, b"~^/view/post/(\\d+)$~", b"/static/$1.html").is_ok());
         assert!(add_rewrite_rule(&state, b"/article/", b"/static/article/").is_ok());
-        assert!(apply_rewrite_rules(&state, &mut context));
+        assert!(apply_rewrite_rules(&state, &mut context).unwrap());
         assert!(
-            !apply_rewrite_rules(&state, &mut context),
+            !apply_rewrite_rules(&state, &mut context).unwrap(),
             "/static/3.html matches neither"
         );
     }
