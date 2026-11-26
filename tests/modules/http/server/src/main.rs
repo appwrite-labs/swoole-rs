@@ -58,7 +58,7 @@ use swoole_rs_corebase::buffer::string::{OwnedString, StringBuffer};
 use swoole_rs_ffi::swoole_init;
 use swoole_rs_ports::frame_api::Frame;
 use swoole_rs_ports::http_routes::exports as http;
-use swoole_rs_server::{Connection, WebSocket};
+use swoole_rs_server::{Connection, Handshaking, WebSocket};
 
 mod client;
 mod http1;
@@ -386,7 +386,11 @@ extern "C" fn base_receive(serv: *mut Server, req: *const c_void) -> c_int {
             ("Content-Length", "0".to_owned()),
         ];
         respond(serv, session_id, "101 Switching Protocols", &headers, "");
-        conn.websocket_requested().handshake().open();
+        let open = conn
+            .websocket_requested()
+            .handshake()
+            .and_then(Handshaking::open);
+        assert!(open.is_some());
         if request.url == "/ws/close" {
             // SAFETY: the server's own session.
             unsafe { swr_case_close_after(serv, session_id, 200) };
@@ -932,7 +936,11 @@ fn get_package_length() {
     // websocket
     let buffer = tg_buffer();
     // Only an open connection reads frames (6.3, 88b6cb15d).
-    conn.websocket_requested().handshake().open();
+    let open = conn
+        .websocket_requested()
+        .handshake()
+        .and_then(Handshaking::open);
+    assert!(open.is_some());
     conn.set_http2_stream(false);
     let size = http_get_package_length_size(conn);
     assert_eq!(size, SW_WEBSOCKET_FRAME_HEADER_SIZE);

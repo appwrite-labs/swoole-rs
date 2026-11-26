@@ -2,8 +2,8 @@
 use core::cell::Cell;
 use core::ffi::{c_int, c_void};
 use core::sync::atomic::{
-    AtomicBool, AtomicU32,
-    Ordering::{Acquire, Relaxed},
+    AtomicBool, AtomicU8, AtomicU32,
+    Ordering::{AcqRel, Acquire, Relaxed, Release},
 };
 use swoole_rs_corebase::constants::SocketTypeCode;
 use swoole_rs_corebase::net_types::SocketAddress;
@@ -24,6 +24,13 @@ pub struct SessionRecord {
     pub fd: Cell<c_int>,
     pub reactor_bits: Cell<u32>,
 }
+
+// The status was a `#[repr(u8)]` enum in a `Cell`; its atomic keeps the record's layout.
+const _: () = assert!(
+    size_of::<AtomicU8>() == size_of::<WebSocketStatus>()
+        && align_of::<AtomicU8>() == align_of::<WebSocketStatus>(),
+    "the WebSocket status keeps its byte"
+);
 
 /// A connection-table slot's record.
 #[derive(Default)]
@@ -71,7 +78,9 @@ pub struct ConnectionRecord {
     pub last_send_time: Cell<f64>,
     pub last_dispatch_time: Cell<f64>,
     pub uid: Cell<u32>,
-    pub websocket_status: Cell<WebSocketStatus>,
+    /// The `WebSocketStatus` code, which every process sharing the table moves by
+    /// compare-and-swap ([`ConnectionRecord::advance`]).
+    pub websocket_status: AtomicU8,
     /// The WebSocket message being reassembled: a box only the connection's reactor
     /// makes, takes and frees.
     pub(crate) websocket_buffer:
@@ -147,23 +156,28 @@ impl ConnectionRecord {
             time.set(0.0);
         }
         self.uid.set(0);
-        self.websocket_status.set(WebSocketStatus::None);
+        self.websocket_status
+            .store(WebSocketStatus::None.code(), Relaxed);
         self.websocket_buffer.set(None);
         self.lock.store(0, Relaxed);
     }
 
     /// The stored WebSocket status.
     fn status(&self) -> WebSocketStatus {
-        self.websocket_status.get()
+        WebSocketStatus::from_code(self.websocket_status.load(Acquire))
     }
 
-    /// Moves the WebSocket state from `from` (whatever it is, for `None`) to `to`. A
-    /// handle moves only the state it was read in: another process may have moved it
-    /// since (a worker's `disconnect`).
-    fn advance(&self, from: Option<WebSocketStatus>, to: WebSocketStatus) {
-        if from.is_none_or(|from| self.websocket_status.get() == from) {
-            self.websocket_status.set(to);
-        }
+    /// Moves the WebSocket state from `from` (whatever it is, for `None`) to `to`, and
+    /// whether it did: a handle moves only the state it was read in, which another
+    /// process (a worker's `disconnect`) may have moved since.
+    fn advance(&self, from: Option<WebSocketStatus>, to: WebSocketStatus) -> bool {
+        let Some(from) = from else {
+            self.websocket_status.store(to.code(), Release);
+            return true;
+        };
+        self.websocket_status
+            .compare_exchange(from.code(), to.code(), AcqRel, Acquire)
+            .is_ok()
     }
 }
 
@@ -291,31 +305,34 @@ impl Closing<'_> {
 pub struct Open<'a>(&'a ConnectionRecord);
 
 impl<'a> Requested<'a> {
-    /// `onHandshake`, or the default handshake, begins.
+    /// `onHandshake`, or the default handshake, begins; `None` if the connection
+    /// moved on first, whose response then opens nothing.
     #[expect(
         clippy::must_use_candidate,
         reason = "a transition, made for its effect"
     )]
-    pub fn handshake(self) -> Handshaking<'a> {
-        self.0.advance(
+    pub fn handshake(self) -> Option<Handshaking<'a>> {
+        let won = self.0.advance(
             Some(WebSocketStatus::Connection),
             WebSocketStatus::Handshake,
         );
-        Handshaking(self.0)
+        won.then_some(Handshaking(self.0))
     }
 }
 
 impl<'a> Handshaking<'a> {
     /// The 101 goes next: the client may send frames as soon as it is on the wire, so
     /// they are read from here on (upstream 7bd6134c4).
+    /// `None` if a `disconnect` moved it first.
     #[expect(
         clippy::must_use_candidate,
         reason = "a transition, made for its effect"
     )]
-    pub fn open(self) -> Open<'a> {
-        self.0
+    pub fn open(self) -> Option<Open<'a>> {
+        let won = self
+            .0
             .advance(Some(WebSocketStatus::Handshake), WebSocketStatus::Active);
-        Open(self.0)
+        won.then_some(Open(self.0))
     }
 
     /// The handshake was answered with another status.
@@ -908,7 +925,11 @@ pub(crate) mod tests {
         conn.set_close_force(true);
         conn.set_last_recv_time(1.5);
         conn.set_uid(6);
-        conn.websocket_requested().handshake().open();
+        let open = conn
+            .websocket_requested()
+            .handshake()
+            .and_then(Handshaking::open);
+        assert!(open.is_some());
         record.lock.store(1, Relaxed);
         conn.clear();
         assert!(conn.is_active());

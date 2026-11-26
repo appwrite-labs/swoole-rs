@@ -280,6 +280,19 @@ impl WebSocketStatus {
     pub const fn code(self) -> u8 {
         self as u8
     }
+
+    /// The status a stored [`Self::code`] names; only those are stored.
+    #[must_use]
+    pub const fn from_code(code: u8) -> Self {
+        match code {
+            1 => Self::Connection,
+            2 => Self::Handshake,
+            3 => Self::Active,
+            4 => Self::Closing,
+            5 => Self::HandshakeFailed,
+            _ => Self::None,
+        }
+    }
 }
 
 /// `swoole::ServerEventType`: what a [`DataHead`] carries.

@@ -499,7 +499,10 @@ mod tests {
         for websocket_status in WebSocketStatus::ALL {
             for http2_stream in [false, true] {
                 let mut conn = ConnectionRecord::default();
-                conn.websocket_status.set(websocket_status);
+                conn.websocket_status.store(
+                    websocket_status.code(),
+                    core::sync::atomic::Ordering::Relaxed,
+                );
                 conn.http2_stream.set(http2_stream);
                 conn.info.get_mut().kind = 1;
                 let expected = pinned(websocket_status, http2_stream);
@@ -545,7 +548,11 @@ mod tests {
         use swoole_rs_websocket::{Action, Context, decide_frame};
         let record = ConnectionRecord::default();
         let conn = Connection::from(&record);
-        let _open = conn.websocket_requested().handshake().open();
+        let open = conn
+            .websocket_requested()
+            .handshake()
+            .and_then(swoole_rs_server::Handshaking::open);
+        assert!(open.is_some());
         assert!(exports::closing(conn).is_none());
         conn.websocket_closing();
         let closing = exports::closing(conn);

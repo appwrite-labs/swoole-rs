@@ -811,10 +811,12 @@ mod tests {
     fn data_goes_where_upstream_sends_it() {
         let record = ConnectionRecord::default();
         let handshaking = Connection::from(&record).websocket_requested().handshake();
+        let handshaking = handshaking.expect("a requested connection handshakes");
         // A handshaking connection's data is HTTP; only an open one's is frames.
         let route_of = |http, websocket, open, http2| route(&facts(http, websocket, open, http2));
         assert!(matches!(route_of(true, false, None, false), Route::Request));
-        let open = Some(handshaking.open());
+        let open = handshaking.open();
+        assert!(open.is_some());
         assert!(matches!(route_of(false, false, open, true), Route::Tcp));
         assert!(matches!(
             route_of(true, false, open, true),
