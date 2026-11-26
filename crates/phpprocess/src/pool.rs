@@ -581,10 +581,15 @@ fn set(call: &Call) {
         return;
     }
     if let Some(value) = options.get(b"max_package_size") {
-        let Some(size) = swoole_rs_phpswoole::php_swoole_parse_to_size(value) else {
+        let Some(size) = swoole_rs_phpswoole::php_swoole_parse_to_size(value)
+            .and_then(|size| swoole_rs_phpswoole::nonnegative_setting(c"max_package_size", size))
+        else {
             return;
         };
-        pool.set_max_packet_size(packet_limit(pool.use_msgqueue(), max_package_size(size)));
+        pool.set_max_packet_size(packet_limit(
+            pool.use_msgqueue(),
+            max_package_size(i64::from(size)),
+        ));
     }
     if let Some(value) = options.get(b"max_wait_time") {
         let Some(seconds) = value.applied_long() else {
@@ -766,6 +771,11 @@ fn send_message(call: &Call) {
         call.set_bool(false);
         return;
     };
+    let first = i64::from(view.start_id());
+    if !(first..first + i64::from(view.worker_num())).contains(&worker) {
+        fatal(E_WARNING, &message!("invalid worker_id[{worker}]"));
+        return call.set_bool(false);
+    }
     let sent = methods::send_message(
         swoole_rs_server::process_pool_native(),
         view,
