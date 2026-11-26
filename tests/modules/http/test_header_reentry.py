@@ -148,3 +148,22 @@ def test_incremental_request_byte_limit(engine, mode):
     result = subprocess.run(engine.command('-r', code, mode), capture_output=True, text=True, timeout=10)
     assert result.returncode == 0, result.stdout + result.stderr
     assert result.stdout.splitlines() == ['bool(true)'] * 9
+
+
+def test_incremental_multipart_fields_reuse_buffer(engine):
+    code = r'''
+    $value = str_repeat("a\0b", 4096);
+    $first = "--foo\r\nContent-Disposition: form-data; name=\"first\"\r\n\r\n";
+    $rest = "\r\n--foo\r\nContent-Disposition: form-data; name=\"empty\"\r\n\r\n" .
+            "\r\n--foo\r\nContent-Disposition: form-data; name=\"last\"\r\n\r\nz\r\n--foo--\r\n";
+    $length = strlen($first) + strlen($value) + strlen($rest);
+    $head = "POST / HTTP/1.1\r\nContent-Type: multipart/form-data; boundary=foo\r\nContent-Length: $length\r\n\r\n";
+    $r = Swoole\Http\Request::create(['package_max_length' => strlen($head) + $length]);
+    foreach ([$head . $first, ...str_split($value, 1000), $rest] as $piece) {
+        if ($r->parse($piece) !== strlen($piece)) throw new RuntimeException('short parse');
+    }
+    var_dump($r->isCompleted(), $r->post === ['first' => $value, 'empty' => '', 'last' => 'z']);
+    '''
+    result = subprocess.run(engine.command('-r', code), capture_output=True, text=True, timeout=10)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert result.stdout.splitlines() == ['bool(true)'] * 2

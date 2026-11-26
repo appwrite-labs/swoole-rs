@@ -28,6 +28,7 @@ use swoole_rs_zend::{
 /// A request's multipart parser and the upload it is writing.
 pub(crate) struct Multipart {
     parser: MultipartParser,
+    field: BoundedBytes,
     fp: Option<Upload>,
 }
 
@@ -40,6 +41,7 @@ type Upload = BufWriter<File>;
 struct Parts<'a, 'i> {
     state: &'a mut State,
     fp: &'a mut Option<Upload>,
+    field: &'a mut BoundedBytes,
     name: &'i [u8],
     content_type: Option<&'i [u8]>,
 }
@@ -117,7 +119,7 @@ impl<'i> Callbacks<'i> for Server<'_, 'i> {
         if self.0.parser.flags & TRAILING != 0 {
             return Step::Go;
         }
-        header_value(self.0, self.1, data)
+        header_value(self.0, self.1, data, self.3)
     }
 
     fn on_headers_complete(&mut self) -> Step {
@@ -147,7 +149,7 @@ impl Callbacks<'_> for Pieces<'_, '_> {
     }
 
     fn on_header_value(&mut self, data: &[u8]) -> Step {
-        on_piece_header_value(self.0, data.as_ptr().cast(), data.len())
+        on_piece_header_value(self.0, data.as_ptr().cast(), data.len(), self.2)
     }
 
     fn on_headers_complete(&mut self) -> Step {
@@ -179,6 +181,13 @@ impl<'i> swoole_rs_http::multipart_parser::Parts<'i> for Parts<'_, 'i> {
     }
 
     fn on_part_data(&mut self, data: &[u8]) -> Flow {
+        if self.state.parse.form_data_name.is_some() {
+            return if self.field.append(data).is_ok() {
+                Flow::Go
+            } else {
+                Flow::Fail
+            };
+        }
         part_data(self.state, self.fp, data);
         Flow::Go
     }
@@ -189,7 +198,7 @@ impl<'i> swoole_rs_http::multipart_parser::Parts<'i> for Parts<'_, 'i> {
     }
 
     fn on_part_data_end(&mut self) -> Flow {
-        part_data_end(self.state, self.fp);
+        part_data_end(self.state, self.fp, self.field);
         Flow::Go
     }
 }
@@ -616,7 +625,12 @@ fn on_piece_header_field(state: &mut State, at: *const c_char, length: usize) ->
     Step::Go
 }
 
-fn on_piece_header_value(state: &mut State, at: *const c_char, length: usize) -> Step {
+fn on_piece_header_value(
+    state: &mut State,
+    at: *const c_char,
+    length: usize,
+    limit: usize,
+) -> Step {
     if state.parser.flags & TRAILING != 0 {
         return Step::Go;
     }
@@ -634,7 +648,7 @@ fn on_piece_header_value(state: &mut State, at: *const c_char, length: usize) ->
         .get(offset..offset.saturating_add(state.parse.header_name_length))
         .unwrap_or_default();
     let value = pieces(&held, at, length, state.parse.header_value_length);
-    let result = header_value(state, name, value);
+    let result = header_value(state, name, value, limit);
     state.parse.header_name_length = 0;
     state.parse.header_value_length = 0;
     result
@@ -674,7 +688,7 @@ fn websocket_connection(state: &State) -> bool {
     true
 }
 
-fn header_value(state: &mut State, name: &[u8], value_: &[u8]) -> Step {
+fn header_value(state: &mut State, name: &[u8], value_: &[u8], limit: usize) -> Step {
     let length = value_.len();
     let (action, known) =
         request_header(name, value_, state.parser.method, state.parse_cookie, true);
@@ -716,7 +730,7 @@ fn header_value(state: &mut State, name: &[u8], value_: &[u8]) -> Step {
         }
         RequestHeader::Form => state.request.post_form_urlencoded = true,
         RequestHeader::Multipart => {
-            if !multipart_start(state, value_) {
+            if !multipart_start(state, value_, limit) {
                 return Step::Fail;
             }
         }
@@ -865,20 +879,15 @@ fn on_message_complete(state: &mut State, input: &[u8]) -> Step {
         }
         None => {}
     }
-    multipart_free(state);
-    state.parse.form_data = None;
+    state.mt_parser = None;
     state.completed = true;
     // The analysis of the http protocol has been completed, no further processing is needed.
     Step::Pause
 }
 
-fn multipart_free(state: &mut State) {
-    state.mt_parser = None;
-}
-
 /// `Context::get_multipart_boundary` of a `multipart/form-data` content
 /// type, then `Context::init_multipart_parser`; false when the boundary is missing or too long.
-pub(crate) fn multipart_start(state: &mut State, content_type: &[u8]) -> bool {
+pub(crate) fn multipart_start(state: &mut State, content_type: &[u8], limit: usize) -> bool {
     let offset = b"multipart/form-data".len();
     let boundary = swoole_rs_http::boundary(content_type, offset)
         .ok()
@@ -896,8 +905,11 @@ pub(crate) fn multipart_start(state: &mut State, content_type: &[u8]) -> bool {
         state.parser.error = INVALID_HEADER_TOKEN;
         return false;
     };
-    state.mt_parser = Some(Box::new(Multipart { parser, fp: None }));
-    state.parse.form_data = Some(Box::new(Vec::with_capacity(BUFFER_SIZE_STD)));
+    state.mt_parser = Some(Box::new(Multipart {
+        parser,
+        field: BoundedBytes::new(limit, 0),
+        fp: None,
+    }));
     true
 }
 
@@ -907,10 +919,11 @@ pub(crate) fn multipart_parse(state: &mut State, data: &[u8]) -> bool {
     let Some(mut multipart) = state.mt_parser.take() else {
         return false;
     };
-    let Multipart { parser, fp } = &mut *multipart;
+    let Multipart { parser, fp, field } = &mut *multipart;
     let mut parts = Parts {
         state,
         fp,
+        field,
         name: &[],
         content_type: None,
     };
@@ -1115,14 +1128,6 @@ fn file_size(upload: &mut Upload) -> i64 {
 }
 
 fn part_data(state: &mut State, upload: &mut Option<Upload>, data: &[u8]) {
-    if state.parse.form_data_name.is_some() {
-        state
-            .parse
-            .form_data
-            .get_or_insert_with(|| Box::new(Vec::with_capacity(BUFFER_SIZE_STD)))
-            .extend_from_slice(data);
-        return;
-    }
     let Some(file) = upload else {
         return;
     };
@@ -1162,16 +1167,15 @@ fn part_headers_complete(state: &mut State, upload: &mut Option<Upload>) {
     *upload = Some(BufWriter::new(file.persist().1));
 }
 
-fn part_data_end(state: &mut State, upload: &mut Option<Upload>) {
+fn part_data_end(state: &mut State, upload: &mut Option<Upload>, data: &mut BoundedBytes) {
     if let Some(name) = state.parse.form_data_name.take() {
-        let data = state.parse.form_data.get_or_insert_with(Default::default);
         // `c_copy`'s name holds its NUL.
         let name = CStr::from_bytes_until_nul(&name).unwrap_or_default();
         if !bailout::pending() {
             edit(&mut state.request, Property::Post, |array| {
                 let post = array.separate();
                 bailout::defer(contain_with(|| {
-                    lend_in(data, |at, count| {
+                    lend_in(data.as_ref(), |at, count| {
                         php_register_variable_safe(name.into(), at, count, post);
                     });
                 }));

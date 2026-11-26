@@ -988,7 +988,7 @@ fn header_block(session: &Session, stream: &Stream, flags: u32, payload: &[u8]) 
         const ENHANCE_YOUR_CALM: u32 = 11;
         return reset_stream(session, stream, ENHANCE_YOUR_CALM);
     }
-    if !discard && !headers_complete(stream) {
+    if !discard && !headers_complete(stream, session.max_body_size) {
         return false;
     }
     stream.headers_received.set(true);
@@ -1006,7 +1006,7 @@ fn content_length_valid(session: &Session, value: &[u8]) -> bool {
 
 /// `http2_server_on_headers_complete`: the request's Content-Length, body
 /// parser and compression, from its whole initial header block.
-fn headers_complete(stream: &Stream) -> bool {
+fn headers_complete(stream: &Stream, limit: u32) -> bool {
     let ctx = stream.ctx();
     if stream.bad_length.get() {
         send_status_code(ctx, REQUEST_ENTITY_TOO_LARGE.cast_unsigned());
@@ -1020,10 +1020,7 @@ fn headers_complete(stream: &Stream) -> bool {
         let media = sw_rs_http2_media_kind(folded.get(..length).unwrap_or_default());
         if media == Media::UrlEncoded {
             set(ctx, Field::Form, 1);
-        } else if media == Media::Multipart
-            // SAFETY: a live context and the header value.
-            && !ctx.multipart_start(value.bytes())
-        {
+        } else if media == Media::Multipart && !ctx.multipart_start(value.bytes(), limit) {
             return false;
         }
     }
