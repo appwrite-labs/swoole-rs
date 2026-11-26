@@ -273,6 +273,13 @@ impl<S: DnsSocket> DnsExchange for Exchange<S> {
     }
 
     fn push(&mut self, address: &[u8]) {
+        #[cfg_attr(
+            protocol_buffer_lint,
+            expect(
+                clippy::disallowed_methods,
+                reason = "query emits at most MAX_ANSWERS addresses, each rendered into a 40-byte array"
+            )
+        )]
         self.found.push(address.to_vec());
     }
 }
@@ -282,11 +289,7 @@ impl<S: DnsSocket> DnsExchange for Exchange<S> {
 #[must_use]
 pub fn server() -> (Vec<u8>, c_int) {
     let config = config();
-    // Sized for the NUL, so the push doesn't reallocate.
-    let mut host = Vec::with_capacity(config.host.len() + 1);
-    host.extend_from_slice(&config.host);
-    host.push(0);
-    (host, config.port)
+    ([config.host.as_slice(), &[0]].concat(), config.port)
 }
 
 /// The next query's id (upstream's `static uint16_t dns_request_id`).
