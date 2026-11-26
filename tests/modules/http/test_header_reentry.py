@@ -167,3 +167,20 @@ def test_incremental_multipart_fields_reuse_buffer(engine):
     result = subprocess.run(engine.command('-r', code), capture_output=True, text=True, timeout=10)
     assert result.returncode == 0, result.stdout + result.stderr
     assert result.stdout.splitlines() == ['bool(true)'] * 2
+
+
+def test_multipart_file_is_registered_with_php(engine, tmp_path):
+    code = r'''
+    $body = "--b\r\nContent-Disposition: form-data; name=\"file\"; filename=\"a.txt\"\r\n\r\nsample\r\n--b--\r\n";
+    $head = "POST / HTTP/1.1\r\nContent-Type: multipart/form-data; boundary=b\r\nContent-Length: " . strlen($body) . "\r\n\r\n";
+    $request = Swoole\Http\Request::create(['parse_files' => true]);
+    $request->parse($head . $body);
+    $file = $request->files['file']['tmp_name'];
+    var_dump(is_uploaded_file($file), move_uploaded_file($file, $argv[1]), is_uploaded_file($file));
+    unset($request);
+    '''
+    moved = tmp_path / 'moved.txt'
+    result = subprocess.run(engine.command('-r', code, str(moved)), capture_output=True, text=True, timeout=10)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert result.stdout.splitlines() == ['bool(true)', 'bool(true)', 'bool(false)']
+    assert moved.read_bytes() == b'sample'
