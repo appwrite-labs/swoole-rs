@@ -28,10 +28,8 @@ pub enum StaticText {
     /// The closing boundary.
     End,
 }
+pub use crate::static_meta::BOUNDARY_SIZE;
 use StaticText::{Boundary, Content, Directory, End, Filename, Index, Original, Url};
-/// `SW_HTTP_SERVER_BOUNDARY_TOTAL_SIZE`: the boundary and its NUL.
-pub const BOUNDARY_SIZE: usize =
-    swoole_rs_corebase::constants::SW_HTTP_SERVER_BOUNDARY_TOTAL_SIZE as usize;
 
 /// The mutually exclusive file kinds returned by `lstat`, as path-policy bits.
 #[derive(Clone, Copy, Default, Debug, PartialEq, Eq)]

@@ -1,13 +1,16 @@
 //! Inline static handler policy; native owns strings, RNG and MIME references.
 pub(crate) const BOUNDARY: &[u8] =
     swoole_rs_corebase::constants::SW_HTTP_SERVER_BOUNDARY_PREKEY.as_bytes();
+/// `SW_HTTP_SERVER_BOUNDARY_TOTAL_SIZE`: the boundary and its NUL.
+pub const BOUNDARY_SIZE: usize =
+    swoole_rs_corebase::constants::SW_HTTP_SERVER_BOUNDARY_TOTAL_SIZE as usize;
 const ALLOCATION: i32 = -3;
 
 /// The lazy boundary's random length while the boundary is still empty
 /// (`length == 0`), else `None`.
 #[must_use]
 pub(crate) fn static_boundary(length: usize) -> Option<usize> {
-    (length == 0).then_some(crate::static_context::BOUNDARY_SIZE - BOUNDARY.len() - 1)
+    (length == 0).then_some(BOUNDARY_SIZE - BOUNDARY.len() - 1)
 }
 /// Whether the response is multipart: more than one task.
 #[must_use]
