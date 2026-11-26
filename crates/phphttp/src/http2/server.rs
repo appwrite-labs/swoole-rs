@@ -43,6 +43,7 @@ const NO_PAYLOAD: c_int = swoole_rs_error::ErrorCode::SW_ERROR_NO_PAYLOAD as c_i
 const STREAM_NOT_FOUND: c_int =
     swoole_rs_error::ErrorCode::SW_ERROR_HTTP2_STREAM_NOT_FOUND as c_int;
 const STREAM_IGNORE: c_int = swoole_rs_error::ErrorCode::SW_ERROR_HTTP2_STREAM_IGNORE as c_int;
+const CO_TIMEDOUT: c_int = swoole_rs_error::ErrorCode::SW_ERROR_CO_TIMEDOUT as c_int;
 
 use crate::decimal;
 use crate::http2::Field;
@@ -524,6 +525,8 @@ pub(crate) fn send_body(
     let flags = if end_stream { FLAG_END_STREAM } else { 0 };
     let page = swoole_rs_corebase::swr_v1_core_pagesize() as usize;
     let mut rest = data;
+    // Set on the first flow-control wait, so a send that never waits reads no clock.
+    let mut deadline = None;
     while !rest.is_empty() {
         // Re-read after a flow-control wait: the peer may have changed it.
         let max_frame_size = send_frame_size(session.remote[MAX_FRAME_SIZE].get());
@@ -541,11 +544,18 @@ pub(crate) fn send_body(
                     "The data sent exceeded remote_window_size",
                 ),
                 WindowAction::Yield => {
-                    // In a coroutine: WINDOW_UPDATE, or the stream's removal, wakes it.
+                    // In a coroutine: WINDOW_UPDATE, or the stream's removal, wakes it, by
+                    // the send's deadline (upstream 6.3's `http2_write_deadline`).
                     if !current(session, stream) {
                         return false;
                     }
-                    stream.wait();
+                    let deadline = *deadline.get_or_insert_with(|| ctx.send_deadline());
+                    if !stream.wait(deadline) {
+                        if swoole_rs_corebase::log::last_error() == CO_TIMEDOUT {
+                            write_timed_out(session);
+                        }
+                        return false;
+                    }
                     if !current(session, stream) {
                         return false;
                     }
@@ -573,6 +583,15 @@ pub(crate) fn send_body(
         consume_window(session, stream, send_n);
     }
     true
+}
+
+/// `http2_server_write_timed_out` (upstream 6.3): a peer that never opened the
+/// window by the send's deadline loses its connection, after a GOAWAY that says why.
+fn write_timed_out(session: &Session) {
+    let ctx = session.default_ctx();
+    goaway(ctx, 0, b"flow control or write timeout");
+    close(ctx);
+    swoole_rs_corebase::log::set_last_error(CO_TIMEDOUT);
 }
 
 /// The windows after `sent` bytes of DATA.
