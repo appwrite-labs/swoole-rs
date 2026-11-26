@@ -10,7 +10,6 @@ mod range;
 mod selection;
 mod serve;
 
-const ALLOCATION: i32 = -3;
 /// One of the context's texts.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum StaticText {
@@ -154,13 +153,6 @@ impl HttpStaticContext {
     fn location(&mut self, location: &[u8]) -> Result<bool, i32> {
         let url = self.rewritten.as_ref().unwrap_or(&self.original);
         crate::static_path::location_match(url, location, &mut self.path)
-    }
-    fn ensure_directory_slash(&mut self) -> Result<(), i32> {
-        if self.directory_path.last() != Some(&b'/') {
-            self.directory_path.try_reserve(1).map_err(|_| ALLOCATION)?;
-            self.directory_path.push(b'/');
-        }
-        Ok(())
     }
     fn url(&self) -> &[u8] {
         self.rewritten.as_deref().unwrap_or(&self.original)
