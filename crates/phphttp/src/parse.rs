@@ -15,7 +15,7 @@ use swoole_rs_corebase::lent::{Count, In, lend_in};
 use swoole_rs_corebase::sys::Text;
 use swoole_rs_corebase::{WebSocketStatus, log};
 use swoole_rs_http::llhttp::{self, Callbacks, Flow as Step, Parser};
-use swoole_rs_http::multipart_parser::{Flow, MultipartParser};
+use swoole_rs_http::multipart_parser::{Flow, MultipartHeader, MultipartParser};
 use swoole_rs_httpbindings::{
     FormSource, RequestHeader, body_prefix, compression, form_source, request_header, request_url,
     token_list_contains, token_list_fast, trim_quotes,
@@ -28,6 +28,8 @@ use swoole_rs_zend::{
 /// A request's multipart parser and the upload it is writing.
 pub(crate) struct Multipart {
     parser: MultipartParser,
+    header: MultipartHeader,
+    content_type: Option<Vec<u8>>,
     field: BoundedBytes,
     fp: Option<Upload>,
 }
@@ -35,15 +37,12 @@ pub(crate) struct Multipart {
 /// The upload file being written, buffered as upstream's `fdopen` stream was.
 type Upload = BufWriter<File>;
 
-/// The multipart parser's callbacks: the context, the current upload's stream,
-/// and the current part header's name and the last unclaimed `Content-Type`,
-/// both spans of the call's input.
-struct Parts<'a, 'i> {
+struct Parts<'a> {
     state: &'a mut State,
     fp: &'a mut Option<Upload>,
     field: &'a mut BoundedBytes,
-    name: &'i [u8],
-    content_type: Option<&'i [u8]>,
+    header: &'a mut MultipartHeader,
+    content_type: &'a mut Option<Vec<u8>>,
 }
 
 unsafe extern "C" {
@@ -165,19 +164,21 @@ impl Callbacks<'_> for Pieces<'_, '_> {
     }
 }
 
-impl<'i> swoole_rs_http::multipart_parser::Parts<'i> for Parts<'_, 'i> {
+impl<'i> swoole_rs_http::multipart_parser::Parts<'i> for Parts<'_> {
     fn on_header_field(&mut self, data: &'i [u8]) -> Flow {
-        self.name = data;
         self.state.parse.header_value_len = 0;
-        Flow::Go
+        self.header.append_name(data)
     }
 
     fn on_header_value(&mut self, data: &'i [u8]) -> Flow {
-        if part_header_value(self, data) {
-            Flow::Go
-        } else {
-            Flow::Fail
-        }
+        self.header.append_value(data)
+    }
+
+    fn on_header_value_complete(&mut self) -> Flow {
+        let (name, value) = self.header.parts();
+        let ok = part_header_value(self.state, name, value, self.content_type);
+        self.header.clear();
+        if ok { Flow::Go } else { Flow::Fail }
     }
 
     fn on_part_data(&mut self, data: &[u8]) -> Flow {
@@ -198,6 +199,7 @@ impl<'i> swoole_rs_http::multipart_parser::Parts<'i> for Parts<'_, 'i> {
     }
 
     fn on_part_data_end(&mut self) -> Flow {
+        *self.content_type = None;
         part_data_end(self.state, self.fp, self.field);
         Flow::Go
     }
@@ -910,6 +912,8 @@ pub(crate) fn multipart_start(state: &mut State, content_type: &[u8], limit: usi
     };
     state.mt_parser = Some(Box::new(Multipart {
         parser,
+        header: MultipartHeader::new(limit),
+        content_type: None,
         field: BoundedBytes::new(limit, 0),
         fp: None,
     }));
@@ -922,13 +926,19 @@ pub(crate) fn multipart_parse(state: &mut State, data: &[u8]) -> bool {
     let Some(mut multipart) = state.mt_parser.take() else {
         return false;
     };
-    let Multipart { parser, fp, field } = &mut *multipart;
+    let Multipart {
+        parser,
+        fp,
+        field,
+        header,
+        content_type,
+    } = &mut *multipart;
     let mut parts = Parts {
         state,
         fp,
         field,
-        name: &[],
-        content_type: None,
+        header,
+        content_type,
     };
     let parsed = parser.execute(&mut parts, data);
     let mut reason = parser.error_message();
@@ -985,8 +995,12 @@ fn c_copy(bytes: &[u8]) -> Box<[u8]> {
     copy.into_boxed_slice()
 }
 
-fn part_header_value<'i>(parts: &mut Parts<'_, 'i>, value_: &'i [u8]) -> bool {
-    let (state, name) = (&mut *parts.state, parts.name);
+fn part_header_value(
+    state: &mut State,
+    name: &[u8],
+    value_: &[u8],
+    content_type: &mut Option<Vec<u8>>,
+) -> bool {
     let func = c"multipart_body_on_header_value";
     // Hash collision attack
     let max_input_vars = max_input_vars();
@@ -1053,8 +1067,8 @@ fn part_header_value<'i>(parts: &mut Parts<'_, 'i>, value_: &'i [u8]) -> bool {
             }
             state.parse.input_name = Some(c_copy(&form_name));
             let mut header = OwnedArray::default();
-            let content_type = parts.content_type.take();
-            header.insert_bytes(b"type", Some(content_type.unwrap_or_default()));
+            let content_type = content_type.take();
+            header.insert_bytes(b"type", Some(content_type.as_deref().unwrap_or_default()));
             header.insert_bytes(b"tmp_name", Some(b""));
             header.insert_long(b"size", 0);
             let filename = trimmed(filename, filename_len);
@@ -1078,7 +1092,7 @@ fn part_header_value<'i>(parts: &mut Parts<'_, 'i>, value_: &'i [u8]) -> bool {
                 upload_bytes(state, b"type", value_);
             }
         } else {
-            parts.content_type = Some(value_);
+            *content_type = Some(value_.to_vec());
         }
     } else if name.eq_ignore_ascii_case(b"swoole-upload-file") && state.upload_preprocessed {
         // When the "SW_HTTP_UPLOAD_FILE" header appears in the request, it indicates that the uploaded file has been

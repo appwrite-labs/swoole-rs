@@ -3,7 +3,7 @@
 //! (`swoole::String` allocation, the upload's file and `swoole_tmpfile`) are direct
 //! calls, which tests run too. Its logs go through corebase's `log`. Trace logs are
 //! compiled out, as in upstream's builds without `--enable-trace-log`.
-use crate::multipart_parser::{Flow, MultipartParser, Parts};
+use crate::multipart_parser::{Flow, MultipartHeader, MultipartParser, Parts};
 use crate::{
     ChunkState, HttpChunked, HttpChunks, HttpFrame, HttpHeaderInfo, HttpSpan, MultipartError,
     case_equal,
@@ -11,7 +11,6 @@ use crate::{
 use core::ffi::c_int;
 use std::fs::File;
 use std::io::{BufWriter, Write};
-use swoole_rs_corebase::buffer::BoundedBytes;
 use swoole_rs_corebase::buffer::string::{StringBuffer, boxed_sized_string};
 use swoole_rs_corebase::log::LogLevel::{SW_LOG_NOTICE as NOTICE, SW_LOG_WARNING as WARNING};
 use swoole_rs_corebase::ossupport::TempFile;
@@ -58,7 +57,7 @@ pub struct HttpForm {
     /// `upload_tmp_dir + "/swoole.upfile.XXXXXX"`.
     template: Vec<u8>,
     /// The part header's name, copied: it may arrive split across reads.
-    header_name: BoundedBytes,
+    header: MultipartHeader,
     upload_size: usize,
     upload_max: usize,
 }
@@ -231,7 +230,7 @@ impl HttpRequest {
                 uploads: Vec::new(),
                 body: None,
                 template: Vec::new(),
-                header_name: BoundedBytes::new(0, 0),
+                header: MultipartHeader::new(0),
                 upload_size: 0,
                 upload_max: 0,
             }));
@@ -334,7 +333,7 @@ impl HttpRequest {
         let Some(parser) = text.get(at).and_then(MultipartParser::new) else {
             return false;
         };
-        form.header_name = BoundedBytes::new(self.max_length as usize, 0);
+        form.header = MultipartHeader::new(self.max_length as usize);
         form.parser = Some(parser);
         let mut body = boxed_sized_string(BUFFER_SIZE_BIG, None);
         body.append(input.get(header..).unwrap_or_default());
@@ -436,7 +435,7 @@ struct Rewrite<'a> {
 impl Parts<'_> for Rewrite<'_> {
     fn on_header_field(&mut self, data: &[u8]) -> Flow {
         let r = &mut *self.request;
-        if form_of(r).header_name.append(data).is_err() {
+        if form_of(r).header.append_name(data) == Flow::Fail {
             (r.excepted, r.too_large) = (true, true);
             return Flow::Pause;
         }
@@ -444,12 +443,19 @@ impl Parts<'_> for Rewrite<'_> {
     }
 
     fn on_header_value(&mut self, data: &[u8]) -> Flow {
+        if form_of(self.request).header.append_value(data) == Flow::Fail {
+            (self.request.excepted, self.request.too_large) = (true, true);
+            return Flow::Pause;
+        }
+        Flow::Go
+    }
+
+    fn on_header_value_complete(&mut self) -> Flow {
         let form = form_of(self.request);
-        // The value callback means the name is complete.
-        let name = form.header_name.as_ref();
+        let (name, data) = form.header.parts();
         // Only the reactor may write this header; a client never names a part header so.
         if case_equal(name, UPLOAD_FILE) {
-            form.header_name.clear();
+            form.header.clear();
             log::error_log(
                 WARNING,
                 INVALID_REQUEST,
@@ -463,9 +469,10 @@ impl Parts<'_> for Rewrite<'_> {
         for part in [name, b": ", data, b"\r\n"] {
             self.saved.append(part);
         }
-        let disposition = case_equal(name, b"content-disposition");
-        form.header_name.clear();
-        if !disposition || !crate::multipart_has_filename(data) {
+        let is_upload =
+            case_equal(name, b"content-disposition") && crate::multipart_has_filename(data);
+        form.header.clear();
+        if !is_upload {
             return Flow::Go;
         }
         let form = form_of(self.request);
@@ -512,7 +519,7 @@ impl Parts<'_> for Rewrite<'_> {
 
     fn on_headers_complete(&mut self) -> Flow {
         let form = form_of(self.request);
-        form.header_name.clear();
+        form.header.clear();
         if let Some(upload) = &form.fp {
             self.saved.append(b"Swoole-Upload-File: ");
             // The name up to its NUL: `swoole_tmpfile` wrote no other.
@@ -539,7 +546,7 @@ impl Parts<'_> for Rewrite<'_> {
     }
 
     fn on_part_data_begin(&mut self, boundary: &[u8]) -> Flow {
-        form_of(self.request).header_name.clear();
+        form_of(self.request).header.clear();
         self.saved.append(boundary);
         self.saved.append(b"\r\n");
         Flow::Go
@@ -1151,18 +1158,22 @@ mod tests {
     // core-tests/src/server/http_upload_provenance.cpp: header_name_split_across_reads_is_assembled.
     #[test]
     fn header_name_split_across_reads_is_assembled() {
-        let body = [PART_PREFIX, b"X-Custom-Header: v\r\n\r\nvalue\r\n--b--\r\n"].concat();
+        let body = [
+            PART_PREFIX,
+            b"X-Custom-Header: sample\r\n\r\nvalue\r\n--b--\r\n",
+        ]
+        .concat();
         let start = body
             .windows(15)
             .position(|w| w == b"X-Custom-Header")
             .unwrap();
-        for split in start..=start + b"X-Custom-Header: ".len() {
+        for split in start..=start + b"X-Custom-Header: sample".len() {
             let mut f = Fixture::new();
             assert!(f.feed(&body[..split]), "{split}");
             assert!(f.feed(&body[split..]), "{split}");
             assert!(f.request.tried_to_dispatch, "{split}");
             assert!(
-                f.forwarded().contains("\r\nx-custom-header: v\r\n"),
+                f.forwarded().contains("\r\nx-custom-header: sample\r\n"),
                 "{split}"
             );
         }

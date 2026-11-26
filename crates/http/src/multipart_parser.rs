@@ -2,6 +2,49 @@
 //! `thirdparty/multipart_parser.c` (node-formidable's, by way of libcat), state for
 //! state: the same callbacks, results, quirks and error messages.
 
+use swoole_rs_corebase::{buffer::BoundedBytes, constants::SW_HTTP_HEADER_MAX_SIZE};
+
+/// A part header assembled across calls, with one shared limit for its name and value.
+#[derive(Debug)]
+pub struct MultipartHeader {
+    bytes: BoundedBytes,
+    name_len: usize,
+}
+
+impl MultipartHeader {
+    #[must_use]
+    pub fn new(limit: usize) -> Self {
+        Self {
+            bytes: BoundedBytes::new(limit.min(SW_HTTP_HEADER_MAX_SIZE as usize), 0),
+            name_len: 0,
+        }
+    }
+
+    pub fn append_name(&mut self, data: &[u8]) -> Flow {
+        let flow = self.append_value(data);
+        self.name_len = self.bytes.as_ref().len();
+        flow
+    }
+
+    pub fn append_value(&mut self, data: &[u8]) -> Flow {
+        if self.bytes.append(data).is_ok() {
+            Flow::Go
+        } else {
+            Flow::Fail
+        }
+    }
+
+    #[must_use]
+    pub fn parts(&self) -> (&[u8], &[u8]) {
+        self.bytes.as_ref().split_at(self.name_len)
+    }
+
+    pub fn clear(&mut self) {
+        self.bytes.clear();
+        self.name_len = 0;
+    }
+}
+
 /// A callback's result: upstream's 0 goes on, `MPPE_PAUSED` stops
 /// [`MultipartParser::execute`] where the parser is, any other value fails the call.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -44,6 +87,9 @@ pub trait Parts<'i> {
         Flow::Go
     }
     fn on_header_value(&mut self, _data: &'i [u8]) -> Flow {
+        Flow::Go
+    }
+    fn on_header_value_complete(&mut self) -> Flow {
         Flow::Go
     }
     fn on_part_data(&mut self, _data: &[u8]) -> Flow {
@@ -202,7 +248,7 @@ impl MultipartParser {
     /// # Errors
     /// A syntax error or a failed callback. A callback failure preserves the
     /// stored diagnostic, matching the original parser.
-    /// Header fields and values must each arrive whole within one call.
+    /// Header fields and values may span calls.
     pub fn execute<'i>(
         &mut self,
         parts: &mut impl Parts<'i>,
@@ -324,10 +370,13 @@ impl MultipartParser {
                     if c == CR {
                         self.state = State::HeaderValueAlmostDone;
                         let result = parts.on_header_value(span(*mark, i));
-                        return done(result, i + 1).unwrap_or(Step::Next);
+                        return done(result, i + 1)
+                            .or_else(|| done(parts.on_header_value_complete(), i + 1))
+                            .unwrap_or(Step::Next);
                     }
                     if is_last {
-                        return self.expect(MultipartError::HeaderValueIncomplete, CR, i, c);
+                        return done(parts.on_header_value(span(*mark, i + 1)), i + 1)
+                            .unwrap_or(Step::Next);
                     }
                     return Step::Next;
                 }

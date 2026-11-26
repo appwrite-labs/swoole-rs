@@ -23,12 +23,12 @@ struct MppResult {
 
 impl Parts<'_> for MppResult {
     fn on_header_field(&mut self, data: &[u8]) -> Flow {
-        self.header_field = data.to_vec();
+        self.header_field.extend_from_slice(data);
         Flow::Go
     }
 
     fn on_header_value(&mut self, data: &[u8]) -> Flow {
-        self.header_value = data.to_vec();
+        self.header_value.extend_from_slice(data);
         Flow::Go
     }
 
@@ -164,23 +164,14 @@ fn header_field() {
 }
 
 #[test]
-fn header_error() {
+fn fragmented_header() {
     let mut parser = create_parser();
-    let header = header(false);
     let mut result = MppResult::default();
-    assert_eq!(
-        parser
-            .execute(&mut result, &header)
-            .map_or(-1, usize::cast_signed),
-        -1,
-        "incomplete header"
-    );
-    assert_eq!(
-        parser.error_reason,
-        Some(MultipartError::HeaderValueIncomplete),
-        "reason"
-    );
-    assert_eq!(parser.error_expected, b'\r', "expected CR");
+    for byte in header(true).chunks(1) {
+        assert_eq!(parser.execute(&mut result, byte), Ok(1));
+    }
+    assert_eq!(result.header_field, b"Content-Disposition");
+    assert_eq!(result.header_value, br#"form-data; name="test""#);
 }
 
 /// `swoole_rand(min, max)`: uniform over `min..=max`.
