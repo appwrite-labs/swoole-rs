@@ -64,8 +64,8 @@ impl Hasher for Fnv {
     }
 }
 
-/// `request_cache_map`, keyed by the domain's bytes.
-type Lookups = HashMap<Vec<u8>, Cached, BuildHasherDefault<Fnv>>;
+/// `request_cache_map`, keyed by the requested address family and domain.
+type Lookups = HashMap<(i64, Vec<u8>), Cached, BuildHasherDefault<Fnv>>;
 
 thread_local! {
     /// Taken out and put back around each lookup and store, which run no PHP code.
@@ -210,10 +210,11 @@ fn dns_lookup(call: &Call) {
         call.set_bool(false);
         return;
     }
+    let key = (family, name.to_vec());
     let cached = with_cache(|cache| {
         let now = swoole_rs_corebase::timer::absolute_msec();
         cache
-            .get(name)
+            .get(&key)
             .filter(|entry| entry.expires > now)
             .map(|entry| entry.address.clone())
     });
@@ -222,9 +223,8 @@ fn dns_lookup(call: &Call) {
         return;
     }
     crate::check_reactor();
-    let family = family.c_cast::<i32>();
     // The coroutine yields.
-    let mut answers = swoole_rs_hooks::resolve::dns_lookup(name, family, timeout);
+    let mut answers = swoole_rs_hooks::resolve::dns_lookup(name, family.c_cast::<i32>(), timeout);
     if answers.is_empty() {
         set_last_error(DNSLOOKUP_RESOLVE_FAILED);
         call.set_bool(false);
@@ -241,11 +241,8 @@ fn dns_lookup(call: &Call) {
     let now = swoole_rs_corebase::timer::absolute_msec();
     let expires = now + (refresh * 1000.0).c_cast::<i64>();
     let entry = Cached { address, expires };
-    with_cache(|cache| match cache.get_mut(name) {
-        Some(cached) => *cached = entry,
-        None => {
-            cache.insert(name.to_vec(), entry);
-        }
+    with_cache(|cache| {
+        cache.insert(key, entry);
     });
 }
 

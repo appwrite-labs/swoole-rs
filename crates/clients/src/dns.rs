@@ -75,6 +75,21 @@ fn u16_at(packet: &[u8], at: usize) -> u16 {
     u16::from_be_bytes([byte(at), byte(at + 1)])
 }
 
+/// Offset of the fields following a resource record's owner name. Labels can
+/// end with either the root label or a two-byte compression pointer.
+fn after_name(packet: &[u8], mut at: usize) -> Option<usize> {
+    loop {
+        let length = *packet.get(at)?;
+        at += 1;
+        match length {
+            0 => return Some(at),
+            1..=63 => at += usize::from(length),
+            192..=255 => return packet.get(at).map(|_| at + 1),
+            _ => return None,
+        }
+    }
+}
+
 /// Copies `bytes` into `buffer` at `at`, as far as `buffer` reaches.
 fn put(buffer: &mut [u8], at: usize, bytes: &[u8]) {
     let slots = buffer.iter_mut().skip(at);
@@ -215,8 +230,10 @@ pub fn query(
     let answers = usize::from(u16_at(&packet, 6)).min(MAX_ANSWERS);
     let mut records = Vec::with_capacity(answers);
     for _ in 0..answers {
-        // The answer's name is a two-byte compression pointer.
-        steps += 2;
+        let Some(fields) = after_name(packet.get(..received).unwrap_or_default(), steps) else {
+            break;
+        };
+        steps = fields;
         let kind = u16_at(&packet, steps);
         let length = usize::from(u16_at(&packet, steps + 8));
         steps += RECORD;
@@ -469,6 +486,21 @@ mod tests {
             .err()
             .unwrap_or(0);
         (error, exchange)
+    }
+
+    #[test]
+    fn answer_names_may_be_uncompressed_or_partly_compressed() {
+        let mut response = reply(&[(A, &[192, 0, 2, 1]), (A, &[192, 0, 2, 2])]);
+        let question_end = HEADER + b"\x07example\x04test\x00".len() + 4;
+        let second = question_end + 2 + RECORD + 4;
+        response.splice(second..second + 2, b"\x07example\xc0\x14".iter().copied());
+        response.splice(
+            question_end..question_end + 2,
+            b"\x07example\x04test\x00".iter().copied(),
+        );
+        let (error, exchange) = ask(libc::AF_INET, response, false);
+        assert_eq!(error, 0);
+        assert_eq!(exchange.results, ["192.0.2.1", "192.0.2.2"]);
     }
 
     #[test]
