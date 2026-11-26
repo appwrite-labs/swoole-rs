@@ -13,7 +13,7 @@ void swr_zend_array_init_size(zval *target, uint32_t size);
 /* PG(max_input_vars). */
 zend_long swr_zend_http_max_input_vars(void);
 /* Append `file`'s bytes, which it copies, to the request's `tmpfiles` and
- * register them in SG(rfc1867_uploaded_files), when there is one, for
+ * register them in SG(rfc1867_uploaded_files), creating the table for
  * is_uploaded_file()/move_uploaded_file(). */
 void swr_zend_http_upload(zval *tmpfiles, struct iovec file);
 /* Swoole's copy of php_default_treat_data for PARSE_STRING and PARSE_COOKIE:
