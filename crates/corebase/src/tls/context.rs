@@ -138,7 +138,7 @@ struct SslMethod {
 /// An `EVP_MD`, one of libcrypto's static method tables.
 // `repr(C)`: OpenSSL's opaque type, named behind references in `extern` blocks.
 #[repr(C)]
-struct EvpMd {
+pub(super) struct EvpMd {
     _opaque: [u8; 0],
 }
 

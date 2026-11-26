@@ -972,10 +972,47 @@ fn enable_crypto(stream: Stream<'_>, socket: &Socket, activate: bool) -> Result<
         socket.ssl_close();
         return Ok(false);
     }
+    if activate
+        && socket.ssl_available()
+        && let Some(expected) = context_option(stream, c"ssl", c"peer_fingerprint")
+        && !fingerprint_matches(socket, &expected)
+    {
+        socket.set_error(swoole_rs_error::ErrorCode::SW_ERROR_SSL_VERIFY_FAILED as c_int);
+        report(Report::Docref, E_WARNING, c"peer_fingerprint match failure")?;
+        return Ok(false);
+    }
     Ok(!(context.is_some()
         && socket.ssl_available()
         && option_true(stream, c"ssl", c"capture_peer_cert")
         && !capture_peer_certs(stream, socket)?))
+}
+
+fn fingerprint_matches(socket: &Socket, expected: &Value) -> bool {
+    let Some(cert) = socket
+        .co()
+        .with_network(swoole_rs_corebase::tls::upstream::ssl_get_peer_certificate)
+        .flatten()
+    else {
+        return false;
+    };
+    if let Some(hex) = expected.bytes() {
+        let algorithm = match hex.len() {
+            32 => c"md5",
+            40 => c"sha1",
+            _ => return false,
+        };
+        return cert.get().matches_fingerprint(algorithm, hex);
+    }
+    expected.array().is_some_and(|list| {
+        list.count() > 0
+            && list.entries().all(|(key, value)| {
+                let (Some(key), Some(hex)) = (key, value.bytes()) else {
+                    return false;
+                };
+                CString::new(key)
+                    .is_ok_and(|algorithm| cert.get().matches_fingerprint(&algorithm, hex))
+            })
+    })
 }
 
 /// `php_openssl_capture_peer_certs`: the `peer_certificate` (and with
