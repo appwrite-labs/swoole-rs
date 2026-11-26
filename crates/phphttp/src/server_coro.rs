@@ -1061,7 +1061,7 @@ fn http2_request(
                     stream_id,
                     swoole_rs_http2::error_code::INTERNAL_ERROR,
                 );
-                host::notice("Swoole\\Http\\Server->onRequest[v2] handler error");
+                host::notice("Swoole\\Coroutine\\Http\\Server->onRequest[v2] handler error");
             }
             Ok(true) => {}
         }
