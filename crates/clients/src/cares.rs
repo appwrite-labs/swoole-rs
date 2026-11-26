@@ -222,10 +222,35 @@ extern "C" fn socket_state(data: *mut c_void, fd: i32, readable: i32, writable: 
             let wrapper = EventSocket::adopt(Box::new(SocketRecord::with_fd(fd, FD)));
             wrapper.socket().edit(|wrapper| wrapper.attach_object(data));
             _ = wrapper.add(events);
+            #[cfg_attr(
+                protocol_buffer_lint,
+                expect(
+                    clippy::disallowed_methods,
+                    reason = "one wrapper per distinct live c-ares file descriptor"
+                )
+            )]
             sockets.push((fd, wrapper));
         }
     });
 }
+/// DNS ANCOUNT is 16 bits. Apply the same ceiling to local hosts-file answers.
+fn address_texts<'a>(
+    version: u8,
+    addresses: impl Iterator<Item = &'a [u8]>,
+) -> Option<Vec<Vec<u8>>> {
+    addresses
+        .enumerate()
+        .map(|(index, address)| {
+            if index == usize::from(u16::MAX) {
+                return None;
+            }
+            let text = swr_v1_clients_ip_text(version, address);
+            let length = usize::try_from(text.length).unwrap_or(0);
+            Some(text.bytes.get(..length).unwrap_or_default().to_vec())
+        })
+        .collect()
+}
+
 extern "C" fn host(data: *mut c_void, status: i32, timeouts: i32, entry: Option<Hostent<'_>>) {
     let Some(query) = registered(data) else {
         return;
@@ -240,11 +265,12 @@ extern "C" fn host(data: *mut c_void, status: i32, timeouts: i32, entry: Option<
     } else if let Some(entry) = entry {
         // The family of the storage the addresses are.
         let version = if entry.is_inet() { 4 } else { 6 };
-        for address in entry.addresses() {
-            let text = swr_v1_clients_ip_text(version, address);
-            let length = usize::try_from(text.length).unwrap_or(0);
-            let text = text.bytes.get(..length).unwrap_or_default().to_vec();
-            query.results.with_taken(|results| results.push(text));
+        if let Some(results) = address_texts(version, entry.addresses()) {
+            query.results.set(results);
+        } else {
+            query
+                .error
+                .set(ErrorCode::SW_ERROR_DNSLOOKUP_RESOLVE_FAILED as i32);
         }
     }
     let waker = query.waker.get();
@@ -299,6 +325,13 @@ pub(crate) fn lookup(domain: &CStr, family: i32, deadline: Deadline) -> Vec<Vec<
     });
     let id = LAST_QUERY.get() + 1;
     LAST_QUERY.set(id);
+    #[cfg_attr(
+        protocol_buffer_lint,
+        expect(
+            clippy::disallowed_methods,
+            reason = "one registry entry per active local lookup, removed when its channel closes"
+        )
+    )]
     with_queries(|queries| queries.push((id, Rc::clone(&query))));
     let data = ptr::without_provenance_mut(id);
     let mut channel = None;
@@ -392,6 +425,17 @@ mod tests {
     thread_local! {
         static RESUMED: Cell<usize> = const { Cell::new(0) };
     }
+    #[test]
+    fn answer_count_accepts_the_dns_limit_and_rejects_partial_results() {
+        let address = [127, 0, 0, 1];
+        let answers = std::iter::repeat(address.as_slice());
+        let max = usize::from(u16::MAX);
+        let exact = address_texts(4, answers.clone().take(max)).unwrap();
+        assert_eq!(exact.len(), max);
+        assert_eq!(exact.last().unwrap(), b"127.0.0.1");
+        assert!(address_texts(4, answers.take(max + 1)).is_none());
+    }
+
     fn count_resume(_: co::Waker) {
         RESUMED.set(RESUMED.get() + 1);
     }
