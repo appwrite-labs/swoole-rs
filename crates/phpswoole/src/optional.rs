@@ -54,6 +54,15 @@ fn ssh2_minit(minit: &swoole_rs_zend::Minit) {
     }
     // Upstream ignores the result too.
     php_swoole_ssh2_minit(minit.module());
+    for (name, offset) in [
+        (c"ssh2_auth_password", 2),
+        (c"ssh2_auth_pubkey_file", 4),
+        (c"ssh2_auth_pubkey", 3),
+        (c"ssh2_auth_pubkey", 4),
+        (c"ssh2_auth_hostbased_file", 5),
+    ] {
+        minit.sensitive_parameter(None, name, offset);
+    }
 }
 
 /// MSHUTDOWN, after the drivers': ssh2's.

@@ -56,7 +56,7 @@ void swr_zend_minit_property_string(zend_class_entry *ce, const char *name, cons
 }
 
 bool swr_zend_minit_sensitive_parameter(zend_class_entry *ce, const char *lcname, uint32_t offset) {
-    zend_function *method = zend_hash_str_find_ptr(&ce->function_table, lcname, strlen(lcname));
+    zend_function *method = zend_hash_str_find_ptr(ce ? &ce->function_table : CG(function_table), lcname, strlen(lcname));
     if (!method || method->type != ZEND_INTERNAL_FUNCTION || offset >= method->common.num_args) {
         return false;
     }

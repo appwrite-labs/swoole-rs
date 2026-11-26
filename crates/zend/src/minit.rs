@@ -56,7 +56,7 @@ unsafe extern "C" {
         access: c_int,
     );
     safe fn swr_zend_minit_sensitive_parameter(
-        class: ClassEntry<'static>,
+        class: Option<ClassEntry<'static>>,
         method: CText<'_>,
         offset: u32,
     ) -> bool;
@@ -500,12 +500,12 @@ impl Minit {
     }
 
     /// `zend_add_parameter_attribute(method, offset, SensitiveParameter)`: PHP
-    /// hides argument `offset` (from 0) of `class`'s `method` (lower case) in
-    /// backtraces. Nothing when the class has no such method or parameter.
+    /// hides argument `offset` (from 0) in backtraces for a method or, with no class, a global function.
+    /// Names are lower case.
     /// # Panics
     /// `class` is not registered.
-    pub fn sensitive_parameter(&self, class: &Class, method: &CStr, offset: u32) {
-        swr_zend_minit_sensitive_parameter(registered(class), method.into(), offset);
+    pub fn sensitive_parameter(&self, class: Option<&Class>, name: &CStr, offset: u32) {
+        swr_zend_minit_sensitive_parameter(class.map(registered), name.into(), offset);
     }
 
     /// `zend::get_function(CG(function_table), name)`: the function the

@@ -1770,7 +1770,7 @@ pub fn http_client_minit(minit: &Minit) -> Result<(), Bailout> {
     if shortname {
         minit.alias(&CLIENT, c"Co\\Http\\Client")?;
     }
-    minit.sensitive_parameter(&CLIENT, c"setbasicauth", 1);
+    minit.sensitive_parameter(Some(&CLIENT), c"setbasicauth", 1);
     let public = ZEND_ACC_PUBLIC;
     minit.property_null(&CLIENT, c"socket", public);
     minit.property_long(&CLIENT, c"errCode", 0, public);
