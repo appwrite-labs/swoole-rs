@@ -301,6 +301,7 @@ pub(crate) fn log_micros(output: &mut [u8], microseconds: i64) -> usize {
 // Every test here calls the C++ oracle, which Miri can't run.
 #[cfg(test)]
 #[cfg(not(miri))]
+#[expect(clippy::disallowed_methods, reason = "tests wake their own waits")]
 mod upstream;
 
 #[cfg(test)]

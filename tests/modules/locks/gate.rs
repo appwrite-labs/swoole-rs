@@ -2,6 +2,7 @@
 //! futex wait and coroutine lock against the pinned pthread bodies and the driver that
 //! ran both sides (`swoole_rs_oracle::locks`). Each lock ABI export the gate called is
 //! replaced by the safe method that was its body (README.md maps them).
+#![expect(clippy::disallowed_methods, reason = "tests wake their own waits")]
 use std::cell::Cell;
 use std::ffi::c_int;
 use std::sync::atomic::{AtomicI32, AtomicI64, AtomicU32, AtomicU64, Ordering};

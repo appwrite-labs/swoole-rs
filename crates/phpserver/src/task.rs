@@ -480,6 +480,7 @@ fn taskwait(call: &Call) {
     }
     crate::lifecycle::with_tasks(|p| p.coroutines.insert(id, (Rc::downgrade(&task_co), None)));
     // onFinish resumes it.
+    #[expect(clippy::disallowed_methods, reason = "taskwait's $timeout, from PHP")]
     let done = task_co.waiter.wait_for(Deadline::from_timeout(timeout));
     crate::lifecycle::with_tasks(|p| p.coroutines.remove(&id));
     if done {
@@ -622,7 +623,9 @@ fn task_co(call: &Call, fill_false: bool) {
     let complete = task_co
         .result
         .with_taken(|result| result.array().is_some_and(|array| array.count() == n_task));
-    if !complete && !task_co.waiter.wait_for(Deadline::from_timeout(timeout)) {
+    #[expect(clippy::disallowed_methods, reason = "taskCo's $timeout, from PHP")]
+    let deadline = Deadline::from_timeout(timeout);
+    if !complete && !task_co.waiter.wait_for(deadline) {
         task_co.result.with_taken(|result| {
             let Some(array) = result.array_mut() else {
                 return;

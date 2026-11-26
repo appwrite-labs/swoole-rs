@@ -139,6 +139,10 @@ pub extern "C" fn system_waitpid(
     if let Some(result) = iouring_waitpid(pid, Some(status), options, timeout) {
         return result;
     }
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "waitpid's timeout, from its PHP caller"
+    )]
     let deadline = crate::timer::Deadline::from_timeout(timeout);
     let waited =
         crate::process::wait::wait_pid(pid, status, options, deadline, &registry::COROUTINES);

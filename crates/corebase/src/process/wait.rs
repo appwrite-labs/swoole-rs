@@ -196,6 +196,7 @@ pub fn wait_count() -> usize {
 }
 
 #[cfg(test)]
+#[expect(clippy::disallowed_methods, reason = "tests wake their own waits")]
 pub(crate) mod tests {
     use super::*;
     use std::cell::Cell;

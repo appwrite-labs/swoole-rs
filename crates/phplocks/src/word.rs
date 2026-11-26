@@ -142,6 +142,10 @@ pub(crate) fn cmpset<H: Holder>(call: &Call) {
 pub(crate) fn wait<H: Holder<Word = AtomicU32>>(call: &Call) {
     match call.arity(0, 1).and_then(|()| call.double(1, 1.0)) {
         Ok(timeout) => {
+            #[expect(
+                clippy::disallowed_methods,
+                reason = "PHP's $timeout, as Atomic::wait's"
+            )]
             let deadline = Deadline::from_futex_timeout(timeout);
             call.set_bool(word::<H>(call).is_some_and(|word| futex_wait(word, deadline)));
         }

@@ -18,4 +18,12 @@ disallowed-methods = [
   { path = "swoole_rs_phphttp2::client::read_u32", allow-invalid = true, reason = "decode a complete four-byte wire field" },
   { path = "swoole_rs_corebase::process::pool::head_bytes", allow-invalid = true, reason = "decode a complete DataHead" },
   { path = "std::process::abort", reason = "use swoole_rs_corebase::log::fatal, which logs the reason and location first" },
+  # A wait with no end (#5705): each caller's `expect` names what ends its wait. The three
+  # readers of an upstream timeout return never() for -1, so only PHP-boundary code calls them.
+  # The defining module's path, not the `timer::Deadline` re-export, which corebase's own
+  # code doesn't resolve.
+  { path = "swoole_rs_corebase::timer::wrapper::Deadline::never", allow-invalid = true, reason = "a wait on a peer ends at a deadline; name what else ends this one" },
+  { path = "swoole_rs_corebase::timer::wrapper::Deadline::from_timeout", allow-invalid = true, reason = "never() for -1: only a PHP caller's own timeout goes here" },
+  { path = "swoole_rs_corebase::timer::wrapper::Deadline::from_msec", allow-invalid = true, reason = "never() for -1: only a PHP caller's own timeout goes here" },
+  { path = "swoole_rs_corebase::timer::wrapper::Deadline::from_futex_timeout", allow-invalid = true, reason = "never() for -1: only a PHP caller's own timeout goes here" },
 ]

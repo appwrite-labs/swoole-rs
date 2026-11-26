@@ -156,6 +156,10 @@ fn narrow(signo: c_long) -> i32 {
 /// Another listener is registered, a signal is invalid, registration cannot reach
 /// the reactor, or the wait ends without a signal.
 pub fn system_wait_signal(signals: &[c_long], timeout: f64) -> Result<i32, SignalWaitError> {
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "waitSignal's timeout, from its PHP caller"
+    )]
     let result = wait_signal(signals, Deadline::from_timeout(timeout), &NATIVE);
     let error = match result {
         Err(SignalWaitError::Busy) => libc::EBUSY,
@@ -334,6 +338,7 @@ mod native {
 }
 
 #[cfg(test)]
+#[expect(clippy::disallowed_methods, reason = "tests wake their own waits")]
 mod tests {
     use super::*;
     use std::cell::RefCell;

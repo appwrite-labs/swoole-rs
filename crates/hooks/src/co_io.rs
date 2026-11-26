@@ -162,6 +162,11 @@ mod native {
     }
 
     /// `co->yield(&cancel_fn)`, `cancel_fn` being `socket->cancel(event)`.
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "the socket's TimerController ends it, as upstream's: 60 s by default, never \
+                  only for a timeout of -1 set from PHP"
+    )]
     pub(super) fn suspend(socket: Co, co: *mut c_void, event: Events) {
         let event = if event == Events::READ {
             Events::READ
