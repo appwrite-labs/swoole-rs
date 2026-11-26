@@ -355,6 +355,12 @@ pub fn swr_v1_server_command(
     crate::commands::command(&send)
 }
 
+/// Forget `callback`, given to [`swr_v1_server_command`], whose caller stopped
+/// waiting for the reply.
+pub fn swr_v1_server_command_forget(serv: view::Server<'_>, callback: &crate::CommandCallback) {
+    crate::commands::forget(serv.state(), callback);
+}
+
 /// `Server::call_command_callback(request_id, message)`: the reply to `request_id`
 /// reaches its callback, or the server logs an invalid command result.
 pub fn swr_v1_server_command_result(serv: view::Server<'_>, request_id: i64, message: &[u8]) {
