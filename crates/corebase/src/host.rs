@@ -250,8 +250,9 @@ pub struct DataHead {
 }
 
 /// `swoole::websocket::Status`: how far a connection is through the WebSocket
-/// upgrade. The order is upstream's, which its `>=` checks rely on.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
+/// upgrade, as a connection record stores it. Routing reads it once, as
+/// `swoole_rs_server::WebSocket`'s typed states, and never compares it.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 #[repr(u8)]
 pub enum WebSocketStatus {
     #[default]
@@ -278,6 +279,19 @@ impl WebSocketStatus {
     #[must_use]
     pub const fn code(self) -> u8 {
         self as u8
+    }
+
+    /// The status a stored [`Self::code`] names; only those are stored.
+    #[must_use]
+    pub const fn from_code(code: u8) -> Self {
+        match code {
+            1 => Self::Connection,
+            2 => Self::Handshake,
+            3 => Self::Active,
+            4 => Self::Closing,
+            5 => Self::HandshakeFailed,
+            _ => Self::None,
+        }
     }
 }
 

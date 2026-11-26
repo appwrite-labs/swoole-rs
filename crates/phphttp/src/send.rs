@@ -159,6 +159,9 @@ pub(crate) fn end(mut ctx: Ctx, data: Option<&ZStr>) -> Result<bool, Bailout> {
 fn body(mut ctx: Ctx, data: Option<&ZStr>) -> Result<bool, Bailout> {
     if ctx.state().upgrade {
         crate::websocket::accept(ctx);
+        if ctx.flags() & CO_SOCKET == 0 {
+            crate::websocket::switching(ctx);
+        }
     }
     let raw = of(data);
     let (large, sent) = header::header(ctx, raw, raw.len(), |out| {

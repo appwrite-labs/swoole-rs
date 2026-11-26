@@ -8,14 +8,14 @@ use std::{
     ffi::{CStr, c_int},
     sync::{Arc, atomic::Ordering::Relaxed},
 };
+use swoole_rs_corebase::CCast;
 use swoole_rs_corebase::log::LogLevel::SW_LOG_TRACE as LOG_TRACE;
-use swoole_rs_corebase::{CCast, WebSocketStatus};
 use swoole_rs_http::status::{BAD_REQUEST, SWITCHING_PROTOCOLS};
 use swoole_rs_phpserver::PortCallback;
 use swoole_rs_phpserver::{RecvData, php_swoole_get_recv_data, php_swoole_server_of, zserv};
 use swoole_rs_phpstubs::websocket as stubs;
 use swoole_rs_phpswoole::MinitArgs;
-use swoole_rs_server::{server_methods, view};
+use swoole_rs_server::{Open, WebSocket, server_methods, view};
 use swoole_rs_websocket::{Delivery, ENCODED_KEY_LEN, Opcode, message_policy};
 use swoole_rs_zend::{
     Call, Class, Owned, Value, ZStr, ZString, bailout, handlers, method_table,
@@ -48,10 +48,8 @@ pub fn websocket_class() -> &'static Class {
 /// What the methods read of a `swoole::Connection`.
 #[derive(Clone, Copy)]
 struct Connection {
-    status: WebSocketStatus,
     server_fd: c_int,
     compression: bool,
-    closed: bool,
 }
 
 /// `php_swoole_server_get_and_check_server(object)`: `None` after the
@@ -69,13 +67,6 @@ pub(crate) fn server_of(object: &Value) -> Option<view::Server<'_>> {
         bailout::defer(swoole_rs_zend::report(swoole_rs_zend::E_ERROR, &message));
     }
     server
-}
-
-/// `conn->websocket_status = status` of the session's slot.
-fn set_status(server: view::Server<'_>, fd: zend_long, status: WebSocketStatus) {
-    if let Some(conn) = server.by_session(fd) {
-        conn.set_websocket_status(status);
-    }
 }
 
 /// `Server::close(fd, reset)`.
@@ -150,10 +141,8 @@ fn connection(server: view::Server<'_>, fd: zend_long, verify: bool) -> Option<C
         server.by_session(fd)
     }?;
     Some(Connection {
-        status: conn.websocket_status(),
         server_fd: conn.server_fd(),
         compression: conn.websocket_compression(),
-        closed: conn.closed().load(Relaxed) != 0,
     })
 }
 
@@ -164,7 +153,11 @@ fn push_frame(server: view::Server<'_>, fd: zend_long, head: &[u8], payload: &[u
         host::fatal(&format!("fd[{fd}] is invalid"));
         return false;
     }
-    if connection(server, fd, false).is_none_or(|conn| conn.status < WebSocketStatus::Handshake) {
+    // Past the start of its handshake.
+    let unconnected = |conn: swoole_rs_server::Connection<'_>| {
+        matches!(conn.websocket(), WebSocket::Http | WebSocket::Requested(_))
+    };
+    if server.by_session(fd).is_none_or(unconnected) {
         host::set_last_error(WEBSOCKET_UNCONNECTED);
         host::fatal(&format!(
             "the connected client of connection[{fd}] is not a websocket client or closed"
@@ -210,9 +203,8 @@ fn disconnect(call: &Call) {
         if !push_frame(server, fd, frame.bytes(), &[]) {
             return Some(false);
         }
-        connection(server, fd, false)?;
         // Mark it closing at once, so it is not closed twice.
-        set_status(server, fd, WebSocketStatus::Closing);
+        server.by_session(fd)?.websocket_closing();
         Some(close(server, fd, false))
     };
     call.set_bool(run().unwrap_or(false));
@@ -243,10 +235,15 @@ fn is_established(call: &Call) {
     let run = || -> Option<bool> {
         let server = server(call)?;
         let fd = call.arity(1, 1).and_then(|()| call.long(1, 0)).ok()?;
-        Some(
-            connection(server, fd, true)
-                .is_some_and(|conn| !conn.closed && conn.status >= WebSocketStatus::Active),
-        )
+        let established = |conn: swoole_rs_server::Connection<'_>| {
+            let state = conn.websocket();
+            conn.closed().load(Relaxed) == 0
+                && matches!(
+                    state,
+                    WebSocket::Open(_) | WebSocket::Closing(_) | WebSocket::Failed
+                )
+        };
+        Some(server.verified(fd).is_some_and(established))
     };
     call.set_bool(run().unwrap_or(false));
 }
@@ -282,26 +279,27 @@ fn dispatch(
 /// `swoole_websocket_onMessage`: a frame `Server::dispatch_frame` delivered,
 /// answered by policy or handed to `onMessage` as a Frame. A bailout in the
 /// handler is raised last, over this frame only.
+/// Only an open connection has frames.
 pub(crate) fn on_message(
     server: view::Server<'_>,
-    fd: zend_long,
+    open: Open<'_>,
     request: &mut RecvData<'_>,
 ) -> bool {
-    let result = message(server, fd, request);
+    let result = message(server, open, request);
     let ok = *result.as_ref().unwrap_or(&true);
     bailout::defer(result.map(|_| ()));
     host::stop_if_bailed();
     ok
 }
 
-/// `fd` is the frame's session.
+/// `_open`: the frame's connection is open, as only an open one has frames.
 fn message(
     view: view::Server<'_>,
-    fd: zend_long,
+    _open: Open<'_>,
     request: &mut RecvData<'_>,
 ) -> Result<bool, bailout::Bailout> {
     let info = request.info();
-    let (server_fd, ext_flags) = (c_int::from(info.server_fd), info.ext_flags);
+    let (fd, server_fd, ext_flags) = (info.fd, c_int::from(info.server_fd), info.ext_flags);
     let server = view;
     let Some(port) = server
         .by_session(fd)
@@ -361,11 +359,6 @@ pub(crate) fn handshake_open(mut context: Ctx) -> Result<(), bailout::Bailout> {
     }
 }
 
-/// A handshake `onHandshake` answers: the connection is upgrading.
-pub(crate) fn upgrading(server: view::Server<'_>, fd: zend_long) {
-    set_status(server, fd, WebSocketStatus::Handshake);
-}
-
 /// Set a response header as `Context::set_header(..., false)`.
 fn set_header(context: Ctx, key: &[u8], value: &[u8]) -> Result<(), bailout::Bailout> {
     crate::response::set_header_bytes(context, key, value);
@@ -401,12 +394,17 @@ fn handshake(mut context: Ctx) -> Result<bool, bailout::Bailout> {
     let fd = context.fd();
     if context.flags() & CO_SOCKET == 0 {
         let server = context::server(context.state());
-        let Some(conn) = connection(server, fd, false) else {
+        let Some(conn) = server.by_session(fd) else {
             closed(c"swoole_websocket_handshake", fd);
             return Ok(false);
         };
-        set_status(server, fd, WebSocketStatus::Active);
-        if let Some(protocol) = port_protocol(server, conn.server_fd)
+        // It opens as the 101 goes ([`switching`]); one that lost to a `disconnect`
+        // finds no handshake there.
+        if let WebSocket::Requested(requested) = conn.websocket() {
+            _ = requested.handshake();
+        }
+        let server_fd = conn.server_fd();
+        if let Some(protocol) = port_protocol(server, server_fd)
             && !protocol.is_empty()
         {
             set_header(context, b"Sec-WebSocket-Protocol", &protocol)?;
@@ -422,7 +420,7 @@ fn handshake(mut context: Ctx) -> Result<bool, bailout::Bailout> {
             |args| {
                 dispatch(
                     server,
-                    conn.server_fd,
+                    server_fd,
                     PortCallback::BeforeHandshakeResponse,
                     args,
                     fd,
@@ -572,25 +570,42 @@ pub(crate) fn accept(mut context: Ctx) {
     }
 }
 
+/// The server session's connection, while its handshake runs.
+fn handshaking(context: &mut Ctx) -> Option<swoole_rs_server::Handshaking<'static>> {
+    let state = context.state();
+    let conn = crate::context::server(state).verified(state.fd)?;
+    match conn.websocket() {
+        WebSocket::Handshaking(handshaking) => Some(handshaking),
+        _ => None,
+    }
+}
+
+/// Before a server handshake's 101 is built: the client may send frames as soon as
+/// it is on the wire, so the connection opens now, and nothing it sent before is
+/// read as a frame.
+pub(crate) fn switching(mut context: Ctx) {
+    if context.state().response.status == SWITCHING_PROTOCOLS
+        && let Some(handshaking) = handshaking(&mut context)
+    {
+        // Lost to a `disconnect`: it stays closing, and nothing is framed.
+        _ = handshaking.open();
+    }
+}
+
 /// After a server handshake response: the connection is a WebSocket on 101,
 /// otherwise the handshake failed and the connection closes.
 pub(crate) fn handshaked(mut context: Ctx) {
-    let state = context.state();
-    let (server, fd) = (crate::context::server(state), state.fd);
-    let Some(conn) = connection(server, fd, true) else {
+    let Some(handshaking) = handshaking(&mut context) else {
         return;
     };
-    if conn.status != WebSocketStatus::Handshake {
-        return;
-    }
     let state = context.state();
-    let status = if state.response.status == SWITCHING_PROTOCOLS {
-        WebSocketStatus::Active
+    if state.response.status == SWITCHING_PROTOCOLS {
+        // As in `switching`, one that lost stays closing.
+        _ = handshaking.open();
     } else {
         state.keepalive = false;
-        WebSocketStatus::HandshakeFailed
-    };
-    set_status(server, fd, status);
+        handshaking.fail();
+    }
 }
 
 pub(crate) fn upgrade(context: Ctx) -> Result<bool, bailout::Bailout> {

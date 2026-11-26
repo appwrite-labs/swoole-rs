@@ -54,12 +54,11 @@ use std::sync::Mutex;
 use std::sync::atomic::{AtomicI32, Ordering};
 use std::thread::JoinHandle;
 use std::time::Duration;
-use swoole_rs_corebase::WebSocketStatus;
 use swoole_rs_corebase::buffer::string::{OwnedString, StringBuffer};
 use swoole_rs_ffi::swoole_init;
 use swoole_rs_ports::frame_api::Frame;
 use swoole_rs_ports::http_routes::exports as http;
-use swoole_rs_server::Connection;
+use swoole_rs_server::{Connection, Handshaking, WebSocket};
 
 mod client;
 mod http1;
@@ -357,7 +356,7 @@ extern "C" fn base_receive(serv: *mut Server, req: *const c_void) -> c_int {
     COUNTER.fetch_add(1, Ordering::Relaxed);
     // SAFETY: the receiving server.
     let conn = unsafe { swr_case_connection(serv, session_id) };
-    if conn.websocket_status() == WebSocketStatus::Active {
+    if matches!(conn.websocket(), WebSocket::Open(_)) {
         let opcode = (ext_flags >> 8) as u8;
         if opcode == OPCODE_PING {
             encode_and_send(serv, session_id, data, OPCODE_PONG);
@@ -387,7 +386,11 @@ extern "C" fn base_receive(serv: *mut Server, req: *const c_void) -> c_int {
             ("Content-Length", "0".to_owned()),
         ];
         respond(serv, session_id, "101 Switching Protocols", &headers, "");
-        conn.set_websocket_status(WebSocketStatus::Active);
+        let open = conn
+            .websocket_requested()
+            .handshake()
+            .and_then(Handshaking::open);
+        assert!(open.is_some());
         if request.url == "/ws/close" {
             // SAFETY: the server's own session.
             unsafe { swr_case_close_after(serv, session_id, 200) };
@@ -932,7 +935,12 @@ fn get_package_length() {
 
     // websocket
     let buffer = tg_buffer();
-    conn.set_websocket_status(WebSocketStatus::Handshake);
+    // Only an open connection reads frames (6.3, 88b6cb15d).
+    let open = conn
+        .websocket_requested()
+        .handshake()
+        .and_then(Handshaking::open);
+    assert!(open.is_some());
     conn.set_http2_stream(false);
     let size = http_get_package_length_size(conn);
     assert_eq!(size, SW_WEBSOCKET_FRAME_HEADER_SIZE);
@@ -951,7 +959,11 @@ fn get_package_length() {
     assert_eq!(length, (SW_WEBSOCKET_HEADER_LEN + TEST_STR.len()) as isize);
 
     // http2
-    conn.set_websocket_status(WebSocketStatus::None);
+    // `disconnect`, then the peer's close answers it: no WebSocket again.
+    conn.websocket_closing();
+    if let WebSocket::Closing(closing) = conn.websocket() {
+        closing.answered();
+    }
     conn.set_http2_stream(true);
     let size = http_get_package_length_size(conn);
     assert_eq!(size, SW_HTTP2_FRAME_HEADER_SIZE);
@@ -964,7 +976,6 @@ fn get_package_length() {
     assert_eq!(got, length as isize);
 
     // http1.1
-    conn.set_websocket_status(WebSocketStatus::None);
     conn.set_http2_stream(false);
     assert_eq!(http_get_package_length_size(conn), 0);
     // SAFETY: as above.
