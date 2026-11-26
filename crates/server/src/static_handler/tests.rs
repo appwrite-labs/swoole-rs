@@ -394,6 +394,21 @@ impl Drop for Server {
     }
 }
 
+#[test]
+fn oversized_rewrite_handles_404_before_filesystem_lookup() {
+    let server = Server::new(&Config::default());
+    let mut handler = server.handler(b"/file.txt");
+    handler
+        .server
+        .add_rewrite_rule(b"/file", &vec![b'x'; 16 * 1024 * 1024])
+        .unwrap();
+    TRACE.take();
+
+    assert!(handler.try_serve());
+    assert_eq!(handler.status(), swoole_rs_http::status::NOT_FOUND);
+    assert_eq!(trace(), Vec::<Vec<u8>>::new());
+}
+
 /// The context gate's rewrite rule modes.
 fn rules(mode: u32) -> Vec<Rule> {
     match mode {
