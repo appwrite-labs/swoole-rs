@@ -918,12 +918,16 @@ fn parse(session: &Session, frame: &[u8]) -> bool {
             return header_block(session, &stream, flags & FLAG_END_HEADERS, payload);
         }
         FrameAction::Data => return data(session, stream_id, flags, payload),
-        FrameAction::PingReply => {
+        FrameAction::PingReply | FrameAction::PingAck => {
             // RFC 9113 6.7: the ACK echoes the PING's eight payload bytes; any
             // other length is a FRAME_SIZE_ERROR.
             let Ok(echo) = swoole_rs_http2::ping_payload(payload) else {
+                close(session.default_ctx());
                 return false;
             };
+            if facts.action == FrameAction::PingAck {
+                return true;
+            }
             let mut ack = [0; FRAME_HEADER + PING_PAYLOAD];
             ack[..FRAME_HEADER].copy_from_slice(&frame_header(
                 FrameType::Ping,
@@ -938,6 +942,13 @@ fn parse(session: &Session, frame: &[u8]) -> bool {
             // RFC 9113 6.9: the increment's four bytes; any other length is a
             // FRAME_SIZE_ERROR.
             let Ok(value) = swoole_rs_http2::window_increment(payload) else {
+                let ctx = session.default_ctx();
+                goaway(
+                    ctx,
+                    i64::from(swoole_rs_http2::error_code::FRAME_SIZE_ERROR),
+                    b"invalid WINDOW_UPDATE length",
+                );
+                close(ctx);
                 return false;
             };
             if stream_id == 0 {
@@ -953,7 +964,14 @@ fn parse(session: &Session, frame: &[u8]) -> bool {
                 }
             }
         }
-        FrameAction::Reset => return session.remove(stream_id),
+        FrameAction::Reset if payload.len() == size_of::<u32>() => {
+            return session.remove(stream_id);
+        }
+        FrameAction::Goaway if payload.len() >= GOAWAY_SIZE => {}
+        FrameAction::Reset | FrameAction::Goaway => {
+            close(session.default_ctx());
+            return false;
+        }
         _ => {}
     }
     true
@@ -1099,6 +1117,7 @@ fn credit(current: u32, amount: u32) -> u32 {
 fn settings(session: &Session, payload: &[u8]) -> bool {
     // RFC 9113 6.5: six bytes a setting; any other length is a FRAME_SIZE_ERROR.
     let (entries, &[]) = payload.as_chunks::<{ swoole_rs_http2::SETTING_BYTES }>() else {
+        close(session.default_ctx());
         return false;
     };
     for entry in entries {
