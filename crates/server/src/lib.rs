@@ -16,7 +16,8 @@
 pub use base_factory::SendData;
 pub use commands::{CommandCallback, CommandHandler};
 pub use server_methods::{
-    swr_v1_server_add_command, swr_v1_server_command, swr_v1_server_command_result,
+    swr_v1_server_add_command, swr_v1_server_command, swr_v1_server_command_forget,
+    swr_v1_server_command_result,
 };
 
 // Thread-local role values from Server::ThreadType.

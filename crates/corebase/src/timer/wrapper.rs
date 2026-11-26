@@ -161,8 +161,23 @@ impl Deadline {
     /// connection forever. Never only for a timeout past what the clock holds.
     #[must_use]
     pub fn of_write(seconds: f64) -> Self {
-        let default = f64::from(crate::constants::SW_SOCKET_DEFAULT_WRITE_TIMEOUT);
-        Self::from_timeout(if seconds > 0.0 { seconds } else { default })
+        Self::or_default(seconds, crate::constants::SW_SOCKET_DEFAULT_WRITE_TIMEOUT)
+    }
+
+    /// A wait on a peer to answer: [`Deadline::of_write`], falling back to
+    /// `SW_SOCKET_DEFAULT_READ_TIMEOUT` instead.
+    #[must_use]
+    pub fn of_read(seconds: f64) -> Self {
+        Self::or_default(seconds, crate::constants::SW_SOCKET_DEFAULT_READ_TIMEOUT)
+    }
+
+    fn or_default(seconds: f64, default: u32) -> Self {
+        let seconds = if seconds > 0.0 {
+            seconds
+        } else {
+            default.into()
+        };
+        Self::from_timeout(seconds)
     }
 
     /// Upstream's `int timeout_msec`, as `Lock::lock` reads it: a positive one ends
