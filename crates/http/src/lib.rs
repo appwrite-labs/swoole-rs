@@ -18,7 +18,9 @@ pub use headers::{
 };
 mod maps;
 mod multipart;
-pub use multipart::{MultipartError, multipart_disposition, multipart_filename, multipart_result};
+pub use multipart::{
+    MultipartError, close_upload_file, multipart_disposition, multipart_filename, multipart_result,
+};
 pub mod llhttp;
 pub mod multipart_parser;
 mod owned_proxy;

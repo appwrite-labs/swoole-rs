@@ -1,5 +1,35 @@
 //! Multipart upload accounting and result policy.
 use crate::multipart_parser::ParseError;
+use std::fs::File;
+use std::io::{BufWriter, Write};
+use std::os::fd::{AsRawFd, IntoRawFd};
+
+/// Finish a multipart file and optionally report the bytes that reached disk,
+/// including after a partial write. A failed flush, size check or close is logged.
+#[must_use]
+pub fn close_upload_file(mut upload: BufWriter<File>, size: Option<&mut i64>) -> bool {
+    let flushed = upload.flush();
+    // Take the file even after an error so dropping the writer cannot retry buffered bytes.
+    let (file, _) = upload.into_parts();
+    let measured = size.map_or(Ok(()), |size| {
+        *size = 0;
+        let length = swoole_rs_corebase::ossupport::file_size(file.as_raw_fd())?;
+        *size = i64::try_from(length)
+            .map_err(|_| std::io::Error::from_raw_os_error(libc::EOVERFLOW))?;
+        Ok(())
+    });
+    let closed = swoole_rs_corebase::sys::close(file.into_raw_fd());
+    if let Err(error) = flushed.and(measured).and(closed) {
+        swoole_rs_corebase::log::sys_warning_errno(
+            error.raw_os_error().unwrap_or(libc::EIO),
+            c"http_server::close_upload_file",
+            format_args!("failed to flush upload file"),
+        );
+        return false;
+    }
+    true
+}
+
 /// How a multipart parse fell short.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MultipartError {

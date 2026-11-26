@@ -1131,16 +1131,6 @@ fn path_size(path: &[u8]) -> i64 {
     std::fs::metadata(path).map_or(-1, |meta| i64::try_from(meta.len()).unwrap_or(-1))
 }
 
-/// `swoole::file_get_size(fp)`: flushed, and only for a regular file.
-fn file_size(upload: &mut Upload) -> i64 {
-    // Upstream ignores fflush's result: a failure leaves the size what reached the file.
-    upload.flush().unwrap_or_default();
-    match upload.get_ref().metadata() {
-        Ok(meta) if meta.is_file() => i64::try_from(meta.len()).unwrap_or(-1),
-        _ => -1,
-    }
-}
-
 fn part_data(state: &mut State, upload: &mut Option<Upload>, data: &[u8]) {
     let Some(file) = upload else {
         return;
@@ -1202,8 +1192,12 @@ fn part_data_end(state: &mut State, upload: &mut Option<Upload>, data: &mut Boun
     let Some(input_name) = state.parse.input_name.take() else {
         return;
     };
-    if let Some(mut file) = upload.take() {
-        upload_long(state, b"size", file_size(&mut file));
+    if let Some(file) = upload.take() {
+        let mut size = 0;
+        if !swoole_rs_http::close_upload_file(file, Some(&mut size)) {
+            upload_long(state, b"error", UPLOAD_CANT_WRITE);
+        }
+        upload_long(state, b"size", size);
     }
     let Some(code) = upload_error(state).map(Value::long) else {
         state.parse.input_name = Some(input_name);
