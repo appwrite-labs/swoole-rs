@@ -46,6 +46,10 @@ const FINGERPRINT_SHA1: i64 = 0x0001;
 const FINGERPRINT_RAW: i64 = 0x0002;
 
 unsafe extern "C" {
+    #[link_name = "libssh2_keepalive_send"]
+    safe fn send_keepalive(session: Session, seconds: &mut c_int) -> c_int;
+    safe fn libssh2_keepalive_config(session: Session, want_reply: c_int, interval: c_uint);
+
     /// `ssh2_bound` (crates/hooks): the wait for the session's socket, once no
     /// other coroutine is bound to it.
     safe fn swr_v1_ssh2_bound(session: Session) -> &'static Ops;
@@ -455,6 +459,8 @@ swoole_rs_zend::handlers! {
     zif_ssh2_sftp_readlink => sftp_readlink;
     zif_ssh2_sftp_realpath => sftp_realpath;
     zif_ssh2_methods_negotiated => methods_negotiated;
+    zif_ssh2_keepalive_config => keepalive_config;
+    zif_ssh2_keepalive_send => keepalive_send;
     zif_ssh2_fingerprint => fingerprint;
     zif_ssh2_auth_none => auth_none;
     zif_ssh2_auth_password => auth_password;
@@ -514,6 +520,47 @@ fn warn(message: &str) {
 fn warn_bytes(parts: &[&[u8]]) {
     if let Ok(message) = CString::new(parts.concat()) {
         bailout::defer(report(E_WARNING, &message));
+    }
+}
+
+fn keepalive_config(call: &Call<'_>) {
+    if call.arity(3, 3).is_err() {
+        return;
+    }
+    let Ok(resource) = call.resource(1) else {
+        return;
+    };
+    let Ok(reply) = call.bool(2, false) else {
+        return;
+    };
+    let Ok(interval) = call.long(3, 0) else {
+        return;
+    };
+    let Ok(interval) = c_uint::try_from(interval) else {
+        warn("Argument #3 ($interval) must be between 0 and 4294967295");
+        return;
+    };
+    if let Some(session) = session(call, resource) {
+        libssh2_keepalive_config(session, reply.into(), interval);
+    }
+}
+
+fn keepalive_send(call: &Call<'_>) {
+    if call.arity(1, 1).is_err() {
+        return;
+    }
+    let Ok(resource) = call.resource(1) else {
+        return;
+    };
+    let Some(session) = session(call, resource) else {
+        return;
+    };
+    let mut seconds = 0;
+    let result = hooked(session, || send_keepalive(session, &mut seconds));
+    if result == 0 {
+        call.set_long(seconds.into());
+    } else {
+        call.set_bool(false);
     }
 }
 
