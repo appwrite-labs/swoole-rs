@@ -2,7 +2,9 @@
 // Compatibility derived from Swoole v6.2.4 src/core/base.cc (Swoole contributors).
 //! base.cc's init, thread, clean and fork sequences, and `SwooleTG`.
 //! Runtime resources are initialized and cleaned through their owners in this crate.
-use crate::buffer::string::StringBuffer;
+use crate::buffer::string::{
+    free_thread_buffer, init_thread_buffer, set_thread_buffer, thread_buffer,
+};
 use crate::constants::SW_STACK_BUFFER_SIZE;
 use crate::log;
 use crate::memory::members::pool;
@@ -11,13 +13,6 @@ use std::cell::Cell;
 use std::ffi::{c_int, c_void};
 use std::ptr;
 use std::sync::atomic::{AtomicPtr, Ordering};
-
-thread_local! {
-    /// This thread's `SwooleTG.buffer_stack`, which lives as long as the thread.
-    /// C++ keeps a pointer to the slot, so it is set once in place and replaced
-    /// only when the thread is cleaned.
-    static BUFFER: Cell<StringBuffer> = const { Cell::new(StringBuffer::EMPTY) };
-}
 
 /// `SW_FORK_EXEC`, `SW_FORK_DAEMON` and `SW_FORK_PRECHECK`.
 const FORK_EXEC: c_int = crate::constants::ForkType::SW_FORK_EXEC as c_int;
@@ -28,12 +23,12 @@ const OPERATION_NOT_SUPPORT: c_int =
     swoole_rs_error::ErrorCode::SW_ERROR_OPERATION_NOT_SUPPORT as c_int;
 
 /// `swoole::ThreadGlobal`, `SwooleTG`: each thread's, which only Rust reads. Its
-/// `reactor` is the reactor's own ([`crate::reactor::thread_reactor`]).
+/// `reactor` is the reactor's own ([`crate::reactor::thread_reactor`]) and its
+/// `buffer_stack` the buffer's ([`crate::buffer::string::thread_buffer`]).
 struct ThreadGlobal {
     id: Cell<u16>,
     kind: Cell<u8>,
     main_thread: Cell<bool>,
-    buffer_stack: Cell<*mut c_void>,
     timer: Cell<*mut c_void>,
     async_threads: Cell<*mut c_void>,
 }
@@ -44,7 +39,6 @@ thread_local! {
             id: Cell::new(0),
             kind: Cell::new(0),
             main_thread: Cell::new(false),
-            buffer_stack: Cell::new(ptr::null_mut()),
             timer: Cell::new(ptr::null_mut()),
             async_threads: Cell::new(ptr::null_mut()),
         }
@@ -159,15 +153,7 @@ pub fn register_upper_layer() {
 
 /// `void swoole_thread_init(bool main_thread)`.
 pub fn swoole_thread_init(main_thread: bool) {
-    if with(|thread| thread.buffer_stack.get().is_null()) {
-        let mut fresh = StringBuffer::EMPTY;
-        fresh.alloc(SW_STACK_BUFFER_SIZE as usize, None);
-        let buffer = BUFFER.with(|buffer| {
-            buffer.set(fresh);
-            buffer.as_ptr().cast()
-        });
-        with(|thread| thread.buffer_stack.set(buffer));
-    }
+    init_thread_buffer(SW_STACK_BUFFER_SIZE as usize);
     if !main_thread {
         crate::signal_block_all();
     }
@@ -182,10 +168,7 @@ pub fn swoole_thread_clean(_main_thread: bool) {
     if !crate::reactor::thread_reactor().is_null() {
         crate::reactor::swoole_event_free();
     }
-    if with(|thread| !thread.buffer_stack.get().is_null()) {
-        BUFFER.with(|buffer| buffer.replace(StringBuffer::EMPTY).dispose());
-        with(|thread| thread.buffer_stack.set(ptr::null_mut()));
-    }
+    free_thread_buffer();
 }
 
 /// `bool swoole_is_main_thread()`.
@@ -294,28 +277,6 @@ pub fn fork_exec<E>(child: impl FnOnce() -> Result<(), E>) -> Result<libc::pid_t
     }
 }
 
-/// `sw_tg_buffer()`: `SwooleTG.buffer_stack`.
-#[must_use]
-pub fn thread_buffer() -> *mut c_void {
-    with(|thread| thread.buffer_stack.get())
-}
-
-thread_local! {
-    /// Whether a [`lend_thread_buffer`] is running on this thread.
-    static BUFFER_LENT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
-}
-
-/// Runs `f` as the one Rust borrower of [`thread_buffer`] on this thread: a lend
-/// inside `f` panics instead of aliasing the buffer. A thread-context coroutine's
-/// thread shares the buffer, but no other runs while `f` does.
-/// # Panics
-/// Inside another lend's `f` on this thread.
-pub fn lend_thread_buffer<R>(f: impl FnOnce() -> R) -> R {
-    assert!(!BUFFER_LENT.replace(true), "sw_tg_buffer() is lent already");
-    let _lent = core::mem::DropGuard::new((), |()| BUFFER_LENT.set(false));
-    f()
-}
-
 /// The `SwooleTG` members a thread-context coroutine's thread shares with the
 /// thread that activated coroutines: the buffer stack, reactor, timer and async
 /// threads.
@@ -326,7 +287,7 @@ pub struct SharedThread([AtomicPtr<c_void>; 4]);
 pub fn shared_thread() -> SharedThread {
     SharedThread(with(|thread| {
         [
-            thread.buffer_stack.get(),
+            thread_buffer(),
             crate::reactor::thread_reactor(),
             thread.timer.get(),
             thread.async_threads.get(),
@@ -342,10 +303,10 @@ pub fn adopt_shared_thread(shared: &SharedThread) {
         .each_ref()
         .map(|member| member.load(Ordering::Relaxed));
     with(|thread| {
-        thread.buffer_stack.set(buffer_stack);
         thread.timer.set(timer);
         thread.async_threads.set(async_threads);
     });
+    set_thread_buffer(buffer_stack);
     crate::reactor::set_thread_reactor(reactor);
 }
 

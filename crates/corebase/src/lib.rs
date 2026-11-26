@@ -92,9 +92,7 @@ pub use host::{
     swoole_redirect_stdout, swoole_redirect_stdout_file, swoole_shell_exec, swoole_system_random,
     swr_v1_core_format_result,
 };
-pub use lifecycle::{
-    SharedThread, adopt_shared_thread, lend_thread_buffer, shared_thread, thread_buffer,
-};
+pub use lifecycle::{SharedThread, adopt_shared_thread, shared_thread};
 pub use lifecycle::{
     fork_exec, set_thread, set_thread_async_threads, set_thread_timer, swoole_clean, swoole_fork,
     swoole_is_main_thread, swoole_thread_clean, swoole_thread_init, swr_v1_core_swoole_init,

@@ -715,6 +715,53 @@ pub fn boxed_sized_string(size: usize, with: Option<TrustedAllocator>) -> Box<St
     string
 }
 
+thread_local! {
+    /// `SwooleTG.buffer_stack`: this thread's String, or null. A thread-context
+    /// coroutine's thread shares the one of the thread that activated coroutines.
+    static THREAD_BUFFER: std::cell::Cell<*mut StringBuffer> = const {
+        std::cell::Cell::new(ptr::null_mut())
+    };
+    /// The String [`init_thread_buffer`] makes, which lives as long as the thread.
+    /// C++ keeps a pointer to the slot, so it is set once in place and replaced
+    /// only by [`free_thread_buffer`].
+    static OWN_BUFFER: std::cell::Cell<StringBuffer> = const {
+        std::cell::Cell::new(StringBuffer::EMPTY)
+    };
+    /// Whether a [`try_with_thread_buffer`] lend is running on this thread.
+    static BUFFER_LENT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// `sw_tg_buffer()`: `SwooleTG.buffer_stack`.
+#[must_use]
+pub fn thread_buffer() -> *mut c_void {
+    THREAD_BUFFER.get().cast()
+}
+
+/// Sets `SwooleTG.buffer_stack` to `buffer`, another thread's ([`thread_buffer`]).
+pub fn set_thread_buffer(buffer: *mut c_void) {
+    THREAD_BUFFER.set(buffer.cast());
+}
+
+/// `swoole_thread_init`'s buffer: this thread's own String of `size` bytes, unless
+/// it has one.
+pub fn init_thread_buffer(size: usize) {
+    if THREAD_BUFFER.get().is_null() {
+        let mut fresh = StringBuffer::EMPTY;
+        fresh.alloc(size, None);
+        THREAD_BUFFER.set(OWN_BUFFER.with(|buffer| {
+            buffer.set(fresh);
+            buffer.as_ptr()
+        }));
+    }
+}
+
+/// `swoole_thread_clean`'s buffer: frees this thread's String, if it has one.
+pub fn free_thread_buffer() {
+    if !THREAD_BUFFER.replace(ptr::null_mut()).is_null() {
+        OWN_BUFFER.with(|buffer| buffer.replace(StringBuffer::EMPTY).dispose());
+    }
+}
+
 /// `f` over this thread's String (`sw_tg_buffer()`), lent to `f` alone. A thread
 /// `swoole_thread_init` didn't set up has none, which aborts.
 #[inline]
@@ -723,13 +770,18 @@ pub fn with_thread_buffer<R>(f: impl FnOnce(&mut StringBuffer) -> R) -> R {
 }
 
 /// [`with_thread_buffer`], or `None` on a thread without a buffer.
+///
+/// A thread-context coroutine's thread shares the buffer, but no other runs while
+/// `f` does.
+/// # Panics
+/// Inside another lend's `f` on this thread, instead of aliasing the buffer.
 #[inline]
 pub fn try_with_thread_buffer<R>(f: impl FnOnce(&mut StringBuffer) -> R) -> Option<R> {
-    crate::lend_thread_buffer(|| {
-        // SAFETY: null, or the calling thread's live buffer, which
-        // `swoole_thread_init` set up, lent to `f` alone.
-        unsafe { crate::thread_buffer().cast::<StringBuffer>().as_mut() }.map(f)
-    })
+    assert!(!BUFFER_LENT.replace(true), "sw_tg_buffer() is lent already");
+    let _lent = core::mem::DropGuard::new((), |()| BUFFER_LENT.set(false));
+    // SAFETY: null, or the calling thread's live buffer, which `swoole_thread_init`
+    // set up, lent to `f` alone.
+    unsafe { THREAD_BUFFER.get().as_mut() }.map(f)
 }
 
 #[cfg(test)]
