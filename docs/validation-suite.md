@@ -10,6 +10,7 @@ PHPTs (see [corpus](../corpus/README.md)). `EXT` is a path to a built
 | Buffer backpressure/lifecycle | `python3 tests/modules/buffer/lifecycle.py --engine upstream=EXT --engine cargo=EXT`, or corpus project `11-buffer-lifecycle` |
 | Original upstream PHPTs | `python3 corpus/upstream/run.py --engine NAME=EXT --require-all` |
 | HTTP/1 framing ambiguities (smuggling corpus) | `python3 -m pytest tests/modules/http/test_smuggling.py --engine upstream=EXT --engine cargo=EXT` |
+| HTTP/1, h2c and WebSocket resource abuse (bounded RSS and time per connection) | `python3 -m pytest tests/modules/http/test_abuse.py --engine cargo=EXT` |
 | PHP-API differential fuzzing | `python3 tests/differential/fuzz.py --engine upstream=EXT --engine cargo=EXT --seed S --programs N --cases tests/differential/cases --keep DIR` |
 | WebSocket raw transport | `python3 -m pytest tests/modules/websocket/test_close.py --engine upstream=EXT --engine cargo=EXT` |
 | WebSocket invalid-frame policy | `python3 -m pytest tests/modules/websocket/test_invalid.py --engine upstream=EXT --engine cargo=EXT` |
