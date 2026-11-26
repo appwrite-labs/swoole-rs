@@ -328,9 +328,6 @@ fn set(call: &Call) {
     let Ok(array) = client_coro::parse_class_swoole_coroutine_client_set(call) else {
         return call.set_bool(false);
     };
-    if array.count() == 0 {
-        return call.set_bool(false);
-    }
     if let Some(settings) = call.value(1) {
         crate::net::merge_setting(call, &CLIENT, settings);
     }

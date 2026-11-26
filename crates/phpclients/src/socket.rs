@@ -852,9 +852,6 @@ fn set_protocol(call: &Call) {
     let Ok(settings) = socket_coro::parse_class_swoole_coroutine_socket_setprotocol(call) else {
         return call.set_bool(false);
     };
-    if settings.count() == 0 {
-        return call.set_bool(false);
-    }
     call.set_bool(crate::socket_options::apply(
         socket,
         settings,

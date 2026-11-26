@@ -701,15 +701,10 @@ fn handle(call: &Call) {
 }
 
 fn set(call: &Call) {
-    let Ok(settings) = http_server_coro::parse_class_swoole_coroutine_http_server_set(call) else {
-        call.set_bool(false);
-        return;
+    let Ok(settings) = call.arity(1, 1).and_then(|()| call.array(1)) else {
+        return call.set_bool(false);
     };
-    if settings.count() == 0 {
-        call.set_bool(false);
-        return;
-    }
-    if let (Some(props), Ok(settings)) = (call.props(Some(&SERVER)), call.array(1)) {
+    if let Some(props) = call.props(Some(&SERVER)) {
         props.merge(c"settings", settings);
     }
     call.set_bool(true);
