@@ -66,6 +66,88 @@ pub fn conditional(date: &[u8], kind: Conditional, mtime: i64, calendar: &impl C
     }
 }
 
+fn skip_ows(mut bytes: &[u8]) -> &[u8] {
+    while let [b' ' | b'\t', rest @ ..] = bytes {
+        bytes = rest;
+    }
+    bytes
+}
+
+fn matches_etag(mut list: &[u8], tag: &[u8], weak: bool) -> bool {
+    loop {
+        list = skip_ows(list);
+        if let Some(rest) = list.strip_prefix(b"*") {
+            return skip_ows(rest).is_empty();
+        }
+        let strong = !list.starts_with(b"W/");
+        let value = list.strip_prefix(b"W/").unwrap_or(list);
+        let Some(text) = value.strip_prefix(b"\"") else {
+            return false;
+        };
+        let Some(end) = text.iter().position(|&byte| byte == b'"') else {
+            return false;
+        };
+        let (candidate, rest) = value.split_at(end + 2);
+        let rest = skip_ows(rest);
+        let next = rest.strip_prefix(b",");
+        if !rest.is_empty() && next.is_none() {
+            return false;
+        }
+        if (weak || strong) && candidate == tag {
+            return true;
+        }
+        let Some(next) = next else { return false };
+        list = next;
+    }
+}
+
+/// Outcome of evaluating a static request's conditional headers.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PreconditionStatus {
+    Ok = 200,
+    NotModified = 304,
+    Failed = 412,
+}
+
+impl crate::HttpStaticObservation {
+    /// Strong validator derived from the metadata of the selected file.
+    #[must_use]
+    pub fn etag(&self) -> String {
+        format!(
+            "\"{:x}-{:x}-{:x}\"",
+            self.mtime, self.filesize, self.mtime_nsec
+        )
+    }
+
+    /// Return the HTTP status after evaluating the request's four conditional headers.
+    pub fn preconditions(
+        &self,
+        if_match: &[u8],
+        unmodified: &[u8],
+        none_match: &[u8],
+        modified: &[u8],
+        calendar: &impl Calendar,
+    ) -> PreconditionStatus {
+        if !if_match.is_empty() {
+            if !matches_etag(if_match, self.etag().as_bytes(), false) {
+                return PreconditionStatus::Failed;
+            }
+        } else if parse_http_date(unmodified, calendar).is_some_and(|date| self.mtime > date) {
+            return PreconditionStatus::Failed;
+        }
+        let cached = if none_match.is_empty() {
+            conditional(modified, Conditional::ModifiedSince, self.mtime, calendar)
+        } else {
+            matches_etag(none_match, self.etag().as_bytes(), true)
+        };
+        if cached {
+            PreconditionStatus::NotModified
+        } else {
+            PreconditionStatus::Ok
+        }
+    }
+}
+
 /// `get_date()` (now, when `mtime` is None) or `get_date_last_modified()`: the time
 /// as an HTTP date, empty when it has no calendar date.
 #[must_use]
