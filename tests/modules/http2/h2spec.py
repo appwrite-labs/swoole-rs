@@ -2,7 +2,9 @@
 """h2spec (pinned) against an open_http2_protocol server, h2c and TLS, on every engine.
 
 A case that passes on upstream and not on another engine fails the run; upstream's own
-failures are listed, not hidden. Strict cases run too: they only gate where upstream passes.
+failures are listed, not hidden. So does a case in h2spec.baseline (`MODE CASE`, strict cases
+included) that doesn't pass on another engine, whatever upstream does; passes the baseline
+lacks are listed, to be added to it.
 
     python3 tests/modules/http2/h2spec.py --engine upstream=target/upstream/src/modules/swoole.so \
       --engine cargo=target/ext/swoole.so
@@ -21,7 +23,7 @@ import xml.etree.ElementTree as ET
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
-from tools.harness import ROOT, parse_engines, server, write_report
+from tools.harness import ROOT, against_baseline, parse_engines, server, write_report
 
 VERSION = 'v2.6.0'
 SHA256 = {
@@ -92,7 +94,8 @@ def main():
             for name, mode, rows in pool.map(lambda job: run(*job), [(e, *m) for e in engines for m in modes]):
                 results.setdefault(name, {})[mode] = rows
     oracle = results['upstream']
-    report = {'h2spec': VERSION, 'engines': [engine.metadata() for engine in engines], 'results': {}, 'regressions': []}
+    report = {'h2spec': VERSION, 'engines': [engine.metadata() for engine in engines], 'results': {}, 'regressions': [],
+              'baseline': {}}
     lines = ['| engine | mode | passed | failed | skipped |', '| --- | --- | --- | --- | --- |']
     for name, modes in results.items():
         for mode, rows in modes.items():
@@ -107,6 +110,11 @@ def main():
                 if row[1] == 'passed' and rows.get(case, (None, 'missing'))[1] != 'passed':
                     report['regressions'].append({'engine': name, 'mode': mode, 'case': case, 'desc': row[0],
                                                   'outcome': rows.get(case, (None, 'missing'))[1]})
+        if name != 'upstream':
+            ran = {f'{mode} {case}': row[1] for mode, rows in modes.items() for case, row in rows.items()}
+            lost, new = against_baseline(Path(__file__).with_suffix('.baseline'),
+                                         [case for case, outcome in ran.items() if outcome == 'passed'], ran)
+            report['baseline'][name] = {'lost': lost, 'new': new}
     write_report(args.output, report)
     # Markdown, for the job summary.
     print('\n'.join(lines))
@@ -114,6 +122,13 @@ def main():
         print('\nRegressions (pass on upstream, not here):\n')
     for row in report['regressions']:
         print(f"- {row['engine']} {row['mode']} `{row['case']}` {row['desc']}: {row['outcome']}")
+    for name, rows in report['baseline'].items():
+        if rows['lost']:
+            print(f'\nLost from the baseline on {name} (h2spec.baseline):\n')
+        for case in rows['lost']:
+            print(f'- `{case}`')
+        if rows['new']:
+            print(f'\nNew passes on {name}, add to h2spec.baseline:\n\n```\n' + '\n'.join(rows['new']) + '\n```')
     print('\n<details><summary>Cases upstream fails too</summary>\n')
     for mode, rows in oracle.items():
         for case, row in sorted(rows.items()):
@@ -123,7 +138,7 @@ def main():
     empty = not all(oracle.values())
     if empty:
         print('\nupstream ran no h2spec cases')
-    return int(bool(report['regressions']) or empty)
+    return int(bool(report['regressions']) or empty or any(rows['lost'] for rows in report['baseline'].values()))
 
 
 if __name__ == '__main__':

@@ -262,3 +262,11 @@ def write_report(path, data):
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(data, indent=2) + '\n')
+
+
+def against_baseline(path, passed, ran):
+    """(lost, new): cases listed in the baseline at `path` that ran and did not pass, and
+    passes it doesn't list. One case per line, `#` comments. Lines only leave it with
+    `needs:decision` (the PR tier's `tooling` job checks); add a new pass to raise it."""
+    listed = {line.partition('#')[0].strip() for line in Path(path).read_text().splitlines()} - {''}
+    return sorted((listed & set(ran)) - set(passed)), sorted(set(passed) - listed)
