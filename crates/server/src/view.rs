@@ -244,7 +244,13 @@ impl<'a> Server<'a> {
     }
 
     /// `apply_rewrite_rules` on a static context: true when a rule applied.
-    pub fn static_rewrite(self, context: &mut swoole_rs_http::HttpStaticContext) -> bool {
+    ///
+    /// # Errors
+    /// Returns the byte limit when a rewritten URL is too long to serve.
+    pub fn static_rewrite(
+        self,
+        context: &mut swoole_rs_http::HttpStaticContext,
+    ) -> Result<bool, usize> {
         crate::static_config::apply_rewrite_rules(&self.state().static_config, context)
     }
 

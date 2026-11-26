@@ -9,6 +9,7 @@
 mod regex;
 
 use regex::{Captures, Regex, Rejected};
+use swoole_rs_corebase::buffer::BoundedBytes;
 
 enum Pattern {
     Prefix(Vec<u8>),
@@ -44,6 +45,13 @@ impl RewriteRules {
             },
             _ => (Pattern::Prefix(pattern.to_vec()), Ok(())),
         };
+        #[cfg_attr(
+            protocol_buffer_lint,
+            expect(
+                clippy::disallowed_methods,
+                reason = "one rule per server configuration entry, before serving requests"
+            )
+        )]
         self.0.push(Rule {
             pattern,
             replacement: replacement.to_vec(),
@@ -53,35 +61,56 @@ impl RewriteRules {
 
     /// The rewritten URL, or `None` when no rule applies. A prefix rule applies whenever it
     /// matches; a regex rule only when its replacement differs from `url`.
-    #[must_use]
-    pub fn apply(&self, url: &[u8]) -> Option<Vec<u8>> {
-        self.0.iter().find_map(|rule| match &rule.pattern {
-            Pattern::Prefix(prefix) => url
-                .strip_prefix(prefix.as_slice())
-                .map(|suffix| [rule.replacement.as_slice(), suffix].concat()),
-            Pattern::Regex(regex) => regex
-                .as_ref()
-                .and_then(|regex| replace_all(regex, url, &rule.replacement))
-                .filter(|rewritten| rewritten != url),
-        })
+    ///
+    /// # Errors
+    /// Returns the output byte limit when a matching rule would exceed it.
+    pub fn apply(&self, url: &[u8], max: usize) -> Result<Option<Vec<u8>>, usize> {
+        for rule in &self.0 {
+            match &rule.pattern {
+                Pattern::Prefix(prefix) => {
+                    if let Some(suffix) = url.strip_prefix(prefix.as_slice()) {
+                        if rule.replacement.len().saturating_add(suffix.len()) > max {
+                            return Err(max);
+                        }
+                        return Ok(Some([rule.replacement.as_slice(), suffix].concat()));
+                    }
+                }
+                Pattern::Regex(Some(regex)) => {
+                    if let Some(caps) = regex.search(url, 0, 0, false) {
+                        let rewritten =
+                            replace_all(regex, caps, url, &rule.replacement, max).ok_or(max)?;
+                        if rewritten != url {
+                            return Ok(Some(rewritten));
+                        }
+                    }
+                }
+                Pattern::Regex(None) => {}
+            }
+        }
+        Ok(None)
     }
 }
 
-/// `std::regex_replace(url, regex, format)`, or `None` when nothing matches. After an empty
+/// `std::regex_replace(url, regex, format)`, starting with its first match, or `None` on overflow. After an empty
 /// match, libstdc++'s iterator first tries a non-empty match at the same place, then searches
 /// from the next byte; after any other match it searches from its end, empty matches included.
 /// Its first step doesn't pass `match_prev_avail` yet, so the non-empty try after a first,
 /// empty match sees the input begin there.
-fn replace_all(regex: &Regex, url: &[u8], format: &[u8]) -> Option<Vec<u8>> {
-    let mut caps = regex.search(url, 0, 0, false)?;
-    let mut out = Vec::new();
+fn replace_all(
+    regex: &Regex,
+    mut caps: Captures,
+    url: &[u8],
+    format: &[u8],
+    max: usize,
+) -> Option<Vec<u8>> {
+    let mut out = BoundedBytes::new(max, 0);
     let mut previous = 0;
     let mut first = true;
     loop {
         let first_step = std::mem::replace(&mut first, false);
         let std::ops::Range { start, end } = caps.group(0)?;
-        out.extend_from_slice(url.get(previous..start)?);
-        expand(&mut out, url, &caps, previous, format);
+        out.append(url.get(previous..start)?).ok()?;
+        expand(&mut out, url, &caps, previous, format).ok()?;
         previous = end;
         let mut from = end;
         if start == end {
@@ -100,20 +129,26 @@ fn replace_all(regex: &Regex, url: &[u8], format: &[u8]) -> Option<Vec<u8>> {
             None => break,
         }
     }
-    out.extend_from_slice(url.get(previous..)?);
-    Some(out)
+    out.append(url.get(previous..)?).ok()?;
+    Some(out.into_vec())
 }
 
 /// libstdc++'s ECMAScript `match_results::format`: `$$`, `$&`, `` $` `` (from the previous
 /// match's end), `$'`, and `$n`/`$nn` (nothing for a group that doesn't exist or didn't match).
 /// Any other `$` is literal.
-fn expand(out: &mut Vec<u8>, url: &[u8], caps: &Captures, previous: usize, format: &[u8]) {
+fn expand(
+    out: &mut BoundedBytes,
+    url: &[u8],
+    caps: &Captures,
+    previous: usize,
+    format: &[u8],
+) -> Result<(), usize> {
     let group = |index: usize| caps.group(index).and_then(|span| url.get(span));
     let whole = caps.group(0).unwrap_or(0..0);
     let mut rest = format;
     while let Some(dollar) = rest.iter().position(|&byte| byte == b'$') {
         let (literal, tail) = rest.split_at(dollar);
-        out.extend_from_slice(literal);
+        out.append(literal)?;
         rest = tail.get(1..).unwrap_or_default();
         let (text, used) = match rest {
             [] | [b'$', ..] => (Some(&b"$"[..]), usize::from(!rest.is_empty())),
@@ -127,10 +162,10 @@ fn expand(out: &mut Vec<u8>, url: &[u8], caps: &Captures, previous: usize, forma
             [digit @ b'0'..=b'9', ..] => (group(usize::from(digit - b'0')), 1),
             _ => (Some(&b"$"[..]), 0),
         };
-        out.extend_from_slice(text.unwrap_or_default());
+        out.append(text.unwrap_or_default())?;
         rest = rest.get(used..).unwrap_or_default();
     }
-    out.extend_from_slice(rest);
+    out.append(rest)
 }
 
 #[cfg(test)]
@@ -144,7 +179,29 @@ mod tests {
             // Unsupported regexes are installed as nonmatches; this helper tests the resulting URL.
             let _added = owner.add(pattern, replacement);
         }
-        owner.apply(url)
+        owner.apply(url, 65536).unwrap()
+    }
+
+    #[test]
+    fn rewrite_limit_includes_every_match_and_the_unmatched_suffix() {
+        for pattern in [b"/a".as_slice(), b"~a~"] {
+            let mut rules = RewriteRules::default();
+            rules.add(pattern, b"xx").unwrap();
+            rules.add(b"", b"").unwrap();
+            let expected = if pattern == b"/a" {
+                b"xxab".as_slice()
+            } else {
+                b"/xxxxb"
+            };
+            assert_eq!(
+                rules.apply(b"/aab", expected.len()),
+                Ok(Some(expected.to_vec()))
+            );
+            assert_eq!(
+                rules.apply(b"/aab", expected.len() - 1),
+                Err(expected.len() - 1)
+            );
+        }
     }
 
     #[test]

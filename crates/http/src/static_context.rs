@@ -103,13 +103,19 @@ impl HttpStaticContext {
     }
     /// Upstream's `apply_rewrite_rules`: rewrite the current URL by the first rule that
     /// applies. True when one did.
-    pub fn rewrite(&mut self, rules: &crate::RewriteRules) -> bool {
-        let rewritten = rules.apply(self.url());
-        let changed = rewritten.is_some();
-        if changed {
-            self.rewritten = rewritten;
+    ///
+    /// # Errors
+    /// An expanded URL beyond the HTTP header limit sets the static response to 404.
+    pub fn rewrite(&mut self, rules: &crate::RewriteRules) -> Result<bool, usize> {
+        let limit = swoole_rs_corebase::constants::SW_HTTP_HEADER_MAX_SIZE as usize;
+        let rewritten = rules.apply(self.url(), limit).inspect_err(|_| {
+            self.facts.status = crate::status::NOT_FOUND;
+        })?;
+        if let Some(url) = rewritten {
+            self.rewritten = Some(url);
+            return Ok(true);
         }
-        changed
+        Ok(false)
     }
     /// The file's modification time, once a stat has succeeded.
     #[must_use]
@@ -253,14 +259,25 @@ mod tests {
         let mut rules = crate::RewriteRules::default();
         assert!(rules.add(b"/a\0", b"/b\0").is_ok());
         assert!(rules.add(b"/b\0tail", b"").is_ok());
-        assert!(owner.rewrite(&rules));
+        assert!(owner.rewrite(&rules).unwrap());
         assert_eq!(owner.text(Url), b"/b\0tail");
-        assert!(owner.rewrite(&rules));
+        assert!(owner.rewrite(&rules).unwrap());
         assert_eq!(owner.text(Url), b"");
         assert_eq!(owner.text(Original), original);
-        assert!(!owner.rewrite(&crate::RewriteRules::default()));
+        assert!(!owner.rewrite(&crate::RewriteRules::default()).unwrap());
         assert_eq!(owner.text(Url), b"");
     }
+    #[test]
+    fn oversized_rewrite_sets_not_found_and_keeps_original_url() {
+        let mut owner = make();
+        let limit = swoole_rs_corebase::constants::SW_HTTP_HEADER_MAX_SIZE as usize;
+        let mut rules = crate::RewriteRules::default();
+        rules.add(b"/files", &vec![b'x'; limit]).unwrap();
+        assert_eq!(owner.rewrite(&rules), Err(limit));
+        assert_eq!(owner.observe().status, crate::status::NOT_FOUND);
+        assert_eq!(owner.text(Url), owner.text(Original));
+    }
+
     #[test]
     fn content_and_end_render_from_the_owned_binary_boundary() {
         let mut owner = make();
