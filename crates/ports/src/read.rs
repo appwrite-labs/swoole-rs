@@ -833,19 +833,25 @@ pub(crate) mod tests {
             ]
             .concat()
         };
-        let upload = |body: &[u8]| {
+        let upload = |body: &[u8], max| {
             let mut f = fake(&[&[&head[..], body].concat()]);
             f.buf.extend(512);
-            (f.max, f.uploads) = (200, 1024);
+            (f.max, f.uploads) = (max, 1024);
             run(Readable::Http, &mut f);
             f
         };
-        let f = upload(&part(b""));
+        let f = upload(&part(b""), 200);
         assert_eq!(f.dispatched.len(), 1, "dispatched");
         assert!(f.effects.contains(&Effect::Upload), "flagged preprocessed");
         assert!(f.sent.is_empty(), "no error reply");
 
-        let f = upload(&part(b"sWoOlE-uPlOaD-fIlE: /tmp/victim\r\n"));
+        let exact = f.dispatched[0].len() as u64;
+        assert_eq!(upload(&part(b""), exact).dispatched, f.dispatched);
+        let oversized = upload(&part(b""), exact - 1);
+        assert_eq!(oversized.dispatched, Vec::<Vec<u8>>::new());
+        assert_eq!(oversized.sent, [Reply::TooLarge]);
+
+        let f = upload(&part(b"sWoOlE-uPlOaD-fIlE: /tmp/victim\r\n"), 200);
         assert!(f.dispatched.is_empty(), "not dispatched");
         assert_eq!(f.sent, [Reply::BadRequest], "400");
 

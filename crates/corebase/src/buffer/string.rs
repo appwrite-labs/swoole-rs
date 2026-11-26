@@ -353,6 +353,25 @@ impl StringBuffer {
         self.reserve(new_size);
     }
 
+    /// Append a complete fragment without growing the allocation past `limit`.
+    ///
+    /// # Errors
+    /// Returns the limit before writing anything if the complete fragment cannot fit.
+    pub fn append_bounded(&mut self, parts: &[&[u8]], limit: usize) -> Result<(), usize> {
+        let end = parts
+            .iter()
+            .try_fold(self.len(), |n, part| n.checked_add(part.len()))
+            .filter(|&n| n <= limit)
+            .ok_or(limit)?;
+        if end > self.size {
+            self.reserve_exact(self.size.saturating_mul(2).max(end).min(limit));
+        }
+        for part in parts {
+            self.append(part);
+        }
+        Ok(())
+    }
+
     /// `String::append(const char *, size_t)`.
     pub fn append(&mut self, data: &[u8]) {
         let new_size = self.length.wrapping_add(data.len());
