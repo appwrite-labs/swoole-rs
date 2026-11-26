@@ -1047,12 +1047,15 @@ mod tests {
             (0.3, 300),
             (1.9999, 1999),
         ] {
+            // What passed around the two clock reads, so a pause between them
+            // only widens the lower bound.
+            let began = std::time::Instant::now();
             let left = Deadline::from_timeout(seconds).remaining().unwrap();
-            let range =
-                std::time::Duration::from_millis(ms - 1)..=std::time::Duration::from_millis(ms);
+            let passed = began.elapsed();
+            let ms = std::time::Duration::from_millis(ms);
             assert!(
-                range.contains(&left) && left != *range.start(),
-                "{seconds}: {left:?}"
+                left <= ms && left + passed >= ms,
+                "{seconds}: {left:?} {passed:?}"
             );
         }
     }
