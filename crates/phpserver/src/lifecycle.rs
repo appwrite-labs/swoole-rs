@@ -1008,6 +1008,13 @@ fn command(call: &Call) {
     let Ok((name, process_id, process_type, json_decode)) = parsed else {
         return call.set_bool(false);
     };
+    let Ok(process_id) = u32::try_from(process_id) else {
+        fatal(
+            E_WARNING,
+            message!("invalid process_id[{process_id}]").as_cstr(),
+        );
+        return call.set_bool(false);
+    };
     let encoded = match call.value(4).map(Value::json_encode) {
         Some(Ok(Some(encoded))) => encoded,
         Some(Err(bailout)) => return bailout.defer(),
@@ -1031,14 +1038,7 @@ fn command(call: &Call) {
     )]
     let callback: swoole_rs_server::CommandCallback =
         std::sync::Arc::new(command_done(Rc::clone(&wait)));
-    // Upstream's `(uint16_t) process_id` and `(ProcessType) process_type`.
-    let [low, high, ..] = process_id.to_le_bytes();
-    let process_id = u32::from(u16::from_le_bytes([low, high]));
-    let process_type = c_int::from_le_bytes(
-        process_type.to_le_bytes()[..4]
-            .try_into()
-            .unwrap_or_default(),
-    );
+    let process_type = process_type.c_cast::<c_int>();
     let sent = swr_v1_server_command(serv, process_id, process_type, name, data, callback.clone());
     drop(encoded);
     if !sent {
