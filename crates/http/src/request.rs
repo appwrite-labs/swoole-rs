@@ -557,9 +557,9 @@ impl Parts<'_> for Rewrite<'_> {
 
     fn on_part_data_end(&mut self) -> Flow {
         self.request.multipart_header_parsed = false;
-        // Dropping the file writes what is buffered and closes it.
-        if let Some(mut upload) = form_of(self.request).fp.take() {
-            if upload.file.flush().is_err() {
+        if let Some(upload) = form_of(self.request).fp.take() {
+            let upload = upload.map_file(|file| crate::close_upload_file(file, None));
+            if !*upload.file {
                 (self.request.excepted, self.request.unavailable) = (true, true);
                 return Flow::Pause;
             }
