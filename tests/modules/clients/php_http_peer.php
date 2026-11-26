@@ -18,7 +18,7 @@ for ($i = 0; $i < ($mode === 'retry' ? 2 : 1); $i++) {
     $body = $i === 0 ? 'old' : 'ok';
     $status = $i === 0 ? '502 Bad Gateway' : '200 OK';
     $response = "HTTP/1.1 $status\r\nConnection: close\r\nContent-Length: " . strlen($body)
-        . "\r\nSet-Cookie: token=one%20two+three%00tail; Path=/\r\nSet-Cookie: odd;name=value; Path=/\r\nSet-Cookie: nameless\r\n\r\n" . $body;
+        . "\r\nSet-Cookie: token=one%20two+three%00tail; Path=/\r\nSet-Cookie: odd;name=value; Path=/\r\nSet-Cookie: nameless\r\nSet-Cookie: empty=; Path=/\r\nSet-Cookie: escaped=%zz+%25; Path=/\r\n\r\n" . $body;
     while ($response !== '') {
         $written = fwrite($socket, $response);
         if ($written === false || $written === 0) { throw new RuntimeException('response write failed'); }
