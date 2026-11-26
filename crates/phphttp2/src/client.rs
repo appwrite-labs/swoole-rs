@@ -616,7 +616,7 @@ impl Client {
 
     /// `build_header`: a HEADERS frame whose first nine bytes are left for
     /// its header, then the request's HPACK block.
-    fn build_header(&self, request: Request<'_>) -> Vec<u8> {
+    fn build_header(&self, request: Request<'_>) -> Option<Vec<u8>> {
         let method_value = request.property(Field::Method);
         let path_value = request.property(Field::Path);
         let method = method_value
@@ -666,7 +666,8 @@ impl Client {
                     continue;
                 };
                 let value = value.string();
-                let encoded = ZString::url_encode(value.bytes());
+                let encoded =
+                    swoole_rs_phpclients::encode_request_cookie(key, value.bytes(), &EXCEPTION)?;
                 set.add(b"cookie", &[key, b"=", encoded.bytes()]);
             }
             let mut frame = vec![0_u8; FRAME_HEADER];
@@ -675,7 +676,7 @@ impl Client {
                     encoder.encode(set.list(), &mut frame);
                 }
             });
-            frame
+            Some(frame)
         })
     }
 
@@ -702,7 +703,9 @@ impl Client {
             Some(text) => text.is_empty(),
             None => !data.truthy(),
         };
-        let mut frame = self.build_header(request);
+        let Some(mut frame) = self.build_header(request) else {
+            return 0;
+        };
         let flags = sw_rs_http2_stream_flags(pipeline, use_pipeline_read);
         // The id is taken before a send yields or the body's conversion runs PHP
         // code, so an overlapping send gets the next one. A failed send gives it

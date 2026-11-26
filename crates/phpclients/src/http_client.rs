@@ -78,8 +78,6 @@ const WEBSOCKET_HEADER: usize = swoole_rs_websocket::HEADER_LEN as usize;
 /// `SW_WEBSOCKET_EXTENSION_DEFLATE`.
 const DEFLATE_EXTENSION: &CStr =
     c"permessage-deflate; client_no_context_takeover; server_no_context_takeover";
-/// `SW_HTTP_COOKIE_MAX_SIZE`.
-const COOKIE_MAX_SIZE: usize = 4096;
 /// `SW_HTTP_RESPONSE_INIT_SIZE`.
 const BODY_SIZE: usize = swoole_rs_corebase::constants::SW_HTTP_RESPONSE_INIT_SIZE as usize;
 
@@ -388,6 +386,19 @@ impl Conn {
         let conn = &this.custom::<Data>()?.client.get()?.conn;
         std::ptr::eq(Rc::as_ptr(conn), self).then_some(this)
     }
+}
+
+/// Encode a request cookie after checking the pinned size limit for the raw pair.
+pub fn encode_request_cookie(key: &[u8], value: &[u8], exception: &Class) -> Option<ZString> {
+    const SW_HTTP_COOKIE_MAX_SIZE: usize = 4096;
+    if key.len() + value.len() + 1 > SW_HTTP_COOKIE_MAX_SIZE {
+        exception.throw(
+            c"HTTP cookie header is too large",
+            i64::from(INVALID_PARAMS),
+        );
+        return None;
+    }
+    Some(ZString::url_encode(value))
 }
 
 impl Client {
@@ -835,16 +846,12 @@ impl Client {
                 if text.bytes().is_empty() {
                     continue;
                 }
-                if key.len() + text.bytes().len() + 1 > COOKIE_MAX_SIZE {
-                    EXCEPTION.throw(
-                        c"HTTP cookie header is too large",
-                        i64::from(INVALID_PARAMS),
-                    );
+                let Some(encoded) = encode_request_cookie(key, text.bytes(), &EXCEPTION) else {
                     return false;
-                }
+                };
                 out.extend_from_slice(key);
                 out.push(b'=');
-                out.extend_from_slice(ZString::url_encode(text.bytes()).bytes());
+                out.extend_from_slice(encoded.bytes());
                 if index < count {
                     out.extend_from_slice(b"; ");
                 }
