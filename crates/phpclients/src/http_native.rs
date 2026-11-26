@@ -131,9 +131,14 @@ impl Co {
         if body.is_empty() {
             return self.send_all(data);
         }
-        let vectors = [std::io::IoSlice::new(data), std::io::IoSlice::new(body)];
+        self.send_vectors([data, body])
+    }
+
+    pub(crate) fn send_vectors<const N: usize>(self, parts: [&[u8]; N]) -> bool {
+        let length = parts.iter().map(|part| part.len()).sum();
+        let vectors = parts.map(std::io::IoSlice::new);
         let (sent, _, _) = co::vector(self.handle(), co::Vectors::Write(&vectors), true);
-        usize::try_from(sent) == Ok(data.len() + body.len())
+        usize::try_from(sent) == Ok(length)
     }
 
     /// `send_all(data)`: whether all went.

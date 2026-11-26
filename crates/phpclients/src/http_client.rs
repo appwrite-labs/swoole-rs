@@ -300,6 +300,26 @@ fn not_null(props: Props<'_>, name: &CStr) -> Option<Owned> {
         .filter(|value| !matches!(value.kind(), z::IS_NULL | z::IS_UNDEF))
 }
 
+/// Keep the original upload across coroutine yields and 502/503 retries.
+struct MultipartBody {
+    fields: Option<Owned>,
+    files: Owned,
+}
+
+impl MultipartBody {
+    fn capture(props: Props) -> Option<Self> {
+        let value = property(props, c"uploadFiles");
+        let files = value.dereferenced();
+        files.array().filter(|files| files.count() > 0)?;
+        let fields = property(props, c"requestBody");
+        let fields = fields.dereferenced();
+        Some(Self {
+            fields: (!fields.is_null()).then(|| fields.into_owned()),
+            files: files.into_owned(),
+        })
+    }
+}
+
 /// `php_swoole_socket_set_error_properties(zobject, code, message)`.
 fn set_error_properties(props: Props, code: c_int, message: &CStr) {
     swoole_rs_corebase::log::set_last_error(code);
@@ -658,7 +678,7 @@ impl Client {
         clippy::too_many_lines,
         reason = "upstream's send_request, in its order"
     )]
-    fn send_request(&self, path: &[u8]) -> bool {
+    fn send_request(&self, path: &[u8], multipart: &mut Option<MultipartBody>) -> bool {
         if path.is_empty() {
             set_error_properties(self.props(), INVALID_PARAMS, &strerror(INVALID_PARAMS));
             return false;
@@ -690,12 +710,16 @@ impl Client {
         let method = not_null(props, c"requestMethod");
         let headers_value = property(props, c"requestHeaders");
         let headers = headers_value.array();
-        // The body and files with references of their own: a multipart send yields
-        // between its writes, and `setData()` or `addFile()` may replace or add to
-        // them meanwhile (an add separates the shared array).
-        let body = not_null(props, c"requestBody");
-        let files = property(props, c"uploadFiles");
-        let body = body.as_deref();
+        if multipart.is_none() {
+            *multipart = MultipartBody::capture(props);
+        }
+        let ordinary_body;
+        let (body, files) = if let Some(multipart) = multipart {
+            (multipart.fields.as_deref(), multipart.files.array())
+        } else {
+            ordinary_body = not_null(props, c"requestBody");
+            (ordinary_body.as_deref(), None)
+        };
         let cookies_value = property(props, c"cookies");
         let cookies = cookies_value.array();
         let download = not_null(props, c"downloadFile");
@@ -827,7 +851,6 @@ impl Client {
             out.extend_from_slice(b"\r\n");
         }
 
-        let files = files.array().filter(|files| files.count() > 0);
         self.has_upload_files.set(files.is_some());
         if let Some(files) = files {
             return self.send_multipart(out, body, files);
@@ -911,12 +934,13 @@ impl Client {
             };
             let header = request::file_header(&boundary, part.name, part.filename, part.kind);
             let sent = match part.source {
-                Source::Memory(content) => {
-                    let mut data = header;
-                    data.extend_from_slice(content);
-                    data.extend_from_slice(b"\r\n");
-                    self.send_raw(&data)
-                }
+                Source::Memory(content) => self.co().is_some_and(|socket| {
+                    if content.is_empty() {
+                        socket.send_vectors([&header, b"\r\n"])
+                    } else {
+                        socket.send_vectors([&header, content, b"\r\n"])
+                    }
+                }),
                 Source::Disk(path, offset) => {
                     self.send_raw(&header)
                         && self.sendfile(path, offset, part.size)
@@ -996,9 +1020,10 @@ impl Client {
             if self.collect_stats.get() {
                 self.props().null(c"stats");
             }
+            let mut multipart = MultipartBody::capture(self.props());
             let mut attempt = 0;
             while attempt < u32::from(self.max_retries.get()) + 1 {
-                if !self.send_request(path) {
+                if !self.send_request(path, &mut multipart) {
                     self.reset_download();
                     return false;
                 }
@@ -2054,6 +2079,7 @@ fn add_upload(call: &Call, entry: &[(&CStr, Upload<'_>)]) {
     let mut file = OwnedArray::default();
     for (key, item) in entry {
         match item {
+            Upload::String(text) => file.insert(key.to_bytes(), Owned::string((*text).to_owned())),
             Upload::Text(text) => file.insert_bytes(key.to_bytes(), Some(text)),
             Upload::Number(number) => file.insert_long(key.to_bytes(), *number),
         }
@@ -2073,6 +2099,7 @@ fn add_upload(call: &Call, entry: &[(&CStr, Upload<'_>)]) {
 }
 
 enum Upload<'a> {
+    String(&'a ZStr),
     Text(&'a [u8]),
     Number(i64),
 }
@@ -2164,13 +2191,13 @@ fn add_file(call: &Call) {
 fn add_data(call: &Call) {
     let parsed = call.arity(2, 4).and_then(|()| {
         Ok((
-            call.string(1, b"")?,
+            call.zstr(1)?,
             call.string(2, b"")?,
             call.string(3, b"")?,
             call.string(4, b"")?,
         ))
     });
-    let Ok((data, name, kind, filename)) = parsed else {
+    let Ok((Some(data), name, kind, filename)) = parsed else {
         return call.set_bool(false);
     };
     let kind = if kind.is_empty() {
@@ -2179,11 +2206,11 @@ fn add_data(call: &Call) {
         kind
     };
     let filename = if filename.is_empty() { name } else { filename };
-    let size = i64::try_from(data.len()).unwrap_or(i64::MAX);
+    let size = i64::try_from(data.bytes().len()).unwrap_or(i64::MAX);
     add_upload(
         call,
         &[
-            (c"content", Upload::Text(data)),
+            (c"content", Upload::String(data)),
             (c"name", Upload::Text(name)),
             (c"filename", Upload::Text(filename)),
             (c"type", Upload::Text(kind)),

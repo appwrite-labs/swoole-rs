@@ -1,5 +1,5 @@
 //! The HTTP client's byte-level rules, free of Zend: request formatting through
-//! upstream's fixed `sw_snprintf` buffers, multipart sizes, header token lists,
+//! upstream's HTTP format strings, multipart sizes, header token lists,
 //! random tokens and response header semantics.
 use swoole_rs_clients::http_format::{Format, http_format};
 
@@ -17,8 +17,7 @@ const FIELD_OVERHEAD: usize =
     SW_HTTP_FORM_RAW_DATA_FMT.len() - SW_HTTP_FORM_RAW_DATA_FMT_LEN as usize;
 const FILE_OVERHEAD: usize =
     SW_HTTP_FORM_FILE_DATA_FMT.len() - SW_HTTP_FORM_FILE_DATA_FMT_LEN as usize;
-/// `header_buf[2048]` and `content_length_str[64]`.
-const PART_BUFFER: usize = 2048;
+/// `content_length_str[64]`.
 const LENGTH_BUFFER: usize = 64;
 /// `SW_STACK_BUFFER_SIZE`, the bound of `swoole_http_token_list_contains_value`.
 const TOKEN_LIST_LIMIT: usize = swoole_rs_corebase::constants::SW_STACK_BUFFER_SIZE as usize;
@@ -118,7 +117,7 @@ pub(crate) fn multipart_type(out: &mut Vec<u8>, boundary: &[u8]) {
         Format::MultipartType,
         [boundary, b"", b"", b""],
         0,
-        PART_BUFFER,
+        b"Content-Type: multipart/form-data; boundary=\r\n".len() + boundary.len() + 1,
     );
 }
 
@@ -129,7 +128,7 @@ pub(crate) fn field_header(out: &mut Vec<u8>, boundary: &[u8], name: &[u8]) {
         Format::Field,
         [boundary, name, b"", b""],
         0,
-        PART_BUFFER,
+        FIELD_OVERHEAD + boundary.len() + name.len() + 1,
     );
 }
 
@@ -141,7 +140,7 @@ pub(crate) fn file_header(boundary: &[u8], name: &[u8], filename: &[u8], kind: &
         Format::File,
         [boundary, name, filename, kind],
         0,
-        PART_BUFFER,
+        FILE_OVERHEAD + boundary.len() + name.len() + filename.len() + kind.len() + 1,
     );
     out
 }
@@ -154,7 +153,7 @@ pub(crate) fn closing(boundary: &[u8]) -> Vec<u8> {
         Format::Closing,
         [boundary, b"", b"", b""],
         0,
-        PART_BUFFER,
+        boundary.len() + 7,
     );
     out
 }
@@ -271,7 +270,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn requests_format_through_the_fixed_buffers() {
+    fn request_headers_keep_the_full_field_values() {
         let mut out = Vec::new();
         content_length(&mut out, 42);
         assert_eq!(out, b"Content-Length: 42\r\n\r\n", "content length");
@@ -299,8 +298,8 @@ mod tests {
         let long = vec![b'x'; 3000];
         assert_eq!(
             file_header(b"B", &long, b"", b"").len(),
-            PART_BUFFER - 1,
-            "snprintf truncates at the buffer"
+            FILE_OVERHEAD + 1 + long.len(),
+            "a long name is preserved in the part header"
         );
     }
 
