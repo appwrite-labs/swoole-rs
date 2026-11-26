@@ -4,6 +4,9 @@
 // HTTP/1 and HTTP/2 (tests/modules/http2/test_header_reentry.py) alike.
 $server = new Swoole\Http\Server('127.0.0.1', (int) getenv('TEST_PORT'), SWOOLE_BASE);
 $server->set(['worker_num' => 1, 'log_level' => SWOOLE_LOG_NONE, 'open_http2_protocol' => true]);
+if ($log = getenv('TEST_HTTP_WARNING_LOG')) {
+    $server->set(['log_level' => SWOOLE_LOG_WARNING, 'log_file' => $log]);
+}
 
 final class Value
 {
