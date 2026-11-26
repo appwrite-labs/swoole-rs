@@ -239,15 +239,16 @@ fn strerror(code: c_int) -> String {
 }
 
 /// `php_swoole_socket_set` when `settings` is an array.
-fn apply(socket: Co, settings: &Value, decoded_body_limit: &Cell<usize>) {
+fn apply(socket: Co, settings: &Value, decoded_body_limit: &Cell<usize>) -> bool {
     if let Some(settings) = settings.array() {
-        // Every setting.
-        if swoole_rs_phpclients::socket_set(socket, settings)
-            && settings.get(b"package_max_length").is_some()
-        {
+        if !swoole_rs_phpclients::socket_set(socket, settings) {
+            return false;
+        }
+        if settings.get(b"package_max_length").is_some() {
             decoded_body_limit.set(socket.protocol().package_max_length as usize);
         }
     }
+    true
 }
 
 fn frame_header(kind: FrameType, length: usize, flags: u32, stream: u32) -> [u8; FRAME_HEADER] {
@@ -446,8 +447,10 @@ impl Client {
         socket.set_protocol(protocol);
         if let Some(this) = self.conn.this()
             && let Some(setting) = this.property(c"setting")
+            && !apply(socket, &setting, &self.decoded_body_limit)
         {
-            apply(socket, &setting, &self.decoded_body_limit);
+            self.close();
+            return false;
         }
         if swoole_rs_zend::bailout::pending() {
             return false;
@@ -1462,11 +1465,14 @@ fn set(call: &Call) {
     let Ok(settings) = call.arity(1, 1).and_then(|()| call.array(1)) else {
         return call.set_bool(false);
     };
+    if let Some(socket) = client.socket()
+        && !apply(socket, settings, &client.decoded_body_limit)
+    {
+        swoole_rs_phpswoole::invalid_setting(c"failed to apply HTTP/2 client settings");
+        return;
+    }
     if let Some(props) = call.props(Some(&CLIENT)) {
         props.merge(c"setting", settings);
-    }
-    if let Some(socket) = client.socket() {
-        apply(socket, settings, &client.decoded_body_limit);
     }
     call.set_bool(true);
 }

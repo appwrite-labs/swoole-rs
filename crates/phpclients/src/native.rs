@@ -537,10 +537,7 @@ impl Co {
 /// `package_length_func`: the callable `value` makes replaces any earlier
 /// one, which is freed once the socket no longer holds it. Nothing more is set
 /// once a bailout is pending.
-pub(crate) fn length_callable(socket: Co, value: &Value) {
-    let Ok(Some(callable)) = owned_callable(value) else {
-        return;
-    };
+pub(crate) fn length_callable(socket: Co, callable: Rc<Callable>) {
     let named = Named::new(callable);
     socket.0.edit_protocol(|protocol| {
         protocol.get_package_length = Some(swoole_rs_phpswoole::length::length::<Length>);

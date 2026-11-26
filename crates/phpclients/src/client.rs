@@ -289,8 +289,11 @@ fn socket_for_connect(call: &Call, port: i64) -> Option<Co> {
     }
     let socket = create_socket(call, data, kind)?;
     let settings = setting(call);
-    if let Some(settings) = settings.as_ref().and_then(|value| value.array()) {
-        crate::socket_options::apply(socket, settings, swoole_rs_phpswoole::SocketSettings::All);
+    if let Some(settings) = settings.as_ref().and_then(|value| value.array())
+        && !crate::socket_options::socket_set(socket.handle(), settings)
+    {
+        socket.close();
+        return None;
     }
     Some(socket)
 }
@@ -328,17 +331,16 @@ fn set(call: &Call) {
     let Ok(array) = client_coro::parse_class_swoole_coroutine_client_set(call) else {
         return call.set_bool(false);
     };
+    if let Some(socket) = client_socket(call)
+        && !crate::socket_options::socket_set(socket.handle(), array)
+    {
+        swoole_rs_phpswoole::invalid_setting(c"failed to apply coroutine client settings");
+        return;
+    }
     if let Some(settings) = call.value(1) {
         crate::net::merge_setting(call, &CLIENT, settings);
     }
-    let Some(socket) = client_socket(call) else {
-        return call.set_bool(true);
-    };
-    call.set_bool(crate::socket_options::apply(
-        socket,
-        array,
-        swoole_rs_phpswoole::SocketSettings::All,
-    ));
+    call.set_bool(true);
 }
 
 /// `connect(string $host, int $port = 0, float $timeout = 0, int $sock_flag = 0): bool`.
