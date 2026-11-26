@@ -79,6 +79,15 @@
       ]
     },
     {
+      "path": "tests/swoole_table/stats_before_create.phpt",
+      "sha256": "2933732435ea4fd31cfd1f0b783e895b734bd397e7fc4d72a4f4e48bbdfa7b41",
+      "module": "table",
+      "requires": [
+        "upstream_test_bootstrap",
+        "table"
+      ]
+    },
+    {
       "path": "tests/swoole_table/int.phpt",
       "sha256": "5d03592b8a8b928755511a0953d822d9da864e52c730a35c0fee422583d2662f",
       "module": "table",

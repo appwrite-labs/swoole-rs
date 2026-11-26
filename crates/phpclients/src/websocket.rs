@@ -525,9 +525,7 @@ fn construct(opcode: zend_long, payload: Owned, mut flags: u8) -> Owned {
         if let [high, low, reason @ ..] = payload.bytes().unwrap_or_default()
             && let Some(props) = frame.props(Some(class))
         {
-            // `(payload[0] << 8) ^ (payload[1] & 0xFF)` over a signed char.
-            let code = (i64::from(high.cast_signed()) << 8) ^ i64::from(*low);
-            props.long(c"code", code);
+            props.long(c"code", i64::from(u16::from_be_bytes([*high, *low])));
             if !reason.is_empty() {
                 props.bytes(c"reason", reason);
             }
