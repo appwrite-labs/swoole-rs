@@ -198,3 +198,19 @@ def test_invalid_request_logs_receive_warning(engine, tmp_path):
         assert get(port, '/')[0] == 'HTTP/1.1 200 OK'
         assert ('\tWARNING\tphp_swoole_http_server_onReceive(): Invalid HTTP request discarded: '
                 '4 bytes unprocessed. Reason: Invalid header token') in log.read_text()
+
+
+def test_standalone_request_upload_uses_php_temp_directory(engine, tmp_path):
+    code = r'''
+    $body = "--part\r\nContent-Disposition: form-data; name=\"file\"; filename=\"notes.txt\"\r\n\r\nnotes\r\n--part--\r\n";
+    $request = Swoole\Http\Request::create();
+    $request->parse("POST / HTTP/1.1\r\nHost: localhost\r\nContent-Type: multipart/form-data; boundary=part\r\n"
+        . "Content-Length: " . strlen($body) . "\r\n\r\n" . $body);
+    $path = $request->files['file']['tmp_name'];
+    echo json_encode([dirname($path), file_get_contents($path)]), "\n";
+    unset($request);
+    echo json_encode(file_exists($path));
+    '''
+    result = subprocess.run(engine.command('-d', f'sys_temp_dir={tmp_path}', '-r', code),
+                            capture_output=True, text=True, check=True, timeout=10)
+    assert [json.loads(line) for line in result.stdout.splitlines()] == [[str(tmp_path), 'notes'], False]

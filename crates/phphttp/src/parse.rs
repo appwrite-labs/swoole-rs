@@ -72,12 +72,10 @@ const SESSION_CLOSED: c_int = swoole_rs_error::ErrorCode::SW_ERROR_SESSION_CLOSE
 const SERVER_INVALID_REQUEST: c_int =
     swoole_rs_error::ErrorCode::SW_ERROR_SERVER_INVALID_REQUEST as c_int;
 /// `SW_STACK_BUFFER_SIZE` (also `sw_tg_buffer()`'s size), `SW_BUFFER_SIZE_STD`,
-/// `SW_HTTP_FORM_KEYLEN`, `SW_HTTP_UPLOAD_TMPDIR_SIZE`, `HT_MIN_SIZE`.
+/// `SW_HTTP_FORM_KEYLEN`, `HT_MIN_SIZE`.
 const STACK_BUFFER_SIZE: usize = swoole_rs_corebase::constants::SW_STACK_BUFFER_SIZE as usize;
 const BUFFER_SIZE_STD: usize = swoole_rs_corebase::constants::SW_BUFFER_SIZE_STD as usize;
 const FORM_KEYLEN: usize = swoole_rs_corebase::constants::SW_HTTP_FORM_KEYLEN as usize;
-const UPLOAD_TMPDIR_SIZE: usize =
-    swoole_rs_corebase::constants::SW_HTTP_UPLOAD_TMPDIR_SIZE as usize;
 const HT_MIN_SIZE: u32 = 8;
 /// `http_upload_errno`.
 const UPLOAD_OK: i64 = 0;
@@ -1166,10 +1164,11 @@ fn part_headers_complete(state: &mut State, upload: &mut Option<Upload>) {
     if upload_error(state).is_none_or(|code| code.as_long().is_some_and(|code| code != UPLOAD_OK)) {
         return;
     }
-    let mut path = crate::context::upload_tmp_dir(state).to_bytes().to_vec();
-    path.extend_from_slice(b"/swoole.upfile.XXXXXX");
-    path.truncate(UPLOAD_TMPDIR_SIZE - 1);
-    path.push(0);
+    let mut path = [
+        crate::context::upload_tmp_dir(state).to_bytes(),
+        b"/swoole.upfile.XXXXXX\0",
+    ]
+    .concat();
     let Some(file) = swoole_rs_corebase::ossupport::TempFile::create(&mut path) else {
         upload_long(state, b"error", UPLOAD_NO_TMP_DIR);
         return;
