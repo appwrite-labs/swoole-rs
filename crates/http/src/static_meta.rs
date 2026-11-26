@@ -1,8 +1,6 @@
 //! Inline static handler policy; native owns strings, RNG and MIME references.
-use crate::c_text;
 pub(crate) const BOUNDARY: &[u8] =
     swoole_rs_corebase::constants::SW_HTTP_SERVER_BOUNDARY_PREKEY.as_bytes();
-const CONTENT_TYPE: &[u8] = b"multipart/byteranges; boundary=\0";
 const ALLOCATION: i32 = -3;
 
 /// The lazy boundary's random length while the boundary is still empty
@@ -18,14 +16,22 @@ pub(crate) fn static_multipart(tasks: usize) -> bool {
 }
 /// The binary-safe multipart content type over `boundary`, excluding any NUL.
 pub(crate) fn static_content_type(boundary: &[u8]) -> Result<Vec<u8>, i32> {
-    let prefix = c_text(CONTENT_TYPE);
-    let mut value = Vec::new();
-    value
-        .try_reserve_exact(prefix.len() + boundary.len())
-        .map_err(|_| ALLOCATION)?;
-    value.extend_from_slice(prefix);
-    value.extend_from_slice(boundary);
-    Ok(value)
+    joined(&[b"multipart/byteranges; boundary=", boundary])
+}
+
+/// Allocate the exact combined length before copying any of the parts.
+pub(crate) fn joined(parts: &[&[u8]]) -> Result<Vec<u8>, i32> {
+    let length = parts
+        .iter()
+        .try_fold(0usize, |n, part| n.checked_add(part.len()))
+        .filter(|&n| isize::try_from(n).is_ok())
+        .ok_or(crate::OVERFLOW)?;
+    let mut bytes = Vec::new();
+    bytes.try_reserve_exact(length).map_err(|_| ALLOCATION)?;
+    for part in parts {
+        bytes.extend_from_slice(part);
+    }
+    Ok(bytes)
 }
 /// Publish 404 only for the terminal location match; no native callback occurs.
 pub(crate) fn static_catch(last: bool, status: &mut i32) -> bool {
