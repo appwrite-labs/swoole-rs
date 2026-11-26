@@ -21,14 +21,13 @@ use swoole_rs_http2::frame_flag::{
 };
 use swoole_rs_http2::{
     FrameAction, FrameType, GOAWAY_SIZE, HeaderKind, HeaderRole, Http2FrameFacts, Http2Settings,
-    Http2WindowPlan, Media, PING_PAYLOAD, QueueAction, WINDOW_UPDATE_SIZE, decode_packet,
+    Http2WindowPlan, Media, PING_PAYLOAD, WINDOW_UPDATE_SIZE, decode_packet,
     hpack::{self, Decoder, Encoder, Error, MAX_DECODED_STRING},
     send_frame_size, sw_rs_http2_chunk, sw_rs_http2_default_settings, sw_rs_http2_header_plan,
     sw_rs_http2_headers_flags, sw_rs_http2_inflate_step, sw_rs_http2_media_kind,
-    sw_rs_http2_pack_frame_header, sw_rs_http2_pack_settings, sw_rs_http2_queue_action,
-    sw_rs_http2_response, sw_rs_http2_send_complete, sw_rs_http2_setting_plan,
-    sw_rs_http2_stream_flags, sw_rs_http2_stream_update, sw_rs_http2_window_plan,
-    sw_rs_http2_write_allowed,
+    sw_rs_http2_pack_frame_header, sw_rs_http2_pack_settings, sw_rs_http2_response,
+    sw_rs_http2_send_complete, sw_rs_http2_setting_plan, sw_rs_http2_stream_flags,
+    sw_rs_http2_stream_update, sw_rs_http2_window_plan, sw_rs_http2_write_allowed,
 };
 use swoole_rs_inflate::{DecodeError, Inflate};
 use swoole_rs_phphttp::http2::{IdMap, entries};
@@ -534,42 +533,45 @@ impl Client {
         true
     }
 
-    /// `send`: directly, or queued behind a coroutine writing already.
-    fn send(&self, data: &[u8]) -> bool {
+    fn check_send_queue(&self) -> bool {
         let Some(socket) = self.socket() else {
             return false;
         };
-        let bound = socket.has_bound(Events::WRITE);
-        let (queued, limit) = if bound {
-            (
-                self.queue.with_taken(|queue| queue.len()),
-                self.remote.get().max_concurrent_streams,
-            )
-        } else {
-            (0, 0)
+        if socket.has_bound(Events::WRITE)
+            && self.queue.with_taken(|queue| queue.len())
+                > self.remote.get().max_concurrent_streams as usize
+        {
+            socket.set_err_code(QUEUE_FULL);
+            socket.set_static_err_msg(c"the send queue is full, try again later");
+            self.io_error(socket);
+            return false;
+        }
+        true
+    }
+
+    fn send(&self, data: &[u8]) -> bool {
+        self.send_part(data, true)
+    }
+
+    /// Flush queued writes only after the last part of the current frame.
+    fn send_part(&self, data: &[u8], flush: bool) -> bool {
+        let Some(socket) = self.socket() else {
+            return false;
         };
-        match sw_rs_http2_queue_action(bound, queued, limit) {
-            QueueAction::Send => {}
-            QueueAction::Full => {
-                socket.set_err_code(QUEUE_FULL);
-                socket.set_static_err_msg(c"the send queue is full, try again later");
-                self.io_error(socket);
-                return false;
-            }
-            QueueAction::Append => {
-                self.queue
-                    .with_taken(|queue| queue.push_back(data.to_vec()));
-                return true;
-            }
+        if socket.has_bound(Events::WRITE) {
+            self.queue
+                .with_taken(|queue| queue.push_back(data.to_vec()));
+            return true;
         }
         if !Self::send_all(socket, data) {
             self.close_with_socket_error(socket);
             return false;
         }
         // Each frame is copied out: sending yields, and the queue is put back first.
-        loop {
-            let next = self.queue.with_taken(|queue| queue.front().cloned());
-            let Some(frame) = next else { break };
+        if !flush {
+            return true;
+        }
+        while let Some(frame) = self.queue.with_taken(|queue| queue.front().cloned()) {
             if !Self::send_all(socket, &frame) {
                 self.close_with_socket_error(socket);
                 EXCEPTION.throw(c"failed to send control frame", SEND_CONTROL_FRAME_FAILED);
@@ -625,12 +627,10 @@ impl Client {
             let max_frame_size = send_frame_size(self.remote.get().max_frame_size);
             let chunk = sw_rs_http2_chunk(data.len(), max_frame_size, flag);
             let (part, rest) = data.split_at(chunk.length.min(data.len()));
-            if !self.send(&frame_header(
-                FrameType::Data,
-                part.len(),
-                chunk.flags,
-                stream,
-            )) || !self.send(part)
+            if !self.send_part(
+                &frame_header(FrameType::Data, part.len(), chunk.flags, stream),
+                false,
+            ) || !self.send(part)
             {
                 return false;
             }
@@ -742,6 +742,9 @@ impl Client {
             Some(text) => text.is_empty(),
             None => !data.truthy(),
         };
+        if !self.check_send_queue() {
+            return 0;
+        }
         let Some(mut frame) = self.build_header(request) else {
             return 0;
         };
@@ -804,6 +807,9 @@ impl Client {
         if !sw_rs_http2_write_allowed(flags.is_some(), flags.unwrap_or(0)) {
             let message = format!("unable to found active pipeline stream#{id}");
             self.update_error(libc::EINVAL, message.as_bytes());
+            return false;
+        }
+        if !self.check_send_queue() {
             return false;
         }
         let flag = if end { FLAG_END_STREAM } else { 0 };
