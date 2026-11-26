@@ -141,6 +141,15 @@ pub mod exports {
         );
     }
 
+    /// The connection, if a `disconnect` (in a worker) marked it closing since its read
+    /// took it open: a close frame then answers it, as 6.3's `dispatch_frame` reads.
+    pub(crate) fn closing(conn: Connection<'_>) -> Option<swoole_rs_server::Closing<'_>> {
+        match conn.websocket() {
+            WebSocket::Closing(closing) => Some(closing),
+            _ => None,
+        }
+    }
+
     /// `websocket::dispatch_frame` over a session's whole frame: decode it (unmasking
     /// it in place), let [`decide_frame`] choose, and carry out its action on the
     /// connection's fragment buffer, the server and the socket. Only an open
@@ -159,11 +168,7 @@ pub mod exports {
         let conn = s.conn;
         // Out of the connection while this frame works on it.
         let fragment = open.take_fragment();
-        // A `disconnect` (in a worker) may have marked it closing since this read began.
-        let closing = match conn.websocket() {
-            WebSocket::Closing(closing) => Some(closing),
-            _ => None,
-        };
+        let closing = closing(conn);
         let mut context = Context {
             has_fragment: fragment.is_some(),
             closing: closing.is_some(),
@@ -531,5 +536,32 @@ mod tests {
         }
         assert_eq!(cases, WebSocketStatus::ALL.len() * 2 * 3);
         assert_eq!(WEBSOCKET_FRAME_HEADER_SIZE, 14);
+    }
+
+    /// A `disconnect` after a read took its connection open: the peer's close frame in
+    /// that read answers it (`ServerClose`, back to `NONE`), not dispatched or echoed.
+    #[test]
+    fn a_close_frame_answers_a_connection_closing_since_its_read() {
+        use swoole_rs_websocket::{Action, Context, decide_frame};
+        let record = ConnectionRecord::default();
+        let conn = Connection::from(&record);
+        let _open = conn.websocket_requested().handshake().open();
+        assert!(exports::closing(conn).is_none());
+        conn.websocket_closing();
+        let closing = exports::closing(conn);
+        let mut close = *b"\x88\x82\x00\x00\x00\x00\x03\xe8";
+        let length = close.len();
+        let frame = crate::frame_api::decode_frame(&mut close).expect("a close frame");
+        let context = Context {
+            closing: closing.is_some(),
+            ..Context::default()
+        };
+        let decision = decide_frame(&frame, length, &context).expect("a decision");
+        assert_eq!(decision.action, Action::ServerClose);
+        closing.expect("closing").answered();
+        assert!(matches!(
+            conn.websocket(),
+            swoole_rs_server::WebSocket::Http
+        ));
     }
 }
