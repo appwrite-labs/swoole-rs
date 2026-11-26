@@ -155,6 +155,16 @@ impl Deadline {
         }
     }
 
+    /// A wait on a peer to take what is written: `seconds` as [`Deadline::from_timeout`]
+    /// reads them when positive, else `SW_SOCKET_DEFAULT_WRITE_TIMEOUT`, as upstream
+    /// 6.3's `http2_server_send_timeout` falls back, so a stalled peer can't hold a
+    /// connection forever. Never only for a timeout past what the clock holds.
+    #[must_use]
+    pub fn of_write(seconds: f64) -> Self {
+        let default = f64::from(crate::constants::SW_SOCKET_DEFAULT_WRITE_TIMEOUT);
+        Self::from_timeout(if seconds > 0.0 { seconds } else { default })
+    }
+
     /// Upstream's `int timeout_msec`, as `Lock::lock` reads it: a positive one ends
     /// that many milliseconds from now; zero or a negative one is [`Deadline::never`].
     #[must_use]

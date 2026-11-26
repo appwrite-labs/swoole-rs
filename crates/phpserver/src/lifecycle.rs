@@ -17,6 +17,7 @@ use std::{
 };
 use swoole_rs_corebase::CCast;
 use swoole_rs_corebase::CellExt;
+use swoole_rs_corebase::timer::Deadline;
 use swoole_rs_phpcoroutines::{Coroutine, Waiter};
 use swoole_rs_server::{server_methods, swr_v1_server_add_command, swr_v1_server_command, view};
 use swoole_rs_zend::host::callable::Callable as Kept;
@@ -1385,6 +1386,7 @@ pub(crate) const SW_ERROR_OUTPUT_SEND_YIELD: c_int =
 
 /// `php_swoole_server_send_yield`: wait in the session's queue until its
 /// output buffer drains, then send; repeat while the send asks to yield again.
+/// Each wait ends at `send_timeout`, or at [`Deadline::of_write`]'s default.
 /// # Errors
 /// A trapped bailout, for the caller to raise.
 pub fn php_swoole_server_send_yield(
@@ -1405,9 +1407,10 @@ pub fn php_swoole_server_send_yield(
         };
         let waiter = Rc::new(Waiter::default());
         waiters.with_taken(|queue| queue.push_back(Rc::clone(&waiter)));
-        let timeout = server.config().send_timeout.get();
-        // `onBufferEmpty` or `onClose` wakes it.
-        if !waiter.wait_for(swoole_rs_corebase::timer::Deadline::from_timeout(timeout)) {
+        // `onBufferEmpty` or `onClose` wakes it. Upstream waits forever without a
+        // `send_timeout`; a peer that never reads ends it at the default write timeout.
+        let deadline = Deadline::of_write(server.config().send_timeout.get());
+        if !waiter.wait_for(deadline) {
             waiters.with_taken(|queue| {
                 queue.retain(|queued| !Rc::ptr_eq(queued, &waiter));
             });

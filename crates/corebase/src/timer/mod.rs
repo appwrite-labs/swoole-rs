@@ -1060,6 +1060,22 @@ mod tests {
         }
     }
 
+    /// A write's wait: its own positive timeout, else upstream 6.3's 60 seconds.
+    #[test]
+    fn deadline_of_a_write() {
+        for (seconds, ms) in [
+            (0.5, 500),
+            (0.0, 60_000),
+            (-1.0, 60_000),
+            (f64::NAN, 60_000),
+        ] {
+            let left = Deadline::of_write(seconds).remaining().unwrap();
+            let ms = std::time::Duration::from_millis(ms);
+            assert!(left <= ms && left > ms / 2, "{seconds}: {left:?}");
+        }
+        assert_eq!(Deadline::of_write(f64::INFINITY), Deadline::never());
+    }
+
     /// `Lock::lock`'s `int` milliseconds, and `sw_atomic_futex_wait`'s seconds to the
     /// nanosecond: only a positive one ends.
     #[test]

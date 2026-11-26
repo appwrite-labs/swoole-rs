@@ -1,6 +1,8 @@
 """The HTTP/2 server against a client that writes raw frames."""
 from pathlib import Path
 import socket
+import struct
+import time
 
 from tools.harness import server
 from tests.modules.http2.test_client import PREFACE, frame, read
@@ -56,3 +58,25 @@ def test_a_body_the_multipart_parser_rejects_is_never_handled(engine):
                 # Expected: the server ends the connection; the frames read so far are asserted.
                 pass
     assert (1, 1) not in kinds, kinds
+
+
+def test_a_peer_that_never_opens_the_window_loses_the_connection(engine):
+    """A response waiting on a zero window ends at the send's deadline (the
+    server's send_timeout): GOAWAY NO_ERROR, then the connection closes."""
+    with server(engine, Path(__file__).with_name('body_limit_server.php')) as (port, _):
+        with socket.create_connection(('127.0.0.1', port), timeout=10) as conn:
+            # SETTINGS_INITIAL_WINDOW_SIZE 0, and never a WINDOW_UPDATE.
+            conn.sendall(PREFACE + frame(4, 0, 0, struct.pack('!HI', 4, 0)) + frame(1, 5, 1, REQUEST))
+            began = time.monotonic()
+            kinds = []
+            while True:
+                head = read(conn, 9)
+                payload = read(conn, int.from_bytes(head[:3], 'big'))
+                kinds.append(head[3])
+                if head[3] == 7:
+                    break
+            waited = time.monotonic() - began
+            assert conn.recv(1) == b''
+    assert 0 not in kinds, kinds
+    assert payload[4:] == struct.pack('!I', 0) + b'flow control or write timeout', payload.hex()
+    assert 0.4 < waited < 5, waited
