@@ -23,6 +23,8 @@ jobs:
         run: cargo fmt --all --check
       - name: Clippy
         run: cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
+      - name: Check protocol buffer growth
+        run: python3 tools/check_protocol_buffers.py
       # --all-features always pairs phpserver's `php` and `server`; its standalone server
       # build is the one the extension's dependents use (#5352).
       - name: Clippy phpserver's server build
