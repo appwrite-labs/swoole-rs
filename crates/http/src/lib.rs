@@ -1,11 +1,4 @@
 //! HTTP parsing, policy, request and proxy state, and private directory storage.
-#![cfg_attr(
-    test,
-    expect(
-        clippy::disallowed_types,
-        reason = "existing uses; tools/budget.py counts them down (docs/migration.md#data-layout)"
-    )
-)]
 #![forbid(unsafe_code)]
 use std::mem::MaybeUninit;
 use swoole_rs_locale::case_prefix;
@@ -15,8 +8,6 @@ mod chunked;
 pub use chunked::{ChunkState, HttpChunked, HttpChunks};
 mod conditional;
 pub use conditional::{Calendar, Conditional, Tm, conditional, http_date};
-mod directory;
-use directory::HttpDirectory;
 mod dispatch;
 mod framing;
 pub use framing::{HttpFrame, expect as has_expect_header, header_delimiter, header_value};

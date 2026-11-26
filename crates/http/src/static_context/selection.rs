@@ -23,18 +23,11 @@ impl HttpStaticContext {
             return false;
         }
         // `swoole::intersection`: the first configured name the directory holds.
-        let mut found = None;
-        for name in files {
-            let name = name.as_ref();
-            match self.directory.contains(name) {
-                Ok(true) => {
-                    found = Some(name);
-                    break;
-                }
-                Ok(false) => {}
-                Err(_) => return false,
-            }
-        }
+        let found = files.iter().map(AsRef::as_ref).find(|name| {
+            self.directory
+                .binary_search_by(|entry| entry.as_slice().cmp(name))
+                .is_ok()
+        });
         match found {
             Some(name) => {
                 if self.publish(Index, name).is_err() {
@@ -78,7 +71,7 @@ impl HttpStaticContext {
         if self.ensure_directory_slash().is_err() {
             return page;
         }
-        let names = (0..self.directory.len()).filter_map(|index| self.directory.name(index));
+        let names = self.directory.iter().map(Vec::as_slice);
         let parts = core::iter::once((0, &[][..]))
             .chain(names.map(|name| (1, name)))
             .chain(core::iter::once((2, &[][..])));
@@ -159,7 +152,10 @@ mod tests {
         let mut owner = directory(&effects);
         assert!(owner.get_dir_files(&effects));
         assert_eq!(owner.directory.len(), 3);
-        assert_eq!(owner.directory.name(0), Some(b"a".as_slice()));
+        assert_eq!(
+            owner.directory.first().map(Vec::as_slice),
+            Some(b"a".as_slice())
+        );
         assert!(owner.get_dir_files(&effects));
         assert_eq!(*effects.lists.borrow(), 1);
         assert!(owner.try_serve_index_file(&files(&[b"missing", b"z"]), false, &effects));
@@ -168,6 +164,25 @@ mod tests {
             owner.text(super::super::StaticText::Filename),
             b"/root/files/z"
         );
+    }
+
+    #[test]
+    fn large_directory_listing_keeps_sorted_unique_owned_names() {
+        let expected: Vec<_> = (0..4096)
+            .map(|i| format!("entry-{i:04}-é").into_bytes())
+            .collect();
+        let effects = Listing {
+            names: expected
+                .iter()
+                .rev()
+                .flat_map(|name| [name.clone(), name.clone()])
+                .collect(),
+            lists: RefCell::new(0),
+        };
+        let mut owner = directory(&effects);
+        assert!(owner.get_dir_files(&effects));
+        drop(effects);
+        assert_eq!(owner.directory, expected);
     }
 
     /// Upstream `TEST(base, intersection)`: the first configured index file the directory
