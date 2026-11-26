@@ -355,12 +355,18 @@ fn write(stream: Stream<'_>, data: &[u8]) -> Result<isize, Bailout> {
         let written = socket
             .send(SendOp::Once, data)
             .map_or(-1, usize::cast_signed);
-        socket.set_error(errno());
+        socket.set_error(if written < 0 { errno() } else { 0 });
         written
     };
-    if written < 0 || written.unsigned_abs() != count {
-        // the caller does not loop on send, and a partial count is meaningless
+    // PHP retries a positive short write. A canceled blocking send must stop that retry.
+    if blocking
+        && written > 0
+        && written.unsigned_abs() < count
+        && socket.error() == libc::ECANCELED
+    {
         written = -1;
+    }
+    if written < 0 {
         let code = socket.error();
         if code != libc::ETIMEDOUT {
             if socket.catch_error(code) == Some(Caught::Wait) {
@@ -578,7 +584,7 @@ extern "C" fn swr_v1_phpruntime_socket_option(
         return socket.check_liveness();
     }
     if let Some(data) = data {
-        meta_data(stream, &socket, data);
+        meta_data(stream, &socket, net.blocking.get(), data);
     }
     if let Some(time) = timeout {
         // PHP socket streams share this timeout between reads and writes
@@ -605,7 +611,7 @@ extern "C" fn swr_v1_phpruntime_socket_option(
 
 /// `PHP_STREAM_OPTION_META_DATA_API`: the TLS session, `timed_out`, `eof`
 /// and `blocked`.
-fn meta_data(stream: Stream<'_>, socket: &Socket, data: &mut ArrayMut) {
+fn meta_data(stream: Stream<'_>, socket: &Socket, blocking: bool, data: &mut ArrayMut) {
     if let Some(session) = socket.ssl_session() {
         let protocol: &[u8] = match session.version {
             0x304 => b"TLSv1.3",
@@ -624,7 +630,7 @@ fn meta_data(stream: Stream<'_>, socket: &Socket, data: &mut ArrayMut) {
     }
     data.insert_bool(b"timed_out", socket.error() == libc::ETIMEDOUT);
     data.insert_bool(b"eof", stream.fields(|stream| stream.eof()) != 0);
-    data.insert_bool(b"blocked", true);
+    data.insert_bool(b"blocked", blocking);
 }
 
 /// `PHP_STREAM_OPTION_XPORT_API`.
