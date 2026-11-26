@@ -23,8 +23,7 @@ use swoole_rs_corebase::{
 use swoole_rs_ssh2_sys::{KbdintResponse, LIBSSH2_CHANNEL};
 use swoole_rs_zend::stream::{REPORT_ERRORS, Stream};
 use swoole_rs_zend::{
-    Call, E_ERROR, E_NOTICE, E_WARNING, Owned, OwnedArray, ReturnSlot, Value, ZStr, ZString,
-    bailout, report,
+    Call, E_NOTICE, E_WARNING, Owned, OwnedArray, ReturnSlot, Value, ZStr, ZString, bailout, report,
 };
 
 /// `LIBSSH2_METHOD_*`, the negotiated method kinds `ssh2_methods_negotiated` reads.
@@ -1704,10 +1703,10 @@ const TERM_UNIT_CHARS: i64 = 0;
 /// `ssh2_shell(resource $session, string $term_type = "vanilla",
 /// ?array $env = null, int $width = 80, int $height = 25,
 /// int $width_height_type = SSH2_TERM_UNIT_CHARS): resource|false`: a shell
-/// on the server, as a stream. Five arguments are C's fatal error.
+/// on the server, as a stream. Width and height must be supplied together.
 fn shell(call: &Call<'_>) {
-    if call.num_args() == 5 {
-        bailout::defer(report(E_ERROR, c"width specified without height parameter"));
+    if call.num_args() == 4 {
+        warn("width specified without height parameter");
         call.set_bool(false);
         return;
     }
@@ -1854,19 +1853,10 @@ fn set_environment(session: Session, channel: Opened, environment: &swoole_rs_ze
             })
         });
         if set != 0 {
-            // C's %s of each, up to its first NUL.
-            let until_nul = |bytes: &[u8]| {
-                bytes
-                    .split(|&byte| byte == 0)
-                    .next()
-                    .unwrap_or_default()
-                    .to_vec()
-            };
+            let name = name.split(|&byte| byte == 0).next().unwrap_or_default();
             warn_bytes(&[
-                b"Failed setting ",
-                &until_nul(name),
-                b"=",
-                &until_nul(value.bytes()),
+                b"Failed setting environment variable ",
+                name,
                 b" on remote end",
             ]);
         }
