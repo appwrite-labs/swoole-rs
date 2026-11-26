@@ -30,7 +30,8 @@ pub(super) static METHODS: [&CStr; METHOD_PRI as usize] = [
     c"QUERY",
     c"PRI",
 ];
-/// One-based index of HEAD in the Swoole method table.
+/// One-based indices in the Swoole method table.
+pub const METHOD_GET: u8 = 2;
 pub const METHOD_HEAD: u8 = 3;
 /// The legacy status line for `code`, or None for an unknown code.
 pub(crate) const fn status(code: i32) -> Option<&'static CStr> {

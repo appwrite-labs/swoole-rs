@@ -168,6 +168,25 @@ impl HttpStaticContext {
     pub fn filename(&self) -> &[u8] {
         crate::c_text(&self.filename)
     }
+    /// Canonical directory URL, preserving the query and collapsing leading slashes.
+    #[must_use]
+    pub fn directory_redirect(&self) -> Option<Vec<u8>> {
+        if self.facts.kind != StaticFileKind::Directory || self.url() != self.original {
+            return None;
+        }
+        let split = self
+            .original
+            .iter()
+            .position(|b| matches!(b, b'?' | b'#'))
+            .unwrap_or(self.original.len());
+        let (path, suffix) = self.original.split_at(split);
+        if path.is_empty() || path.ends_with(b"/") {
+            return None;
+        }
+        let start = path.iter().position(|&b| b != b'/')?;
+        joined(&[b"/", path.get(start..)?, b"/", suffix]).ok()
+    }
+
     /// The directory's index file, empty when there is none.
     #[must_use]
     pub fn index_file(&self) -> &[u8] {

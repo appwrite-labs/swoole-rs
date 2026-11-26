@@ -59,12 +59,7 @@ __attribute__((unused)) static size_t sw_snprintf(char *buf, size_t size, const 
     }
     return retval;
 }
-static void *sw_malloc(size_t size) {
-    return malloc(size);
-}
-static void sw_free(void *ptr) {
-    free(ptr);
-}
+enum { CLOSE_RESET = 2 };
 namespace network {
 struct SendfileTask {
     off_t offset;
@@ -76,6 +71,7 @@ struct DataHead {
     long fd;
     uint32_t len;
     uint8_t type;
+    uint16_t ext_flags;
 };
 struct SendData {
     DataHead info;
@@ -85,25 +81,30 @@ struct Buffer {
     std::string storage;
     char *str = nullptr;
     size_t length = 0;
-    void clear() {
-        storage.clear();
+};
+struct String : Buffer {
+    explicit String(size_t) {}
+    void append(const char *value, size_t size) {
+        storage.append(value, size);
         str = &storage[0];
-        length = 0;
+        length = storage.size();
+    }
+    void append(const std::string &value) { append(value.data(), value.size()); }
+    void append_format(const char *format, ...) {
+        va_list args, copy;
+        va_start(args, format);
+        va_copy(copy, args);
+        int count = vsnprintf(nullptr, 0, format, args);
+        va_end(args);
+        std::vector<char> bytes(static_cast<size_t>(count) + 1);
+        vsnprintf(bytes.data(), bytes.size(), format, copy);
+        va_end(copy);
+        append(bytes.data(), static_cast<size_t>(count));
     }
 };
-static thread_local Buffer tls_buffer;
-static Buffer *sw_tg_buffer() {
-    return &tls_buffer;
-}
 static thread_local std::vector<std::string> trace, request_trace, events;
-struct Socket {
-    void cork() {
-        trace.emplace_back("cork");
-    }
-};
 struct Connection {
     long session_id;
-    Socket *socket;
 };
 struct Server;
 namespace http_server {
@@ -142,9 +143,13 @@ struct StaticHandler {
         trace.emplace_back("modified-date");
         return std::string(s->last_modified.data, s->last_modified.length);
     }
-    bool is_modified(const std::string &) {
-        trace.emplace_back("is-modified");
-        return s->modified;
+    std::string get_etag() const { trace.emplace_back("etag"); return "\"tag\""; }
+    std::string get_directory_redirect() const { return {}; }
+    bool open_file() const { return true; }
+    const std::string &get_file() const { return filename_; }
+    int evaluate_preconditions(const std::string &, const std::string &, const std::string &, const std::string &since) const {
+        trace.emplace_back("conditions");
+        return !since.empty() && s->modified ? SW_HTTP_NOT_MODIFIED : SW_HTTP_OK;
     }
     bool try_serve_index_file() {
         trace.emplace_back("index");
@@ -199,7 +204,7 @@ struct Server {
     http_server::Request *mutable_request = nullptr;
     unsigned send_count = 0;
     bool select_static_handler(const http_server::Request *request, const Connection *conn);
-    int send_to_connection(const SendData *response) {
+    int send_to_connection(const SendData *response, const std::string *file = nullptr) {
         trace.emplace_back("send");
         if (scenario->throw_on_send) throw std::runtime_error("send failed");
         ++send_count;
@@ -209,11 +214,12 @@ struct Server {
         std::string payload;
         if (response->info.type == SW_SERVER_EVENT_SEND_FILE) {
             auto task = reinterpret_cast<const network::SendfileTask *>(response->data);
-            payload = std::to_string(task->offset) + ":" + std::to_string(task->length) + ":" + task->filename + ":" +
+            payload = std::to_string(task->offset) + ":" + std::to_string(task->length) + ":" + *file + ":" +
                       std::to_string(response->info.len);
         } else if (response->info.len) {
             payload.assign(response->data, response->info.len);
         }
+        if (response->info.ext_flags == CLOSE_RESET) payload = "reset";
         events.push_back(std::to_string(response->info.fd) + ":" + std::to_string(response->info.type) + ":" + payload);
         return scenario->send_result;
     }
@@ -253,8 +259,7 @@ extern "C" int swr_oracle_static_select(const swr_oracle_static_scenario *scenar
     request_trace.clear();
     events.clear();
     Server server{scenario};
-    Socket socket;
-    Connection conn{73, &socket};
+    Connection conn{73};
     Buffer buffer;
     buffer.storage = "request";
     buffer.str = &buffer.storage[0];

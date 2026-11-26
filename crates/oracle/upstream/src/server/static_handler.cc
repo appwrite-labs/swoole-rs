@@ -492,183 +492,135 @@ void Server::add_static_handler_index_files(const std::string &file) {
 }
 
 bool Server::select_static_handler(const http_server::Request *request, const Connection *conn) {
-    const char *url = request->buffer_->str + request->url_offset_;
-    size_t url_length = request->url_length_;
-
-    http_server::StaticHandler handler(this, url, url_length);
+    // Static responses run on the owning reactor. Other methods retain application
+    // handling, including OPTIONS/CORS, rather than bypassing PHP with file content.
+    if (request->method != SW_HTTP_GET && request->method != SW_HTTP_HEAD) {
+        return false;
+    }
+    http_server::StaticHandler handler(this, request->buffer_->str + request->url_offset_, request->url_length_);
     if (!handler.try_serve()) {
         return false;
     }
-
-    char header_buffer[1024];
-    SendData response;
-    response.info.fd = conn->session_id;
-    response.info.type = SW_SERVER_EVENT_SEND_DATA;
-
-    if (handler.status_code == SW_HTTP_NOT_FOUND) {
-        response.info.len = sw_snprintf(header_buffer,
-                                        sizeof(header_buffer),
-                                        "HTTP/1.1 %s\r\n"
-                                        "Server: " SW_HTTP_SERVER_SOFTWARE "\r\n"
-                                        "Content-Length: %zu\r\n"
-                                        "\r\n%s",
-                                        http_server::get_status_message(SW_HTTP_NOT_FOUND),
-                                        sizeof(SW_HTTP_PAGE_404) - 1,
-                                        SW_HTTP_PAGE_404);
-        response.data = header_buffer;
-        send_to_connection(&response);
-
-        return true;
-    }
-
-    auto date_str = handler.get_date();
-    auto date_str_last_modified = handler.get_date_last_modified();
-
-    std::string date_if_modified_since = request->get_header("If-Modified-Since");
-    if (!date_if_modified_since.empty() && handler.is_modified(date_if_modified_since)) {
-        response.info.len = sw_snprintf(header_buffer,
-                                        sizeof(header_buffer),
-                                        "HTTP/1.1 304 Not Modified\r\n"
-                                        "Connection: %s\r\n"
-                                        "Date: %s\r\n"
-                                        "Last-Modified: %s\r\n"
-                                        "Server: %s\r\n\r\n",
-                                        request->keep_alive ? "keep-alive" : "close",
-                                        date_str.c_str(),
-                                        date_str_last_modified.c_str(),
-                                        SW_HTTP_SERVER_SOFTWARE);
-        response.data = header_buffer;
-        send_to_connection(&response);
-
-        return true;
-    }
-
-    /**
-     * if http_index_files is enabled, need to search the index file first.
-     * if the index file is found, set filename to index filename.
-     */
-    if (!handler.try_serve_index_file()) {
+    const auto redirect = handler.status_code == SW_HTTP_OK ? handler.get_directory_redirect() : std::string{};
+    if (handler.status_code == SW_HTTP_OK && (!handler.try_serve_index_file() || !handler.open_file())) {
         return false;
     }
 
-    /**
-     * the index file was not found in the current directory,
-     * if http_autoindex is enabled, should show the list of files in the current directory.
-     */
-    if (!handler.has_index_file() && handler.is_enabled_auto_index() && handler.is_dir()) {
-        sw_tg_buffer()->clear();
-        size_t body_length = handler.make_index_page(sw_tg_buffer());
-
-        response.info.len = sw_snprintf(header_buffer,
-                                        sizeof(header_buffer),
-                                        "HTTP/1.1 200 OK\r\n"
-                                        "Connection: %s\r\n"
-                                        "Content-Length: %ld\r\n"
-                                        "Content-Type: text/html\r\n"
-                                        "Date: %s\r\n"
-                                        "Last-Modified: %s\r\n"
-                                        "Server: %s\r\n\r\n",
-                                        request->keep_alive ? "keep-alive" : "close",
-                                        static_cast<long>(body_length),
-                                        date_str.c_str(),
-                                        date_str_last_modified.c_str(),
-                                        SW_HTTP_SERVER_SOFTWARE);
-        response.data = header_buffer;
-        send_to_connection(&response);
-
-        response.info.len = body_length;
-        response.data = sw_tg_buffer()->str;
-        send_to_connection(&response);
+    const bool head = request->method == SW_HTTP_HEAD;
+    SendData response{};
+    response.info.fd = conn->session_id;
+    bool failed = false;
+    const auto send = [&](const char *data, size_t length) {
+        if (failed || length == 0) {
+            return;
+        }
+        response.info.type = SW_SERVER_EVENT_SEND_DATA;
+        response.info.len = length;
+        response.data = data;
+        failed = send_to_connection(&response) < 0;
+    };
+    const auto complete = [&]() {
+        // All static branches honor connection policy, including 304/404/autoindex.
+        // A partial response cannot safely be reused after a send failure.
+        if (failed || !request->keep_alive) {
+            response.info.type = SW_SERVER_EVENT_CLOSE;
+            response.info.ext_flags = failed ? CLOSE_RESET : 0;
+            response.info.len = 0;
+            response.data = nullptr;
+            send_to_connection(&response);
+        }
         return true;
+    };
+    const auto send_header = [&](int status, size_t length, const std::string &type, const std::string &extra) {
+        String header(1024);
+        header.append_format("HTTP/1.1 %s\r\nConnection: %s\r\nDate: %s\r\nServer: %s\r\n",
+                             http_server::get_status_message(status),
+                             request->keep_alive ? "keep-alive" : "close",
+                             handler.get_date().c_str(),
+                             SW_HTTP_SERVER_SOFTWARE);
+        if (status != SW_HTTP_NOT_MODIFIED) {
+            header.append_format("Content-Length: %zu\r\nContent-Type: %s\r\n", length, type.c_str());
+        }
+        if (status != SW_HTTP_NOT_FOUND && status != SW_HTTP_BAD_REQUEST) {
+            header.append_format("Last-Modified: %s\r\n", handler.get_date_last_modified().c_str());
+        }
+        if (status == SW_HTTP_OK || status == SW_HTTP_PARTIAL_CONTENT || status == SW_HTTP_NOT_MODIFIED ||
+            status == SW_HTTP_PRECONDITION_FAILED || status == SW_HTTP_RANGE_NOT_SATISFIABLE) {
+            header.append_format("ETag: %s\r\n", handler.get_etag().c_str());
+        }
+        header.append(extra);
+        header.append(SW_STRL("\r\n"));
+        send(header.str, header.length);
+    };
+
+    if (handler.status_code == SW_HTTP_NOT_FOUND || handler.status_code == SW_HTTP_BAD_REQUEST) {
+        const bool not_found = handler.status_code == SW_HTTP_NOT_FOUND;
+        send_header(handler.status_code, not_found ? sizeof(SW_HTTP_PAGE_404) - 1 : 0, "text/html", "");
+        if (!head && not_found) {
+            send(SW_STRL(SW_HTTP_PAGE_404));
+        }
+        return complete();
+    }
+    if (!redirect.empty()) {
+        send_header(SW_HTTP_MOVED_PERMANENTLY, 0, "text/html", "Location: " + redirect + "\r\n");
+        return complete();
+    }
+    const int condition = handler.evaluate_preconditions(request->get_header("If-Match"),
+                                                         request->get_header("If-Unmodified-Since"),
+                                                         request->get_header("If-None-Match"),
+                                                         request->get_header("If-Modified-Since"));
+    if (condition != SW_HTTP_OK) {
+        send_header(condition, 0, "text/html", "");
+        return complete();
+    }
+    if (!handler.has_index_file() && handler.is_enabled_auto_index() && handler.is_dir()) {
+        String body(1024);
+        handler.make_index_page(&body);
+        send_header(SW_HTTP_OK, body.length, "text/html", "");
+        if (!head) {
+            send(body.str, body.length);
+        }
+        return complete();
     }
 
     handler.parse_range(request->get_header("Range").c_str(), request->get_header("If-Range").c_str());
-    auto tasks = handler.get_tasks();
-
-    std::stringstream header_stream;
-    if (1 == tasks.size()) {
-        if (SW_HTTP_PARTIAL_CONTENT == handler.status_code) {
-            header_stream << "Content-Range: bytes " << tasks[0].offset << "-"
-                          << (tasks[0].length + tasks[0].offset - 1) << "/" << handler.get_filesize() << "\r\n";
-        } else {
-            header_stream << "Accept-Ranges: bytes\r\n";
-        }
+    const auto &tasks = handler.get_tasks();
+    std::string extra;
+    if (handler.status_code == SW_HTTP_RANGE_NOT_SATISFIABLE) {
+        extra = "Content-Range: bytes */" + std::to_string(handler.get_filesize()) + "\r\n";
+    } else if (handler.status_code == SW_HTTP_PARTIAL_CONTENT && tasks.size() == 1) {
+        extra = "Content-Range: bytes " + std::to_string(tasks[0].offset) + "-" +
+                std::to_string(tasks[0].offset + tasks[0].length - 1) + "/" + std::to_string(handler.get_filesize()) +
+                "\r\n";
+    } else if (handler.status_code == SW_HTTP_OK) {
+        extra = "Accept-Ranges: bytes\r\n";
     }
-
-    response.info.len = sw_snprintf(
-        header_buffer,
-        sizeof(header_buffer),
-        "HTTP/1.1 %s\r\n"
-        "Connection: %s\r\n"
-        "Content-Length: %ld\r\n"
-        "Content-Type: %s\r\n"
-        "%s"
-        "Date: %s\r\n"
-        "Last-Modified: %s\r\n"
-        "Server: %s\r\n\r\n",
-        http_server::get_status_message(handler.status_code),
-        request->keep_alive ? "keep-alive" : "close",
-        SW_HTTP_HEAD == request->method ? 0 : handler.get_content_length(),
-        SW_HTTP_HEAD == request->method ? handler.get_mimetype().c_str() : handler.get_content_type().c_str(),
-        header_stream.str().c_str(),
-        date_str.c_str(),
-        date_str_last_modified.c_str(),
-        SW_HTTP_SERVER_SOFTWARE);
-
-    response.data = header_buffer;
-
-    // Use tcp_nopush to improve sending efficiency
-    conn->socket->cork();
-
-    // Send HTTP header
-    send_to_connection(&response);
-
-    // Send HTTP body
-    if (SW_HTTP_HEAD != request->method) {
-        if (!tasks.empty()) {
-            size_t task_size = sizeof(network::SendfileTask) + strlen(handler.get_filename()) + 1;
-            auto task = static_cast<network::SendfileTask *>(sw_malloc(task_size));
-            strcpy(task->filename, handler.get_filename());
+    // Socket::handle_sendfile owns cork/uncork for large transfers. Pre-corking
+    // here prevents it from claiming that state and can leave small/HEAD replies corked.
+    send_header(handler.status_code, handler.get_content_length(), handler.get_content_type(), extra);
+    if (!head && !failed && !tasks.empty()) {
+        // The explicit opened-file argument stays inside this reactor call; no
+        // filename or smart pointer is copied into a process/worker IPC packet.
+        network::SendfileTask task{};
+        for (const auto &part : tasks) {
             if (tasks.size() > 1) {
-                for (const auto &i : tasks) {
-                    response.info.type = SW_SERVER_EVENT_SEND_DATA;
-                    response.info.len = strlen(i.part_header);
-                    response.data = i.part_header;
-                    send_to_connection(&response);
-
-                    task->offset = i.offset;
-                    task->length = i.length;
-                    response.info.type = SW_SERVER_EVENT_SEND_FILE;
-                    response.info.len = task_size;
-                    response.data = reinterpret_cast<char *>(task);
-                    send_to_connection(&response);
-                }
-
-                response.info.type = SW_SERVER_EVENT_SEND_DATA;
-                response.info.len = handler.get_end_part().length();
-                response.data = handler.get_end_part().c_str();
-                send_to_connection(&response);
-            } else if (tasks[0].length > 0) {
-                task->offset = tasks[0].offset;
-                task->length = tasks[0].length;
-                response.info.type = SW_SERVER_EVENT_SEND_FILE;
-                response.info.len = task_size;
-                response.data = reinterpret_cast<char *>(task);
-                send_to_connection(&response);
+                send(part.part_header, strlen(part.part_header));
             }
-            sw_free(task);
+            if (failed || part.length == 0) {
+                break;
+            }
+            task.offset = part.offset;
+            task.length = part.length;
+            response.info.type = SW_SERVER_EVENT_SEND_FILE;
+            response.info.len = sizeof(task);
+            response.data = reinterpret_cast<char *>(&task);
+            failed = send_to_connection(&response, &handler.get_file()) < 0;
+        }
+        if (tasks.size() > 1) {
+            send(handler.get_end_part().c_str(), handler.get_end_part().length());
         }
     }
-
-    // Close the connection if keepalive is not used
-    if (!request->keep_alive) {
-        response.info.type = SW_SERVER_EVENT_CLOSE;
-        response.info.len = 0;
-        response.data = nullptr;
-        send_to_connection(&response);
-    }
-
-    return true;
+    return complete();
 }
 
 bool Server::apply_rewrite_rules(http_server::StaticHandler *handler) {

@@ -4,7 +4,7 @@
 use crate::static_handler::{Effects, StaticHandler, page_404};
 use swoole_rs_corebase::{CCast, ServerEvent};
 use swoole_rs_http::status::{NOT_FOUND, PARTIAL_CONTENT};
-use swoole_rs_http::{HttpStaticHeaders, HttpStaticTask, StaticHead, StaticRange};
+use swoole_rs_http::{HttpStaticHeaders, HttpStaticTask, PreconditionStatus};
 
 /// What [`select`] asks of a static handler, in upstream `select_static_handler`'s order.
 pub trait Handler {
@@ -12,7 +12,9 @@ pub trait Handler {
     fn status(&self) -> i32;
     fn date(&self) -> Vec<u8>;
     fn date_last_modified(&self) -> Vec<u8>;
-    fn is_modified(&self, date: &[u8]) -> bool;
+    fn etag(&self) -> String;
+    fn directory_redirect(&self) -> Option<Vec<u8>>;
+    fn preconditions(&self, headers: [&[u8]; 4]) -> PreconditionStatus;
     fn try_serve_index_file(&mut self) -> bool;
     fn lists_directory(&self) -> bool;
     fn index_page(&mut self) -> Vec<u8>;
@@ -20,7 +22,6 @@ pub trait Handler {
     fn parse_range(&mut self, range: &[u8], if_range: &[u8]);
     fn tasks(&self) -> Vec<HttpStaticTask>;
     fn content_length(&self) -> usize;
-    fn mimetype(&self) -> Vec<u8>;
     fn content_type(&mut self) -> Vec<u8>;
     fn filesize(&self) -> usize;
     fn filename(&self) -> Vec<u8>;
@@ -40,8 +41,17 @@ impl<E: Effects> Handler for StaticHandler<'_, E> {
     fn date_last_modified(&self) -> Vec<u8> {
         Self::date_last_modified(self)
     }
-    fn is_modified(&self, date: &[u8]) -> bool {
-        Self::is_modified(self, date)
+    fn etag(&self) -> String {
+        Self::etag(self)
+    }
+    fn directory_redirect(&self) -> Option<Vec<u8>> {
+        Self::directory_redirect(self)
+    }
+    fn preconditions(
+        &self,
+        [if_match, unmodified, none_match, modified]: [&[u8]; 4],
+    ) -> PreconditionStatus {
+        Self::preconditions(self, if_match, unmodified, none_match, modified)
     }
     fn try_serve_index_file(&mut self) -> bool {
         Self::try_serve_index_file(self)
@@ -60,9 +70,6 @@ impl<E: Effects> Handler for StaticHandler<'_, E> {
     }
     fn content_length(&self) -> usize {
         Self::content_length(self)
-    }
-    fn mimetype(&self) -> Vec<u8> {
-        Self::mimetype(self)
     }
     fn content_type(&mut self) -> Vec<u8> {
         Self::content_type(self)
@@ -86,10 +93,7 @@ pub trait Exchange {
     fn keep_alive(&self) -> bool;
     /// `SW_HTTP_HEAD == request->method`.
     fn head(&self) -> bool;
-    /// `conn->socket->cork()`.
-    fn cork(&self);
-    /// `send_to_connection` of a `SendData` of event `kind` to the connection.
-    fn send(&self, kind: ServerEvent, data: &[u8]);
+    fn send(&self, kind: ServerEvent, data: &[u8], reset: bool) -> bool;
 }
 
 /// The text up to its first NUL, as a C string reads it.
@@ -97,122 +101,134 @@ fn c_text(text: &[u8]) -> &[u8] {
     text.split(|&byte| byte == 0).next().unwrap_or_default()
 }
 
-/// The response head, cut as upstream's 1024-byte `sw_snprintf` buffer cuts it.
-fn encode(header: &HttpStaticHeaders<'_>) -> Vec<u8> {
-    let mut head = swoole_rs_http::static_headers(header).unwrap_or_default();
-    head.truncate(1023);
-    head
-}
-
-fn signed(length: usize) -> i64 {
-    length.c_cast::<i64>()
-}
-
-/// `Server::select_static_handler`: answer an HTTP/1 request from the
-/// document root; false when the static handler does not serve it.
+/// Answer an HTTP/1 static request. A failed write stops further body sends.
 pub fn select(handler: &mut impl Handler, exchange: &impl Exchange) -> bool {
     if !handler.try_serve() {
         return false;
     }
-    let mut header = HttpStaticHeaders {
-        status: &[],
-        date: &[],
-        modified: &[],
-        content_type: &[],
-        software: swoole_rs_corebase::constants::SW_HTTP_SERVER_SOFTWARE.as_bytes(),
-        page: &[],
-        content_length: 0,
-        head: StaticHead::NotFound,
-        keep_alive: false,
-    };
-    if handler.status() == NOT_FOUND {
-        let status = swoole_rs_http::status_message(NOT_FOUND);
-        let page = page_404();
-        header.status = &status;
-        header.page = &page;
-        header.content_length = signed(page.len());
-        exchange.send(ServerEvent::SendData, &encode(&header));
-        return true;
-    }
-    let date = handler.date();
-    let modified = handler.date_last_modified();
-    header.date = &date;
-    header.modified = &modified;
-    let since = exchange.header(b"If-Modified-Since");
-    if !since.is_empty() && handler.is_modified(&since) {
-        header.head = StaticHead::NotModified;
-        header.keep_alive = exchange.keep_alive();
-        exchange.send(ServerEvent::SendData, &encode(&header));
-        return true;
-    }
-    // With http_index_files, the directory's index file becomes the file.
-    if !handler.try_serve_index_file() {
+    let status = handler.status();
+    let redirect = (status == 200)
+        .then(|| handler.directory_redirect())
+        .flatten();
+    if status == 200 && !handler.try_serve_index_file() {
         return false;
     }
-    // No index file in the directory: with http_autoindex, list the directory.
-    if handler.lists_directory() {
-        let body = handler.index_page();
-        header.head = StaticHead::Autoindex;
-        header.keep_alive = exchange.keep_alive();
-        header.content_length = signed(body.len());
-        exchange.send(ServerEvent::SendData, &encode(&header));
-        exchange.send(ServerEvent::SendData, &body);
-        return true;
-    }
-    // Upstream reads both as one call's arguments, in an order C++ leaves to the
-    // compiler; this reads them in source order.
-    let range = exchange.header(b"Range");
-    handler.parse_range(c_text(&range), c_text(&exchange.header(b"If-Range")));
-    let tasks = handler.tasks();
-    let status = handler.status();
-    let message = swoole_rs_http::status_message(status);
-    header.status = &message;
-    header.keep_alive = exchange.keep_alive();
     let head = exchange.head();
-    header.content_length = if head {
-        0
-    } else {
-        signed(handler.content_length())
-    };
-    let content_type = if head {
-        handler.mimetype()
-    } else {
-        handler.content_type()
-    };
-    header.content_type = &content_type;
-    header.head = StaticHead::File(match tasks.as_slice() {
-        [task] if status == PARTIAL_CONTENT => StaticRange::Content {
-            offset: task.offset,
-            length: task.length,
-            filesize: handler.filesize(),
-        },
-        [_] => StaticRange::Accept,
-        _ => StaticRange::None,
-    });
-    let head_bytes = encode(&header);
-    // tcp_nopush for the header and body.
-    exchange.cork();
-    exchange.send(ServerEvent::SendData, &head_bytes);
-    if !exchange.head() && !tasks.is_empty() {
-        let filename = handler.filename();
-        let mut file = SendfileTask::new(c_text(&filename));
-        if tasks.len() > 1 {
-            for task in &tasks {
-                exchange.send(ServerEvent::SendData, c_text(&task.part_header));
-                exchange.send(ServerEvent::SendFile, file.at(task));
-            }
-            exchange.send(ServerEvent::SendData, &handler.end_part());
-        } else if let [task] = tasks.as_slice()
-            && task.length > 0
-        {
-            exchange.send(ServerEvent::SendFile, file.at(task));
-        }
-    }
-    // Close the connection if keepalive is not used.
-    if !exchange.keep_alive() {
-        exchange.send(ServerEvent::Close, &[]);
+    let ok = write_response(handler, exchange, status, redirect, head);
+    if !ok || !exchange.keep_alive() {
+        exchange.send(ServerEvent::Close, &[], !ok);
     }
     true
+}
+
+fn write_response(
+    handler: &mut impl Handler,
+    exchange: &impl Exchange,
+    status: i32,
+    redirect: Option<Vec<u8>>,
+    head: bool,
+) -> bool {
+    let send = |data: &[u8]| data.is_empty() || exchange.send(ServerEvent::SendData, data, false);
+    let header = |handler: &dyn Handler, status, length, mime: &[u8], extra: &[u8]| {
+        let date = handler.date();
+        let modified = if matches!(status, 400 | 404) {
+            Vec::new()
+        } else {
+            handler.date_last_modified()
+        };
+        let etag = if matches!(status, 200 | 206 | 304 | 412 | 416) {
+            handler.etag()
+        } else {
+            String::new()
+        };
+        swoole_rs_http::static_headers(&HttpStaticHeaders {
+            status,
+            date: &date,
+            modified: &modified,
+            etag: etag.as_bytes(),
+            content_type: mime,
+            content_length: length,
+            keep_alive: exchange.keep_alive(),
+            extra,
+        })
+        .is_ok_and(|bytes| send(&bytes))
+    };
+    if matches!(status, NOT_FOUND | 400) {
+        let body = if status == NOT_FOUND {
+            page_404()
+        } else {
+            Vec::new()
+        };
+        return header(handler, status, body.len(), b"text/html", b"") && (head || send(&body));
+    }
+    if let Some(location) = redirect {
+        let extra = [b"Location: ".as_slice(), &location, b"\r\n"].concat();
+        return header(handler, 301, 0, b"text/html", &extra);
+    }
+    let values = [
+        b"If-Match".as_slice(),
+        b"If-Unmodified-Since",
+        b"If-None-Match",
+        b"If-Modified-Since",
+    ]
+    .map(|key| exchange.header(key));
+    let condition = handler.preconditions(values.each_ref().map(Vec::as_slice));
+    if condition != PreconditionStatus::Ok {
+        return header(handler, condition as i32, 0, b"text/html", b"");
+    }
+    if handler.lists_directory() {
+        let body = handler.index_page();
+        return header(handler, 200, body.len(), b"text/html", b"") && (head || send(&body));
+    }
+    handler.parse_range(
+        c_text(&exchange.header(b"Range")),
+        c_text(&exchange.header(b"If-Range")),
+    );
+    let tasks = handler.tasks();
+    let status = handler.status();
+    let extra = match (status, tasks.as_slice()) {
+        (416, _) => format!("Content-Range: bytes */{}\r\n", handler.filesize()),
+        (PARTIAL_CONTENT, [task]) => {
+            let end = task
+                .offset
+                .c_cast::<usize>()
+                .wrapping_add(task.length)
+                .wrapping_sub(1);
+            format!(
+                "Content-Range: bytes {}-{end}/{}\r\n",
+                task.offset,
+                handler.filesize()
+            )
+        }
+        (200, _) => String::from("Accept-Ranges: bytes\r\n"),
+        _ => String::new(),
+    };
+    let mime = handler.content_type();
+    if !header(
+        handler,
+        status,
+        handler.content_length(),
+        &mime,
+        extra.as_bytes(),
+    ) {
+        return false;
+    }
+    if head || tasks.is_empty() {
+        return true;
+    }
+    let mut file = SendfileTask::new(c_text(&handler.filename()));
+    for part in &tasks {
+        if tasks.len() > 1 && !send(c_text(&part.part_header)) {
+            return false;
+        }
+        if part.length == 0 {
+            break;
+        }
+        if !exchange.send(ServerEvent::SendFile, file.at(part), false) {
+            return false;
+        }
+    }
+    tasks.len() == 1 || send(&handler.end_part())
 }
 
 /// A `network::SendfileTask`: offset, length and the NUL-terminated name.
@@ -247,7 +263,6 @@ struct Wire<'a> {
     request: &'a swoole_rs_http::HttpRequest,
     input: &'a [u8],
     session_id: core::ffi::c_long,
-    socket: swoole_rs_corebase::reactor::Socket<'a>,
 }
 
 impl Exchange for Wire<'_> {
@@ -262,24 +277,24 @@ impl Exchange for Wire<'_> {
     fn head(&self) -> bool {
         self.request.method == swoole_rs_http::METHOD_HEAD
     }
-    fn cork(&self) {
-        // An `extern "C"` fn is no closure.
-        let cork = swoole_rs_corebase::reactor::SocketFields::cork;
-        self.socket.edit(cork);
-    }
-    fn send(&self, kind: ServerEvent, data: &[u8]) {
+    fn send(&self, kind: ServerEvent, data: &[u8], reset: bool) -> bool {
         let info = swoole_rs_corebase::DataHead {
             fd: self.session_id,
             len: u32::try_from(data.len()).unwrap_or(u32::MAX),
             kind: kind.code(),
+            ext_flags: if reset {
+                crate::factory::CLOSE_RESET.c_cast()
+            } else {
+                0
+            },
             ..Default::default()
         };
-        crate::send::send_event_to_connection(self.server, &info, data);
+        crate::send::send_event_to_connection(self.server, &info, data)
     }
 }
 
 /// `Server::select_static_handler(request, conn)` for the ports read path: `request`
-/// is the request of the connection of session `session_id`, whose socket is `socket`.
+/// is the request of the connection of session `session_id`.
 /// The caller owns the request, which the last send's close leaves alone; nothing
 /// reads it after that send.
 #[must_use]
@@ -288,14 +303,18 @@ pub fn static_select(
     request: &swoole_rs_http::HttpRequest,
     input: &[u8],
     session_id: core::ffi::c_long,
-    socket: swoole_rs_corebase::reactor::Socket<'_>,
 ) -> bool {
+    if !matches!(
+        request.method,
+        swoole_rs_http::METHOD_GET | swoole_rs_http::METHOD_HEAD
+    ) {
+        return false;
+    }
     let wire = Wire {
         server,
         request,
         input,
         session_id,
-        socket,
     };
     let Some(mut handler) = StaticHandler::new(wire.server, request.url_bytes(input)) else {
         return false;
@@ -312,7 +331,7 @@ mod tests {
     use super::{Exchange, Handler, ServerEvent, select};
     use core::cell::{Cell, RefCell};
     use std::ffi::{c_char, c_void};
-    use swoole_rs_http::HttpStaticTask;
+    use swoole_rs_http::{HttpStaticTask, PreconditionStatus};
     use swoole_rs_oracle::http_static_context::swr_oracle_static_arguments_left_to_right;
     use swoole_rs_oracle::http_static_select::{Scenario, Task, Text, swr_oracle_static_select};
 
@@ -421,9 +440,20 @@ mod tests {
             self.note("modified-date");
             self.case.last_modified.clone()
         }
-        fn is_modified(&self, _: &[u8]) -> bool {
-            self.note("is-modified");
-            self.case.modified
+        fn etag(&self) -> String {
+            self.note("etag");
+            String::from("\"tag\"")
+        }
+        fn directory_redirect(&self) -> Option<Vec<u8>> {
+            None
+        }
+        fn preconditions(&self, [_, _, _, modified]: [&[u8]; 4]) -> PreconditionStatus {
+            self.note("conditions");
+            if !modified.is_empty() && self.case.modified {
+                PreconditionStatus::NotModified
+            } else {
+                PreconditionStatus::Ok
+            }
         }
         fn try_serve_index_file(&mut self) -> bool {
             self.note("index");
@@ -444,10 +474,6 @@ mod tests {
         }
         fn content_length(&self) -> usize {
             self.case.content_length
-        }
-        fn mimetype(&self) -> Vec<u8> {
-            self.note("mime");
-            self.case.mime.clone()
         }
         fn content_type(&mut self) -> Vec<u8> {
             self.note("content-type");
@@ -479,10 +505,7 @@ mod tests {
         fn head(&self) -> bool {
             self.head.get()
         }
-        fn cork(&self) {
-            self.note("cork");
-        }
-        fn send(&self, kind: ServerEvent, data: &[u8]) {
+        fn send(&self, kind: ServerEvent, data: &[u8], reset: bool) -> bool {
             self.note("send");
             if self.case.throw_on_send {
                 std::panic::resume_unwind(Box::new(Thrown));
@@ -501,11 +524,15 @@ mod tests {
                 let name = data[16..].split(|&b| b == 0).next().unwrap();
                 event.extend_from_slice(format!("{offset}:{length}:").as_bytes());
                 event.extend_from_slice(name);
-                event.extend_from_slice(format!(":{}", data.len()).as_bytes());
+                event.extend_from_slice(format!(":{}", data.len() - name.len() - 1).as_bytes());
             } else if kind != ServerEvent::Close {
                 event.extend_from_slice(data);
             }
+            if reset {
+                event.extend_from_slice(b"reset");
+            }
             self.events.borrow_mut().push(event);
+            self.case.send_result >= 0
         }
     }
 
@@ -602,10 +629,16 @@ mod tests {
         let mut lines: Vec<Vec<u8>> = Vec::new();
         let result =
             unsafe { swr_oracle_static_select(&raw const scenario, line, (&raw mut lines).cast()) };
-        // parse_range's two header reads in source order, whichever order the
+        // Compare the precondition and range header reads in source order, whichever order the
         // shim's compiler gave them (GCC on x86 goes right to left).
         if unsafe { swr_oracle_static_arguments_left_to_right() } == 0 {
             for i in 1..lines.len() {
+                if lines[i - 1] == b"R:If-Modified-Since"
+                    && i + 2 < lines.len()
+                    && lines[i + 2] == b"R:If-Match"
+                {
+                    lines[i - 1..=i + 2].reverse();
+                }
                 if lines[i - 1] == b"R:If-Range" && lines[i] == b"R:Range" {
                     lines.swap(i - 1, i);
                 }
@@ -705,7 +738,7 @@ mod tests {
     }
 
     /// Sends may fail or change the request: keep-alive is read again after the
-    /// body and HEAD again after the header, as upstream reads them.
+    /// body, while HEAD is captured before the first send.
     #[test]
     #[cfg_attr(miri, ignore = "Miri can't call the C++ oracle")]
     fn former_static_gate_sends_change_the_request() {
