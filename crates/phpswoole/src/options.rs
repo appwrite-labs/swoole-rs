@@ -1,10 +1,7 @@
 //! `php_swoole_set_global_option`: the process-wide settings that
 //! `swoole_async_set()`, `Co::set()` and `Process\Pool::set()` take, applied in
 //! upstream's order. And `sw_zval_is_serializable`.
-use crate::{
-    constants::DEBUG,
-    module::{PHP_FATAL_ERROR, globals},
-};
+use crate::{constants::DEBUG, module::globals};
 use std::{
     ffi::{CStr, CString, c_int},
     sync::atomic::Ordering,
@@ -12,13 +9,10 @@ use std::{
 use swoole_rs_corebase::CCast;
 use swoole_rs_corebase::utilities::{process_logger, set_log_file, swoole_set_log_level};
 use swoole_rs_corebase::{
-    Switch, built_with, log::set_last_error, swr_v1_core_set_enable_kqueue,
-    swr_v1_core_set_enable_signalfd, swr_v1_core_set_print_backtrace_on_error,
-    swr_v1_core_set_trace_flags,
+    Switch, built_with, swr_v1_core_set_enable_kqueue, swr_v1_core_set_enable_signalfd,
+    swr_v1_core_set_print_backtrace_on_error, swr_v1_core_set_trace_flags,
 };
-use swoole_rs_zend::{
-    Array, E_ERROR, Value, ZStr, ZString, bailout, report, sys::ZEND_ACC_NOT_SERIALIZABLE,
-};
+use swoole_rs_zend::{Array, Value, ZStr, bailout, sys::ZEND_ACC_NOT_SERIALIZABLE};
 
 use swoole_rs_http2::setting_id;
 
@@ -26,10 +20,9 @@ use swoole_rs_http2::setting_id;
 use swoole_rs_clients::dns::set_dns_server;
 
 /// `php_swoole_array_get_value`: the value under `key`, unless absent or null.
-/// Nothing is found once a bailout is pending: upstream's setters stopped at
-/// the conversion that bailed out, so no later option is read or applied.
+/// Stop reading options after a conversion raises.
 pub(crate) fn get<'a>(options: &'a Array, key: &CStr) -> Option<&'a Value> {
-    if bailout::pending() {
+    if !setting_ok() {
         return None;
     }
     options.get(key.to_bytes())
@@ -46,7 +39,8 @@ fn long(value: &Value) -> i64 {
 /// `timeout_format`: non-positive or oversized timeouts mean `INT_MAX` seconds;
 /// `None` after a bailout, as [`Value::applied_double`].
 fn timeout(value: &Value) -> Option<f64> {
-    value.applied_double().map(clamp)
+    let seconds = value.applied_double()?;
+    setting_ok().then(|| clamp(seconds))
 }
 
 fn clamp(timeout: f64) -> f64 {
@@ -57,51 +51,45 @@ fn clamp(timeout: f64) -> f64 {
     }
 }
 
-/// `php_swoole_parse_to_size`, or the string that did not parse and Zend's
-/// reason.
-fn size(value: &Value) -> Result<i64, (&ZStr, ZString)> {
-    match value.str() {
-        None => Ok(long(value)),
-        Some(string) => string
-            .parse_quantity()
-            .map_err(|(_, error)| (string, error)),
+fn setting_ok() -> bool {
+    !bailout::pending() && swoole_rs_zend::host::exception().is_null()
+}
+
+fn invalid_setting(message: &CStr) {
+    if setting_ok() {
+        crate::exception().throw(
+            message,
+            swoole_rs_error::ErrorCode::SW_ERROR_INVALID_PARAMS as i64,
+        );
     }
 }
 
-/// `php_swoole_fatal_error(E_ERROR, "failed to parse '%s' to size, Error: %s")`:
-/// a bailout, deferred for the caller's native boundary.
-fn size_error(failed: &ZStr, error: &ZStr) {
-    set_last_error(PHP_FATAL_ERROR);
-    let message = [
-        b"failed to parse '",
-        failed.c_str().to_bytes(),
-        b"' to size, Error: ",
-        error.c_str().to_bytes(),
-    ]
-    .concat();
-    let message = CString::new(message).unwrap_or_default();
-    bailout::defer(report(E_ERROR, &message));
-}
-
-/// `php_swoole_parse_to_size(zv)`: a size string as an ini quantity
-/// ("64M"), anything else as `zval_get_long`. A string that does not parse
-/// is a fatal error, raised from here.
+/// Parse a PHP size setting, including ini quantities such as "64M".
 pub fn php_swoole_parse_to_size(value: &Value) -> Option<i64> {
-    let size = match size(value) {
-        Ok(size) => size,
-        Err((failed, error)) => {
-            size_error(failed, &error);
-            return None;
-        }
-    };
-    (!bailout::pending()).then_some(size)
+    if let Some(string) = value.str() {
+        return string
+            .parse_quantity()
+            .map_err(|(_, error)| {
+                let message = [
+                    b"failed to parse '".as_slice(),
+                    string.c_str().to_bytes(),
+                    b"' to size, Error: ",
+                    error.c_str().to_bytes(),
+                ]
+                .concat();
+                invalid_setting(&CString::new(message).unwrap_or_default());
+            })
+            .ok();
+    }
+    let size = long(value);
+    setting_ok().then_some(size)
 }
 
 /// The option under `key`, if set, as `convert` reads it, passed to `set`.
 fn option<T>(options: &Array, key: &CStr, convert: impl FnOnce(&Value) -> T, set: impl FnOnce(T)) {
     if let Some(value) = get(options, key) {
         let converted = convert(value);
-        if !bailout::pending() {
+        if setting_ok() {
             set(converted);
         }
     }
@@ -111,7 +99,10 @@ fn option<T>(options: &Array, key: &CStr, convert: impl FnOnce(&Value) -> T, set
 /// with its length, for `set`.
 fn text_option(options: &Array, key: &CStr, set: impl FnOnce(&ZStr)) {
     if let Some(value) = get(options, key) {
-        set(&value.string());
+        let text = value.string();
+        if setting_ok() {
+            set(&text);
+        }
     }
 }
 
@@ -119,18 +110,28 @@ fn text_option(options: &Array, key: &CStr, set: impl FnOnce(&ZStr)) {
 const OPERATION_NOT_SUPPORT: i64 =
     swoole_rs_error::ErrorCode::SW_ERROR_OPERATION_NOT_SUPPORT as i64;
 
-/// `php_swoole_set_global_option`'s body: false after a size that does not
-/// parse, whose fatal error is deferred, or a conversion's deferred bailout.
-pub fn set_global(options: &Array) -> bool {
-    let Err((failed, error)) = apply(options) else {
-        return !bailout::pending();
-    };
-    size_error(failed, &error);
-    false
+/// Convert a socket or HTTP/2 setting without wrapping its unsigned destination.
+fn nonnegative_setting(key: &CStr, value: i64) -> Option<u32> {
+    if !setting_ok() {
+        return None;
+    }
+    if value < 0 {
+        let message = swoole_rs_zend::message!(
+            "{} must be greater than or equal to 0, got {value}",
+            key.to_string_lossy()
+        );
+        invalid_setting(message.as_cstr());
+        return None;
+    }
+    Some(u32::try_from(value).unwrap_or(u32::MAX))
 }
 
-fn apply(options: &Array) -> Result<(), (&ZStr, ZString)> {
-    let size_of = size;
+/// Apply global settings in order, stopping on a conversion error.
+pub fn set_global(options: &Array) -> bool {
+    apply(options).is_some() && setting_ok()
+}
+
+fn apply(options: &Array) -> Option<()> {
     let flag = |key, set: &dyn Fn(bool)| option(options, key, truthy, |on| set(on != 0));
     let number = |key, set: &dyn Fn(i64)| option(options, key, long, set);
     let defaults = &swoole_rs_corebase::reactor::SOCKET_DEFAULTS;
@@ -203,22 +204,14 @@ fn apply(options: &Array) -> Result<(), (&ZStr, ZString)> {
         defaults.read.set(read);
     }
     if let Some(value) = get(options, c"socket_buffer_size") {
-        let size = (size_of(value)?).c_cast::<u32>();
-        if bailout::pending() {
-            return Ok(());
-        }
-        defaults.set_buffer_size(size);
+        defaults.set_buffer_size(nonnegative_setting(
+            c"socket_buffer_size",
+            php_swoole_parse_to_size(value)?,
+        )?);
     }
     if let Some(both) = get(options, c"socket_timeout").and_then(timeout) {
         defaults.read.set(both);
         defaults.write.set(both);
-    }
-    if let Some(value) = get(options, c"http2_max_headers") {
-        let limit = long(value);
-        if bailout::pending() {
-            return Ok(());
-        }
-        swoole_rs_http2::set_max_headers(limit.clamp(0, i64::from(u32::MAX)).c_cast::<u32>());
     }
     // [HTTP2]: (key, setting, parsed as a size).
     let http2 = [
@@ -247,14 +240,22 @@ fn apply(options: &Array) -> Result<(), (&ZStr, ZString)> {
     ];
     for (key, id, sized) in http2 {
         if let Some(value) = get(options, key) {
-            let setting = if sized { size_of(value)? } else { long(value) };
-            if bailout::pending() {
-                return Ok(());
-            }
-            swoole_rs_http2::put_default_setting(u32::from(id), setting.c_cast::<u32>());
+            let setting = if sized {
+                php_swoole_parse_to_size(value)?
+            } else {
+                long(value)
+            };
+            swoole_rs_http2::put_default_setting(u32::from(id), nonnegative_setting(key, setting)?);
         }
     }
-    Ok(())
+    if let Some(value) = get(options, c"http2_max_headers") {
+        let limit = long(value);
+        if !setting_ok() {
+            return None;
+        }
+        swoole_rs_http2::set_max_headers(limit.clamp(0, i64::from(u32::MAX)).c_cast::<u32>());
+    }
+    Some(())
 }
 
 /// `sw_zval_is_serializable`: false if `value` is, or holds in nested arrays,
