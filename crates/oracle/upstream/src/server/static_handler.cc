@@ -132,34 +132,54 @@ bool StaticHandler::try_serve() {
     const std::string &document_root = serv->get_document_root();
     const size_t l_document_root = document_root.length();
 
-    memcpy(p, document_root.c_str(), l_document_root);
-    p += l_document_root;
-
     if (!serv->locations->empty()) {
-        for (const auto &i : *serv->locations) {
-            if (swoole_str_istarts_with(url, url_length, i.c_str(), i.size())) {
+        for (const auto &location : *serv->locations) {
+            if (swoole_str_istarts_with(url, url_length, location.c_str(), location.size())) {
                 last = true;
+                break;
             }
         }
         if (!last) {
             return false;
         }
     }
-
-    if (l_document_root + n >= PATH_MAX) {
+    if (l_document_root >= PATH_MAX || n >= PATH_MAX - l_document_root) {
         return catch_error();
     }
-
-    memcpy(p, url, n);
-    p += n;
-    *p = '\0';
-    if (!dir_path.empty()) {
-        dir_path.clear();
+    memcpy(p, document_root.c_str(), l_document_root);
+    p += l_document_root;
+    const auto hex = [](unsigned char c) -> int {
+        if (c >= '0' && c <= '9') {
+            return c - '0';
+        }
+        if (c >= 'a' && c <= 'f') {
+            return c - 'a' + 10;
+        }
+        if (c >= 'A' && c <= 'F') {
+            return c - 'A' + 10;
+        }
+        return -1;
+    };
+    // URI paths are not form data: '+' is literal, and only the URL is decoded.
+    for (size_t i = 0; i < n; ++i) {
+        unsigned char c = url[i];
+        if (c == '%') {
+            if (i + 2 >= n || hex(url[i + 1]) < 0 || hex(url[i + 2]) < 0) {
+                status_code = SW_HTTP_BAD_REQUEST;
+                return true;
+            }
+            c = (hex(url[i + 1]) << 4) | hex(url[i + 2]);
+            i += 2;
+        }
+        if (c == 0) {
+            status_code = SW_HTTP_BAD_REQUEST;
+            return true;
+        }
+        *p++ = c;
     }
-    dir_path = std::string(url, n);
-
-    l_filename = url_decode(filename, p - filename);
-    filename[l_filename] = '\0';
+    *p = '\0';
+    dir_path.assign(url, n);
+    l_filename = p - filename;
 
     // The file does not exist
     if (lstat(filename, &file_stat) < 0) {

@@ -2,13 +2,15 @@
 //! `http2_server_is_static_file` and `http2_server_send_range_file`) and
 //! `Response::sendfile`'s (`http2_server_send_file`), over crates/server's
 //! `StaticHandler`.
-use super::server::{Value, begin_file, current, finish_file, of, respond, send_body, set};
+use super::server::{
+    Value, begin_file, current, finish_file, of, respond, respond_with_length, send_body, set,
+};
 use crate::http2::{Ctx, Field};
 use std::ffi::CString;
 use swoole_rs_corebase::CCast;
 use swoole_rs_corebase::offload::async_job;
 use swoole_rs_http::PreconditionStatus;
-use swoole_rs_http::status::{NOT_FOUND, PARTIAL_CONTENT, RANGE_NOT_SATISFIABLE};
+use swoole_rs_http::status::{BAD_REQUEST, NOT_FOUND, PARTIAL_CONTENT, RANGE_NOT_SATISFIABLE};
 use swoole_rs_http2::{FileMode, sw_rs_http2_file_length, sw_rs_http2_file_mode};
 use swoole_rs_server::static_handler::{StaticHandler, page_404};
 use swoole_rs_server::view;
@@ -78,7 +80,7 @@ fn serve(server: view::Server<'_>, ctx: Ctx) -> bool {
     if !head && !method.eq_ignore_ascii_case(b"GET") {
         return false;
     }
-    let Some(uri) = entry(ctx, Value::Server, b"request_uri") else {
+    let Some(uri) = ctx.request_target() else {
         return false;
     };
     // Borrowed where it was made: moving the handler out of the `Option` copies it.
@@ -89,17 +91,29 @@ fn serve(server: view::Server<'_>, ctx: Ctx) -> bool {
     if !handler.try_serve() {
         return false;
     }
-    if handler.status() == NOT_FOUND {
-        set(ctx, Field::Status, NOT_FOUND.cast_unsigned());
-        respond(ctx, &page_404());
-        return true;
-    }
-    // if http_index_files is enabled, need to search the index file first.
-    if !handler.try_serve_index_file() {
+    let status = handler.status();
+    let redirect = handler.directory_redirect();
+    if status == 200 && !handler.try_serve_index_file() {
         return false;
     }
     ctx.unhook();
     set(ctx, Field::AcceptCompression, 0);
+    if matches!(status, NOT_FOUND | BAD_REQUEST) {
+        set(ctx, Field::Status, status.cast_unsigned());
+        let body = if status == NOT_FOUND {
+            page_404()
+        } else {
+            Vec::new()
+        };
+        respond_with_length(ctx, if head { &[] } else { &body }, body.len());
+        return true;
+    }
+    if let Some(location) = redirect {
+        ctx.set_header(b"Location", &location);
+        set(ctx, Field::Status, 301);
+        respond(ctx, &[]);
+        return true;
+    }
     ctx.set_header(b"Last-Modified", &handler.date_last_modified());
     ctx.set_header(b"ETag", handler.etag().as_bytes());
     let header = |key: &[u8]| entry(ctx, Value::Header, key).unwrap_or_default();
@@ -118,7 +132,8 @@ fn serve(server: view::Server<'_>, ctx: Ctx) -> bool {
         return true;
     }
     if handler.lists_directory() {
-        respond(ctx, &handler.index_page());
+        let listing = handler.index_page();
+        respond_with_length(ctx, if head { &[] } else { &listing }, listing.len());
         return true;
     }
     let (range, if_range) = (
@@ -154,7 +169,8 @@ fn serve(server: view::Server<'_>, ctx: Ctx) -> bool {
         }
     }
     if head {
-        respond(ctx, &[]);
+        ctx.set_header(b"Content-Type", &handler.content_type());
+        respond_with_length(ctx, &[], handler.content_length());
         return true;
     }
     send_ranges(ctx, handler);

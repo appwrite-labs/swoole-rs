@@ -485,7 +485,15 @@ fn send_header(
     body: Option<Body<'_>>,
     end_stream: bool,
 ) -> bool {
-    send_header_then(ctx, session, stream, body, end_stream, |_| ())
+    send_header_then(
+        ctx,
+        session,
+        stream,
+        body,
+        body.is_none_or(|body| body.length == 0),
+        end_stream,
+        |_| (),
+    )
 }
 
 /// `Stream::send_header`, sending what `then` appends to the HEADERS frame in
@@ -495,6 +503,7 @@ fn send_header_then(
     session: &Session,
     stream: &Stream,
     body: Option<Body<'_>>,
+    empty: bool,
     end_stream: bool,
     then: impl FnOnce(&mut Vec<u8>),
 ) -> bool {
@@ -506,7 +515,6 @@ fn send_header_then(
         }
         return false;
     };
-    let empty = body.is_none_or(|body| body.length == 0);
     let flags = sw_rs_http2_headers_flags(empty, end_stream, 0);
     if flags & FLAG_END_STREAM != 0 {
         set(ctx, Field::End, 1);
@@ -664,6 +672,11 @@ fn has_trailer(ctx: Ctx) -> bool {
 /// `http2_server_respond`: the header, the body and the trailer, then the
 /// stream is done.
 pub(crate) fn respond(ctx: Ctx, data: &[u8]) -> bool {
+    respond_with_length(ctx, data, data.len())
+}
+
+/// HEAD sends an empty body but announces the selected representation's length.
+pub(crate) fn respond_with_length(ctx: Ctx, data: &[u8], length: usize) -> bool {
     let Some((session, stream)) = of(ctx) else {
         return false;
     };
@@ -687,16 +700,14 @@ pub(crate) fn respond(ctx: Ctx, data: &[u8]) -> bool {
     loop {
         match action {
             Respond::Header => {
-                let announced = Body {
-                    data,
-                    length: data.len(),
-                };
+                let announced = Body { data, length };
                 let mut appended = 0;
                 let sent = send_header_then(
                     ctx,
                     &session,
                     &stream,
                     Some(announced),
+                    data.is_empty(),
                     end_stream,
                     |frame| {
                         // The header decided the compression.

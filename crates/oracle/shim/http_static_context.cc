@@ -1,6 +1,6 @@
 // Upstream's StaticHandler behind C entry points: build.rs copies the class from the
 // pinned swoole_static_handler.h, its method bodies and Server::apply_rewrite_rules
-// from the pinned static_handler.cc and url_decode from the pinned http.cc unchanged.
+// unchanged from the pinned static_handler.cc.
 // The filesystem, MIME table and random strings answer from the caller's script and
 // trace each call, and strptime, timegm and gmtime are libc's, recorded as calendar
 // events, as the retired tests/modules/http/context_gate.py and conditional_gate.py
@@ -95,7 +95,7 @@ namespace http_server = ::upstream_static_context;
 // below are as upstream's swoole_http.h, swoole_util.h and swoole_string.h, and src/core/base.cc's
 // sw_snprintf and intersection.
 #include "http_static_context_pinned.inc"
-enum { SW_HTTP_OK = 200, SW_HTTP_PARTIAL_CONTENT = 206, SW_HTTP_NOT_FOUND = 404, SW_HTTP_RANGE_NOT_SATISFIABLE = 416 };
+enum { SW_HTTP_BAD_REQUEST = 400, SW_HTTP_OK = 200, SW_HTTP_PARTIAL_CONTENT = 206, SW_HTTP_NOT_FOUND = 404, SW_HTTP_RANGE_NOT_SATISFIABLE = 416 };
 static inline unsigned int swoole_str_starts_with(const char *pstr, size_t plen, const char *sstr, size_t slen) {
     return (plen >= slen) && (strncmp(pstr, sstr, slen) == 0);
 }

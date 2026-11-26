@@ -278,8 +278,8 @@ fn http_static_select() {
 }
 
 /// The `StaticHandler` class from the pinned `swoole_static_handler.h`, its method
-/// bodies and `Server::apply_rewrite_rules` from the pinned `static_handler.cc`, and
-/// `url_decode` from the pinned http.cc, copied unchanged for `shim/http_static_context.cc`.
+/// bodies and `Server::apply_rewrite_rules` from the pinned `static_handler.cc`,
+/// copied unchanged for `shim/http_static_context.cc`.
 fn http_static_context() {
     let header = fs::read_to_string("upstream/include/swoole_static_handler.h")
         .expect("vendored swoole_static_handler.h");
@@ -313,18 +313,13 @@ fn http_static_context() {
         ),
     )
     .unwrap();
-    let http = fs::read_to_string("upstream/src/protocol/http.cc").expect("vendored http.cc");
     let handler = fs::read_to_string("upstream/src/server/static_handler.cc")
         .expect("vendored static_handler.cc");
-    let mut parts = vec![
-        definition(&http, "static int url_htoi("),
-        definition(&http, "size_t url_decode("),
-        slice(
-            &handler,
-            "std::string StaticHandler::get_etag(",
-            "bool StaticHandler::is_modified(",
-        ),
-    ];
+    let mut parts = vec![slice(
+        &handler,
+        "std::string StaticHandler::get_etag(",
+        "bool StaticHandler::is_modified(",
+    )];
     for signature in [
         "static bool parse_http_date(",
         "bool StaticHandler::is_modified(",

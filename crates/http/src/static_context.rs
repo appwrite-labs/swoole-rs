@@ -190,7 +190,7 @@ impl HttpStaticContext {
             &mut self.path,
             facts,
         );
-        if result == Ok(Action::Directory) {
+        if result == Ok(Action::Lstat) && self.path.phase == crate::StaticPhase::Stat {
             let url = url.get(..self.path.url_length).ok_or(INVALID)?;
             self.directory_path = joined(&[url])?;
         }
@@ -372,9 +372,8 @@ mod tests {
         let mut owner = make();
         let root = b"/root";
         assert_eq!(owner.path_step(root, 0), Ok(Action::Locations));
-        assert_eq!(owner.path_step(root, 0), Ok(Action::Directory));
-        assert_eq!(owner.text(Directory), b"/files");
         assert_eq!(owner.path_step(root, 0), Ok(Action::Lstat));
+        assert_eq!(owner.text(Directory), b"/files");
         assert_eq!(owner.publish(Index, b"index.html"), Ok(()));
         let base = owner.path.filename_length;
         let index_path = |owner: &mut HttpStaticContext| {
