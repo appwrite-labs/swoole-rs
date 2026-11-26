@@ -591,6 +591,7 @@ impl Lock {
     /// `capabilities` names (bit 0 mutex, bit 1 rwlock).
     /// # Errors
     /// The errno of a lock not taken.
+    #[inline]
     pub fn lock(&self, operation: i32, deadline: Deadline, capabilities: u32) -> Result<(), i32> {
         let lock = self.live();
         // A blocking mutex lock, the common case, is small enough to inline.

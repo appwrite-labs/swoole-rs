@@ -188,7 +188,9 @@ impl Deadline {
         Self::never()
     }
 
-    /// `nanos` from now; never when the clock can't hold it.
+    /// `nanos` from now; never when the clock can't hold it. Kept out of line, so a
+    /// caller whose usual wait never ends doesn't make room for the clock read.
+    #[inline(never)]
     fn after(nanos: u64) -> Self {
         Self(now_nanos().checked_add(nanos).and_then(NonZeroU64::new))
     }

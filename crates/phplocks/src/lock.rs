@@ -160,13 +160,14 @@ fn milliseconds(seconds: f64) -> i32 {
 /// `lock(int $operation = LOCK_EX, float $timeout = -1): bool` of `lock`, for
 /// a leaf handler: `lock` defers the fatal error of an unconstructed object.
 pub(crate) fn lock_with(call: &Call, lock: impl for<'c> FnOnce(&'c Call<'_>) -> Option<&'c Lock>) {
-    let (operation, timeout) = if call.num_args() == 0 {
-        (LOCK_EX, -1.0)
+    let (operation, deadline) = if call.num_args() == 0 {
+        (LOCK_EX, Deadline::never())
     } else {
-        let Ok(args) = call
-            .arity(0, 2)
-            .and_then(|()| Ok((call.long(1, LOCK_EX)?, call.double(2, -1.0)?)))
-        else {
+        let Ok(args) = call.arity(0, 2).and_then(|()| {
+            let operation = call.long(1, LOCK_EX)?;
+            let timeout = milliseconds(call.double(2, -1.0)?);
+            Ok((operation, Deadline::from_msec(timeout)))
+        }) else {
             return failed(call);
         };
         args
@@ -174,11 +175,7 @@ pub(crate) fn lock_with(call: &Call, lock: impl for<'c> FnOnce(&'c Call<'_>) -> 
     if let Some(lock) = lock(call) {
         checked(
             call,
-            lock.lock(
-                operation.c_cast::<i32>(),
-                Deadline::from_msec(milliseconds(timeout)),
-                TIMED_LOCK_CAPABILITIES,
-            ),
+            lock.lock(operation.c_cast::<i32>(), deadline, TIMED_LOCK_CAPABILITIES),
         );
     }
 }
