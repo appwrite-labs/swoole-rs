@@ -21,8 +21,7 @@ pub struct NameResolverContext {
     pub is_final: bool,
 }
 
-/// Socket contexts own their settings without allocating. PHP context objects share
-/// them with an active lookup so callbacks can re-run the constructor.
+/// The address family and port-formatting preference for a resolver context.
 #[derive(Clone)]
 pub enum ResolverOptions {
     Owned(c_int, bool),

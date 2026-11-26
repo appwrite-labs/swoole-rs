@@ -6,8 +6,8 @@
 //! resolver's entry names its object, whose reference crates/phpcoroutines keeps.
 use crate::socket::warn;
 pub use native::swoole_name_resolver_php_remove;
-use std::{cell::Cell, ffi::c_void, mem::ManuallyDrop, rc::Rc};
-use swoole_rs_corebase::{CCast, CellExt, NameResolverContext, ResolverOptions};
+use std::{cell::Cell, ffi::c_void, mem::ManuallyDrop};
+use swoole_rs_corebase::{CCast, NameResolverContext, ResolverOptions};
 use swoole_rs_phpstubs::name_resolver;
 use swoole_rs_zend::{
     Call, Custom, CustomClass, Minit, Owned, Value, ZString, bailout, method_table,
@@ -29,20 +29,16 @@ mod native {
     use swoole_rs_phpcoroutines::name_resolvers;
     use swoole_rs_zend::{Owned, Value};
 
-    /// `*context = {}` with `with_port`: the old value is overwritten, not destroyed.
+    /// Reset the lookup and release any retained cluster.
     pub(crate) fn swoole_name_resolver_context_reset(
         context: &mut NameResolverContext,
         with_port: bool,
     ) {
-        let fresh = NameResolverContext {
-            options: ResolverOptions::Owned(0, with_port),
+        *context = NameResolverContext {
+            options: ResolverOptions::Owned(context.options.get().0, with_port),
+            timeout: context.timeout,
             ..NameResolverContext::default()
         };
-        #[expect(
-            clippy::mem_forget,
-            reason = "upstream overwrites the old context without releasing it"
-        )]
-        std::mem::forget(std::mem::replace(context, fresh));
     }
 
     /// A reference of our own to the cluster in `private_data`, if any: the PHP calls
@@ -114,20 +110,15 @@ mod native {
 
 pub(crate) use native::swoole_name_resolver_context_reset;
 
-/// The lookup owns its cluster state while PHP callbacks share only the settings
-/// that `__construct` may change. No mutable context borrow reaches those callbacks.
-#[derive(Default)]
-struct Held {
-    context: Cell<Option<NameResolverContext>>,
-    options: Rc<Cell<(libc::c_int, bool)>>,
-}
+/// Taken while a PHP resolver callback is using this context.
+struct Held(Cell<Option<NameResolverContext>>);
 
 impl Custom for Held {
     fn class() -> &'static CustomClass<Self> {
         &CONTEXT
     }
     fn new() -> Self {
-        Self::default()
+        Self(Cell::new(Some(NameResolverContext::default())))
     }
 }
 
@@ -154,40 +145,49 @@ fn construct(call: &Call) {
         call.set_bool(false);
         return;
     };
-    if let Some(held) = call.custom::<Held>() {
-        held.options
-            .set((family.c_cast::<libc::c_int>(), with_port));
-    } else {
-        crate::native::unconstructed();
+    if family != AF_INET && family != i64::from(libc::AF_INET6) {
+        return call.argument_value_error(1, c"must be AF_INET or AF_INET6");
     }
+    let Some(held) = call.custom::<Held>() else {
+        return crate::native::unconstructed();
+    };
+    let Some(previous) = held.0.take() else {
+        return call.throw_error(c"NameResolver Context is already in use");
+    };
+    drop(previous);
+    held.0.set(Some(NameResolverContext {
+        options: ResolverOptions::Owned(family.c_cast(), with_port),
+        ..NameResolverContext::default()
+    }));
 }
 
 /// `swoole_name_resolver_lookup(string $name, Swoole\NameResolver\Context $ctx): string`.
 fn lookup(call: &Call) {
-    let parsed = call
-        .arity(2, 2)
-        .and_then(|()| Ok((call.string(1, b"")?, call.object(2)?)));
-    let Ok((name, _)) = parsed else {
-        call.set_bool(false);
+    let Ok(name) = call.arity(2, 2).and_then(|()| call.string(1, b"")) else {
+        return call.set_bool(false);
+    };
+    let Some(argument) = call.value(2).map(Value::dereferenced) else {
         return;
     };
-    let held = call.value(2).map(Value::dereferenced);
-    let Some(held) = held.as_deref().and_then(Value::custom::<Held>) else {
-        return crate::native::unconstructed();
+    let Some(held) = argument.custom::<Held>() else {
+        return call.wrong_class(2, c"Swoole\\NameResolver\\Context", &argument);
+    };
+    if name.is_empty() || name.contains(&0) {
+        return call.argument_value_error(1, c"must be nonempty and contain no null bytes");
+    }
+    let Some(mut context) = held.0.take() else {
+        return call.throw_error(c"NameResolver Context is already in use");
     };
     let mut result = Vec::new();
-    let looked_up = held.context.with_taken(|slot| {
-        let context = slot.get_or_insert_with(|| NameResolverContext {
-            options: ResolverOptions::Shared(Rc::clone(&held.options)),
-            ..NameResolverContext::default()
-        });
-        // Catch a PHP resolver's bailout before restoring the context.
-        swoole_rs_zend::contain_with(|| {
-            swoole_rs_hooks::resolve::name_resolver_lookup(name, context, &mut result);
-        })
+    let looked_up = swoole_rs_zend::contain_with(|| {
+        swoole_rs_hooks::resolve::name_resolver_lookup(name, &mut context, &mut result);
     });
+    held.0.set(Some(context));
     match looked_up {
-        Ok(()) => call.set_zstring(ZString::new(&result)),
+        Ok(()) if swoole_rs_zend::host::exception().is_null() => {
+            call.set_zstring(ZString::new(&result));
+        }
+        Ok(()) => {}
         Err(bailout) => bailout.defer(),
     }
 }
