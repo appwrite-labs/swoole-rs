@@ -171,7 +171,7 @@ impl Response {
 enum FrameReadError {
     InvalidMaxFrameSize(u32),
     Short,
-    Goaway,
+    InvalidLength(&'static [u8]),
 }
 
 /// What a frame's payload held, read while the read buffer was on loan.
@@ -840,12 +840,15 @@ impl Client {
             }
             // RFC 9113 6.7: the ACK echoes the PING's eight payload bytes; any
             // other length is a FRAME_SIZE_ERROR.
-            FrameAction::PingReply => Payload::Ping(
-                swoole_rs_http2::ping_payload(payload).map_err(|_| FrameReadError::Short)?,
+            FrameAction::PingReply | FrameAction::PingAck => Payload::Ping(
+                swoole_rs_http2::ping_payload(payload)
+                    .map_err(|_| FrameReadError::InvalidLength(b"invalid PING frame length"))?,
             ),
             FrameAction::Goaway => {
-                let (last, rest) = payload.split_first_chunk().ok_or(FrameReadError::Goaway)?;
-                let (code, debug) = rest.split_first_chunk().ok_or(FrameReadError::Goaway)?;
+                const SHORT_GOAWAY: FrameReadError =
+                    FrameReadError::InvalidLength(b"invalid GOAWAY frame length");
+                let (last, rest) = payload.split_first_chunk().ok_or(SHORT_GOAWAY)?;
+                let (code, debug) = rest.split_first_chunk().ok_or(SHORT_GOAWAY)?;
                 Payload::Goaway {
                     server_last: u32::from_be_bytes(*last),
                     code: u32::from_be_bytes(*code),
@@ -884,12 +887,9 @@ impl Client {
             Err(error) => {
                 match error {
                     FrameReadError::Short => return Frame::Fail,
-                    FrameReadError::Goaway => {
+                    FrameReadError::InvalidLength(message) => {
                         self.close();
-                        self.update_error(
-                            error_code::FRAME_SIZE_ERROR.cast_signed(),
-                            b"invalid GOAWAY frame length",
-                        );
+                        self.update_error(error_code::FRAME_SIZE_ERROR.cast_signed(), message);
                     }
                     FrameReadError::InvalidMaxFrameSize(value) => {
                         self.close();
@@ -1462,6 +1462,15 @@ fn construct(call: &Call) {
         call.throw(&EXCEPTION, c"host is empty", INVALID_PARAMS);
         return call.set_bool(false);
     }
+    if port != 0
+        && !(1..=65535).contains(&port.c_cast::<i32>())
+        && !swoole_rs_corebase::reactor::host_type(host)
+            .socket_type
+            .is_local()
+    {
+        call.throw(&EXCEPTION, c"The port is invalid", INVALID_PARAMS);
+        return call.set_bool(false);
+    }
     let Some(object) = call.this_value().and_then(Weak::of) else {
         return call.set_bool(false);
     };
@@ -1637,6 +1646,9 @@ fn write(call: &Call) {
     let Ok((id, end)) = parsed else {
         return call.set_bool(false);
     };
+    if id < 0 {
+        return call.set_bool(false);
+    }
     let _hold = client.hold_socket();
     let result = client.write_data(id.c_cast::<u32>(), call.value(2), end);
     call.set_bool(result);
