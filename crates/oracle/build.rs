@@ -318,8 +318,14 @@ fn http_static_context() {
     let mut parts = vec![
         definition(&http, "static int url_htoi("),
         definition(&http, "size_t url_decode("),
+        slice(
+            &handler,
+            "std::string StaticHandler::get_etag(",
+            "bool StaticHandler::is_modified(",
+        ),
     ];
     for signature in [
+        "static bool parse_http_date(",
         "bool StaticHandler::is_modified(",
         "bool StaticHandler::is_modified_range(",
         "std::string StaticHandler::get_date_last_modified(",

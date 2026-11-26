@@ -23,6 +23,7 @@ pub trait StaticEffects {
         Some(HttpStaticObservation {
             filesize,
             mtime: meta.mtime(),
+            mtime_nsec: meta.mtime_nsec(),
             kind: if kind.is_dir() {
                 StaticFileKind::Directory
             } else if kind.is_file() {

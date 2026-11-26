@@ -782,7 +782,7 @@ pub mod http_static_context {
             text: *const c_char,
             format: *const c_char,
             value: *mut c_void,
-        ) -> bool;
+        ) -> *mut c_char;
         pub fn swr_oracle_calendar_time(value: *mut c_void) -> i64;
         pub fn swr_oracle_calendar_gmt(time: i64) -> *mut c_void;
         pub fn swr_oracle_static_new(

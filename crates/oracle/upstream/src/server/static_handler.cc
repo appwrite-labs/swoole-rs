@@ -25,65 +25,76 @@
 
 namespace swoole {
 namespace http_server {
-bool StaticHandler::is_modified(const std::string &date_if_modified_since) const {
-    char date_tmp[64];
-    if (date_if_modified_since.empty() || date_if_modified_since.length() > sizeof(date_tmp) - 1) {
+static bool parse_http_date(const std::string &value, time_t &result) {
+    if (value.empty() || value.length() > 63 || value.find('\0') != std::string::npos) {
         return false;
     }
-
-    struct tm tm3 {};
-    memcpy(date_tmp, date_if_modified_since.c_str(), date_if_modified_since.length());
-    date_tmp[date_if_modified_since.length()] = 0;
-
-    const char *date_format = nullptr;
-
-    if (strptime(date_tmp, SW_HTTP_RFC1123_DATE_GMT, &tm3) != nullptr) {
-        date_format = SW_HTTP_RFC1123_DATE_GMT;
-    } else if (strptime(date_tmp, SW_HTTP_RFC1123_DATE_UTC, &tm3) != nullptr) {
-        date_format = SW_HTTP_RFC1123_DATE_UTC;
-    } else if (strptime(date_tmp, SW_HTTP_RFC850_DATE, &tm3) != nullptr) {
-        date_format = SW_HTTP_RFC850_DATE;
-    } else if (strptime(date_tmp, SW_HTTP_ASCTIME_DATE, &tm3) != nullptr) {
-        date_format = SW_HTTP_ASCTIME_DATE;
+    static const char *formats[] = {
+        SW_HTTP_RFC1123_DATE_GMT, SW_HTTP_RFC1123_DATE_UTC, SW_HTTP_RFC850_DATE, SW_HTTP_ASCTIME_DATE};
+    for (const auto *format : formats) {
+        tm parsed{};
+        const char *end = strptime(value.c_str(), format, &parsed);
+        if (!end || *end) {
+            continue;
+        }
+        result = make_utc_time(parsed);
+        const tm check = get_utc_tm(result);
+        // Reject dates normalized by the calendar conversion (for example February 31).
+        if (check.tm_year == parsed.tm_year && check.tm_mon == parsed.tm_mon && check.tm_mday == parsed.tm_mday &&
+            check.tm_hour == parsed.tm_hour && check.tm_min == parsed.tm_min && check.tm_sec == parsed.tm_sec) {
+            return true;
+        }
     }
-    return date_format && mktime(&tm3) - (time_t) serv->timezone_ >= get_file_mtime();
+    return false;
+}
+
+std::string StaticHandler::get_etag() const {
+    // Metadata-based validator, like common static servers; no file-content hash
+    // or per-request reads are needed. Nanoseconds distinguish subsecond updates.
+    long nanoseconds = 0;
+#ifdef __MACH__
+    nanoseconds = file_stat.st_mtimespec.tv_nsec;
+#elif !defined(_WIN32)
+    nanoseconds = file_stat.st_mtim.tv_nsec;
+#endif
+    char value[96];
+    const int length = snprintf(value,
+                                sizeof(value),
+                                "\"%llx-%llx-%lx\"",
+                                static_cast<unsigned long long>(get_file_mtime()),
+                                static_cast<unsigned long long>(get_filesize()),
+                                static_cast<unsigned long>(nanoseconds));
+    return {value, static_cast<size_t>(length)};
+}
+
+bool StaticHandler::is_modified(const std::string &date_if_modified_since) const {
+    time_t date;
+    return parse_http_date(date_if_modified_since, date) && date >= get_file_mtime();
 }
 
 bool StaticHandler::is_modified_range(const std::string &date_range) const {
-    if (date_range.empty()) {
-        return false;
+    if (!date_range.empty() && date_range.front() == '"') {
+        return date_range != get_etag();
     }
-
-    tm tm3{};
-    const char *date_format = nullptr;
-
-    if (strptime(date_range.c_str(), SW_HTTP_RFC1123_DATE_GMT, &tm3) != nullptr) {
-        date_format = SW_HTTP_RFC1123_DATE_GMT;
-    } else if (strptime(date_range.c_str(), SW_HTTP_RFC1123_DATE_UTC, &tm3) != nullptr) {
-        date_format = SW_HTTP_RFC1123_DATE_UTC;
-    } else if (strptime(date_range.c_str(), SW_HTTP_RFC850_DATE, &tm3) != nullptr) {
-        date_format = SW_HTTP_RFC850_DATE;
-    } else if (strptime(date_range.c_str(), SW_HTTP_ASCTIME_DATE, &tm3) != nullptr) {
-        date_format = SW_HTTP_ASCTIME_DATE;
-    }
-    time_t file_mtime = get_file_mtime();
-    tm *tm_file_mtime = gmtime(&file_mtime);
-    return date_format && mktime(&tm3) != mktime(tm_file_mtime);
+    time_t date;
+    // If-Range requires a strong entity tag or an exactly matching HTTP-date.
+    return !parse_http_date(date_range, date) || date != get_file_mtime();
 }
 
 std::string StaticHandler::get_date() {
     char date_[64];
     time_t now = ::time(nullptr);
-    tm *tm1 = gmtime(&now);
-    strftime(date_, sizeof(date_), "%a, %d %b %Y %H:%M:%S %Z", tm1);
+    tm tm1 = get_utc_tm(now);
+    // HTTP dates require a literal GMT suffix, independent of libc's UTC zone name.
+    strftime(date_, sizeof(date_), SW_HTTP_RFC1123_DATE_GMT, &tm1);
     return date_;
 }
 
 std::string StaticHandler::get_date_last_modified() const {
     char date_last_modified[64];
     time_t file_mtime = get_file_mtime();
-    tm *tm2 = gmtime(&file_mtime);
-    strftime(date_last_modified, sizeof(date_last_modified), "%a, %d %b %Y %H:%M:%S %Z", tm2);
+    tm tm2 = get_utc_tm(file_mtime);
+    strftime(date_last_modified, sizeof(date_last_modified), SW_HTTP_RFC1123_DATE_GMT, &tm2);
     return date_last_modified;
 }
 
