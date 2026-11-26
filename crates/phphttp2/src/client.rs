@@ -706,6 +706,12 @@ impl Client {
         let Some(mut frame) = self.build_header(request) else {
             return 0;
         };
+        let header_length = frame.len() - FRAME_HEADER;
+        if header_length > self.remote.get().max_frame_size as usize {
+            self.close();
+            EXCEPTION.throw(c"HTTP/2 header block is too large", INVALID_PARAMS);
+            return 0;
+        }
         let flags = sw_rs_http2_stream_flags(pipeline, use_pipeline_read);
         // The id is taken before a send yields or the body's conversion runs PHP
         // code, so an overlapping send gets the next one. A failed send gives it
@@ -714,12 +720,7 @@ impl Client {
         self.stream_id.set(id + 2);
         self.create_stream(id, flags);
         let header_flags = sw_rs_http2_headers_flags(empty, true, flags);
-        let header = frame_header(
-            FrameType::Headers,
-            frame.len() - FRAME_HEADER,
-            header_flags,
-            id,
-        );
+        let header = frame_header(FrameType::Headers, header_length, header_flags, id);
         if let Some(head) = frame.first_chunk_mut::<FRAME_HEADER>() {
             *head = header;
         }
