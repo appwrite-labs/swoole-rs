@@ -2,68 +2,87 @@
 //! process-wide map PHP's `swoole_mime_type_*` functions change, and lookup by a
 //! filename's lowercased last suffix.
 use core::ffi::CStr;
-use std::collections::BTreeMap;
 use std::ffi::CString;
 use std::sync::{LazyLock, Mutex, MutexGuard, PoisonError};
 
 /// What `get` answers for an unknown suffix.
 pub const FALLBACK: &CStr = c"application/octet-stream";
 
-static MAP: LazyLock<Mutex<BTreeMap<Vec<u8>, CString>>> = LazyLock::new(|| {
-    Mutex::new(
-        CATALOG
-            .iter()
-            .filter_map(|&(suffix, kind)| Some((suffix.to_vec(), CString::new(kind).ok()?)))
-            .collect(),
-    )
+type Entries = Vec<(Vec<u8>, CString)>;
+
+static MAP: LazyLock<Mutex<Entries>> = LazyLock::new(|| {
+    let mut entries: Entries = CATALOG
+        .iter()
+        .filter_map(|&(suffix, kind)| Some((suffix.to_vec(), CString::new(kind).ok()?)))
+        .collect();
+    entries.sort_unstable_by(|a, b| a.0.cmp(&b.0));
+    Mutex::new(entries)
 });
 
-fn map() -> MutexGuard<'static, BTreeMap<Vec<u8>, CString>> {
+fn map() -> MutexGuard<'static, Entries> {
     MAP.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
-/// The bytes after the last dot (all of them without one), ASCII-lowercased:
-/// upstream's `std::transform` of each `char` through C `tolower` in the "C"
-/// locale PHP starts in.
-fn suffix(filename: &[u8]) -> Vec<u8> {
-    let start = filename
-        .iter()
-        .rposition(|&c| c == b'.')
-        .map_or(0, |n| n + 1);
+/// Compare the lookup's lowercased bytes lazily, so a filename needs no scratch buffer.
+fn suffix(filename: &[u8]) -> impl Iterator<Item = u8> + Clone + '_ {
     filename
-        .get(start..)
+        .rsplit(|&c| c == b'.')
+        .next()
         .unwrap_or_default()
-        .to_ascii_lowercase()
+        .iter()
+        .map(u8::to_ascii_lowercase)
+}
+
+fn search(
+    entries: &[(Vec<u8>, CString)],
+    key: &(impl Iterator<Item = u8> + Clone),
+) -> Result<usize, usize> {
+    entries.binary_search_by(|(suffix, _)| suffix.iter().copied().cmp(key.clone()))
 }
 
 /// `mime_type::add`: false, changing nothing, when the suffix is known.
 #[must_use]
 pub fn add(suffix: &[u8], kind: &CStr) -> bool {
     let mut map = map();
-    if map.contains_key(suffix) {
+    let Err(index) = search(&map, &suffix.iter().copied()) else {
         return false;
-    }
-    map.insert(suffix.to_vec(), kind.to_owned());
+    };
+    map.insert(index, (suffix.to_vec(), kind.to_owned()));
     true
 }
 
 /// `mime_type::set`.
 pub fn set(suffix: &[u8], kind: &CStr) {
-    map().insert(suffix.to_vec(), kind.to_owned());
+    let mut map = map();
+    match search(&map, &suffix.iter().copied()) {
+        Ok(index) => {
+            if let Some((_, value)) = map.get_mut(index) {
+                kind.clone_into(value);
+            }
+        }
+        Err(index) => map.insert(index, (suffix.to_vec(), kind.to_owned())),
+    }
 }
 
 /// `mime_type::del`: whether the suffix was known.
 #[must_use]
 pub fn del(suffix: &[u8]) -> bool {
-    map().remove(suffix).is_some()
+    let mut map = map();
+    let Ok(index) = search(&map, &suffix.iter().copied()) else {
+        return false;
+    };
+    map.remove(index);
+    true
 }
 
 /// `mime_type::get`: a copy of the type, as callers take before the table changes.
 #[must_use]
 pub fn get(filename: &[u8]) -> Vec<u8> {
-    map()
-        .get(&suffix(filename))
-        .map_or(FALLBACK, CString::as_c_str)
+    let map = map();
+    search(&map, &suffix(filename))
+        .ok()
+        .and_then(|index| map.get(index))
+        .map_or(FALLBACK, |(_, kind)| kind.as_c_str())
         .to_bytes()
         .to_vec()
 }
@@ -71,12 +90,12 @@ pub fn get(filename: &[u8]) -> Vec<u8> {
 /// `mime_type::exists`.
 #[must_use]
 pub fn exists(filename: &[u8]) -> bool {
-    map().contains_key(&suffix(filename))
+    search(&map(), &suffix(filename)).is_ok()
 }
 
 /// `mime_type::list`'s types, in suffix order.
 pub fn each(mut f: impl FnMut(&CStr)) {
-    for kind in map().values() {
+    for (_, kind) in map().iter() {
         f(kind);
     }
 }
@@ -517,12 +536,34 @@ mod tests {
 
     #[test]
     fn suffix_is_the_last_one_lowercased() {
-        assert_eq!(suffix(b"a.B.JSON"), b"json");
-        assert_eq!(suffix(b"noDot"), b"nodot");
-        assert_eq!(suffix(b"trailing."), b"");
-        assert_eq!(suffix(b"x.\0Y"), b"\0y");
-        assert_eq!(suffix(b"x.\xc0\xff"), b"\xc0\xff");
+        assert_eq!(suffix(b"a.B.JSON").collect::<Vec<_>>(), b"json");
+        assert_eq!(suffix(b"noDot").collect::<Vec<_>>(), b"nodot");
+        assert_eq!(suffix(b"trailing.").collect::<Vec<_>>(), b"");
+        assert_eq!(suffix(b"x.\0Y").collect::<Vec<_>>(), b"\0y");
+        assert_eq!(suffix(b"x.\xc0\xff").collect::<Vec<_>>(), b"\xc0\xff");
         assert_eq!(CATALOG.len(), 362);
+    }
+
+    #[test]
+    fn long_registered_suffixes_keep_exact_keys_and_lookup_order() {
+        let _serial = serial();
+        let lower = vec![b'q'; 8192];
+        let upper = lower.to_ascii_uppercase();
+        assert!(super::add(&upper, c"test/upper"));
+        assert!(!super::exists(&upper));
+        assert!(super::add(&lower, c"test/first"));
+        super::set(&lower, c"test/lower");
+        assert_eq!(super::get(&upper), b"test/lower");
+        let mut listed = Vec::new();
+        super::each(|kind| {
+            if kind == c"test/upper" || kind == c"test/lower" {
+                listed.push(kind.to_owned());
+            }
+        });
+        assert_eq!(listed, [c"test/upper".to_owned(), c"test/lower".to_owned()]);
+        assert!(super::del(&lower));
+        assert!(!super::exists(&upper));
+        assert!(super::del(&upper));
     }
 
     /// The C ABI gate's lookups (`tests/modules/framing/gate.cc`).

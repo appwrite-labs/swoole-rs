@@ -1,10 +1,6 @@
 //! The length/EOF receive loops, packet-length helpers and the MIME table;
 //! native code keeps the socket IO, callbacks and buffer allocation.
 #![forbid(unsafe_code)]
-#![expect(
-    clippy::disallowed_types,
-    reason = "existing uses; tools/budget.py counts them down (docs/migration.md#data-layout)"
-)]
 pub mod mime;
 
 pub mod recv;
