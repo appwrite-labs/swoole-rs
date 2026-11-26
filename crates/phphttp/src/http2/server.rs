@@ -157,19 +157,28 @@ pub(crate) fn goaway(ctx: Ctx, code: i64, data: &[u8]) -> bool {
         return false;
     };
     let last_stream_id = session.last_stream_id.get();
-    let (flags, code) = (u32::from(code.c_cast::<u8>()), code.c_cast::<u32>());
+    let max_frame = send_frame_size(session.remote[MAX_FRAME_SIZE].get()) as usize;
+    if data.len() > max_frame - GOAWAY_SIZE {
+        bailout::defer(swoole_rs_zend::report(
+            swoole_rs_zend::E_WARNING,
+            c"GOAWAY debug data exceeds the peer's maximum frame size",
+        ));
+        return false;
+    }
     let mut frame = Vec::with_capacity(FRAME_HEADER + GOAWAY_SIZE + data.len());
     frame.extend_from_slice(&frame_header(
         FrameType::Goaway,
         GOAWAY_SIZE + data.len(),
-        flags,
+        0,
         0,
     ));
     frame.extend_from_slice(&last_stream_id.to_be_bytes());
-    frame.extend_from_slice(&code.to_be_bytes());
+    frame.extend_from_slice(&code.c_cast::<u32>().to_be_bytes());
     frame.extend_from_slice(data);
     let sent = send(ctx, &frame);
-    session.shutting_down.set(true);
+    if sent {
+        session.shutting_down.set(true);
+    }
     sent
 }
 
