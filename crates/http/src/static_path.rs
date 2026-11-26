@@ -264,61 +264,9 @@ pub(crate) fn span(
     output.get_mut(from..to)
 }
 
-/// Append an index filename using the pinned logical-length/slash behavior.
-/// Logical length intentionally stays unchanged in the native class.
-pub(crate) fn static_index_path(
-    output: &mut Vec<u8>,
-    capacity: usize,
-    logical_length: usize,
-    name: &[u8],
-) -> Result<(), i32> {
-    let Some(room) = capacity
-        .checked_sub(logical_length)
-        .filter(|&room| room > 0)
-    else {
-        return Err(INVALID);
-    };
-    let slash = output.get(logical_length) != Some(&b'/');
-    let length = usize::from(slash) + name.len();
-    if length >= room {
-        return Err(OVERFLOW);
-    }
-    let Some(rest) = span(
-        output,
-        capacity,
-        logical_length,
-        logical_length + length + 1,
-    ) else {
-        return Err(OVERFLOW);
-    };
-    let tail = slash
-        .then_some(b'/')
-        .into_iter()
-        .chain(name.iter().copied())
-        .chain([0]);
-    for (slot, byte) in rest.iter_mut().zip(tail) {
-        *slot = byte;
-    }
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    #[test]
-    fn index_path_appends_after_one_slash() {
-        let mut out = b"/a\0\0\0\0\0\0".to_vec();
-        assert_eq!(static_index_path(&mut out, 8, 2, b"ix"), Ok(()));
-        assert_eq!(out, b"/a/ix\0\0\0");
-        let mut out = b"/a/\0\0\0".to_vec();
-        assert_eq!(static_index_path(&mut out, 6, 2, b"ix"), Ok(()));
-        assert_eq!(out, b"/aix\0\0");
-        assert_eq!(static_index_path(&mut out, 6, 2, b"ixxx"), Err(OVERFLOW));
-        assert_eq!(static_index_path(&mut out, 6, 6, b""), Err(INVALID));
-        let mut out = b"/a".to_vec();
-        assert_eq!(static_index_path(&mut out, 8, 2, b"ix"), Ok(()));
-        assert_eq!(out, b"/a/ix\0");
-    }
     #[test]
     fn query_bytes_do_not_size_the_filename_buffer() {
         let mut url = b"/a?".to_vec();

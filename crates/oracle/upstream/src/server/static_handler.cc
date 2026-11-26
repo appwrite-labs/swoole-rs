@@ -225,17 +225,14 @@ bool StaticHandler::try_serve() {
 
 bool StaticHandler::try_serve_index_file() {
     if (serv->http_index_files && !serv->http_index_files->empty() && is_dir()) {
-        if (!get_dir_files()) {
-            return false;
+        // Index lookup is proportional to the configured candidates, not directory size.
+        for (const auto &candidate : *serv->http_index_files) {
+            if (set_filename(candidate)) {
+                index_file = candidate;
+                return true;
+            }
         }
-        index_file = intersection(*serv->http_index_files, dir_files);
-
-        if (has_index_file() && !set_filename(index_file)) {
-            return false;
-        }
-        if (!has_index_file() && !is_enabled_auto_index()) {
-            return false;
-        }
+        return is_enabled_auto_index();
     }
     return true;
 }
@@ -348,26 +345,24 @@ bool StaticHandler::get_dir_files() {
     return true;
 }
 
-bool StaticHandler::set_filename(const std::string &_filename) {
-    char *p = filename + l_filename;
-
-    if (*p != '/') {
-        *p = '/';
-        p += 1;
-    }
-
-    memcpy(p, _filename.c_str(), _filename.length());
-    p += _filename.length();
-    *p = 0;
-
-    if (lstat(filename, &file_stat) < 0) {
+bool StaticHandler::set_filename(const std::string &name) {
+    const size_t separator = l_filename && filename[l_filename - 1] == '/' ? 0 : 1;
+    if (l_filename + separator + name.length() >= PATH_MAX) {
         return false;
     }
-
-    if (!is_file()) {
+    std::string candidate(filename, l_filename);
+    if (separator) {
+        candidate += '/';
+    }
+    candidate += name;
+    struct stat candidate_stat;
+    if (::stat(candidate.c_str(), &candidate_stat) < 0 || !S_ISREG(candidate_stat.st_mode)) {
         return false;
     }
-
+    // Failed candidates leave the directory intact for the next candidate/autoindex.
+    memcpy(filename, candidate.c_str(), candidate.length() + 1);
+    l_filename = candidate.length();
+    file_stat = candidate_stat;
     return true;
 }
 

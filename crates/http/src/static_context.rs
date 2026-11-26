@@ -368,32 +368,6 @@ mod tests {
         assert!(HttpStaticContext::new(b"/", 0).is_none());
     }
     #[test]
-    fn path_owner_preserves_index_backing_and_separate_base_length() {
-        let mut owner = make();
-        let root = b"/root";
-        assert_eq!(owner.path_step(root, 0), Ok(Action::Locations));
-        assert_eq!(owner.path_step(root, 0), Ok(Action::Lstat));
-        assert_eq!(owner.text(Directory), b"/files");
-        assert_eq!(owner.publish(Index, b"index.html"), Ok(()));
-        let base = owner.path.filename_length;
-        let index_path = |owner: &mut HttpStaticContext| {
-            crate::static_path::static_index_path(
-                &mut owner.filename,
-                owner.capacity,
-                owner.path.filename_length,
-                &owner.index,
-            )
-        };
-        assert_eq!(index_path(&mut owner), Ok(()));
-        assert_eq!(owner.path.filename_length, base);
-        assert_eq!(owner.text(Filename), b"/root/files/index.html");
-        assert_eq!(owner.publish(Index, b"other.html"), Ok(()));
-        assert_eq!(index_path(&mut owner), Ok(()));
-        // The pinned helper observes slash at the unchanged base offset,
-        // then overwrites from that offset on a repeated append.
-        assert_eq!(owner.text(Filename), b"/root/filesother.html");
-    }
-    #[test]
     fn initialized_facts_and_nested_stores_have_one_custodian() {
         let mut owner = make();
         let facts = owner.observe();

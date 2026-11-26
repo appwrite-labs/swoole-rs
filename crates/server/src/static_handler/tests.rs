@@ -137,6 +137,13 @@ impl StaticEffects for Scripted {
             ..HttpStaticObservation::default()
         }))
     }
+    fn index_stat(&self, path: &[u8]) -> Option<HttpStaticObservation> {
+        let facts = self.stat(path)?;
+        let name = path.rsplit(|&byte| byte == b'/').next()?;
+        SCRIPT
+            .with_borrow(|script| script.names.iter().any(|entry| entry == name))
+            .then_some(facts)
+    }
     fn canonical(&self, path: &[u8]) -> Option<Vec<u8>> {
         note(&[b"canonical:", path]);
         let resolved = SCRIPT.with_borrow(|script| {
