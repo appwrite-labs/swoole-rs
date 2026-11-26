@@ -139,6 +139,7 @@ impl Conn {
 
 struct Stream {
     flags: u32,
+    received_headers: bool,
     /// None while draining a response that exceeded its limit.
     buffer: Option<BoundedBytes>,
     gzip: Option<Inflate>,
@@ -782,6 +783,7 @@ impl Client {
     fn create_stream(&self, id: u32, flags: u32) {
         let stream = Stream {
             flags,
+            received_headers: false,
             buffer: Some(BoundedBytes::new(self.decoded_body_limit.get(), 0)),
             gzip: None,
             response: Response::new(id),
@@ -1213,17 +1215,25 @@ impl Client {
     /// `parse_header`: HPACK-decode a HEADERS block onto the stream's response.
     /// Its failure is the caller's to report.
     fn parse_header(&self, id: u32, input: &[u8]) -> Option<Error> {
-        // The response, held apart from the streams.
-        let response = self
-            .streams
-            .with_taken(|streams| streams.get(&id).map(|stream| stream.response.zval.copy()));
-        let props = response.as_ref()?.props(Some(&RESPONSE))?;
-        // The three arrays the block fills, out of their properties meanwhile.
+        let (response, trailing) = self.streams.with_taken(|streams| {
+            let stream = streams.get(&id)?;
+            Some((stream.response.zval.copy(), stream.received_headers))
+        })?;
+        let props = response.props(Some(&RESPONSE))?;
         props
             .edit_array(c"headers", |headers| {
                 props.edit_array(c"cookies", |cookies| {
                     props.edit_array(c"set_cookie_headers", |set_cookie_headers| {
-                        self.decode_headers(id, input, headers, cookies, set_cookie_headers)
+                        self.hpack.with_taken(|hpack| {
+                            let (decoder, field, _) = hpack.as_mut()?;
+                            self.decode_block(
+                                (decoder, field),
+                                id,
+                                input,
+                                (props, trailing),
+                                (headers, cookies, set_cookie_headers),
+                            )
+                        })
                     })
                 })
             })
@@ -1232,40 +1242,13 @@ impl Client {
             .flatten()
     }
 
-    /// A header block onto the response's `headers`, `cookies` and
-    /// `set_cookie_headers`; its failure.
-    fn decode_headers(
-        &self,
-        id: u32,
-        input: &[u8],
-        headers: &mut ArrayMut,
-        cookies: &mut ArrayMut,
-        set_cookie_headers: &mut ArrayMut,
-    ) -> Option<Error> {
-        // Nothing in the loop yields or runs user code: the response is this
-        // client's alone until a receive returns it.
-        self.hpack.with_taken(|hpack| {
-            let (decoder, field, _) = hpack.as_mut()?;
-            self.decode_block(
-                (decoder, field),
-                id,
-                input,
-                headers,
-                cookies,
-                set_cookie_headers,
-            )
-        })
-    }
-
-    /// `decode_headers` with the HPACK decoder taken out.
     fn decode_block(
         &self,
         (decoder, field): (&Decoder, &mut hpack::Field),
         id: u32,
         mut input: &[u8],
-        headers: &mut ArrayMut,
-        cookies: &mut ArrayMut,
-        set_cookie_headers: &mut ArrayMut,
+        (props, mut trailing): (Props<'_>, bool),
+        (headers, cookies, set_cookie_headers): (&mut ArrayMut, &mut ArrayMut, &mut ArrayMut),
     ) -> Option<Error> {
         loop {
             let step = match decoder.decode(input, true, field) {
@@ -1281,11 +1264,11 @@ impl Client {
                 let kind = header_kind(HeaderRole::Response, name);
                 if name.first() == Some(&b':') {
                     if kind == HeaderKind::Status {
+                        props.own().long(c"statusCode", atol(text));
+                        trailing = false;
                         self.streams.with_taken(|streams| {
-                            if let Some(stream) = streams.get(&id)
-                                && let Some(props) = stream.response.props()
-                            {
-                                props.own().long(c"statusCode", atol(text));
+                            if let Some(stream) = streams.get_mut(&id) {
+                                stream.received_headers = true;
                             }
                         });
                     }
@@ -1304,6 +1287,11 @@ impl Client {
                         swoole_rs_phpclients::parse_set_cookies(text, cookies, set_cookie_headers);
                     }
                     headers.insert_bytes(name, Some(text));
+                    if trailing {
+                        props.edit_array(c"trailers", |trailers| {
+                            trailers.insert_bytes(name, Some(text));
+                        });
+                    }
                 }
             }
             let step = sw_rs_http2_inflate_step(flags, input.len(), true);
@@ -1490,7 +1478,13 @@ fn register(minit: &Minit, shortname: bool) -> Result<(), swoole_rs_zend::bailou
         minit.property_long(&RESPONSE, name, 0, public);
     }
     minit.property_bool(&RESPONSE, c"pipeline", false, public);
-    for name in [c"headers", c"set_cookie_headers", c"cookies", c"data"] {
+    for name in [
+        c"headers",
+        c"trailers",
+        c"set_cookie_headers",
+        c"cookies",
+        c"data",
+    ] {
         minit.property_null(&RESPONSE, name, public);
     }
     for (name, number) in CONSTANTS {
