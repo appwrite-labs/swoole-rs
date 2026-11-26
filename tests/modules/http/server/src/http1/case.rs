@@ -485,7 +485,7 @@ pub(crate) unsafe fn swr_case_sendfile(
 
 /// `sw_tg_buffer()`: `SwooleTG.buffer_stack`.
 pub(crate) fn swr_case_tg_buffer() -> *mut StringBuffer {
-    swoole_rs_corebase::thread_buffer().cast()
+    swoole_rs_corebase::buffer::string::thread_buffer().cast()
 }
 
 /// The request header fields a callback reads.
