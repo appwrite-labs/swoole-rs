@@ -240,12 +240,61 @@ bool StaticHandler::try_serve_index_file() {
     return true;
 }
 
+static std::string html_escape(const std::string &value) {
+    std::string escaped;
+    escaped.reserve(value.length());
+
+    for (const char c : value) {
+        switch (c) {
+        case '&':
+            escaped.append("&amp;");
+            break;
+        case '<':
+            escaped.append("&lt;");
+            break;
+        case '>':
+            escaped.append("&gt;");
+            break;
+        case '"':
+            escaped.append("&quot;");
+            break;
+        case '\'':
+            escaped.append("&#39;");
+            break;
+        default:
+            escaped.push_back(c);
+            break;
+        }
+    }
+
+    return escaped;
+}
+
+static std::string percent_encode_path_segment(const std::string &value) {
+    static constexpr char hex[] = "0123456789ABCDEF";
+    std::string encoded;
+    encoded.reserve(value.length());
+
+    for (const unsigned char c : value) {
+        if (isalnum(c) || c == '-' || c == '.' || c == '_' || c == '~') {
+            encoded.push_back(c);
+        } else {
+            encoded.push_back('%');
+            encoded.push_back(hex[c >> 4]);
+            encoded.push_back(hex[c & 0x0f]);
+        }
+    }
+
+    return encoded;
+}
+
 size_t StaticHandler::make_index_page(String *buffer) {
     get_dir_files();
 
-    if (dir_path.back() != '/') {
+    if (dir_path.empty() || dir_path.back() != '/') {
         dir_path.append("/");
     }
+    const std::string escaped_dir_path = html_escape(dir_path);
 
     buffer->format_impl(String::FORMAT_APPEND | String::FORMAT_GROW,
                         "<html>\n"
@@ -254,18 +303,20 @@ size_t StaticHandler::make_index_page(String *buffer) {
                         "</head>\n"
                         "<body>\n" SW_HTTP_PAGE_CSS "<h1>Index of %s</h1>"
                         "\t<ul>\n",
-                        dir_path.c_str(),
-                        dir_path.c_str());
+                        escaped_dir_path.c_str(),
+                        escaped_dir_path.c_str());
 
     for (const auto &dir_file : dir_files) {
         if (dir_file == "." || (dir_path == "/" && dir_file == "..")) {
             continue;
         }
+        std::string escaped_href = escaped_dir_path + percent_encode_path_segment(dir_file);
+        std::string escaped_name = html_escape(dir_file);
+
         buffer->format_impl(String::FORMAT_APPEND | String::FORMAT_GROW,
-                            "\t\t<li><a href=%s%s>%s</a></li>\n",
-                            dir_path.c_str(),
-                            dir_file.c_str(),
-                            dir_file.c_str());
+                            "\t\t<li><a href=\"%s\">%s</a></li>\n",
+                            escaped_href.c_str(),
+                            escaped_name.c_str());
     }
 
     buffer->append(SW_STRL("\t</ul>\n" SW_HTTP_POWER_BY "</body>\n</html>\n"));

@@ -328,6 +328,8 @@ fn http_static_context() {
         "bool StaticHandler::get_absolute_path(",
         "bool StaticHandler::try_serve(",
         "bool StaticHandler::try_serve_index_file(",
+        "static std::string html_escape(",
+        "static std::string percent_encode_path_segment(",
         "size_t StaticHandler::make_index_page(",
         "bool StaticHandler::get_dir_files(",
         "bool StaticHandler::set_filename(",
