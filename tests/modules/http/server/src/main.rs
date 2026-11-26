@@ -54,7 +54,6 @@ use std::sync::Mutex;
 use std::sync::atomic::{AtomicI32, Ordering};
 use std::thread::JoinHandle;
 use std::time::Duration;
-use swoole_rs_corebase::WebSocketStatus;
 use swoole_rs_corebase::buffer::string::{OwnedString, StringBuffer};
 use swoole_rs_ffi::swoole_init;
 use swoole_rs_ports::frame_api::Frame;
@@ -933,7 +932,7 @@ fn get_package_length() {
     // websocket
     let buffer = tg_buffer();
     // Only an open connection reads frames (6.3, 88b6cb15d).
-    record.websocket_status.set(WebSocketStatus::Active);
+    conn.websocket_requested().handshake().open();
     conn.set_http2_stream(false);
     let size = http_get_package_length_size(conn);
     assert_eq!(size, SW_WEBSOCKET_FRAME_HEADER_SIZE);
@@ -952,7 +951,11 @@ fn get_package_length() {
     assert_eq!(length, (SW_WEBSOCKET_HEADER_LEN + TEST_STR.len()) as isize);
 
     // http2
-    record.websocket_status.set(WebSocketStatus::None);
+    // `disconnect`, then the peer's close answers it: no WebSocket again.
+    conn.websocket_closing();
+    if let WebSocket::Closing(closing) = conn.websocket() {
+        closing.answered();
+    }
     conn.set_http2_stream(true);
     let size = http_get_package_length_size(conn);
     assert_eq!(size, SW_HTTP2_FRAME_HEADER_SIZE);
@@ -965,7 +968,6 @@ fn get_package_length() {
     assert_eq!(got, length as isize);
 
     // http1.1
-    record.websocket_status.set(WebSocketStatus::None);
     conn.set_http2_stream(false);
     assert_eq!(http_get_package_length_size(conn), 0);
     // SAFETY: as above.
