@@ -23,21 +23,23 @@ use swoole_rs_corebase::reactor::TimeoutKind;
 /// `SW_DATA_EOF_MAXLEN`.
 const EOF_MAXLEN: usize = swoole_rs_corebase::constants::SW_DATA_EOF_MAXLEN as usize;
 /// `open_fastcgi_protocol`'s length: the record's content and padding lengths
-/// plus its 8-byte header, or `None` past 65535.
+/// plus its 8-byte header. A partial header needs more data.
 fn fastcgi_length(
     _protocol: &Protocol,
     _: Option<u8>,
     _owner: Option<std::rc::Rc<dyn std::any::Any>>,
     pl: &mut PacketLength,
 ) -> Option<usize> {
-    pl.bytes()
-        .first_chunk::<8>()
-        .map_or(Some(0), |&p| fastcgi_record_length(p))
+    Some(
+        pl.bytes()
+            .first_chunk::<8>()
+            .map_or(0, fastcgi_record_length),
+    )
 }
 
-fn fastcgi_record_length(p: [u8; 8]) -> Option<usize> {
-    let length = ((usize::from(p[4]) << 8) | usize::from(p[5])) + usize::from(p[6]);
-    (length <= 0xffff).then_some(length + 8)
+fn fastcgi_record_length(header: &[u8; 8]) -> usize {
+    let content = u16::from_be_bytes([header[4], header[5]]);
+    header.len() + usize::from(content) + usize::from(header[6])
 }
 
 /// `swoole_type_size`: the byte width of a `pack()` length type, or 0.
@@ -805,13 +807,13 @@ mod tests {
 
     #[test]
     fn fastcgi_lengths() {
-        // content 0x0102, padding 3: 258 + 3 + header 8.
-        assert_eq!(fastcgi_record_length([1, 6, 0, 1, 1, 2, 3, 0]), Some(269));
-        assert_eq!(
-            fastcgi_record_length([1, 6, 0, 1, 0xff, 0xff, 0, 0]),
-            Some(0xffff + 8)
-        );
-        assert_eq!(fastcgi_record_length([1, 6, 0, 1, 0xff, 0xff, 1, 0]), None);
+        assert_eq!(fastcgi_record_length(&[1, 6, 0, 1, 1, 2, 3, 0]), 269);
+        for padding in [0, 1, 255] {
+            assert_eq!(
+                fastcgi_record_length(&[1, 6, 0, 1, 0xff, 0xff, padding, 0]),
+                8 + 65535 + usize::from(padding)
+            );
+        }
     }
 
     #[test]
