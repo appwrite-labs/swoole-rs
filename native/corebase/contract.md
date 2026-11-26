@@ -94,7 +94,9 @@ hooks/client reactor initializers remain registered callbacks.
 ## `SwooleTG` (`lifecycle.rs`)
 
 Each thread's `ThreadGlobal` is a Rust `thread_local` without a destructor, read
-and written through `thread_*`/`set_thread_*`. No compiled C++ read `SwooleTG`,
+and written through `thread_*`/`set_thread_*`. Its `reactor` is the reactor's own
+(`reactor::thread_reactor`, `reactor_state.rs`), which thread clean and coroutine
+threads reach from above. No compiled C++ read `SwooleTG`,
 `sw_tg_buffer()` or `sw_reactor()`, so they left `swoole.h` (#4310).
 
 ## `SwooleG` (`config_state.rs`, `global.rs`)

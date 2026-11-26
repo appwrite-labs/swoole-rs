@@ -78,7 +78,9 @@ pub(crate) fn main_loop(serv: view::Server<'_>, worker: Worker<'_>) -> bool {
     process::swoole_set_worker_id(id);
     process::swoole_set_worker_pid(std::process::id().cast_signed());
     crate::worker_methods::init_event_worker(serv, worker);
-    if swoole_rs_corebase::thread_reactor().is_null() && !hybrid().step(serv, Step::EventInit) {
+    if swoole_rs_corebase::reactor::thread_reactor().is_null()
+        && !hybrid().step(serv, Step::EventInit)
+    {
         return false;
     }
     hybrid().step(serv, Step::TimerReinit);

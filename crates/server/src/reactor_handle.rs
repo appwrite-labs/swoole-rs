@@ -34,18 +34,18 @@ impl Reactor {
     }
     /// The thread's reactor (`sw_reactor()`), which the worker ops run under.
     pub(crate) fn thread() -> Self {
-        Self(swoole_rs_corebase::thread_reactor())
+        Self(swoole_rs_corebase::reactor::thread_reactor())
     }
     /// The thread's reactor, if it has one.
     pub(crate) fn current() -> Option<Self> {
-        let reactor = swoole_rs_corebase::thread_reactor();
+        let reactor = swoole_rs_corebase::reactor::thread_reactor();
         (!reactor.is_null()).then_some(Self(reactor))
     }
     /// `reactor->ptr = serv`: the reactor, which must be this thread's, serves `serv`,
     /// which [`Self::server`] reads back until the reactor is freed, another object
     /// replaces it, or the server's deletion releases it ([`release_server`]).
     pub(crate) fn hold_server(self, serv: crate::view::Server<'_>) {
-        if self.0 != swoole_rs_corebase::thread_reactor() {
+        if self.0 != swoole_rs_corebase::reactor::thread_reactor() {
             swoole_rs_corebase::fatal("a server held by another thread's reactor");
         }
         self.handle().hold(&SERVER, serv.raw());

@@ -10,7 +10,7 @@ use std::ffi::c_int;
 pub struct EventSocket(OwnedSocket);
 
 fn reactor() -> bool {
-    !crate::thread_reactor().is_null()
+    !crate::reactor::thread_reactor().is_null()
 }
 
 impl EventSocket {

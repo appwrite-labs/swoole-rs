@@ -11,7 +11,7 @@ const PHP_FATAL_ERROR: c_int = swoole_rs_error::ErrorCode::SW_ERROR_PHP_FATAL_ER
 const PHP_RUNTIME_NOTICE: c_int = swoole_rs_error::ErrorCode::SW_ERROR_PHP_RUNTIME_NOTICE as c_int;
 
 pub(crate) fn has_reactor() -> bool {
-    !swoole_rs_corebase::thread_reactor().is_null()
+    !swoole_rs_corebase::reactor::thread_reactor().is_null()
 }
 
 /// `SWOOLE_G(cli)`.
