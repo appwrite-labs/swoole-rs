@@ -130,7 +130,6 @@ struct Client {
     response_timeout: Cell<f64>,
     max_retries: Cell<u8>,
     defer: Cell<bool>,
-    lowercase_header: Cell<bool>,
     keep_alive: Cell<bool>,
     http_compression: Cell<bool>,
     body_decompression: Cell<bool>,
@@ -421,7 +420,6 @@ impl Client {
             response_timeout: Cell::new(0.0),
             max_retries: Cell::new(0),
             defer: Cell::new(false),
-            lowercase_header: Cell::new(true),
             keep_alive: Cell::new(true),
             http_compression: Cell::new(true),
             body_decompression: Cell::new(true),
@@ -515,9 +513,6 @@ impl Client {
             }
             if let Some(found) = get(b"defer") {
                 self.defer.set(truthy(found));
-            }
-            if let Some(found) = get(b"lowercase_header") {
-                self.lowercase_header.set(truthy(found));
             }
             if let Some(found) = get(b"keep_alive") {
                 self.keep_alive.set(truthy(found));
@@ -1576,13 +1571,10 @@ impl<'a> FilePart<'a> {
 
 fn on_header_value(hooks: &Hooks, name: &[u8], data: &[u8]) -> Flow {
     let client = hooks.client;
-    let lowered;
-    let name = if client.lowercase_header.get() {
-        lowered = name.to_ascii_lowercase();
-        &lowered[..]
-    } else {
-        name
-    };
+    let lowered = name.to_ascii_lowercase();
+    let name = lowered.as_slice();
+    let end = data.iter().rposition(|byte| !matches!(byte, b' ' | b'\t'));
+    let data = &data[..end.map_or(0, |last| last + 1)];
     hooks.props.edit_array(c"headers", |headers| {
         headers.merge(name, Owned::from(ZString::new(data)));
     });
