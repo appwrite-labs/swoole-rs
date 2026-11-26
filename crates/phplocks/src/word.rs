@@ -3,6 +3,7 @@
 //! word and sets the return value.
 use std::sync::atomic::{AtomicI64, AtomicU32, Ordering};
 use swoole_rs_corebase::CCast;
+use swoole_rs_corebase::timer::Deadline;
 use swoole_rs_corebase::utilities::misc::{futex_wait, futex_wakeup};
 use swoole_rs_zend::{Call, Custom};
 
@@ -141,7 +142,8 @@ pub(crate) fn cmpset<H: Holder>(call: &Call) {
 pub(crate) fn wait<H: Holder<Word = AtomicU32>>(call: &Call) {
     match call.arity(0, 1).and_then(|()| call.double(1, 1.0)) {
         Ok(timeout) => {
-            call.set_bool(word::<H>(call).is_some_and(|word| futex_wait(word, timeout)));
+            let deadline = Deadline::from_futex_timeout(timeout);
+            call.set_bool(word::<H>(call).is_some_and(|word| futex_wait(word, deadline)));
         }
         Err(_) => failed(call),
     }

@@ -9,6 +9,7 @@ use crate::CCast;
 use crate::sys;
 #[cfg(miri)]
 use crate::sys::miri::set_mutex_process_shared;
+use crate::timer::Deadline;
 #[cfg_attr(
     not(test),
     expect(
@@ -210,8 +211,22 @@ fn poll(mut timeout: i32, mut attempt: impl FnMut() -> i32) -> Result<(), i32> {
     }
     Err(ETIMEDOUT)
 }
+/// The milliseconds left until `deadline`, rounded up as a timer's are, so a wait
+/// begun at once is given the milliseconds its timeout named; none when it never comes.
+fn millis(deadline: Deadline) -> Option<i32> {
+    let left = deadline.remaining()?.as_nanos().div_ceil(1_000_000);
+    Some(i32::try_from(left).unwrap_or(i32::MAX))
+}
+/// `left` as a relative `timespec`, to the nanosecond.
 #[cfg(target_os = "linux")]
-fn deadline(millis: i32) -> timespec {
+fn relative(left: std::time::Duration) -> timespec {
+    timespec {
+        tv_sec: left.as_secs().c_cast(),
+        tv_nsec: c_long::from(left.subsec_nanos().c_cast::<i32>()),
+    }
+}
+#[cfg(target_os = "linux")]
+fn realtime(millis: i32) -> timespec {
     // Zero if the clock can't be read, as the unchecked call left it.
     let mut now = sys::clock_gettime(CLOCK_REALTIME).unwrap_or(timespec {
         tv_sec: 0,
@@ -240,29 +255,17 @@ impl UnownedMutex {
             .map_err(|_| EBUSY)
     }
 
-    /// Blocks until it holds the word, or `millis` (when positive) pass: `ETIMEDOUT`.
-    fn lock(&self, millis: i32) -> Result<(), i32> {
+    /// Blocks until it holds the word, or `deadline` passes: `ETIMEDOUT`.
+    fn lock(&self, deadline: Deadline) -> Result<(), i32> {
         if self.try_lock().is_ok() {
             return Ok(());
         }
-        let deadline = (millis > 0).then(|| {
-            std::time::Instant::now()
-                + std::time::Duration::from_millis(millis.unsigned_abs().into())
-        });
         while self.0.swap(2, Ordering::Acquire) != 0 {
-            let left = match deadline {
-                None => None,
-                Some(deadline) => {
-                    let left = deadline.saturating_duration_since(std::time::Instant::now());
-                    if left.is_zero() {
-                        return Err(ETIMEDOUT);
-                    }
-                    Some(timespec {
-                        tv_sec: left.as_secs().c_cast(),
-                        tv_nsec: c_long::from(left.subsec_nanos().c_cast::<i32>()),
-                    })
-                }
-            };
+            let left = deadline.remaining();
+            if left.is_some_and(|left| left.is_zero()) {
+                return Err(ETIMEDOUT);
+            }
+            let left = left.map(relative);
             // Parks while the word still says locked with waiters; a wake, a change or
             // the timeout returns, and the swap above decides.
             futex(&self.0, Futex::Wait, 2, left.as_ref());
@@ -301,12 +304,12 @@ impl UnownedMutex {
         }
     }
 
-    fn lock(&self, millis: i32) -> Result<(), i32> {
+    fn lock(&self, deadline: Deadline) -> Result<(), i32> {
         let held = self
             .held
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let mut held = if millis > 0 {
+        let mut held = if let Some(millis) = millis(deadline) {
             let timeout = std::time::Duration::from_millis(millis.unsigned_abs().into());
             let (held, _) = self
                 .available
@@ -345,9 +348,10 @@ enum Live<'a> {
 }
 
 impl Live<'_> {
-    /// `Lock::lock(operation, timeout)` with the timed waits `capabilities` names (bit 0
-    /// mutex timedlock, bit 1 rwlock timed{rd,wr}lock, from native configure).
-    fn lock(self, operation: i32, timeout: i32, capabilities: u32) -> Result<(), i32> {
+    /// `Lock::lock(operation, timeout)` until `deadline`, with the timed waits
+    /// `capabilities` names (bit 0 mutex timedlock, bit 1 rwlock timed{rd,wr}lock, from
+    /// native configure). A timed wait is given the milliseconds left ([`millis`]).
+    fn lock(self, operation: i32, deadline: Deadline, capabilities: u32) -> Result<(), i32> {
         #[cfg(not(target_os = "linux"))]
         let _ = capabilities;
         match self {
@@ -356,10 +360,10 @@ impl Live<'_> {
                 if operation & LOCK_NB != 0 {
                     return pthread_result(try_lock());
                 }
-                if timeout > 0 {
+                if let Some(timeout) = millis(deadline) {
                     #[cfg(target_os = "linux")]
                     if capabilities & 1 != 0 {
-                        return pthread_result(pthread_mutex_timedlock(lock, &deadline(timeout)));
+                        return pthread_result(pthread_mutex_timedlock(lock, &realtime(timeout)));
                     }
                     return poll(timeout, try_lock);
                 }
@@ -369,7 +373,7 @@ impl Live<'_> {
                 if operation & LOCK_NB != 0 {
                     word.try_lock()
                 } else {
-                    word.lock(timeout)
+                    word.lock(deadline)
                 }
             }
             Self::RwLock(lock) => {
@@ -384,10 +388,10 @@ impl Live<'_> {
                 if operation & LOCK_NB != 0 {
                     return pthread_result(try_lock());
                 }
-                if timeout > 0 {
+                if let Some(timeout) = millis(deadline) {
                     #[cfg(target_os = "linux")]
                     if capabilities & 2 != 0 {
-                        let deadline = deadline(timeout);
+                        let deadline = realtime(timeout);
                         return pthread_result(if read {
                             pthread_rwlock_timedrdlock(lock, &deadline)
                         } else {
@@ -408,7 +412,7 @@ impl Live<'_> {
                 if operation & LOCK_NB != 0 {
                     return pthread_result(try_lock());
                 }
-                if timeout > 0 {
+                if let Some(timeout) = millis(deadline) {
                     return poll(timeout, try_lock);
                 }
                 pthread_result(pthread_spin_lock(lock))
@@ -582,21 +586,21 @@ impl Lock {
         }
     }
 
-    /// `Lock::lock(operation, timeout)`: `LOCK_SH`/`LOCK_NB` from `operation`,
-    /// `timeout` in milliseconds (none when not positive), the timed waits
+    /// `Lock::lock(operation, timeout)`: `LOCK_SH`/`LOCK_NB` from `operation`, waiting
+    /// until `deadline` ([`Deadline::from_msec`] of upstream's), with the timed waits
     /// `capabilities` names (bit 0 mutex, bit 1 rwlock).
     /// # Errors
     /// The errno of a lock not taken.
-    pub fn lock(&self, operation: i32, timeout: i32, capabilities: u32) -> Result<(), i32> {
+    pub fn lock(&self, operation: i32, deadline: Deadline, capabilities: u32) -> Result<(), i32> {
         let lock = self.live();
         // A blocking mutex lock, the common case, is small enough to inline.
         if let Live::Mutex(mutex) = lock
             && operation & LOCK_NB == 0
-            && timeout <= 0
+            && deadline == Deadline::never()
         {
             pthread_result(pthread_mutex_lock(mutex))
         } else {
-            lock.lock(operation, timeout, capabilities)
+            lock.lock(operation, deadline, capabilities)
         }
     }
 
@@ -881,25 +885,21 @@ fn futex(word: &AtomicU32, op: Futex, value: c_int, timeout: Option<&timespec>) 
     }
 }
 
-/// Futex wait on an atomic word (process-shared for a forked waiter): consume a ready
-/// token, otherwise one `FUTEX_WAIT` syscall. Whether it took the word's token.
+/// Futex wait on an atomic word (process-shared for a forked waiter) until `deadline`
+/// ([`Deadline::from_futex_timeout`] of upstream's): consume a ready token, otherwise
+/// one `FUTEX_WAIT` syscall for the time left. Whether it took the word's token.
 #[cfg(target_os = "linux")]
 #[must_use]
-pub fn wait(a: &AtomicU32, timeout: f64) -> bool {
+pub fn wait(a: &AtomicU32, deadline: Deadline) -> bool {
     if a.compare_exchange(1, 0, Ordering::SeqCst, Ordering::SeqCst)
         .is_ok()
     {
         return true;
     }
-    let seconds = timeout.c_cast::<i64>();
-    let duration = timespec {
-        tv_sec: seconds,
-        tv_nsec: ((timeout - seconds.c_cast::<f64>()) * 1000.0 * 1000.0 * 1000.0)
-            .c_cast::<c_long>(),
-    };
     // A wakeup between the check above and the syscall makes FUTEX_WAIT fail with
     // EAGAIN; its token is still in the word, so the result alone doesn't decide.
-    futex(a, Futex::Wait, 0, (timeout > 0.0).then_some(&duration));
+    let left = deadline.remaining().map(relative);
+    futex(a, Futex::Wait, 0, left.as_ref());
     a.compare_exchange(1, 0, Ordering::SeqCst, Ordering::SeqCst)
         .is_ok()
 }
@@ -950,20 +950,23 @@ mod tests {
     fn another_thread_unlocks_a_private_mutex() {
         let lock = super::Lock::unowned_mutex().expect("a mutex");
         let written = AtomicU32::new(0);
-        assert_eq!(lock.lock(LOCK_EX, -1, 0), Ok(()));
-        assert_eq!(lock.lock(LOCK_NB, -1, 0), Err(EBUSY), "held");
-        assert_eq!(lock.lock(LOCK_EX, 5, 0), Err(ETIMEDOUT), "still held");
+        let never = Deadline::never();
+        assert_eq!(lock.lock(LOCK_EX, never, 0), Ok(()));
+        assert_eq!(lock.lock(LOCK_NB, never, 0), Err(EBUSY), "held");
+        let five = Deadline::from_msec(5);
+        assert_eq!(lock.lock(LOCK_EX, five, 0), Err(ETIMEDOUT), "still held");
+        assert_eq!(lock.lock(LOCK_EX, five, 0), Err(ETIMEDOUT), "passed");
         thread::scope(|scope| {
             scope.spawn(|| {
                 thread::sleep(Duration::from_millis(20));
                 written.store(1, Ordering::Relaxed);
                 assert_eq!(lock.unlock(), Ok(()));
             });
-            assert_eq!(lock.lock(LOCK_EX, -1, 0), Ok(()), "woken by the unlock");
+            assert_eq!(lock.lock(LOCK_EX, never, 0), Ok(()), "woken by the unlock");
             assert_eq!(written.load(Ordering::Relaxed), 1);
         });
         assert_eq!(lock.unlock(), Ok(()));
-        assert_eq!(lock.lock(LOCK_NB, -1, 0), Ok(()), "free again");
+        assert_eq!(lock.lock(LOCK_NB, never, 0), Ok(()), "free again");
         assert_eq!(lock.unlock(), Ok(()));
     }
 
@@ -999,7 +1002,8 @@ mod tests {
     #[test]
     fn safe_locks_lock_and_refuse_what_they_cannot_hold() {
         let lock = super::Lock::private(MUTEX).expect("a mutex");
-        assert_eq!(lock.lock(LOCK_EX, -1, TIMED_LOCK_CAPABILITIES), Ok(()));
+        let never = Deadline::never();
+        assert_eq!(lock.lock(LOCK_EX, never, TIMED_LOCK_CAPABILITIES), Ok(()));
         assert_eq!(lock.unlock(), Ok(()));
         assert_eq!(super::Kind::from_code(42), None, "no such kind");
         // Taken back after the refusal, which keeps no reference, so Miri sees no leak.
@@ -1032,8 +1036,9 @@ mod tests {
             Self(lock.expect("a lock"))
         }
         fn lock(&self, operation: i32, timeout: i32) -> i32 {
+            let deadline = Deadline::from_msec(timeout);
             self.0
-                .lock(operation, timeout, TIMED_LOCK_CAPABILITIES)
+                .lock(operation, deadline, TIMED_LOCK_CAPABILITIES)
                 .err()
                 .unwrap_or(0)
         }

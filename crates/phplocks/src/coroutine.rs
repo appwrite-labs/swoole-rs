@@ -123,8 +123,10 @@ fn lock(call: &Call) {
     let Some(owner) = constructed(call) else {
         return;
     };
+    // Upstream's `Coroutine\Lock::lock` has no timeout: a blocking one waits until it holds it.
     let blocking = operation & i64::from(swoole_rs_corebase::locks::LOCK_NB) == 0;
-    super::lock::check(call, owner.acquire(blocking));
+    let wait = blocking.then_some(swoole_rs_corebase::timer::Deadline::never());
+    super::lock::check(call, owner.acquire(wait));
 }
 fn unlock(call: &Call) {
     let Some(owner) = constructed(call) else {

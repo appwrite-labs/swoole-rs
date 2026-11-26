@@ -217,7 +217,8 @@ fn spinlock_across_threads_and_a_fork() {
 // Compare the Rust operations with the pinned functions' integer results.
 #[cfg(target_os = "linux")]
 fn wait_result(word: &AtomicU32, timeout: f64) -> i32 {
-    if super::misc::futex_wait(word, timeout) {
+    let deadline = crate::timer::Deadline::from_futex_timeout(timeout);
+    if super::misc::futex_wait(word, deadline) {
         0
     } else {
         -1

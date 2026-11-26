@@ -1059,4 +1059,33 @@ mod tests {
             );
         }
     }
+
+    /// `Lock::lock`'s `int` milliseconds, and `sw_atomic_futex_wait`'s seconds to the
+    /// nanosecond: only a positive one ends.
+    #[test]
+    fn deadline_of_a_lock_or_futex_timeout() {
+        for forever in [0, -1, i32::MIN] {
+            assert_eq!(Deadline::from_msec(forever), Deadline::never(), "{forever}");
+        }
+        for forever in [-1.0, -0.0, 0.0, f64::NAN, 1e12] {
+            let deadline = Deadline::from_futex_timeout(forever);
+            assert_eq!(deadline, Deadline::never(), "{forever}");
+        }
+        // A futex refuses a timespec past `i64` seconds at once, so it has passed.
+        #[cfg(target_os = "linux")]
+        assert_eq!(
+            Deadline::from_futex_timeout(f64::INFINITY).remaining(),
+            Some(std::time::Duration::ZERO)
+        );
+        let deadlines = [
+            (Deadline::from_msec(1500), 1_500_000_000),
+            (Deadline::from_futex_timeout(0.0015), 1_500_000),
+            (Deadline::from_futex_timeout(1.000_000_001), 1_000_000_001),
+        ];
+        for (deadline, nanos) in deadlines {
+            let left = deadline.remaining().unwrap();
+            let nanos = std::time::Duration::from_nanos(nanos);
+            assert!(left <= nanos && left > nanos / 2, "{nanos:?}: {left:?}");
+        }
+    }
 }

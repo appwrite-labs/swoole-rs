@@ -773,13 +773,15 @@ fn file_status(result: io::Result<isize>) -> io::Result<()> {
     result.map(|_| ())
 }
 
-/// Wait on the owned word. The slot keeps its address live through completion.
+/// Wait on the owned word, for up to `timeout` seconds when positive. The slot keeps
+/// its address live through completion.
 /// # Errors
-/// The ring or the futex operation failed.
-pub fn futex_wait(host: &Host, word: &Arc<LockWord>) -> io::Result<c_int> {
+/// The ring or the futex operation failed, or the timeout passed (`ETIMEDOUT`).
+pub fn futex_wait(host: &Host, word: &Arc<LockWord>, timeout: f64) -> io::Result<c_int> {
     let entry =
         opcode::FutexWait::new(word.as_ptr(), 1, FUTEX_BITSET_MATCH_ANY, FUTEX2_SIZE_U32).build();
     Event::new(host, entry)
+        .with_timeout(timeout)
         .execute_owned(host, Some(Arc::clone(word)))
         .map(CCast::c_cast::<c_int>)
 }
@@ -1364,7 +1366,7 @@ mod tests {
         let errors = [
             waitpid(&host, -1, Some(&mut status), 0, 1.0).unwrap_err(),
             poll(&host, &mut fd, 1000).unwrap_err(),
-            futex_wait(&host, &word).unwrap_err(),
+            futex_wait(&host, &word, -1.0).unwrap_err(),
             futex_wakeup(&host, &word).unwrap_err(),
         ];
         set_errno(libc::EINTR);
@@ -1571,7 +1573,7 @@ mod tests {
                 };
                 let word = Arc::new(LockWord::Private(std::sync::atomic::AtomicU32::new(1)));
                 let owner = Arc::downgrade(&word);
-                assert_eq!(futex_wait(&early, &word).unwrap(), 0);
+                assert_eq!(futex_wait(&early, &word, -1.0).unwrap(), 0);
                 drop(word);
                 let id = engine.slots.with_taken(|slots| {
                     slots

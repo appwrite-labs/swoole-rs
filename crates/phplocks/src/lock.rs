@@ -8,6 +8,7 @@ use std::{
 use swoole_rs_corebase::CCast;
 use swoole_rs_corebase::locks::{Kind, Lock, TIMED_LOCK_CAPABILITIES};
 use swoole_rs_corebase::memory::members::pool::PooledLock;
+use swoole_rs_corebase::timer::Deadline;
 use swoole_rs_phpstubs::lock;
 use swoole_rs_zend::{
     Call, Custom, CustomClass, Minit,
@@ -152,19 +153,19 @@ fn failed(call: &Call) {
 }
 
 /// `swoole::sec2msec(double)`, narrowed to the `int` `Lock::lock` takes.
-pub(crate) fn milliseconds(seconds: f64) -> i32 {
+fn milliseconds(seconds: f64) -> i32 {
     (seconds * 1000.0).c_cast::<i64>().c_cast::<i32>()
 }
 
 /// `lock(int $operation = LOCK_EX, float $timeout = -1): bool` of `lock`, for
 /// a leaf handler: `lock` defers the fatal error of an unconstructed object.
 pub(crate) fn lock_with(call: &Call, lock: impl for<'c> FnOnce(&'c Call<'_>) -> Option<&'c Lock>) {
-    let (operation, timeout_ms) = if call.num_args() == 0 {
-        (LOCK_EX, milliseconds(-1.0))
+    let (operation, timeout) = if call.num_args() == 0 {
+        (LOCK_EX, -1.0)
     } else {
         let Ok(args) = call
             .arity(0, 2)
-            .and_then(|()| Ok((call.long(1, LOCK_EX)?, milliseconds(call.double(2, -1.0)?))))
+            .and_then(|()| Ok((call.long(1, LOCK_EX)?, call.double(2, -1.0)?)))
         else {
             return failed(call);
         };
@@ -175,7 +176,7 @@ pub(crate) fn lock_with(call: &Call, lock: impl for<'c> FnOnce(&'c Call<'_>) -> 
             call,
             lock.lock(
                 operation.c_cast::<i32>(),
-                timeout_ms,
+                Deadline::from_msec(milliseconds(timeout)),
                 TIMED_LOCK_CAPABILITIES,
             ),
         );
@@ -212,5 +213,21 @@ mod tests {
         assert_eq!(milliseconds(-1.0), -1000, "the default blocks");
         assert_eq!(milliseconds(0.0015), 1, "truncates toward zero");
         assert_eq!(milliseconds(2.5), 2500, "seconds to milliseconds");
+        assert!(milliseconds(2_147_484.0) < 0, "narrowed to an int");
+    }
+
+    /// Only a timeout of a positive whole millisecond ends; the others block, as
+    /// upstream's `Lock::lock` does for `timeout_msec <= 0`.
+    #[test]
+    fn deadlines_of_timeouts() {
+        let deadline = |seconds| Deadline::from_msec(milliseconds(seconds));
+        for forever in [-1.0, 0.0, 0.0005, f64::NAN, 2_147_484.0] {
+            assert_eq!(deadline(forever), Deadline::never(), "{forever}");
+        }
+        for (seconds, ms) in [(0.0015, 1), (2.5, 2500)] {
+            let left = deadline(seconds).remaining().expect("an end");
+            let ms = std::time::Duration::from_millis(ms);
+            assert!(left <= ms && left > ms / 2, "{seconds}: {left:?}");
+        }
     }
 }
