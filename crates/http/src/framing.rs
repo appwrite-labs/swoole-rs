@@ -94,7 +94,7 @@ fn request_line(input: &[u8], frame: &mut HttpFrame) -> bool {
             2 => {
                 if byte != b' ' {
                     frame.version = match input.get(at..at + 8) {
-                        None => return false,
+                        None => break,
                         Some(b"HTTP/1.1") => HttpVersion::Http11 as u32,
                         Some(b"HTTP/1.0") => HttpVersion::Http10 as u32,
                         Some(_) => {
@@ -111,8 +111,8 @@ fn request_line(input: &[u8], frame: &mut HttpFrame) -> bool {
         }
         at += 1;
     }
-    // The native implementation forms input.end()+8 here even when no version
-    // was found. Keep partial state but reject that out-of-allocation pointer.
+    // A zero method tells the read loop to retry with the next packet.
+    frame.method = 0;
     false
 }
 /// Offset of the first CRLFCRLF that separates HTTP headers from the body.
@@ -344,8 +344,10 @@ mod tests {
         );
         let mut f = HttpFrame::default();
         assert!(!request_line(b"GET /long-target HTTP/1", &mut f));
-        assert_eq!(f.excepted, 0);
+        assert_eq!((f.method, f.excepted), (0, 0));
         assert_eq!(f.url_length, 12);
+        assert!(!request_line(b"GET /long-target", &mut f));
+        assert_eq!((f.method, f.excepted), (0, 0));
         let mut f = HttpFrame::default();
         assert!(request_line(b"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n", &mut f));
         assert_eq!(f.offset, 24);

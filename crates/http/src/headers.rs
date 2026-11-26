@@ -97,7 +97,7 @@ pub fn header_info(
             };
             if let Some((skip, kind)) = kind {
                 at += skip;
-                while input.get(at) == Some(&b' ') {
+                while matches!(input.get(at), Some(b' ' | b'\t')) {
                     at += 1;
                 }
                 state.cursor = at + 1;
