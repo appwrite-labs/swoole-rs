@@ -91,7 +91,7 @@ each C export replaced by the safe function that was its body:
 | `native.cc` part | Rust test | Export → function |
 | --- | --- | --- |
 | `receive_states`: every split of eight commands at three package limits against the pinned `redis::recv_packet` | `receive_states` | `swr_v1_resp_recv` over C effects → `recv_packet` over a `RespConnection` |
-| `handler_key_trace`: 2432 keys against `snprintf` and an ASCII case model | `handler_keys` | `swr_v1_resp_handler_key` → `resp_handler_key` |
+| `handler_key_trace`: 2432 keys against v6.3’s full-length ASCII case model | `handler_keys` | `swr_v1_resp_handler_key` → `resp_handler_key` |
 | Five values and five integers as each of the seven reply types against the pinned `redis::format` overloads (70) | `reply_formats` | `swr_v1_resp_format` → `resp_format` |
 | Integers, numbers at and past a signed long from errno 0, `EDOM` and `ERANGE`, 1 to 128 arguments, permissive fallthrough and bulk payloads against the pinned `redis::parse`, or `get_number` where parse reads outside its input (134) | `parse_replies` | `swr_v1_resp_scan`, `swr_v1_resp_parse_range` → `resp_spans` |
 | `seeded_resp_trace`: 10,000 seeded wires through the pinned `redis::parse` and the pinned PHP request loop with modeled Zend parameters, strings, parameters and errno compared | `seeded_requests` | `swr_v1_resp_scan`, `swr_v1_resp_php_next` → `resp_spans`, `resp_php_next` |
@@ -122,7 +122,7 @@ and request state; the Rust loop runs over the same model and must log the same
 bytes. It makes the further calls the oracle's driver makes until the stream is
 drained, where the C++ gate made one. `handler_key_trace` also checked a guard byte
 either side of the export's 64-byte output, which went with the export:
-`resp_handler_key` returns its array.
+`resp_handler_key` returns owned bytes.
 
 ## Actual PHP checks
 

@@ -104,12 +104,6 @@ pub extern "C" fn redis_rshutdown() {
     drop(HANDLERS.take());
 }
 
-/// `redis_handler_key`: `_handler_` and the command, lowercased.
-fn handler_key(command: &[u8]) -> Vec<u8> {
-    let (key, length) = resp_handler_key(command);
-    key.get(..length).unwrap_or(&key).to_vec()
-}
-
 /// `%.*s`: up to the first NUL.
 fn until_nul(text: &[u8]) -> &[u8] {
     text.split(|&b| b == 0).next().unwrap_or(text)
@@ -147,7 +141,7 @@ fn set_handler(call: &Call) {
     let Ok(Some(callable)) = Callable::new(callback) else {
         return;
     };
-    let key = handler_key(command);
+    let key = resp_handler_key(command);
     // The dynamic property's deprecation runs the user error handler.
     if let Err(bailed) = call.update_property(Some(&SERVER), &key, callback) {
         drop(callable);
@@ -165,7 +159,10 @@ fn get_handler(call: &Call) {
         call.set_bool(false);
         return;
     };
-    call.set_property(Some(&SERVER), &handler_key(command));
+    if command.is_empty() || command.len() >= REDIS_MAX_COMMAND_SIZE {
+        return call.set_null();
+    }
+    call.set_property(Some(&SERVER), &resp_handler_key(command));
 }
 
 /// `php_swoole_redis_server_onReceive` on a Redis port: parse the request,
@@ -213,7 +210,7 @@ fn receive(
         server_methods::close(serv, fd, false);
         return Ok(true);
     }
-    let key = handler_key(command);
+    let key = resp_handler_key(command);
     let Some(callable) = HANDLERS.with(|slot| slot.with_taken(|map| map.get(&key).cloned())) else {
         let mut reply = b"-ERR unknown command '".to_vec();
         reply.extend_from_slice(until_nul(command));

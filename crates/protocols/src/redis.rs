@@ -80,25 +80,12 @@ pub struct RespSpan {
 /// Capacity of the Redis command buffer, including its terminating NUL.
 pub const REDIS_MAX_COMMAND_SIZE: usize = 64;
 
-/// Render the native PHP handler property key: ASCII lowercase `_handler_`,
-/// stopping at the command's first NUL and truncating to 63 bytes. The native
-/// caller keeps raw command-length validation and Zend registry ownership.
-/// Returns the key, zero-filled past its length.
+/// The PHP handler property name for a command, including all command bytes.
 #[must_use]
-pub fn resp_handler_key(bytes: &[u8]) -> ([u8; REDIS_MAX_COMMAND_SIZE], usize) {
-    let mut key = [0u8; REDIS_MAX_COMMAND_SIZE];
-    let prefix = b"_handler_";
-    let name = bytes
-        .iter()
-        .take(key.len() - prefix.len() - 1)
-        .take_while(|&&byte| byte != 0)
-        .map(u8::to_ascii_lowercase);
-    let mut length = 0;
-    for (slot, byte) in key.iter_mut().zip(prefix.iter().copied().chain(name)) {
-        *slot = byte;
-        length += 1;
-    }
-    (key, length)
+pub fn resp_handler_key(command: &[u8]) -> Vec<u8> {
+    let mut key = [b"_handler_".as_slice(), command].concat();
+    key.make_ascii_lowercase();
+    key
 }
 
 /// Where a RESP walk is.
@@ -415,27 +402,9 @@ mod tests {
         assert_eq!(resp_extend_size(300_000, 300_000, 500_000, 4096), 500_000);
     }
     #[test]
-    fn handler_keys_preserve_nul_truncation_and_ascii() {
-        for input in [
-            b"".as_slice(),
-            b"EcHo\0ignored",
-            &[b'A'; 1024],
-            &[255, b'A', 128],
-        ] {
-            let (output, length) = resp_handler_key(input);
-            let expected = [
-                b"_handler_".as_slice(),
-                &input[..input.iter().position(|&b| b == 0).unwrap_or(input.len())],
-            ]
-            .concat();
-            let expected: Vec<_> = expected
-                .iter()
-                .take(63)
-                .map(u8::to_ascii_lowercase)
-                .collect();
-            assert_eq!(&output[..length], expected);
-            assert!(output[length..].iter().all(|&byte| byte == 0));
-        }
+    fn handler_keys_preserve_command_bytes() {
+        assert_eq!(resp_handler_key(b"EcHo\0A"), b"_handler_echo\0a");
+        assert_ne!(resp_handler_key(&[b'A'; 63]), resp_handler_key(&[b'A'; 62]));
     }
     #[test]
     fn php_cursor_preserves_typed_order_and_transactional_errors() {

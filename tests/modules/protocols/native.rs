@@ -179,30 +179,15 @@ fn receive_states() {
     );
 }
 
-/// `native.cc`'s `handler_key_trace`: C printf truncation plus an ASCII case model.
-/// Zend's case folding and property behaviour are compared by handlers.py on real
-/// PHP engines.
+/// Compare every byte and boundary length with the v6.3 length-aware key spelling.
 #[test]
 fn handler_keys() {
     fn check(wire: &[u8]) {
-        let mut expected = [0u8; 64];
-        let terminated = [wire, &[0]].concat();
-        // SAFETY: a 64-byte output and a NUL-terminated argument for `%s`.
-        let needed = unsafe {
-            libc::snprintf(
-                expected.as_mut_ptr().cast(),
-                expected.len(),
-                c"_handler_%s".as_ptr(),
-                terminated.as_ptr(),
-            )
-        };
-        let length = usize::try_from(needed)
-            .expect("snprintf succeeds")
-            .min(expected.len() - 1);
-        expected[..length].make_ascii_lowercase();
-        let (actual, actual_length) = resp_handler_key(wire);
-        assert_eq!(actual_length, length);
-        assert_eq!(expected[..=length], actual[..=length]);
+        let key = resp_handler_key(wire);
+        assert_eq!(
+            key.strip_prefix(b"_handler_").unwrap(),
+            wire.to_ascii_lowercase()
+        );
     }
     let mut cases = 0;
     for byte in 0..=255u8 {
