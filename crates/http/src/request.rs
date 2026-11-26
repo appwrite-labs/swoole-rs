@@ -434,17 +434,35 @@ struct Rewrite<'a> {
     saved: &'a mut StringBuffer,
 }
 
+impl Rewrite<'_> {
+    fn too_large(&mut self) -> Flow {
+        (self.request.excepted, self.request.too_large) = (true, true);
+        Flow::Pause
+    }
+
+    fn append_metadata(&mut self, parts: &[&[u8]]) -> Flow {
+        if self
+            .saved
+            .append_bounded(parts, self.request.max_length as usize)
+            .is_err()
+        {
+            return self.too_large();
+        }
+        Flow::Go
+    }
+}
+
 impl Parts<'_> for Rewrite<'_> {
     fn on_header_field(&mut self, data: &[u8]) -> Flow {
         let r = &mut *self.request;
         if form_of(r).header_name.append(data).is_err() {
-            (r.excepted, r.too_large) = (true, true);
-            return Flow::Pause;
+            return self.too_large();
         }
         Flow::Go
     }
 
     fn on_header_value(&mut self, data: &[u8]) -> Flow {
+        let limit = self.request.max_length as usize;
         let form = form_of(self.request);
         // The value callback means the name is complete.
         let name = form.header_name.as_ref();
@@ -461,8 +479,12 @@ impl Parts<'_> for Rewrite<'_> {
             );
             return Flow::Fail;
         }
-        for part in [name, b": ", data, b"\r\n"] {
-            self.saved.append(part);
+        if self
+            .saved
+            .append_bounded(&[name, b": ", data, b"\r\n"], limit)
+            .is_err()
+        {
+            return self.too_large();
         }
         let disposition = case_equal(name, b"content-disposition");
         form.header_name.clear();
@@ -471,8 +493,7 @@ impl Parts<'_> for Rewrite<'_> {
         }
         let form = form_of(self.request);
         if form.uploads.len() >= MAX_UPLOAD_FILES {
-            (self.request.excepted, self.request.too_large) = (true, true);
-            return Flow::Pause;
+            return self.too_large();
         }
         let mut template = form.template.clone();
         form.upload_size = 0;
@@ -487,21 +508,19 @@ impl Parts<'_> for Rewrite<'_> {
 
     fn on_part_data(&mut self, data: &[u8]) -> Flow {
         let r = &mut *self.request;
-        let max_length = u64::from(r.max_length);
+        let max_length = r.max_length as usize;
         let length = data.len();
         let form = form_of(r);
         let Some(fp) = form.fp.as_mut() else {
-            if (self.saved.len() as u64).wrapping_add(length as u64) > max_length {
+            if self.saved.append_bounded(&[data], max_length).is_err() {
                 (r.excepted, r.unavailable) = (true, true);
                 return Flow::Pause;
             }
-            self.saved.append(data);
             return Flow::Go;
         };
         form.upload_size = form.upload_size.wrapping_add(length);
         if form.upload_size > form.upload_max {
-            (r.excepted, r.too_large) = (true, true);
-            return Flow::Pause;
+            return self.too_large();
         }
         if fp.file.write_all(data).is_err() {
             form.fp = None;
@@ -516,15 +535,17 @@ impl Parts<'_> for Rewrite<'_> {
     }
 
     fn on_headers_complete(&mut self) -> Flow {
+        let limit = self.request.max_length as usize;
         let form = form_of(self.request);
         form.header_name.clear();
-        if let Some(upload) = &form.fp {
-            self.saved.append(b"Swoole-Upload-File: ");
-            // The name up to its NUL: `swoole_tmpfile` wrote no other.
-            self.saved.append(upload.path().to_bytes());
+        let parts: &[&[u8]] = match &form.fp {
+            Some(upload) => &[b"Swoole-Upload-File: ", upload.path().to_bytes(), b"\r\n"],
+            None => &[b"\r\n"],
+        };
+        if self.saved.append_bounded(parts, limit).is_err() {
+            return self.too_large();
         }
         self.request.multipart_header_parsed = true;
-        self.saved.append(b"\r\n");
         Flow::Go
     }
 
@@ -544,22 +565,20 @@ impl Parts<'_> for Rewrite<'_> {
                 )
             )]
             form_of(self.request).uploads.push(upload.map_file(drop));
-            self.saved.append(b"\r\nSwoole-Upload-File");
+            return self.append_metadata(&[b"\r\nSwoole-Upload-File\r\n"]);
         }
-        self.saved.append(b"\r\n");
-        Flow::Go
+        self.append_metadata(&[b"\r\n"])
     }
 
     fn on_part_data_begin(&mut self, boundary: &[u8]) -> Flow {
         form_of(self.request).header_name.clear();
-        self.saved.append(boundary);
-        self.saved.append(b"\r\n");
-        Flow::Go
+        self.append_metadata(&[boundary, b"\r\n"])
     }
 
     fn on_body_end(&mut self, boundary: &[u8]) -> Flow {
-        self.saved.append(boundary);
-        self.saved.append(b"--");
+        if self.append_metadata(&[boundary, b"--"]) == Flow::Pause {
+            return Flow::Pause;
+        }
         let r = &mut *self.request;
         r.content_length = (self.saved.len() as u64).wrapping_sub(u64::from(r.header_length));
         r.tried_to_dispatch = true;
@@ -1084,6 +1103,31 @@ mod tests {
         assert!(request.excepted && request.too_large);
         assert!(form_of(&mut request).fp.is_none());
         assert_eq!(request.destroy_multipart_parser().len(), MAX_UPLOAD_FILES);
+    }
+
+    #[test]
+    fn final_boundary_must_fit_before_dispatch() {
+        for (limit, flow, bytes) in [
+            (5, Flow::Pause, b"abc".as_slice()),
+            (6, Flow::Go, b"abcb--"),
+        ] {
+            let mut r = HttpRequest {
+                max_length: limit,
+                ..HttpRequest::default()
+            };
+            let mut saved = input(b"abc");
+            assert_eq!(
+                Rewrite {
+                    request: &mut r,
+                    saved: saved.get_mut()
+                }
+                .on_body_end(b"b"),
+                flow
+            );
+            assert_eq!(r.tried_to_dispatch, flow == Flow::Go);
+            assert_eq!(r.too_large, flow == Flow::Pause);
+            assert_eq!(saved.bytes(), bytes);
+        }
     }
 
     #[test]
