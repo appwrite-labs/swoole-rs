@@ -122,19 +122,18 @@ fn fatal(level: i32, message: &CStr) {
     bailout::defer(swoole_rs_zend::report(level, message));
 }
 
-/// `php_swoole_fatal_error(E_WARNING, "<before>%s<after>", text)` of Zend's
-/// string bytes (`%s` stops at a NUL); true if a user error handler bailed
-/// out (deferred: the method stops).
-fn report(before: &[u8], text: &[u8], after: &[u8]) -> bool {
-    let mut message = Message::new();
-    message.push(before);
-    message.push(text.split(|&b| b == 0).next().unwrap_or_default());
-    message.push(after);
-    swoole_rs_corebase::log::set_last_error(PHP_FATAL_ERROR);
-    let reported = swoole_rs_zend::report(E_WARNING, message.as_cstr());
-    let bailed = reported.is_err();
-    bailout::defer(reported);
-    bailed
+fn valid_key(call: &Call, key: &[u8]) -> bool {
+    if key.is_empty() {
+        fatal(E_WARNING, c"key must not be empty");
+    } else if key.len() >= KEY_SIZE {
+        let message =
+            swoole_rs_zend::message!("key length exceeds the limit of {} bytes", KEY_SIZE - 1);
+        fatal(E_WARNING, message.as_cstr());
+    } else {
+        return true;
+    }
+    call.set_bool(false);
+    false
 }
 
 /// `php_swoole_error(E_WARNING, "failed to set('%*s'), unable to allocate
@@ -333,8 +332,7 @@ fn set(call: &Call) {
         call.set_bool(false);
         return;
     }
-    if key.len() >= KEY_SIZE && report(b"key[", key, b"] is too long") {
-        call.set_bool(false);
+    if !valid_key(call, key) {
         return;
     }
     let values = convert(call, || {
@@ -384,9 +382,16 @@ fn update(call: &Call, subtract: bool) {
         call.set_bool(false);
         return;
     };
+    if !valid_key(call, key) {
+        return;
+    }
     let by = call.value(3);
     let Some(column) = table.column(name) else {
-        report(b"column[", name, b"] does not exist");
+        let mut message = Message::new();
+        message.push(b"column[");
+        message.push(name.split(|&b| b == 0).next().unwrap_or_default());
+        message.push(b"] does not exist");
+        fatal(E_WARNING, message.as_cstr());
         call.set_bool(false);
         return;
     };
@@ -518,6 +523,9 @@ fn get(call: &Call) {
         call.set_bool(false);
         return;
     };
+    if !valid_key(call, key) {
+        return;
+    }
     let Some(row) = table.lock_get(key).filter(Locked::found) else {
         call.set_bool(false);
         return;
@@ -542,7 +550,7 @@ fn key<'c>(call: &'c Call<'_>) -> Option<&'c [u8]> {
     if key.is_err() {
         call.set_bool(false);
     }
-    key.ok()
+    key.ok().filter(|key| valid_key(call, key))
 }
 
 /// `exists(string $key): bool`.

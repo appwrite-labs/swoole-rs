@@ -310,33 +310,21 @@ fn set_get_del_and_counters() {
 }
 
 #[test]
-fn long_keys_are_cut_to_63_bytes() {
+fn only_nonempty_keys_that_fit_the_row_are_accepted() {
     let table = three_columns(64, 0.2);
     let t = table.get();
-    let long = [b'q'; 100];
-    put(t, &long, 7);
-    let mut lock = ptr::null_mut();
-    let row = t.get(&long[..63], &mut lock);
-    assert_eq!(unsafe { row_key(row) }, &long[..63]);
-    unsafe { unlock(lock) };
-    assert!(t.exists(&long[..80]) && t.del(&long));
-}
-
-/// `Swoole\Table`'s hook hashes the whole PHP string, not the 63 bytes a row
-/// compares: keys sharing those bytes find each other only in one bucket.
-#[test]
-fn the_hash_sees_the_whole_key() {
-    fn length(key: &[u8], compared: usize) -> u64 {
-        assert_eq!(compared, key.len().min(63));
-        key.len() as u64
+    let key = [b'q'; KEY_SIZE];
+    let valid = &key[..KEY_SIZE - 1];
+    put(t, valid, 7);
+    for invalid in [&key[..0], &key[..]] {
+        let mut lock = ptr::null_mut();
+        assert!(t.set(invalid, &mut lock, None).is_null());
+        assert!(lock.is_null());
+        assert!(t.get(invalid, &mut lock).is_null());
+        assert!(lock.is_null());
+        assert!(!t.exists(invalid) && !t.del(invalid));
     }
-    let mut table = three_columns(64, 0.2);
-    table.get_mut().set_hash(length);
-    let t = table.get();
-    let long = [b'q'; 100];
-    put(t, &long, 7);
-    assert!(t.exists(&long) && t.exists(&[b'q'; 164]));
-    assert!(!t.exists(&long[..80]) && !t.del(&long[..80]));
+    assert!(t.exists(valid) && t.del(valid));
 }
 
 #[test]

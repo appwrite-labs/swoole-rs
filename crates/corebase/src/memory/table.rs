@@ -65,11 +65,8 @@ const FORCE_UNLOCK_MS: u128 = 2000;
 const SPINLOCK_LOOP_N: u32 = crate::constants::SW_SPINLOCK_LOOP_N;
 const SW_ERROR_MALLOC_FAIL: c_int = swoole_rs_error::ErrorCode::SW_ERROR_MALLOC_FAIL as c_int;
 
-/// The host's hash of a key as the caller passed it, whose row compares its
-/// first `compared` bytes: upstream's `hash_func(key, keylen)`, which
-/// `swoole_hash_php` reads `compared` bytes of and `Swoole\Table`'s hook the
-/// whole PHP string.
-pub type Hash = fn(key: &[u8], compared: usize) -> u64;
+/// The host's hash of a validated key, with its byte length.
+pub type Hash = fn(key: &[u8], length: usize) -> u64;
 /// Logs one whole warning line, as `swoole_warning` does.
 pub type Warning = fn(message: &[u8]);
 /// `swoole_set_last_error`.
@@ -341,13 +338,6 @@ fn warn(warning: Warning, message: &[u8]) {
     warning(message);
 }
 
-/// The bytes of a key a row holds: its `uint16_t` length (as upstream's
-/// `Table` takes it), then `check_key_length`'s 63 bytes.
-fn clamp(key: &[u8]) -> &[u8] {
-    let length = usize::from(key.len().c_cast::<u16>());
-    key.get(..length.min(KEY_SIZE - 1)).unwrap_or(key)
-}
-
 impl Table {
     /// `Table::make`: an empty, uncreated table in `this`, whose locks are made in
     /// place; none when a lock can't be made.
@@ -580,13 +570,13 @@ impl Table {
         if row.active() { row.0 } else { ptr::null_mut() }
     }
 
-    /// The bucket `key` hashes to, and the bytes its row compares ([`clamp`]).
-    fn bucket<'k>(&self, key: &'k [u8]) -> (Live, &'k [u8]) {
-        let compared = clamp(key);
-        let hash = (self.hash)(key, compared.len());
-        // Masked below the row count, a usize.
-        let row = self.bucket_row((hash & (self.size as u64 - 1)).c_cast::<usize>());
-        (row, compared)
+    /// A valid key's bucket in a created table.
+    fn bucket(&self, key: &[u8]) -> Option<Live> {
+        if !self.ready() || !(1..KEY_SIZE).contains(&key.len()) {
+            return None;
+        }
+        let hash = (self.hash)(key, key.len());
+        Some(self.bucket_row((hash & (self.size as u64 - 1)).c_cast::<usize>()))
     }
 
     fn claim(&self, row: Live, key: &[u8]) {
@@ -598,10 +588,10 @@ impl Table {
     /// the bucket's row, which stays locked even when no row could be made.
     /// `flags` gets `NEW_ROW` and `CONFLICT` unless that happens.
     pub fn set(&self, key: &[u8], lock: &mut *mut Row, flags: Option<&mut i32>) -> *mut Row {
-        if !self.ready() {
+        let Some(root) = self.bucket(key) else {
+            *lock = ptr::null_mut();
             return ptr::null_mut();
-        }
-        let (root, key) = self.bucket(key);
+        };
         *lock = root.0;
         root.lock(self.warning);
         let mut found = 0;
@@ -646,10 +636,10 @@ impl Table {
     /// `Table::get`: the active row for `key` or null, with `lock` set to the
     /// bucket's row, which is locked either way.
     pub fn get(&self, key: &[u8], lock: &mut *mut Row) -> *mut Row {
-        if !self.ready() {
+        let Some(mut row) = self.bucket(key) else {
+            *lock = ptr::null_mut();
             return ptr::null_mut();
-        }
-        let (mut row, key) = self.bucket(key);
+        };
         *lock = row.0;
         row.lock(self.warning);
         while !row.key_is(key) {
@@ -674,10 +664,9 @@ impl Table {
 
     /// `Table::del`. Deleting a bucket's own row moves its first collision row in.
     pub fn del(&self, key: &[u8]) -> bool {
-        if !self.ready() {
+        let Some(root) = self.bucket(key) else {
             return false;
-        }
-        let (root, key) = self.bucket(key);
+        };
         if !root.active() {
             return false;
         }
