@@ -5,7 +5,7 @@ import subprocess
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-CRATES = ('brotli', 'framing', 'inflate', 'websocket', 'zlib')
+CRATES = ('brotli', 'deflate', 'framing', 'inflate', 'websocket', 'zlib')
 METHODS = (
     'std::vec::Vec::push', 'std::iter::Extend::extend',
     'std::vec::Vec::extend_from_slice', 'std::vec::Vec::extend_from_within',
