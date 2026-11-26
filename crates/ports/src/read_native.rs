@@ -14,12 +14,12 @@ use swoole_rs_corebase::constants::{
 use swoole_rs_corebase::reactor::reactor_upstream::trigger_close_event;
 use swoole_rs_corebase::reactor::{Caught, Event, Running, Socket, SocketFields};
 use swoole_rs_corebase::tls::upstream::{recv_append, send};
-use swoole_rs_corebase::{DataHead, WebSocketStatus, log};
+use swoole_rs_corebase::{DataHead, log};
 use swoole_rs_framing::recv::{Mode, Status};
 use swoole_rs_http::{HttpRequest, request_free};
 use swoole_rs_server::port_config::{PortConfig, ReadEvent};
 use swoole_rs_server::static_select::static_select;
-use swoole_rs_server::{Connection as Slot, ServerConfig, view};
+use swoole_rs_server::{Connection as Slot, Open, ServerConfig, WebSocket, view};
 
 use crate::http_routes::Session;
 use crate::http_routes::exports::{Frames, Port, Route, Tasks};
@@ -44,9 +44,9 @@ struct Read<'a> {
     /// The port, whose settings nothing writes while it serves.
     port: &'a PortConfig,
     kind: Readable,
-    /// A WebSocket connection on a port with `open_websocket_protocol`: its
+    /// An open WebSocket connection on a port with `open_websocket_protocol`: its
     /// frames go to [`Frames`], past the port protocol's callbacks.
-    frames: bool,
+    frames: Option<Open<'a>>,
 }
 
 /// `ListenPort::readable_callback_*` of `kind` on the event `read` lends: a readable
@@ -91,11 +91,13 @@ pub(crate) fn on_read(
         server,
         port,
         kind,
-        frames: false,
+        frames: None,
     };
-    if kind == Readable::Http {
-        read.frames = read.conn.websocket_status() >= WebSocketStatus::Handshake
-            && port.open_websocket_protocol.get();
+    if kind == Readable::Http
+        && port.open_websocket_protocol.get()
+        && let WebSocket::Open(open) = read.conn.websocket()
+    {
+        read.frames = Some(open);
     }
     let ok = readable(kind, &mut read);
     // The connection keeps its request for the next read, unless it closed.
@@ -225,7 +227,9 @@ impl Connection for Read<'_> {
     #[inline(always)]
     fn receive(&mut self, framing: Framing) -> bool {
         match framing {
-            Framing::Length if self.frames => self.framed(Mode::Length, Frames(self.session())),
+            Framing::Length if let Some(open) = self.frames => {
+                self.framed(Mode::Length, Frames(self.session(), open))
+            }
             // An HTTP/2 stream's frames, through the port's own callbacks.
             Framing::Length if self.kind == Readable::Http => {
                 let port = self.port;
@@ -324,14 +328,14 @@ impl Connection for Read<'_> {
     fn upgrade(&mut self) -> Upgrade {
         let c = self.conn;
         Upgrade {
-            websocket: c.websocket_status() >= WebSocketStatus::Handshake,
+            // The state `on_read` read: only a WebSocket port's connection opens.
+            websocket: self.frames.is_some(),
             upgraded: c.http_upgrade(),
             http2_stream: c.http2_stream(),
         }
     }
 
     fn activate_websocket(&mut self) {
-        self.conn.set_websocket_status(WebSocketStatus::Active);
         self.conn.set_http_upgrade(true);
     }
 

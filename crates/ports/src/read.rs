@@ -55,8 +55,8 @@ pub enum Dispatch {
     Upload,
 }
 
-/// An HTTP connection's state at entry: `websocket_status >= STATUS_HANDSHAKE`,
-/// `http_upgrade`, `http2_stream`.
+/// An HTTP connection's state at entry: `is_websocket_active()` (open: its 101 was
+/// sent), `http_upgrade`, `http2_stream`.
 #[derive(Clone, Copy, Default)]
 pub struct Upgrade {
     pub websocket: bool,
@@ -90,7 +90,7 @@ pub(crate) trait Connection {
     /// `!socket->removed && conn->active`: a closed connection's slot is not read.
     fn active(&mut self) -> bool;
     fn upgrade(&mut self) -> Upgrade;
-    /// Sets `websocket_status = STATUS_ACTIVE` and `http_upgrade = 1`.
+    /// Sets `http_upgrade = 1` on an open WebSocket.
     fn activate_websocket(&mut self);
     /// `open_http2_protocol`.
     fn http2_enabled(&mut self) -> bool;

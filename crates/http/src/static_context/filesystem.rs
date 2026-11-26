@@ -144,16 +144,12 @@ impl HttpStaticContext {
         if !self.facts.file_ready || self.facts.kind != StaticFileKind::Directory {
             return false;
         }
-        let Some(names) = self.effect_path().and_then(|path| effects.list(path)) else {
+        let Some(mut names) = self.effect_path().and_then(|path| effects.list(path)) else {
             return false;
         };
-        if names
-            .iter()
-            .any(|name| self.directory.scan_append(name).is_err())
-        {
-            return false;
-        }
-        self.directory.scan_finish();
+        names.sort_unstable();
+        names.dedup();
+        self.directory = names;
         true
     }
 }
@@ -212,7 +208,7 @@ mod tests {
         assert_eq!(owner.stat(&Native), Ok(true));
         assert!(owner.get_dir_files(&Native));
         for name in [b".".as_slice(), b"..", b"index.html", b"link"] {
-            assert!(owner.directory.contains(name).unwrap());
+            assert!(owner.directory.iter().any(|entry| entry == name));
         }
         assert_eq!(owner.directory.len(), 4);
         std::fs::remove_dir_all(&root).unwrap();

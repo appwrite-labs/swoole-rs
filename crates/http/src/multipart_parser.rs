@@ -194,6 +194,7 @@ impl MultipartParser {
     #[must_use]
     pub fn error_message(&self) -> Vec<u8> {
         use MultipartError as E;
+        use swoole_rs_corebase::net_address::format_into;
         let Some(reason) = self.error_reason else {
             return Vec::new();
         };
@@ -209,27 +210,35 @@ impl MultipartParser {
             // Upstream's message switch has no case for it.
             E::HeaderValueIncomplete => return b"parser abort".to_vec(),
         };
-        let mut text = head.to_vec();
-        match self.error_expected {
-            0 => {}
-            CR => text.extend_from_slice(b"expecting CR "),
-            LF => text.extend_from_slice(b"expecting LF "),
-            byte => {
-                text.extend_from_slice(b"expecting '");
-                text.extend_from_slice(&[byte, b'\'', b' ']);
-            }
-        }
+        let byte = [self.error_expected, b'\'', b' '];
+        let (expecting, quoted): (&[u8], &[u8]) = match self.error_expected {
+            0 => (b"", b""),
+            CR => (b"expecting CR ", b""),
+            LF => (b"expecting LF ", b""),
+            _ => (b"expecting '", &byte),
+        };
+        let mut digits = [0; usize::MAX.ilog10() as usize + 1];
+        let offset = format_into(&mut digits, format_args!("{}", self.error_i)).unwrap_or_default();
         let found = self.error_unexpected;
-        text.extend_from_slice(format!("at {}, but it is '", self.error_i).as_bytes());
-        if (b' '..=b'~').contains(&found) {
-            text.push(found);
+        let mut escaped = [0; b"\\xffffffff".len()];
+        let shown = if (b' '..=b'~').contains(&found) {
+            std::slice::from_ref(&found)
         } else {
             // `%.2x` of a signed char: bytes past 0x7f print sign-extended.
-            let shown = i32::from(found.cast_signed()).cast_unsigned();
-            text.extend_from_slice(format!("\\x{shown:02x}").as_bytes());
-        }
-        text.push(b'\'');
-        text
+            let hex = i32::from(found.cast_signed()).cast_unsigned();
+            format_into(&mut escaped, format_args!("\\x{hex:02x}")).unwrap_or_default()
+        };
+        [
+            head,
+            expecting,
+            quoted,
+            b"at ",
+            offset,
+            b", but it is '",
+            shown,
+            b"'",
+        ]
+        .concat()
     }
 
     fn fail(&mut self, reason: MultipartError, at: usize, found: u8) -> Step {
@@ -656,6 +665,24 @@ mod tests {
         let mut expected = whole();
         expected.splice(4..5, ["data hel".to_owned(), "data lo".to_owned()]);
         assert_eq!(parts.events, expected, "the parts in full");
+    }
+
+    #[test]
+    fn diagnostic_keeps_binary_expected_byte_and_full_offset() {
+        let mut parser = MultipartParser::new(b"AB").unwrap();
+        parser.error_reason = Some(MultipartError::BadStartBoundary);
+        parser.error_i = usize::MAX;
+        parser.error_expected = 0xff;
+        parser.error_unexpected = 0x80;
+        let tail = format!("at {}, but it is '\\xffffff80'", usize::MAX);
+        assert_eq!(
+            parser.error_message(),
+            [
+                b"first boundary mismatching: expecting '\xff' ".as_slice(),
+                tail.as_bytes()
+            ]
+            .concat()
+        );
     }
 
     #[test]

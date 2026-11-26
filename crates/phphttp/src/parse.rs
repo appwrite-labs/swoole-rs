@@ -12,8 +12,8 @@ use std::sync::atomic::{AtomicU32, Ordering::Relaxed};
 use swoole_rs_corebase::CCast;
 use swoole_rs_corebase::buffer::{BoundedBytes, string::find_delimiter};
 use swoole_rs_corebase::lent::{Count, In, lend_in};
+use swoole_rs_corebase::log;
 use swoole_rs_corebase::sys::Text;
-use swoole_rs_corebase::{WebSocketStatus, log};
 use swoole_rs_http::llhttp::{self, Callbacks, Flow as Step, Parser};
 use swoole_rs_http::multipart_parser::{Flow, MultipartHeader, MultipartParser};
 use swoole_rs_httpbindings::{
@@ -685,7 +685,7 @@ fn websocket_connection(state: &State) -> bool {
         .port_of_server_fd(conn.server_fd())
         .is_some_and(|port| port.open_websocket_protocol.get())
     {
-        conn.set_websocket_status(WebSocketStatus::Connection);
+        conn.websocket_requested();
     }
     true
 }

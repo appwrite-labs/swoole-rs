@@ -40,6 +40,9 @@ const UPLOAD_FILE: &[u8] = b"Swoole-Upload-File";
 /// `SW_BUFFER_SIZE_BIG`.
 const BUFFER_SIZE_BIG: usize = swoole_rs_corebase::constants::SW_BUFFER_SIZE_BIG as usize;
 
+/// Maximum number of temporary uploads held until a single request is dispatched.
+const MAX_UPLOAD_FILES: usize = 256;
+
 /// A multipart body being streamed: upstream's `FormData`.
 pub struct HttpForm {
     /// The `Content-Type` value after `multipart/form-data`, in the header buffer.
@@ -339,9 +342,7 @@ impl HttpRequest {
         body.append(input.get(header..).unwrap_or_default());
         buffer.truncate(header);
         form.body = Some(body);
-        let mut template = tmp_dir.to_vec();
-        template.extend_from_slice(b"/swoole.upfile.XXXXXX\0");
-        form.template = template;
+        form.template = [tmp_dir, b"/swoole.upfile.XXXXXX\0"].concat();
         form.upload_max = upload_max;
         true
     }
@@ -476,6 +477,10 @@ impl Parts<'_> for Rewrite<'_> {
             return Flow::Go;
         }
         let form = form_of(self.request);
+        if form.uploads.len() >= MAX_UPLOAD_FILES {
+            (self.request.excepted, self.request.too_large) = (true, true);
+            return Flow::Pause;
+        }
         let mut template = form.template.clone();
         form.upload_size = 0;
         // `swoole_tmpfile` fills in the template's `XXXXXX`.
@@ -538,6 +543,13 @@ impl Parts<'_> for Rewrite<'_> {
                 (self.request.excepted, self.request.unavailable) = (true, true);
                 return Flow::Pause;
             }
+            #[cfg_attr(
+                protocol_buffer_lint,
+                expect(
+                    clippy::disallowed_methods,
+                    reason = "a file is opened only below MAX_UPLOAD_FILES and taken once at part end"
+                )
+            )]
             form_of(self.request).uploads.push(upload.map_file(drop));
             self.saved.append(b"\r\nSwoole-Upload-File");
         }
@@ -1035,6 +1047,34 @@ mod tests {
             names.iter().all(|name| !std::fs::exists(name).unwrap()),
             "both completed and unfinished uploads are gone"
         );
+    }
+
+    #[test]
+    fn file_count_limit_applies_before_opening_another_upload() {
+        let mut f = Fixture::new();
+        f.request.max_length = 1 << 20;
+        let mut parts = Rewrite {
+            request: &mut f.request,
+            saved: f.input.get_mut(),
+        };
+        let disposition = |parts: &mut Rewrite<'_>, value: &[u8]| {
+            assert_eq!(parts.on_header_field(b"Content-Disposition"), Flow::Go);
+            assert_eq!(parts.on_header_value(value), Flow::Go);
+            parts.on_header_value_complete()
+        };
+        let file = b"form-data; filename=\"f\"";
+        for _ in 0..MAX_UPLOAD_FILES {
+            assert_eq!(disposition(&mut parts, file), Flow::Go);
+            assert_eq!(parts.on_part_data_end(), Flow::Go);
+        }
+        assert_eq!(
+            disposition(&mut parts, b"form-data; name=\"text\""),
+            Flow::Go
+        );
+        assert_eq!(disposition(&mut parts, file), Flow::Pause);
+        assert!(f.request.excepted && f.request.too_large);
+        assert!(form_of(&mut f.request).fp.is_none());
+        assert_eq!(f.request.destroy_multipart_parser().len(), MAX_UPLOAD_FILES);
     }
 
     #[test]

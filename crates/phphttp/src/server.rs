@@ -26,7 +26,7 @@ use swoole_rs_corebase::memory::flat::Table;
 use swoole_rs_corebase::process::worker_globals::with_current;
 use swoole_rs_corebase::process::worker_record::WorkerType;
 use swoole_rs_corebase::{CCast, HookType, swoole_isset_hook};
-use swoole_rs_corebase::{DataHead, WebSocketStatus, log};
+use swoole_rs_corebase::{DataHead, log};
 use swoole_rs_http::llhttp::HPE_OK;
 use swoole_rs_http::status::SERVICE_UNAVAILABLE as SERVICE_UNAVAILABLE_STATUS;
 use swoole_rs_phpserver::PortCallback;
@@ -35,7 +35,7 @@ use swoole_rs_phpserver::{
     php_swoole_server_isset_callback, php_swoole_server_on_close, php_swoole_server_on_receive,
 };
 use swoole_rs_phpswoole::MinitArgs;
-use swoole_rs_server::{Connection, DispatchMode, Mode, view};
+use swoole_rs_server::{Connection, DispatchMode, Mode, Open, WebSocket, view};
 use swoole_rs_zend::sys::{ZEND_ACC_NOT_SERIALIZABLE, zend_long};
 use swoole_rs_zend::{Class, Insertions, Owned, ZStr, ZString, bailout};
 
@@ -78,14 +78,14 @@ pub fn server_minit(args: &MinitArgs) {
 const SESSION_NOT_EXIST: c_int = swoole_rs_error::ErrorCode::SW_ERROR_SESSION_NOT_EXIST as c_int;
 
 /// Where `onReceive` sends the data.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Route {
+#[derive(Clone, Copy)]
+enum Route<'a> {
     /// The session or its port is gone.
     Closed,
     /// The server's plain `onReceive`.
     Tcp,
-    /// The WebSocket `onMessage`.
-    WebSocket,
+    /// The WebSocket `onMessage`: only an open connection's frames.
+    WebSocket(Open<'a>),
     /// The HTTP/2 server.
     Http2,
     /// A parsed request, for its handler.
@@ -95,16 +95,20 @@ enum Route {
 }
 
 /// The connection and its port, as `onReceive` routes by.
-struct Receive {
+struct Receive<'a> {
     last_recv_time: f64,
     local_port: i64,
     remote_port: i64,
     loopback: c_int,
-    websocket_status: WebSocketStatus,
+    /// The connection, when its WebSocket is open.
+    open: Option<Open<'a>>,
     /// The port speaks HTTP and has `onRequest`.
     http: bool,
     /// The port speaks WebSocket and has `onMessage` (asked only when `http` is false).
     websocket: bool,
+    /// The port speaks WebSocket: only its connections upgrade, so only theirs have a
+    /// WebSocket state to read.
+    websocket_port: bool,
     http2: bool,
     /// The connection's fd, when the session's addresses may be cached.
     cache: Option<usize>,
@@ -246,7 +250,7 @@ pub fn http_server_on_receive(server: view::Server<'_>, request: &mut RecvData<'
             php_swoole_server_on_receive(server, request);
             true
         }
-        Route::WebSocket => websocket::on_message(server, session, request),
+        Route::WebSocket(open) => websocket::on_message(server, open, request),
         Route::Http2 => {
             // `receive` verified the session.
             let Some(conn) = server.verified(session) else {
@@ -258,11 +262,11 @@ pub fn http_server_on_receive(server: view::Server<'_>, request: &mut RecvData<'
     }
 }
 
-fn receive(
-    server: view::Server<'_>,
+fn receive<'a>(
+    server: view::Server<'a>,
     session: core::ffi::c_long,
     request: &mut RecvData<'_>,
-) -> Route {
+) -> Route<'a> {
     let info = request.info();
     let (server_fd, ext_flags) = (c_int::from(info.server_fd), info.ext_flags);
     let Some(conn) = server.verified(session) else {
@@ -282,21 +286,27 @@ fn receive(
     let isset = |kind| php_swoole_server_isset_callback(server, Some(port), kind);
     // Only whether either is set routes the data, so onMessage is asked only without onRequest.
     let http = config.open_http_protocol.get() && isset(PortCallback::Request);
-    let websocket = !http && config.open_websocket_protocol.get() && isset(PortCallback::Message);
+    let websocket_port = config.open_websocket_protocol.get();
+    let websocket = !http && websocket_port && isset(PortCallback::Message);
     let mut facts = Receive {
         last_recv_time: conn.last_recv_time(),
         local_port: i64::from(conn.local_port()),
         remote_port: 0,
         loopback: 0,
-        websocket_status: conn.websocket_status(),
+        open: if websocket_port && let WebSocket::Open(open) = conn.websocket() {
+            Some(open)
+        } else {
+            None
+        },
         http,
         websocket,
+        websocket_port,
         http2: conn.http2_stream(),
         cache: None,
         coroutine: false,
     };
     let route = route(&facts);
-    if route != Route::Request {
+    if !matches!(route, Route::Request) {
         return route;
     }
     facts.remote_port = i64::from(address_port(&conn.info()));
@@ -322,7 +332,7 @@ fn receive(
     state.request.zdata = php_swoole_get_recv_data(server, request);
     crate::parse::init_request_parser(ctx);
     let result = handle(server, ctx, session, server_fd, &facts).and_then(|route| {
-        if route != Route::Request {
+        if !matches!(route, Route::Request) {
             return context::release_objects(ctx);
         }
         // False leaves it queued, with its objects.
@@ -446,12 +456,13 @@ impl swoole_rs_corebase::reactor::event_api::Deferred for Turn {
     fn dispose(self) {}
 }
 
-/// Where `onReceive` sends data before any parsing.
-fn route(facts: &Receive) -> Route {
+/// Where `onReceive` sends data before any parsing: a handshaking connection's
+/// data is still HTTP.
+fn route<'a>(facts: &Receive<'a>) -> Route<'a> {
     if !facts.http && !facts.websocket {
         Route::Tcp
-    } else if facts.websocket_status >= WebSocketStatus::Handshake {
-        Route::WebSocket
+    } else if let Some(open) = facts.open {
+        Route::WebSocket(open)
     } else if facts.http2 {
         Route::Http2
     } else {
@@ -471,8 +482,8 @@ fn handle(
     mut ctx: Ctx,
     session: i64,
     server_fd: c_int,
-    facts: &Receive,
-) -> Result<Route, bailout::Bailout> {
+    facts: &Receive<'_>,
+) -> Result<Route<'static>, bailout::Bailout> {
     // The request data `receive` moved into the context, a string; this
     // frame's reference keeps it while the parser fills the context.
     let zdata = ctx.state().request.zdata.copy();
@@ -516,10 +527,16 @@ fn handle(
     if swoole_isset_hook(HookType::BEFORE_REQUEST) {
         ctx.call_hook(context::Hook::BeforeRequest);
     }
-    // Parsing an upgrade request sets the connection's status.
-    let handshake = server
-        .by_session(session)
-        .is_some_and(|conn| conn.websocket_status() == WebSocketStatus::Connection);
+    // Parsing an upgrade request on a WebSocket port sets the connection's state.
+    let requested = if facts.websocket_port
+        && let Some(conn) = server.by_session(session)
+        && let WebSocket::Requested(requested) = conn.websocket()
+    {
+        Some(requested)
+    } else {
+        None
+    };
+    let handshake = requested.is_some();
     let kind = if handshake {
         PortCallback::Handshake
     } else {
@@ -535,8 +552,9 @@ fn handle(
     };
     let state = ctx.state();
     state.callback = Some(callback);
-    if handshake {
-        websocket::upgrading(server, session);
+    if let Some(requested) = requested {
+        // Lost to a `disconnect`: its response then finds no handshake to open.
+        _ = requested.handshake();
         state.upgrade = true;
     }
     Ok(Route::Request)
@@ -781,16 +799,18 @@ pub extern "C" fn server_rshutdown() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use swoole_rs_server::ConnectionRecord;
 
-    fn facts(http: bool, websocket: bool, status: WebSocketStatus, http2: bool) -> Receive {
+    fn facts(http: bool, websocket: bool, open: Option<Open<'_>>, http2: bool) -> Receive<'_> {
         Receive {
             last_recv_time: 0.0,
             local_port: 0,
             remote_port: 0,
             loopback: 0,
-            websocket_status: status,
+            open,
             http,
             websocket,
+            websocket_port: true,
             http2,
             cache: None,
             coroutine: false,
@@ -799,29 +819,24 @@ mod tests {
 
     #[test]
     fn data_goes_where_upstream_sends_it() {
-        assert_eq!(
-            route(&facts(false, false, WebSocketStatus::Handshake, true)),
-            Route::Tcp
-        );
-        assert_eq!(
-            route(&facts(true, false, WebSocketStatus::Handshake, true)),
-            Route::WebSocket
-        );
-        assert_eq!(
-            route(&facts(false, true, WebSocketStatus::Active, false)),
-            Route::WebSocket
-        );
-        assert_eq!(
-            route(&facts(true, false, WebSocketStatus::Connection, true)),
-            Route::Http2
-        );
-        assert_eq!(
-            route(&facts(true, true, WebSocketStatus::Connection, false)),
-            Route::Request
-        );
-        assert_eq!(
-            route(&facts(true, false, WebSocketStatus::None, false)),
-            Route::Request
-        );
+        let record = ConnectionRecord::default();
+        let handshaking = Connection::from(&record).websocket_requested().handshake();
+        let handshaking = handshaking.expect("a requested connection handshakes");
+        // A handshaking connection's data is HTTP; only an open one's is frames.
+        let route_of = |http, websocket, open, http2| route(&facts(http, websocket, open, http2));
+        assert!(matches!(route_of(true, false, None, false), Route::Request));
+        let open = handshaking.open();
+        assert!(open.is_some());
+        assert!(matches!(route_of(false, false, open, true), Route::Tcp));
+        assert!(matches!(
+            route_of(true, false, open, true),
+            Route::WebSocket(_)
+        ));
+        assert!(matches!(
+            route_of(false, true, open, false),
+            Route::WebSocket(_)
+        ));
+        assert!(matches!(route_of(true, false, None, true), Route::Http2));
+        assert!(matches!(route_of(true, true, None, false), Route::Request));
     }
 }

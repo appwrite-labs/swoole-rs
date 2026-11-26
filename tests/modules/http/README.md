@@ -382,6 +382,16 @@ python3 -m pytest tests/modules/http/test_smuggling.py \
 A connection is read until the server closes it or sends nothing for a second; the
 cases run 32 at a time, so the phase takes about five seconds.
 
+`test_abuse.py` (`http-abuse`, Cargo build only, Linux) sends resource abuse to a whole
+server at default limits (`abuse.php`, HTTP/1, h2c and WebSocket on one port), one fresh
+server per case: slowloris, header count, gzip and permessage-deflate bombs, tiny WebSocket
+fragments, HPACK dynamic-table references, HTTP/2 stream floods (open and rapid reset) and
+a peer that never sends WINDOW_UPDATE. A case passes when the server's peak RSS grows by
+under 32 MiB, the connection is answered or closed within the case's bound, and the server
+still serves. The bounds come from today's limits (`package_max_length`, the 64 KiB header
+limit, `send_timeout`), not from another engine (#5707). A case whose protection hasn't
+landed is `xfail(strict=True)` naming the issue it waits on, so the fix must remove it.
+
 `test_header_reentry.py` (`http-header-reentry`, Cargo build only) sends responses
 from `header_reentry.php`. In each one, a header or trailer value's `__toString`
 replaces or writes into `$response->header` (or `->trailer`, or a nested

@@ -29,8 +29,9 @@ pub type GetPackageLength = fn(
     &mut PacketLength,
 ) -> Option<usize>;
 
-/// The dynamic header size for a session's WebSocket status and HTTP/2 flag.
-pub type GetPackageLengthSize = fn(swoole_rs_corebase::WebSocketStatus, bool) -> u8;
+/// The dynamic header size for a session: whether its WebSocket is open, and whether
+/// it is an HTTP/2 stream.
+pub type GetPackageLengthSize = fn(bool, bool) -> u8;
 
 /// A whole package in a receive buffer, lent to its handler: `len` bytes at `data`
 /// (null for none), readable and writable for `'a`. It stays a pointer: the handler
