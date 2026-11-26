@@ -970,11 +970,17 @@ impl Client {
             let mut attempt = 0;
             while attempt < u32::from(self.max_retries.get()) + 1 {
                 if !self.send_request(path) {
+                    self.reset_download();
                     return false;
                 }
                 if self.defer.get() {
                     return true;
                 }
+                let retry_download = self.download_name.with_taken(|name| {
+                    name.as_ref()
+                        .filter(|_| attempt < u32::from(self.max_retries.get()))
+                        .map(|name| (name.clone(), self.download_offset.get()))
+                });
                 if !self.recv_response(parser, 0.0) || self.bailout.get() {
                     return false;
                 }
@@ -983,6 +989,10 @@ impl Client {
                     && matches!(i32::from(status), BAD_GATEWAY | SERVICE_UNAVAILABLE)
                 {
                     self.close(true);
+                    if let Some((name, offset)) = retry_download {
+                        self.props().value(c"downloadFile", &Owned::string(name));
+                        self.props().long(c"downloadOffset", offset);
+                    }
                     attempt += 1;
                     continue;
                 }
@@ -1417,13 +1427,21 @@ impl Client {
         if self.has_upload_files.get() {
             self.props().null(c"uploadFiles");
         }
-        // The close can yield, and another coroutine's fatal error can free
-        // the client meanwhile, so the client lets go of the file first.
-        if let Some(fd) = self.download_file.take() {
-            drop(self.download_name.take());
-            self.download_offset.set(0);
-            self.props().null(c"downloadFile");
-            self.props().long(c"downloadOffset", 0);
+        if self.download_file.get().is_some()
+            || self.download_name.with_taken(|name| name.is_some())
+        {
+            self.reset_download();
+        }
+    }
+
+    fn reset_download(&self) {
+        let fd = self.download_file.take();
+        drop(self.download_name.take());
+        self.download_offset.set(0);
+        self.props().null(c"downloadFile");
+        self.props().long(c"downloadOffset", 0);
+        // Closing can yield, so detach the file before closing it.
+        if let Some(fd) = fd {
             native::swoole_http_client_coro_file_close(fd);
         }
     }
