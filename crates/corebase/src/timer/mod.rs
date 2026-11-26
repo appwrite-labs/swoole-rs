@@ -148,7 +148,7 @@ impl Timer {
         persistent: bool,
         token: impl FnOnce() -> *mut c_void,
     ) -> Result<TimerView, Status> {
-        self.add_marked(now, delay, persistent, false, token)
+        self.add_marked(now, delay, persistent, false, None, token)
     }
 
     /// [`Self::add`] of a node whose view says whether it is a PHP callable's.
@@ -160,6 +160,7 @@ impl Timer {
         delay: i64,
         persistent: bool,
         php: bool,
+        reactor_round: Option<u64>,
         token: impl FnOnce() -> *mut c_void,
     ) -> Result<TimerView, Status> {
         if now < 0 || delay <= 0 {
@@ -191,7 +192,7 @@ impl Timer {
             id,
             deadline,
             interval: if persistent { delay } else { 0 },
-            birth_round: self.round,
+            birth_round: reactor_round.unwrap_or(self.round),
             php,
             token,
             ..TimerView::default()
@@ -305,6 +306,14 @@ impl Timer {
     /// `Status::Empty` [`Self::select_next`] and [`Self::end`], with `end`'s delay. `None`, and
     /// nothing changed, when a node is due or `begin` would refuse.
     pub fn select_idle(&mut self, now: i64) -> Option<i64> {
+        self.select_idle_at(now, None)
+    }
+
+    /// Select against the attached reactor's poll round when it owns the clock.
+    pub(crate) fn select_idle_at(&mut self, now: i64, reactor_round: Option<u64>) -> Option<i64> {
+        if let Some(round) = reactor_round.filter(|_| !self.selecting) {
+            self.round = round;
+        }
         let head = self.heap.first();
         let due = head.is_some_and(|head| head.deadline <= now && head.birth_round != self.round);
         if due
