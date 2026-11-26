@@ -176,6 +176,7 @@ struct Hooks<'a> {
     /// The client object's properties, found once for the response.
     props: Props<'a>,
     body_limit_hit: Option<usize>,
+    write_aborted: bool,
 }
 
 /// One parse call's callbacks: the response's hooks and the header name they
@@ -201,6 +202,10 @@ impl<'i> Callbacks<'i> for Spans<'_, '_, 'i> {
 
     fn on_headers_complete(&mut self) -> Flow {
         let hooks = &self.hooks;
+        let status = hooks.parser.status_code;
+        if !(100..200).contains(&status) || status == 101 {
+            hooks.props.long(c"statusCode", i64::from(status));
+        }
         if hooks.client.head.get() || i32::from(hooks.parser.status_code) == NO_CONTENT {
             Flow::SkipBody
         } else {
@@ -209,7 +214,7 @@ impl<'i> Callbacks<'i> for Spans<'_, '_, 'i> {
     }
 
     fn on_body(&mut self, data: &[u8]) -> Flow {
-        match on_body(self.hooks.client, data) {
+        match on_body(self.hooks, data) {
             Ok(flow) => flow,
             Err(limit) => {
                 self.hooks.body_limit_hit = Some(limit);
@@ -381,13 +386,20 @@ impl Client {
 
     /// `callable($client, $data)` inside `zend_try`: whether the call succeeded, or
     /// its bailout.
-    fn call_write(&self, callable: &Callable, data: &[u8]) -> Result<bool, Bailout> {
+    fn call_write(
+        &self,
+        callable: &Callable,
+        data: &[u8],
+        retval: &Value,
+    ) -> Result<bool, Bailout> {
         // The string argument's reference, released when it drops.
         let data = Owned::string(ZString::new(data));
         // The object outlives its client, so the call; it is borrowed for the
         // call as upstream's `ZVAL_OBJ`.
         self.props().object().with_value(|this| {
-            swoole_rs_zend::Zvals::with([this, &data], |args| callable.call(args, None, false))
+            swoole_rs_zend::Zvals::with([this, &data], |args| {
+                callable.call(args, Some(retval), false)
+            })
         })
     }
 
@@ -1033,6 +1045,7 @@ impl Client {
             client: self,
             props: self.props(),
             body_limit_hit: None,
+            write_aborted: false,
         };
         let timeout = if timeout == 0.0 {
             self.response_timeout.get()
@@ -1087,6 +1100,10 @@ impl Client {
                     swoole_rs_error::ErrorCode::SW_ERROR_PACKAGE_LENGTH_TOO_LARGE as c_int,
                     format!("response body exceeds {limit} bytes").as_bytes(),
                 );
+                break false;
+            }
+            if hooks.write_aborted {
+                socket.set_err(libc::ECANCELED);
                 break false;
             }
             if hooks.parser.error != llhttp::HPE_OK {
@@ -1649,7 +1666,8 @@ fn on_header_value(hooks: &Hooks, name: &[u8], data: &[u8]) -> Flow {
     Flow::Go
 }
 
-fn on_body(client: &Client, data: &[u8]) -> Result<Flow, usize> {
+fn on_body(hooks: &mut Hooks, data: &[u8]) -> Result<Flow, usize> {
+    let client = hooks.client;
     let decompress = client.body_decompression.get()
         && !client.compression_error.get()
         && client.compress.get() != Compress::None;
@@ -1666,9 +1684,10 @@ fn on_body(client: &Client, data: &[u8]) -> Result<Flow, usize> {
         false
     };
     if let Some(callable) = callable {
+        let retval = Owned::default();
         let write = |chunk: &[u8]| {
             client.in_callback.set(true);
-            client.call_write(&callable, chunk)
+            client.call_write(&callable, chunk, &retval)
         };
         let result = if decoded {
             // Nested calls see an empty body while the callback consumes this chunk.
@@ -1689,7 +1708,8 @@ fn on_body(client: &Client, data: &[u8]) -> Result<Flow, usize> {
         if result.is_err() {
             client.bailout.set(true);
         }
-        return Ok(if matches!(result, Ok(true)) {
+        hooks.write_aborted = retval.kind() == z::IS_FALSE;
+        return Ok(if matches!(result, Ok(true)) && !hooks.write_aborted {
             Flow::Go
         } else {
             Flow::Fail
@@ -1740,7 +1760,6 @@ fn on_message_complete(hooks: &mut Hooks) -> Flow {
         return Flow::Pause;
     }
     let props = hooks.props;
-    props.long(c"statusCode", i64::from(hooks.parser.status_code));
     if client.download_file.get().is_none() {
         // Out of the client while the write can run PHP code.
         client.with_body(|body| props.bytes(c"body", body.as_ref()));
