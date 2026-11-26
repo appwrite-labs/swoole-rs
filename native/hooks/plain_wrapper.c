@@ -193,10 +193,8 @@ static void _sw_detect_is_seekable(php_stdio_stream_data *self) {
     if (self->fd >= 0 && do_fstat(self, 0) == 0) {
         self->is_seekable = !(S_ISFIFO(self->sb.st_mode) || S_ISCHR(self->sb.st_mode));
         self->is_pipe = S_ISFIFO(self->sb.st_mode);
-        self->can_poll = S_ISFIFO(self->sb.st_mode) || S_ISSOCK(self->sb.st_mode) || S_ISCHR(self->sb.st_mode);
-        if (self->can_poll) {
-            swoole_coroutine_socket_create(self->fd);
-        }
+        self->can_poll = (self->is_pipe || S_ISSOCK(self->sb.st_mode) || S_ISCHR(self->sb.st_mode)) &&
+                         swoole_coroutine_socket_create(self->fd) == 0;
     }
 #endif
 }
@@ -324,6 +322,11 @@ static int sw_php_stdiop_close(php_stream *stream, int close_handle) {
     }
 #endif
 
+    if (data->can_poll && (!close_handle || data->file)) {
+        int fd;
+        PHP_STDIOP_GET_FD(fd, data);
+        swoole_coroutine_socket_unwrap(fd);
+    }
     if (close_handle) {
         if (data->file) {
             if (data->is_process_pipe) {
