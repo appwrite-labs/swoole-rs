@@ -97,6 +97,10 @@ pub fn coroutine_lock_minit(minit: &Minit) -> Result<(), Bailout> {
     Ok(())
 }
 fn construct(call: &Call) {
+    let Ok(shared) = call.arity(0, 1).and_then(|()| call.bool(1, false)) else {
+        call.set_bool(false);
+        return;
+    };
     let Some(held) = call.custom::<Held>() else {
         return;
     };
@@ -105,10 +109,6 @@ fn construct(call: &Call) {
         call.set_bool(false);
         return;
     }
-    let Ok(shared) = call.arity(0, 1).and_then(|()| call.bool(1, false)) else {
-        call.set_bool(false);
-        return;
-    };
     held.0.get_or_init(|| CoroutineLock::new(shared, &HOST));
     call.set_bool(true);
 }
