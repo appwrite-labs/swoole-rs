@@ -184,8 +184,9 @@ runtime tests; conversion to integers happens at the native fields and calls.
 `lent.rs` checks that capped output counts preserve zero, never exceed the lent
 allocation, and saturate oversized limits without wrapping signed syscall counts.
 
-`spare.rs` verifies scalar receive appends, zero/error results, datagram truncation,
-and a real short `readv` spanning an empty room without exposing unwritten bytes.
+`spare.rs` verifies scalar receive appends, zero/error results and datagram truncation.
+The reactor's `iov_owned` tests run a real short `readv` through `SpareVectors` spanning an
+empty room without exposing unwritten bytes.
 
 `lifecycle.rs` runs `rust_core_lifecycle.reinitialize` in the SDK system binary:
 three init/no-op/clean/reinit cycles check the fatal hook, logger, thread buffer,

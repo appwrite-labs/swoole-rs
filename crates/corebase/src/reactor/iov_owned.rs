@@ -1,12 +1,14 @@
 //! An `IOVector`: a copy of the caller's descriptors, typed by the direction their
 //! buffers are lent in, and its cursor. Payload bytes are neither read nor copied.
-use crate::lent::{Ring, Spare, lend_spare};
+use crate::lent::{Brand, Ring, Spare, lend_spare};
 use crate::reactor::iov_progress::progress;
 use crate::reactor::socket_rw::IovState;
 use crate::reactor::{Drain, Fill, IovStep};
 use crate::sys;
 use std::ffi::c_int;
 use std::io::IoSlice;
+use std::marker::PhantomData;
+use std::mem::MaybeUninit;
 
 pub use crate::lent::ReadVec;
 
@@ -59,7 +61,7 @@ impl<'a> ReactorIov<'a> {
     }
 
     /// [`reading`](Self::reading) into `rooms`, which it takes.
-    pub(crate) fn rooms(rooms: impl ExactSizeIterator<Item = ReadVec<'a>>) -> Option<Self> {
+    fn rooms(rooms: impl ExactSizeIterator<Item = ReadVec<'a>>) -> Option<Self> {
         let (copy, state) = copy(rooms)?;
         Some(Self {
             descriptors: Descriptors::Read(copy),
@@ -239,6 +241,57 @@ pub fn swr_v1_socket_iov_owned(
         if !(result.is_none() && crate::reactor::socket_rw::interrupted()) {
             return result;
         }
+    }
+}
+
+/// Ordered rooms lent to vectored receives: a cursor over a copy of their descriptors,
+/// and how many bytes from the first room's start the receives wrote. Only
+/// [`transfer`](Self::transfer) moves either, by what a receive wrote.
+pub struct SpareVectors<'s> {
+    vectors: ReactorIov<'s>,
+    filled: usize,
+    lent: Brand<'s>,
+}
+
+/// Lends several rooms in order: the operation's result and how many bytes it wrote
+/// across them.
+pub fn lend_spare_vectors<'a, R>(
+    rooms: impl IntoIterator<Item = &'a mut [MaybeUninit<u8>], IntoIter: ExactSizeIterator>,
+    fill: impl for<'s> FnOnce(&mut SpareVectors<'s>) -> R,
+) -> (R, usize) {
+    let Some(vectors) = ReactorIov::rooms(rooms.into_iter().map(ReadVec::new)) else {
+        // `IOVector`'s constructor throws here, which ended at this Rust frame.
+        crate::fatal("the I/O vectors can't be built");
+    };
+    let mut out = SpareVectors {
+        vectors,
+        filled: 0,
+        lent: PhantomData,
+    };
+    let result = fill(&mut out);
+    (result, out.filled)
+}
+
+impl SpareVectors<'_> {
+    /// One receive into the rooms past the written bytes, as
+    /// [`swr_v1_socket_iov_owned`]: what it wrote, counted.
+    pub fn transfer(
+        &mut self,
+        plain: Plain<'_>,
+        tls: Option<&(
+            impl Fn(&mut Spare<'_>) -> Option<usize>,
+            impl Fn(Drain<'_>) -> Option<usize>,
+        )>,
+    ) -> Option<usize> {
+        let received = swr_v1_socket_iov_owned(plain, &mut self.vectors, tls);
+        self.filled += received.unwrap_or(0);
+        received
+    }
+
+    /// The cursor: where the receives stopped and the descriptors left.
+    #[must_use]
+    pub fn state(&self) -> IovState {
+        swr_v1_reactor_iov_view(&self.vectors)
     }
 }
 
@@ -574,5 +627,37 @@ mod tests {
             let current = descriptors(&v.owner)[v.iterator()];
             assert!(same(current, input[1]));
         });
+    }
+
+    /// No TLS calls, for a vector over a plain descriptor.
+    type Tls = fn(&mut Spare<'_>) -> Option<usize>;
+    type Send = fn(Drain<'_>) -> Option<usize>;
+
+    #[test]
+    fn vectored_read_counts_short_reads_across_empty_rooms() {
+        use std::io::Write;
+        use std::os::fd::AsRawFd;
+        use std::os::unix::net::UnixStream;
+
+        let (read, mut write) = UnixStream::pair().unwrap();
+        write.write_all(b"abcde").unwrap();
+        let mut head = [MaybeUninit::uninit(); 2];
+        let mut empty = [];
+        let mut tail = [MaybeUninit::uninit(); 4];
+        let (received, filled) = lend_spare_vectors(
+            [
+                head.as_mut_slice(),
+                empty.as_mut_slice(),
+                tail.as_mut_slice(),
+            ],
+            |out| {
+                let received = out.transfer(Plain::Fd(read.as_raw_fd()), None::<&(Tls, Send)>);
+                let state = out.state();
+                (received, (state.index, state.offset_bytes))
+            },
+        );
+        assert_eq!((received, filled), ((Some(5), (2, 3)), 5));
+        assert_eq!(unsafe { head.assume_init_ref() }, b"ab");
+        assert_eq!(unsafe { tail[..3].assume_init_ref() }, b"cde");
     }
 }
