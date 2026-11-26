@@ -80,7 +80,8 @@ int64_t swr_oracle_calendar_time(void *value) {
 }
 void *swr_oracle_calendar_gmt(int64_t time) {
     const time_t value = time;
-    tm *result = ::gmtime(&value);
+    thread_local tm buffer;
+    tm *result = ::gmtime_r(&value, &buffer);
     int saved = errno;
     calendar_events.push_back("gmt:" + std::to_string(value) + ":" + fields(result) + ":" + std::to_string(saved));
     errno = saved;
@@ -278,7 +279,6 @@ static tm get_utc_tm(time_t value) {
     tm *result = static_cast<tm *>(swr_oracle_calendar_gmt(value));
     return result ? *result : tm{};
 }
-#define gmtime(value) ((tm *) swr_oracle_calendar_gmt(*(value)))
 
 class StaticHandler;
 struct RewriteRule;

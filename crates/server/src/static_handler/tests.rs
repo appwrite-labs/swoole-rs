@@ -200,7 +200,7 @@ impl Calendar for Scripted {
         unsafe { oracle::swr_oracle_calendar_time(ptr::from_mut(&mut tm).cast()) }
     }
     fn to_gmt(&self, time: i64) -> Option<Tm> {
-        // SAFETY: null or libc's static tm, copied before another calendar call.
+        // SAFETY: null or the calling thread's tm, copied before another calendar call.
         unsafe { oracle::swr_oracle_calendar_gmt(time).cast::<Tm>().as_ref() }.copied()
     }
 }
