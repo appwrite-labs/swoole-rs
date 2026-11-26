@@ -16,7 +16,8 @@ use swoole_rs_corebase::reactor::{Events, SocketFields};
 use swoole_rs_hooks::{co_socket::Co, packet::recv_packet, socket_extra::set_close_hook};
 use swoole_rs_http2::error_code;
 use swoole_rs_http2::frame_flag::{
-    ACK as FLAG_ACK, END_STREAM as FLAG_END_STREAM, PRIORITY as FLAG_PRIORITY,
+    ACK as FLAG_ACK, END_STREAM as FLAG_END_STREAM, PADDED as FLAG_PADDED,
+    PRIORITY as FLAG_PRIORITY,
 };
 use swoole_rs_http2::{
     FrameAction, FrameType, GOAWAY_SIZE, HeaderKind, HeaderRole, Http2FrameFacts, Http2Settings,
@@ -172,6 +173,7 @@ enum FrameReadError {
     InvalidMaxFrameSize(u32),
     Short,
     InvalidLength(&'static [u8]),
+    InvalidPadding(&'static [u8]),
 }
 
 /// What a frame's payload held, read while the read buffer was on loan.
@@ -260,6 +262,14 @@ fn frame_header(kind: FrameType, length: usize, flags: u32, stream: u32) -> [u8;
 
 fn window(current: u32, amount: usize, initial: u32, credit: bool) -> Http2WindowPlan {
     sw_rs_http2_window_plan(current, amount, initial, credit)
+}
+
+fn unpadded(payload: &[u8], flags: u32) -> Option<&[u8]> {
+    if flags & FLAG_PADDED == 0 {
+        return Some(payload);
+    }
+    let (&padding, rest) = payload.split_first()?;
+    rest.get(..rest.len().checked_sub(usize::from(padding))?)
 }
 
 fn receive_window(remaining: u32, target: u32) -> Http2WindowPlan {
@@ -891,16 +901,23 @@ impl Client {
                 }
             }
             FrameAction::Headers if known() => {
+                let payload = unpadded(payload, facts.flags).ok_or(
+                    FrameReadError::InvalidPadding(b"invalid HEADERS frame padding"),
+                )?;
                 let block = if facts.flags & FLAG_PRIORITY != 0 {
-                    payload.get(5..).ok_or(FrameReadError::Short)?
+                    payload.get(5..).ok_or(FrameReadError::InvalidLength(
+                        b"invalid HEADERS frame length",
+                    ))?
                 } else {
                     payload
                 };
                 Payload::Headers(self.parse_header(id, block))
             }
-            FrameAction::Data if known() => {
-                Payload::Data(payload.len(), self.buffer_data(id, facts.flags, payload))
-            }
+            FrameAction::Data if known() => Payload::Data(
+                payload.len(),
+                self.streams
+                    .with_taken(|streams| self.buffer_stream(streams, id, facts.flags, payload))?,
+            ),
             _ => Payload::Unread,
         };
         if facts.publish_last_id {
@@ -922,6 +939,10 @@ impl Client {
             Err(error) => {
                 match error {
                     FrameReadError::Short => return Frame::Fail,
+                    FrameReadError::InvalidPadding(message) => {
+                        self.close();
+                        self.update_error(error_code::PROTOCOL_ERROR.cast_signed(), message);
+                    }
                     FrameReadError::InvalidLength(message) => {
                         self.close();
                         self.update_error(error_code::FRAME_SIZE_ERROR.cast_signed(), message);
@@ -1095,37 +1116,35 @@ impl Client {
         }
     }
 
-    /// A DATA frame: buffer (inflating gzip) and replenish the windows.
-    /// A DATA frame's payload onto its stream's body, and the stream's window
-    /// after it.
-    fn buffer_data(&self, id: u32, flags: u32, payload: &[u8]) -> Buffered {
-        self.streams
-            .with_taken(|streams| self.buffer_stream(streams, id, flags, payload))
-    }
-
-    /// `buffer_data` over the streams taken out.
+    /// Charge the full DATA payload to the receive window and append its unpadded body.
     fn buffer_stream(
         &self,
         streams: &mut Streams,
         id: u32,
         flags: u32,
         payload: &[u8],
-    ) -> Buffered {
+    ) -> Result<Buffered, FrameReadError> {
         let Some(stream) = streams.get_mut(&id) else {
-            return Buffered::Nothing;
+            return Ok(Buffered::Nothing);
         };
         stream.flags = sw_rs_http2_stream_update(stream.flags, flags & FLAG_END_STREAM != 0, true);
-        if payload.is_empty() {
-            return Buffered::Nothing;
-        }
         let Ok(length) = u32::try_from(payload.len()) else {
-            return Buffered::ExceededWindow;
+            return Ok(Buffered::ExceededWindow);
         };
         if length > stream.local_window.min(self.local_window.get()) {
-            return Buffered::ExceededWindow;
+            return Ok(Buffered::ExceededWindow);
+        }
+        let payload = unpadded(payload, flags).ok_or(FrameReadError::InvalidPadding(
+            b"invalid DATA frame padding",
+        ))?;
+        if length == 0 {
+            return Ok(Buffered::Nothing);
         }
         stream.local_window -= length;
         let credit = receive_window(stream.local_window, self.local.init_window_size);
+        if payload.is_empty() {
+            return Ok(Buffered::Window(credit));
+        }
         if let Some(buffer) = &mut stream.buffer {
             let bytes = match &mut stream.gzip {
                 Some(gzip) => gzip.decode(payload),
@@ -1136,12 +1155,12 @@ impl Client {
                 Err(DecodeError::Limit(limit)) => {
                     stream.buffer = None;
                     stream.gzip = None;
-                    return Buffered::Limit(limit, credit);
+                    return Ok(Buffered::Limit(limit, credit));
                 }
-                Err(DecodeError::Codec(_)) => return Buffered::Failed,
+                Err(DecodeError::Codec(_)) => return Ok(Buffered::Failed),
             }
         }
-        Buffered::Window(credit)
+        Ok(Buffered::Window(credit))
     }
 
     /// The window updates a buffered DATA frame of `length` bytes calls for.
