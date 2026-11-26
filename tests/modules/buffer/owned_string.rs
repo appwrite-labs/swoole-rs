@@ -39,3 +39,16 @@ fn popped_owner_keeps_the_prefix_and_frees_each_allocation_once() {
     buffer.dispose();
     assert_eq!(FREES.get(), 2);
 }
+
+#[test]
+fn bounded_append_caps_growth_and_rejects_the_whole_fragment() {
+    let mut buffer = StringBuffer::EMPTY;
+    buffer.alloc_exact(4, None);
+    buffer.append(b"abcd");
+    assert_eq!(buffer.append_bounded(&[b"e", b"f"], 7), Ok(()));
+    assert_eq!((buffer.view(), buffer.size()), (b"abcdef".as_slice(), 7));
+
+    assert_eq!(buffer.append_bounded(&[b"g", b"h"], 7), Err(7));
+    assert_eq!((buffer.view(), buffer.size()), (b"abcdef".as_slice(), 7));
+    buffer.dispose();
+}
