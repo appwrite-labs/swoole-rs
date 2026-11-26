@@ -255,7 +255,7 @@ mod tests {
     use std::time::Instant;
 
     fn wait(word: &AtomicU32, timeout: f64) -> (c_int, c_int) {
-        let deadline = Deadline::from_futex_timeout(timeout);
+        let deadline = Deadline::from_futex_timeout(timeout).unwrap();
         match with(word, |registry, word| registry.wait(word, deadline)) {
             Ok(()) => (0, 0),
             Err(code) => (-1, code),

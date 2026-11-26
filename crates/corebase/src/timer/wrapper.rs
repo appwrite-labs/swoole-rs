@@ -167,25 +167,25 @@ impl Deadline {
 
     /// Upstream's `timeout` seconds, as `sw_atomic_futex_wait` reads them: a positive
     /// one ends its whole seconds and truncated nanoseconds from now; zero, a negative
-    /// one or NaN is [`Deadline::never`], as is one past what the clock holds. On Linux
-    /// one past what a `timespec` holds (infinity) has passed, as the futex refuses it at once.
+    /// one or NaN is [`Deadline::never`], as is one past what the clock holds. None for
+    /// one whose `timespec` is invalid (infinity, or past 2^63 seconds), which Linux's
+    /// futex refuses with `EINVAL`.
     #[must_use]
-    pub fn from_futex_timeout(seconds: f64) -> Self {
+    pub fn from_futex_timeout(seconds: f64) -> Option<Self> {
         if seconds > 0.0 {
             let sec = seconds.c_cast::<i64>();
             let nsec = ((seconds - sec.c_cast::<f64>()) * 1000.0 * 1000.0 * 1000.0).c_cast::<i64>();
-            #[cfg(target_os = "linux")]
             if nsec >= 1_000_000_000 {
-                return Self::after(0);
+                return None;
             }
             let nanos = u64::try_from(sec)
                 .ok()
                 .and_then(|sec| sec.checked_mul(1_000_000_000));
             if let Some(nanos) = nanos.and_then(|nanos| nanos.checked_add(nsec.cast_unsigned())) {
-                return Self::after(nanos);
+                return Some(Self::after(nanos));
             }
         }
-        Self::never()
+        Some(Self::never())
     }
 
     /// `nanos` from now; never when the clock can't hold it. Kept out of line, so a

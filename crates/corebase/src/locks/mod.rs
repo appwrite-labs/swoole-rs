@@ -888,10 +888,12 @@ fn futex(word: &AtomicU32, op: Futex, value: c_int, timeout: Option<&timespec>) 
 
 /// Futex wait on an atomic word (process-shared for a forked waiter) until `deadline`
 /// ([`Deadline::from_futex_timeout`] of upstream's): consume a ready token, otherwise
-/// one `FUTEX_WAIT` syscall for the time left. Whether it took the word's token.
+/// one `FUTEX_WAIT` syscall for the time left. None is a timeout past what a `timespec`
+/// holds, which the syscall refuses (`EINVAL`) as upstream's did. Whether it took the
+/// word's token.
 #[cfg(target_os = "linux")]
 #[must_use]
-pub fn wait(a: &AtomicU32, deadline: Deadline) -> bool {
+pub fn wait(a: &AtomicU32, deadline: Option<Deadline>) -> bool {
     if a.compare_exchange(1, 0, Ordering::SeqCst, Ordering::SeqCst)
         .is_ok()
     {
@@ -899,7 +901,11 @@ pub fn wait(a: &AtomicU32, deadline: Deadline) -> bool {
     }
     // A wakeup between the check above and the syscall makes FUTEX_WAIT fail with
     // EAGAIN; its token is still in the word, so the result alone doesn't decide.
-    let left = deadline.remaining().map(relative);
+    let refused = timespec {
+        tv_sec: 0,
+        tv_nsec: 1_000_000_000,
+    };
+    let left = deadline.map_or(Some(refused), |deadline| deadline.remaining().map(relative));
     futex(a, Futex::Wait, 0, left.as_ref());
     a.compare_exchange(1, 0, Ordering::SeqCst, Ordering::SeqCst)
         .is_ok()

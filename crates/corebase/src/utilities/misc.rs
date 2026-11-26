@@ -5,15 +5,18 @@ use crate::timer::Deadline;
 use std::ffi::c_int;
 use std::sync::atomic::AtomicU32;
 
-/// Waits for the word's token until `deadline`: whether it took it.
+/// Waits for the word's token until `deadline`: whether it took it. None is a timeout
+/// past what a `timespec` holds ([`Deadline::from_futex_timeout`]): the futex refuses
+/// it (`EINVAL`), and the registry waits forever, as upstream's do.
 #[must_use]
-pub fn futex_wait(word: &AtomicU32, deadline: Deadline) -> bool {
+pub fn futex_wait(word: &AtomicU32, deadline: Option<Deadline>) -> bool {
     #[cfg(target_os = "linux")]
     {
         crate::locks::wait(word, deadline)
     }
     #[cfg(not(target_os = "linux"))]
     {
+        let deadline = deadline.unwrap_or(Deadline::never());
         crate::utilities::wait_registry::registry_wait(word, deadline)
     }
 }
@@ -52,6 +55,6 @@ mod tests {
         let word = AtomicU32::new(0);
         assert!(!futex_wait(&word, Deadline::from_futex_timeout(0.01)));
         assert_eq!(futex_wakeup(&word, 1), Some(0));
-        assert!(futex_wait(&word, Deadline::never()));
+        assert!(futex_wait(&word, Some(Deadline::never())));
     }
 }

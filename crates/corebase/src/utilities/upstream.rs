@@ -253,7 +253,13 @@ fn futex_wait_and_wake_match_the_pin() {
         }
         // Nonpositive waits on zero are indefinite; exercise only immediate paths.
         let nonpositive: &[f64] = if word == 0 { &[] } else { &[-123.0, -0.0, 0.0] };
-        for &timeout in [0.000_001, 0.001, 0.0015].iter().chain(nonpositive) {
+        // Infinity and 1e19 make a timespec the syscall refuses at once (`EINVAL`).
+        let refused = [f64::INFINITY, 1e19];
+        for &timeout in [0.000_001, 0.001, 0.0015]
+            .iter()
+            .chain(nonpositive)
+            .chain(&refused)
+        {
             assert_eq!(
                 call(word, &|a| unsafe { pinned::wait(a.as_ptr(), timeout) }),
                 call(word, &|a| wait_result(a, timeout)),
