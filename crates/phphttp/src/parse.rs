@@ -702,7 +702,6 @@ fn header_value(state: &mut State, name: &[u8], mut value_: &[u8], limit: usize)
             edit(&mut state.request, Property::Cookie, |array| {
                 parse_cookie(array.separate(), value_);
             });
-            return Step::Go;
         }
         RequestHeader::Upgrade => {
             const MAX_LENGTH: usize = STACK_BUFFER_SIZE - 1;
