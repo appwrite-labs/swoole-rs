@@ -184,3 +184,17 @@ def test_multipart_file_is_registered_with_php(engine, tmp_path):
     assert result.returncode == 0, result.stdout + result.stderr
     assert result.stdout.splitlines() == ['bool(true)', 'bool(true)', 'bool(false)']
     assert moved.read_bytes() == b'sample'
+
+
+def test_invalid_request_logs_receive_warning(engine, tmp_path):
+    log = tmp_path / 'server.log'
+    with server(engine, Path(__file__).with_name('header_reentry.php'),
+                {'TEST_HTTP_WARNING_LOG': str(log)}) as (port, _):
+        with socket.create_connection(('127.0.0.1', port), timeout=5) as conn:
+            conn.sendall(b'GET / HTTP/1.1\r\nHost: localhost\r\nMissingColon\r\n\r\n')
+            with conn.makefile('rb') as response:
+                assert response.readline() == b'HTTP/1.1 400 Bad Request\r\n'
+        # The same worker has finished logging before it serves the next request.
+        assert get(port, '/')[0] == 'HTTP/1.1 200 OK'
+        assert ('\tWARNING\tphp_swoole_http_server_onReceive(): Invalid HTTP request discarded: '
+                '4 bytes unprocessed. Reason: Invalid header token') in log.read_text()
