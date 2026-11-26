@@ -307,14 +307,18 @@ fn c_str(bytes: &[u8]) -> &[u8] {
 /// `param` wants it.
 fn parse_address(name: &[u8], param: &mut php_stream_xport_param) -> Option<(CString, i32)> {
     use swoole_rs_hooks::address::{AddressError, parse};
+    if name.contains(&0) {
+        set_error(param, b"The hostname must not contain null bytes");
+        return None;
+    }
     match parse(name) {
-        Ok((host, port)) => Some((CString::new(c_str(host)).unwrap_or_default(), port)),
+        Ok((host, port)) => Some((CString::new(host).ok()?, port)),
         Err(error) => {
             let what = match error {
                 AddressError::Ipv6 => "IPv6 address",
                 AddressError::Address => "address",
             };
-            let name = String::from_utf8_lossy(c_str(name));
+            let name = String::from_utf8_lossy(name);
             set_error(
                 param,
                 format!("Failed to parse {what} \"{name}\"").as_bytes(),
