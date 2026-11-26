@@ -1839,14 +1839,26 @@ fn construct(call: &Call) {
     }
     if let Some(props) = props::this(call) {
         props.bytes(c"host", host);
-        props.long(c"port", port);
         props.bool(c"ssl", ssl);
     }
     if host.is_empty() {
         call.throw(&EXCEPTION, c"host is empty", i64::from(libc::EINVAL));
         return call.set_bool(false);
     }
-    drop(data.client.set(Client::new(object, host, port, ssl)));
+    if !host.starts_with(b"unix:/") && u16::try_from(port).is_err() {
+        call.throw(
+            &EXCEPTION,
+            c"The port is invalid",
+            i64::from(INVALID_PARAMS),
+        );
+        return call.set_bool(false);
+    }
+    let client = Client::new(object, host, port, ssl);
+    let port = i64::from(client.port);
+    drop(data.client.set(client));
+    if let Some(props) = props::this(call) {
+        props.long(c"port", port);
+    }
 }
 
 fn destruct(_call: &Call) {}
@@ -1971,6 +1983,15 @@ enum Upload<'a> {
     Number(i64),
 }
 
+fn nonnegative_file_argument(name: &str, value: i64) -> bool {
+    if value >= 0 {
+        return true;
+    }
+    let message = format!("parameter ${name}[{value}] must be greater than or equal to 0");
+    warn(false, &CString::new(message).unwrap_or_default());
+    false
+}
+
 /// `addFile(string $path, string $name, ?string $type = null, ?string $filename = null, int $offset = 0, int $length = 0): bool`.
 fn add_file(call: &Call) {
     let parsed = call.arity(2, 6).and_then(|()| {
@@ -1985,11 +2006,13 @@ fn add_file(call: &Call) {
             call.long(6, 0)?,
         ))
     });
-    let Ok((path, name, mut kind, filename, offset, length)) = parsed else {
+    let Ok((path, name, mut kind, filename, offset, mut length)) = parsed else {
         return call.set_bool(false);
     };
-    let offset = offset.max(0);
-    let mut length = length.max(0);
+    if !nonnegative_file_argument("offset", offset) || !nonnegative_file_argument("length", length)
+    {
+        return call.set_bool(false);
+    }
     let c_path = c_bytes(path);
     let Some(stat) = swoole_rs_corebase::sys::stat(&c_path) else {
         let message = [&b"stat("[..], c_path.to_bytes(), b") failed"].concat();
@@ -2154,6 +2177,9 @@ fn download(call: &Call) {
         call.set_bool(false);
         return;
     };
+    if !nonnegative_file_argument("offset", offset) {
+        return call.set_bool(false);
+    }
     if let Some(file) = call.value(2) {
         client.props().value(c"downloadFile", file);
     }

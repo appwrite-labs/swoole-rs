@@ -318,6 +318,22 @@
       ]
     },
     {
+      "path": "tests/swoole_websocket_server/compression_extension_list.phpt",
+      "sha256": "1adc6b6ef66bd85e0b7b5eda22f4989cfbdeb87867c313cc82932ec3468ff4e0",
+      "module": "websocket-network",
+      "requires": [
+        "upstream_test_bootstrap",
+        "websocket",
+        "coroutines",
+        "event_loop",
+        "processes",
+        "atomics",
+        "coroutine_http_client",
+        "php_sockets",
+        "zlib"
+      ]
+    },
+    {
       "path": "tests/swoole_websocket_server/recv_decode.phpt",
       "sha256": "c5e7ba1ee15f4df8fb8d9db5651c77508c656ed318c40f94f32f220e1cf5ee59",
       "module": "websocket-network",
