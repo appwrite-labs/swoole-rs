@@ -17,8 +17,8 @@ use swoole_rs_corebase::tls::socket_pair::{CLOSE_MASTER, CLOSE_WORKER};
 use swoole_rs_corebase::{CCast, constants::SW_MSGMAX};
 use swoole_rs_phpstubs::process;
 use swoole_rs_zend::{
-    Call, Class, Custom, CustomClass, E_ERROR, E_WARNING, Minit, Owned, Value, ZString, bailout,
-    handlers, message,
+    Call, Class, Custom, CustomClass, E_ERROR, E_WARNING, Minit, Owned, Value, ZString, handlers,
+    message,
     sys::{IS_NULL, ZEND_ACC_PRIVATE, ZEND_ACC_PUBLIC},
 };
 use swoole_rs_zend::{method_table, sys as z};
@@ -774,26 +774,28 @@ fn pop(call: &Call) {
 fn exec(call: &Call) {
     let parsed = call
         .arity(2, 2)
-        .and_then(|()| Ok((call.zstr(1)?, call.array_ref(2)?)));
-    let Ok((Some(file), args)) = parsed else {
+        .and_then(|()| Ok((call.path(1, b"")?, call.array_ref(2)?)));
+    let Ok((file, args)) = parsed else {
         call.set_bool(false);
         return;
     };
-    if file.bytes().is_empty() {
+    if file.is_empty() {
         fatal(E_WARNING, &message!("exec file name is empty"));
         call.set_bool(false);
         return;
     }
+    let file = ZString::new(file);
     let mut strings = Vec::with_capacity(args.count() as usize);
     for (_, value) in args.entries() {
-        let string = value.string();
-        if bailout::pending() {
-            // Upstream's conversion bailed out here.
+        let Some(string) = value.try_string() else {
+            return;
+        };
+        if string.bytes().contains(&0) {
+            swoole_rs_zend::value_error(c"Argument #2 ($args) must not contain any null bytes");
             return;
         }
         strings.push(string);
     }
-    // Each string as C reads it: up to its first NUL.
     let path = file.c_str();
     let argv: Vec<_> = std::iter::once(Some(path.into()))
         .chain(strings.iter().map(|string| Some(string.c_str().into())))
