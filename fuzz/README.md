@@ -134,6 +134,9 @@ and the body itself decodes in chunks of at most 16 bytes with output capped at 
 of its input length and 16 MiB. For nonempty round trips, all three targets also
 require the decoder to report the configured limit when it is one byte short.
 
+The decode targets also fail when Rust holds more than their allocation bound live
+while they run (`src/bound.rs`, and docs/validation-suite.md).
+
 libFuzzer writes new inputs to the first corpus directory, so keep `corpus/`
 (ignored) first and the committed `seeds/` second. A failure leaves its input in
 `artifacts/<target>/`; replay it with `cargo +nightly fuzz run <target> <file>`.
