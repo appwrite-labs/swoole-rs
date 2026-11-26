@@ -15,9 +15,11 @@ use swoole_rs_oracle::{
     websocket as upstream_ws,
 };
 
+mod bound;
 mod framing_native;
 mod protocols_native;
 
+pub use bound::bounded;
 mod network;
 pub use network::{
     dns_reply, http_chunked, http_decompress, http_inflate, http_rewrite, http_static_path,
