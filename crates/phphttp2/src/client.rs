@@ -12,7 +12,7 @@ use swoole_rs_corebase::CCast;
 use swoole_rs_corebase::CellExt;
 use swoole_rs_corebase::buffer::BoundedBytes;
 use swoole_rs_corebase::constants::HTTP2_PREFACE;
-use swoole_rs_corebase::reactor::Events;
+use swoole_rs_corebase::reactor::{Events, SocketFields};
 use swoole_rs_hooks::{co_socket::Co, packet::recv_packet, socket_extra::set_close_hook};
 use swoole_rs_http2::error_code;
 use swoole_rs_http2::frame_flag::{
@@ -472,7 +472,6 @@ impl Client {
             Encoder::new(self.local.header_table_size),
         )));
         if !self.send(HTTP2_PREFACE) || !self.send_setting() {
-            self.close();
             return false;
         }
         let zsocket = self.hold_socket();
@@ -487,6 +486,13 @@ impl Client {
         self.io_error(socket);
         self.close();
         false
+    }
+
+    fn close_with_socket_error(&self, socket: Co) {
+        let (code, message) = swoole_rs_phpclients::Co::from(socket)
+            .with_error(|code, message| (code, message.to_owned()));
+        self.close();
+        self.update_error(code, message.to_bytes());
     }
 
     fn close(&self) -> bool {
@@ -534,7 +540,7 @@ impl Client {
             }
         }
         if !Self::send_all(socket, data) {
-            self.io_error(socket);
+            self.close_with_socket_error(socket);
             return false;
         }
         // Each frame is copied out: sending yields, and the queue is put back first.
@@ -542,7 +548,7 @@ impl Client {
             let next = self.queue.with_taken(|queue| queue.front().cloned());
             let Some(frame) = next else { break };
             if !Self::send_all(socket, &frame) {
-                self.io_error(socket);
+                self.close_with_socket_error(socket);
                 EXCEPTION.throw(c"failed to send control frame", SEND_CONTROL_FRAME_FAILED);
                 return false;
             }
@@ -790,6 +796,9 @@ impl Client {
             };
             let Some(received @ 1..) = recv_packet(socket, timeout) else {
                 self.io_error(socket);
+                if socket.with_network(|net| net.read(SocketFields::close_deferred)) == Some(true) {
+                    self.close();
+                }
                 return call.set_bool(false);
             };
             match self.parse_frame(call, socket, received, pipeline_read) {
@@ -933,6 +942,7 @@ impl Client {
                 };
             }
             FrameAction::Goaway => {
+                self.close();
                 if let Payload::Goaway {
                     server_last,
                     code,
@@ -945,7 +955,6 @@ impl Client {
                         props.long(c"serverLastStreamId", i64::from(server_last));
                     });
                 }
-                self.close();
                 return Frame::Fail;
             }
             FrameAction::Reset => {
@@ -1625,8 +1634,8 @@ fn receive(call: &Call, pipeline_read: bool) {
     let Ok(timeout) = call.arity(0, 1).and_then(|()| call.double(1, 0.0)) else {
         return call.set_bool(false);
     };
-    // Upstream preserves `$this` here, not the socket.
-    let _hold = call.this_owned();
+    // Closing can resume a writer that releases the connection’s socket reference.
+    let _guard_socket = client.hold_socket();
     client.recv(call, timeout, pipeline_read);
 }
 
