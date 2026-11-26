@@ -204,11 +204,7 @@ pub(crate) fn invalid_setting(message: &CStr) -> Stop {
 pub(crate) type Step = Result<(), Stop>;
 
 pub(crate) fn checked() -> Step {
-    if bailout::pending() {
-        Err(Stop)
-    } else {
-        Ok(())
-    }
+    swoole_rs_phpswoole::setting_ok().then_some(()).ok_or(Stop)
 }
 
 impl<'a> Settings<'a> {
@@ -341,7 +337,7 @@ fn set(call: &Call) {
     let this = ServerObject::this(call);
     if matches!(options(&s, this), Ok(true)) {
         match finish(this, vht) {
-            Ok(()) => call.set_bool(true),
+            Ok(result) => call.set_bool(result),
             Err(bailed) => bailed.defer(),
         }
     } else if !bailout::pending() {
@@ -351,13 +347,15 @@ fn set(call: &Call) {
 
 /// `$this->ports[0]->set($settings)` (Port's own method), then the merge into
 /// `$this->setting`.
-fn finish(this: ServerObject<'_>, settings: &Value) -> Result<(), bailout::Bailout> {
-    drop(
-        this.port(0)
-            .call_method(Some(&crate::PORT), b"set", &[settings])?,
-    );
+fn finish(this: ServerObject<'_>, settings: &Value) -> Result<bool, bailout::Bailout> {
+    let result = this
+        .port(0)
+        .call_method(Some(&crate::PORT), b"set", &[settings])?;
+    if !swoole_rs_phpswoole::setting_ok() || !result.truthy() {
+        return Ok(false);
+    }
     crate::lifecycle::Props::server(this).merge(c"setting", settings);
-    bailout::outcome(())
+    bailout::outcome(true)
 }
 
 /// The options, in upstream's order. `Ok(false)`: return false.
@@ -432,19 +430,16 @@ fn options(s: &Settings, this: ServerObject<'_>) -> Result<bool, Stop> {
         None => s.set(f::SEND_YIELD, s.fact(f::ENABLE_COROUTINE)),
     }
     if let Some(value) = s.get(c"dispatch_func") {
-        // `sw_callable_create`, whose bailouts stay deferred.
-        let created = crate::callable::create(value);
-        if checked().is_err() {
-            drop(created);
-            return Err(Stop);
+        if s.server().config().mode_ != swoole_rs_server::Mode::Process {
+            return Err(invalid_setting(
+                c"dispatch_func is only supported in PROCESS mode",
+            ));
         }
-        if let Some(callable) = created {
-            let set = crate::dispatch::set_dispatch_func(s.serv, callable);
-            if set.is_err() {
-                bailout::defer(set);
-                return Err(Stop);
-            }
-        }
+        let callable = swoole_rs_phpswoole::setting_callable(value).ok_or(Stop)?;
+        crate::dispatch::set_dispatch_func(s.serv, callable).map_err(|bailed| {
+            bailed.defer();
+            Stop
+        })?;
     }
     workers(s)?;
     http(s, this)

@@ -384,7 +384,15 @@ fn get_socket(call: &Call) {
 /// enabled, then the merge into `$this->setting`.
 fn finish(call: &Call, settings: &Value) -> Result<(), bailout::Bailout> {
     if swoole_rs_phpswoole::enable_library() {
-        swoole_rs_zend::host::named_call(br"\Swoole\Server\Helper::checkOptions", &[settings])?;
+        let method = Owned::string(ZString::new(br"\Swoole\Server\Helper::checkOptions"));
+        let result = Owned::default();
+        let status = swoole_rs_zend::Zvals::with([settings], |args| {
+            swoole_rs_zend::host::user_call(&method, args, &result)
+        })?;
+        if status != 0 {
+            call.set_bool(false);
+            return Ok(());
+        }
     }
     if !swoole_rs_zend::host::exception().is_null() {
         return Ok(());

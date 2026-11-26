@@ -13,7 +13,7 @@ use swoole_rs_corebase::tls::{self as tls, OwnedTlsContext, Text, Value};
 use swoole_rs_ports::lifecycle::{context_dup, sni_add};
 use swoole_rs_server::port_config::{LengthOwner, PortConfig};
 use swoole_rs_server::view;
-use swoole_rs_zend::{E_ERROR, Message};
+use swoole_rs_zend::Message;
 
 /// `SW_SSL_DTLS`.
 const SSL_DTLS: i64 = tls::SslVersion::SW_SSL_DTLS.bits() as i64;
@@ -28,8 +28,8 @@ pub(crate) trait Source {
     fn double(&self, key: &CStr) -> Result<Option<f64>, Stop>;
     /// `zend::String`.
     fn bytes(&self, key: &CStr) -> Result<Option<Vec<u8>>, Stop>;
-    /// `php_swoole_fatal_error(level, message)`; `set()` stops after it.
-    fn fatal(&self, level: c_int, message: &CStr) -> Stop;
+    /// `php_swoole_throw_setting_exception(message)`; `set()` stops after it.
+    fn invalid(&self, message: &CStr) -> Stop;
     /// `sw_callable_create` of the setting, when it is callable: the pointer
     /// the protocol names, and its owner.
     fn callable(&self, key: &CStr) -> Result<Option<LengthOwner>, Stop>;
@@ -87,22 +87,18 @@ pub(crate) fn is_dgram(kind: c_int) -> bool {
     SocketType::from_raw(kind).is_some_and(SocketType::is_dgram)
 }
 
-/// `package_eof`: the length is published as a `uint8_t` before it is checked.
+/// Validate the entire delimiter before replacing the active protocol setting.
 fn set_eof(s: &impl Source, eof: &[u8]) -> Step {
-    // The low byte: a `uint8_t`.
-    let eof_len = eof.len().to_le_bytes()[0];
-    let copied = protocol(s, |p| {
-        p.package_eof_len = eof_len;
-        let destination = p.package_eof.get_mut(..eof.len());
-        destination.map(|destination| destination.copy_from_slice(eof))
-    });
-    if eof_len == 0 {
-        return Err(s.fatal(E_ERROR, c"package_eof cannot be an empty string"));
+    if eof.is_empty() {
+        return Err(s.invalid(c"package_eof cannot be an empty string"));
     }
-    if copied.is_none() {
-        return Err(s.fatal(E_ERROR, c"package_eof max length is 8"));
-    }
-    Ok(())
+    protocol(s, |p| {
+        let destination = p.package_eof.get_mut(..eof.len())?;
+        destination.copy_from_slice(eof);
+        p.package_eof_len = eof.len().c_cast::<u8>();
+        Some(())
+    })
+    .ok_or_else(|| s.invalid(c"package_eof max length is 8"))
 }
 
 /// `f` over the port's protocol, which then replaces it.
@@ -115,7 +111,7 @@ fn offset(s: &impl Source, v: i64, field: fn(&mut Protocol) -> &mut u16, error: 
     let v = u16_of(v);
     protocol(s, |p| *field(p) = v);
     if usize::from(v) > SW_IPC_BUFFER_SIZE {
-        return Err(s.fatal(E_ERROR, error));
+        return Err(s.invalid(error));
     }
     Ok(())
 }
@@ -228,10 +224,9 @@ fn framing(s: &impl Source) -> Step {
             p.package_length_size = size;
         });
         if size == 0 {
-            return Err(s.fatal(
-                E_ERROR,
-                c"unknown package_length_type, see pack(). Link: https://php.net/pack",
-            ));
+            return Err(
+                s.invalid(c"unknown package_length_type, see pack(). Link: https://php.net/pack")
+            );
         }
     }
     if let Some(v) = s.long(c"package_length_offset")? {
@@ -294,13 +289,13 @@ fn websocket(s: &impl Source) -> Step {
     Ok(())
 }
 
-/// `E_ERROR "<prefix><file>] not found"`, the file up to its first NUL as `%s` reads it.
+/// A setting exception for a missing file, the file up to its first NUL as `%s` reads it.
 fn not_found(s: &impl Source, prefix: &[u8], file: &[u8]) -> Stop {
     let mut message = Message::new();
     message.push(prefix);
     message.push(file.split(|&b| b == 0).next().unwrap_or_default());
     message.push(b"] not found");
-    s.fatal(E_ERROR, message.as_cstr())
+    s.invalid(message.as_cstr())
 }
 
 /// `php_swoole_server_set_ssl_option`: the context's certificate and key.
@@ -362,7 +357,7 @@ pub(crate) fn tls(s: &impl Source, owner: &OwnedTlsContext, dgram: bool) -> Step
     drop(owner);
     s.sni()?;
     if !s.ssl_init() {
-        return Err(s.fatal(E_ERROR, c"ssl_init() failed"));
+        return Err(s.invalid(c"ssl_init() failed"));
     }
     Ok(())
 }
@@ -401,28 +396,18 @@ impl Source for Zend<'_> {
             .transpose()
     }
 
-    fn fatal(&self, level: c_int, message: &CStr) -> Stop {
-        crate::server::fatal(level, message);
-        Stop
+    fn invalid(&self, message: &CStr) -> Stop {
+        invalid_setting(message)
     }
 
     fn callable(&self, key: &CStr) -> Result<Option<LengthOwner>, Stop> {
         let Some(value) = self.settings.get(key) else {
             return Ok(None);
         };
-        // Its bailouts stay deferred.
-        let callable = crate::callable::create(value);
-        if checked().is_err() {
-            drop(callable);
-            return Err(Stop);
-        }
-        // This thread's owner for the port now, which `release` (or the port's
-        // release) drops.
-        Ok(callable.map(|callable| {
-            let owner: LengthOwner =
-                std::rc::Rc::new(swoole_rs_phpswoole::length::Named::new(callable));
-            owner
-        }))
+        let callable = swoole_rs_phpswoole::setting_callable(value).ok_or(Stop)?;
+        let owner: LengthOwner =
+            std::rc::Rc::new(swoole_rs_phpswoole::length::Named::new(callable));
+        Ok(Some(owner))
     }
 
     fn release(&self, owner: LengthOwner) {
@@ -583,10 +568,10 @@ mod tests {
         fn bytes(&self, key: &CStr) -> Result<Option<Vec<u8>>, Stop> {
             Ok(self.get(key, "string").map(|v| v.bytes))
         }
-        fn fatal(&self, level: c_int, message: &CStr) -> Stop {
+        fn invalid(&self, message: &CStr) -> Stop {
             self.trace
                 .borrow_mut()
-                .push(format!("fatal{level}:{}", message.to_str().unwrap()));
+                .push(format!("invalid:{}", message.to_str().unwrap()));
             Stop
         }
         fn callable(&self, key: &CStr) -> Result<Option<LengthOwner>, Stop> {
@@ -848,21 +833,24 @@ mod tests {
 
     #[test]
     fn package_eof_is_bounded() {
-        // packet_settings: the u8 length is published, then an empty or
-        // over-long one is fatal, and a valid one is copied.
         for length in [0, 1, 8, 9, 256, 264] {
             let mut c = port();
             let eof = vec![b'x'; length];
             let table = Table::default().with("package_eof", text(&eof));
+            let original = c.protocol.get_mut().package_eof_len;
             let result = apply(&table, &c);
             assert_eq!(
                 c.protocol.get_mut().package_eof_len,
-                length.to_le_bytes()[0]
+                if result.is_ok() {
+                    length.c_cast::<u8>()
+                } else {
+                    original
+                }
             );
             let trace = table.trace.borrow().join(";");
             match length {
-                0 | 256 => assert!(trace.ends_with("fatal1:package_eof cannot be an empty string")),
-                9 | 264 => assert!(trace.ends_with("fatal1:package_eof max length is 8")),
+                0 => assert!(trace.ends_with("invalid:package_eof cannot be an empty string")),
+                9 | 256 | 264 => assert!(trace.ends_with("invalid:package_eof max length is 8")),
                 _ => {
                     assert!(result.is_ok());
                     assert_eq!(&c.protocol.get_mut().package_eof[..length], &eof[..]);
@@ -1060,7 +1048,7 @@ mod tests {
     }
 
     #[test]
-    fn a_missing_certificate_is_fatal() {
+    fn a_missing_certificate_is_rejected() {
         let owner = tls::TlsContext::new();
         for key in ["ssl_cert_file", "ssl_key_file", "ssl_client_cert_file"] {
             let table = Table::default().with(key, text(b"/nonexistent/x.pem\0tail"));
@@ -1081,7 +1069,7 @@ mod tests {
                 _ => "ssl_client_cert_file[/nonexistent/x.pem] not found",
             };
             let trace = table.trace.borrow().join(";");
-            assert!(trace.ends_with(&format!("fatal1:{message}")), "{trace}");
+            assert!(trace.ends_with(&format!("invalid:{message}")), "{trace}");
         }
     }
 }

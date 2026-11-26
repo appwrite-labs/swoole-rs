@@ -308,7 +308,7 @@ pub const NO_THEN: Then = Then(None, ptr::null_mut());
 /// holds what it returned, in place of what it held, which is not released.
 /// # Errors
 /// The call bailed out.
-pub(crate) fn user_call(
+pub fn user_call(
     name: &crate::Value,
     args: crate::zval::Zvals<'_>,
     retval: &Owned,
