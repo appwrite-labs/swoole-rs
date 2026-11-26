@@ -361,7 +361,7 @@ fn set_time_limit(call: &Call) {
         return;
     };
     let co = host::require_coroutine();
-    let Some(co) = co.filter(|_| timeout > 0.0) else {
+    let Some(co) = co.filter(|_| timeout >= 0.0) else {
         call.set_bool(false);
         return;
     };
@@ -370,13 +370,18 @@ fn set_time_limit(call: &Call) {
         call.set_bool(false);
         return;
     };
-    let Some(timer) =
-        swoole_rs_corebase::timer::add_fn_sec(timeout, false, move || time_limit(cid))
-    else {
-        call.set_bool(false);
-        return;
+    let timer = if timeout == 0.0 {
+        None
+    } else {
+        let Some(timer) =
+            swoole_rs_corebase::timer::add_fn_sec(timeout, false, move || time_limit(cid))
+        else {
+            call.set_bool(false);
+            return;
+        };
+        Some(timer)
     };
-    if let Some(old) = context::swap_time_limit(ctx, cid, Some(timer)) {
+    if let Some(old) = context::swap_time_limit(ctx, cid, timer) {
         swoole_rs_corebase::timer::del_id(old);
     }
     call.set_bool(true);

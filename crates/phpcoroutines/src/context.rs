@@ -480,8 +480,7 @@ per_thread! {
     static TIME_LIMITS: Cell<Vec<(c_long, Held)>> = Cell::new(Vec::new());
 }
 
-/// Coroutine `cid`'s time-limit timer becomes `timer` (none: it fired, or the
-/// coroutine closes); the armed one it replaces, for the caller to delete.
+/// Replace or clear the time limit for coroutine `cid`, returning its previous timer.
 pub(crate) fn swap_time_limit(ctx: Ctx, cid: c_long, timer: Option<Held>) -> Option<Held> {
     let limited = ctx.time_limited();
     ctx.set_time_limited(timer.is_some());
