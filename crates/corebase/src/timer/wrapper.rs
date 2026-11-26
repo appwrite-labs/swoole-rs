@@ -138,15 +138,16 @@ impl Deadline {
     }
 
     /// Upstream's `timeout` seconds, as `Coroutine::yield_ex` reads them: a positive
-    /// one ends that long from now; zero, a negative one or NaN is [`Deadline::never`],
-    /// as is one past what the clock holds. Only the PHP-API boundary passes it a
-    /// timeout of its user's.
+    /// one ends its `sec2msec` milliseconds from now (truncated, at least
+    /// `SW_TIMER_MIN_SEC`), so a timer armed at once gets upstream's milliseconds;
+    /// zero, a negative one or NaN is [`Deadline::never`], as is one past what the
+    /// clock holds. Only the PHP-API boundary passes it a timeout of its user's.
     #[must_use]
     #[inline]
     pub fn from_timeout(seconds: f64) -> Self {
         if seconds > 0.0
-            && let Ok(after) = Duration::try_from_secs_f64(seconds)
-            && let Ok(after) = u64::try_from(after.as_nanos())
+            && let Ok(ms) = u64::try_from(sec2msec(seconds))
+            && let Some(after) = ms.checked_mul(1_000_000)
         {
             Self(now_nanos().checked_add(after).and_then(NonZeroU64::new))
         } else {
@@ -163,7 +164,8 @@ impl Deadline {
     }
 
     /// A one-shot `f` (as [`add_fn`]) at the deadline: the time left, rounded up
-    /// to the millisecond and at least `SW_TIMER_MIN_SEC`; none when it never comes.
+    /// to the millisecond (a whole number of them from [`Deadline::from_timeout`],
+    /// less any that passed) and at least `SW_TIMER_MIN_SEC`; none when it never comes.
     /// The timer counts that from its own clock, truncated to the millisecond as
     /// upstream's is, so `f` may run up to a millisecond before the deadline.
     #[must_use]

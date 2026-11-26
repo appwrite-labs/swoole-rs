@@ -1028,8 +1028,7 @@ mod tests {
         q.end();
     }
 
-    /// `yield_ex`'s timeouts: only a positive one ends, and it ends no later
-    /// than that long from now.
+    /// `yield_ex`'s timeouts: only a positive one ends, `sec2msec`'s milliseconds from now.
     #[test]
     fn deadline_of_a_timeout() {
         for forever in [-1.0, -0.0, 0.0, f64::NAN, f64::INFINITY, f64::MAX] {
@@ -1040,8 +1039,21 @@ mod tests {
             );
         }
         assert_eq!(Deadline::never().remaining(), None);
-        let left = Deadline::from_timeout(0.5).remaining().unwrap();
-        assert!(left <= std::time::Duration::from_millis(500), "{left:?}");
-        assert!(left > std::time::Duration::from_millis(400), "{left:?}");
+        // `sec2msec`'s milliseconds: truncated, at least one.
+        for (seconds, ms) in [
+            (0.5, 500),
+            (0.0015, 1),
+            (0.0001, 1),
+            (0.3, 300),
+            (1.9999, 1999),
+        ] {
+            let left = Deadline::from_timeout(seconds).remaining().unwrap();
+            let range =
+                std::time::Duration::from_millis(ms - 1)..=std::time::Duration::from_millis(ms);
+            assert!(
+                range.contains(&left) && left != *range.start(),
+                "{seconds}: {left:?}"
+            );
+        }
     }
 }
