@@ -169,6 +169,7 @@ impl Response {
 }
 
 enum FrameReadError {
+    InvalidMaxFrameSize(u32),
     Short,
     Goaway,
 }
@@ -600,9 +601,13 @@ impl Client {
     }
 
     fn send_goaway(&self, error_code: i64, debug: &[u8]) -> bool {
+        let max_frame = send_frame_size(self.remote.get().max_frame_size) as usize;
+        if debug.len() > max_frame - GOAWAY_SIZE {
+            warn(c"GOAWAY debug data exceeds the peer's maximum frame size");
+            return false;
+        }
         let code = error_code.c_cast::<u32>();
-        let mut frame =
-            frame_header(FrameType::Goaway, GOAWAY_SIZE + debug.len(), code & 0xff, 0).to_vec();
+        let mut frame = frame_header(FrameType::Goaway, GOAWAY_SIZE + debug.len(), 0, 0).to_vec();
         frame.extend_from_slice(&self.last_stream_id.get().to_be_bytes());
         frame.extend_from_slice(&code.to_be_bytes());
         frame.extend_from_slice(debug);
@@ -810,6 +815,9 @@ impl Client {
                 };
                 for entry in entries {
                     let (key, number) = swoole_rs_http2::sw_rs_http2_unpack_setting(entry);
+                    if key == setting_id::MAX_FRAME_SIZE && send_frame_size(number) != number {
+                        return Err(FrameReadError::InvalidMaxFrameSize(number));
+                    }
                     self.apply_remote_setting(key, number);
                 }
                 Payload::Unread
@@ -874,12 +882,22 @@ impl Client {
         let (facts, read) = match read {
             Ok(frame) => frame,
             Err(error) => {
-                if matches!(error, FrameReadError::Goaway) {
-                    self.close();
-                    self.update_error(
-                        error_code::FRAME_SIZE_ERROR.cast_signed(),
-                        b"invalid GOAWAY frame length",
-                    );
+                match error {
+                    FrameReadError::Short => return Frame::Fail,
+                    FrameReadError::Goaway => {
+                        self.close();
+                        self.update_error(
+                            error_code::FRAME_SIZE_ERROR.cast_signed(),
+                            b"invalid GOAWAY frame length",
+                        );
+                    }
+                    FrameReadError::InvalidMaxFrameSize(value) => {
+                        self.close();
+                        self.update_error(
+                            error_code::PROTOCOL_ERROR.cast_signed(),
+                            format!("invalid SETTINGS_MAX_FRAME_SIZE value {value}").as_bytes(),
+                        );
+                    }
                 }
                 return Frame::Fail;
             }
@@ -1306,7 +1324,10 @@ const CONSTANTS: [(&CStr, i64); 24] = [
     (c"SWOOLE_HTTP2_TYPE_WINDOW_UPDATE", 8),
     (c"SWOOLE_HTTP2_TYPE_CONTINUATION", 9),
     (c"SWOOLE_HTTP2_ERROR_NO_ERROR", error_code::NO_ERROR as i64),
-    (c"SWOOLE_HTTP2_ERROR_PROTOCOL_ERROR", 1),
+    (
+        c"SWOOLE_HTTP2_ERROR_PROTOCOL_ERROR",
+        error_code::PROTOCOL_ERROR as i64,
+    ),
     (
         c"SWOOLE_HTTP2_ERROR_INTERNAL_ERROR",
         error_code::INTERNAL_ERROR as i64,

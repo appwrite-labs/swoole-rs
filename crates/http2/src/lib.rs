@@ -176,6 +176,7 @@ pub fn sw_rs_http2_window_plan(
 /// HTTP/2 error codes used by both the wire handlers and PHP registration.
 pub mod error_code {
     pub const NO_ERROR: u32 = 0;
+    pub const PROTOCOL_ERROR: u32 = 1;
     pub const INTERNAL_ERROR: u32 = 2;
     pub const FRAME_SIZE_ERROR: u32 = 6;
 }
