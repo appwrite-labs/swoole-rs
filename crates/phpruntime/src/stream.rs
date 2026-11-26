@@ -714,7 +714,7 @@ fn xport_api(stream: Stream<'_>, socket: &Socket, xport: Xport<'_>) -> Result<()
                 .get(p.how() as usize)
                 .copied()
                 .unwrap_or(libc::SHUT_RDWR);
-            p.outputs.returncode = socket.shutdown(how).into();
+            p.outputs.returncode = status(socket.shutdown(how));
         }
         _ => {}
     }
