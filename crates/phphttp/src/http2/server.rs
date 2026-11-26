@@ -1103,6 +1103,14 @@ fn settings(session: &Session, payload: &[u8]) -> bool {
     };
     for entry in entries {
         let (id, value) = swoole_rs_http2::sw_rs_http2_unpack_setting(entry);
+        if id == setting_id::MAX_FRAME_SIZE && send_frame_size(value) != value {
+            warn(
+                c"swoole_http2_server_parse",
+                &format!("invalid SETTINGS_MAX_FRAME_SIZE value {value}"),
+            );
+            close(session.default_ctx());
+            return false;
+        }
         session.with_deflater(|deflater| {
             let old = if id == setting_id::HEADER_TABLE_SIZE {
                 session.remote[0].get()
