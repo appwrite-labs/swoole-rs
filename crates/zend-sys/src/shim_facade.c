@@ -43,3 +43,18 @@ int swr_zend_try_facade_object_init(zval *target, zend_class_entry *ce) {
     SWR_ZEND_CATCH { bailed = 1; } SWR_ZEND_END_TRY();
     return bailed;
 }
+
+/* bailout: an object's clone handler may invoke PHP __clone. */
+int swr_zend_try_facade_clone(const zval *source, zval *result) {
+    volatile int bailed = 0;
+    SWR_ZEND_TRY {
+        if (Z_TYPE_P(source) == IS_OBJECT && Z_OBJ_HT_P(source)->clone_obj) {
+            zend_object *copy = Z_OBJ_HT_P(source)->clone_obj(Z_OBJ_P(source));
+            if (copy) {
+                ZVAL_OBJ(result, copy);
+            }
+        }
+    }
+    SWR_ZEND_CATCH { bailed = 1; } SWR_ZEND_END_TRY();
+    return bailed;
+}

@@ -17,6 +17,8 @@ pub struct NameResolverContext {
     /// A resolver's state kept for the rest of the lookup (the PHP resolver's
     /// cluster), dropped with the context or by [`release`](Self::release).
     pub private_data: Option<Box<dyn Any>>,
+    /// Name and address family of the lookup that owns the current resolver state.
+    pub query: (Vec<u8>, c_int),
     pub cluster: bool,
     pub is_final: bool,
 }
@@ -52,6 +54,18 @@ impl ResolverOptions {
 }
 
 impl NameResolverContext {
+    fn begin_lookup(&mut self, name: &[u8]) {
+        let family = self.options.get().0;
+        if self.query.0 != name || self.query.1 != family {
+            self.release();
+            self.cluster = false;
+            self.query.0.clear();
+            self.query.0.extend_from_slice(name);
+            self.query.1 = family;
+        }
+        self.is_final = false;
+    }
+
     /// `ctx->dtor(ctx); ctx->private_data = nullptr;`.
     pub fn release(&mut self) {
         self.private_data = None;
@@ -158,6 +172,7 @@ pub fn swr_v1_core_name_resolver_resolve(
     context: &mut NameResolverContext,
     out: &mut Vec<u8>,
 ) -> bool {
+    context.begin_lookup(name);
     let mut last = i64::MIN;
     loop {
         let next = resolvers().entries.iter().find(|r| r.id > last).copied();

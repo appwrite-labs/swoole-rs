@@ -17,4 +17,6 @@ int swr_zend_try_facade_throw(zend_class_entry *, const char *, zend_long);
 int swr_zend_try_facade_throw_error(const char *message);
 int swr_zend_try_facade_object_init(zval *target, zend_class_entry *ce);
 
+int swr_zend_try_facade_clone(const zval *source, zval *result);
+
 #endif

@@ -6,12 +6,15 @@
 //! resolver's entry names its object, whose reference crates/phpcoroutines keeps.
 use crate::socket::warn;
 pub use native::swoole_name_resolver_php_remove;
-use std::{cell::Cell, ffi::c_void, mem::ManuallyDrop};
+use std::{
+    cell::Cell,
+    ffi::{CString, c_void},
+};
 use swoole_rs_corebase::{CCast, NameResolverContext, ResolverOptions};
 use swoole_rs_phpstubs::name_resolver;
 use swoole_rs_zend::{
     Call, Custom, CustomClass, Minit, Owned, Value, ZString, bailout, method_table,
-    sys::{IS_OBJECT, IS_STRING, ZEND_ACC_PUBLIC},
+    sys::{IS_ARRAY, IS_FALSE, IS_NULL, IS_OBJECT, IS_STRING, ZEND_ACC_PUBLIC},
 };
 
 /// `AF_INET`, `__construct`'s default family.
@@ -39,29 +42,6 @@ mod native {
             timeout: context.timeout,
             ..NameResolverContext::default()
         };
-    }
-
-    /// A reference of our own to the cluster in `private_data`, if any: the PHP calls
-    /// on it may reach the context.
-    pub(super) fn swoole_name_resolver_context_cluster(
-        context: &NameResolverContext,
-    ) -> Option<Owned> {
-        let cluster = context.private_data.as_ref()?.downcast_ref::<Owned>()?;
-        Some(cluster.copy())
-    }
-
-    /// With a cluster: keep it in `private_data` (dropped with the context), `cluster_`
-    /// set and `final_` clear. Without: both flags as given.
-    pub(super) fn swoole_name_resolver_context_settle(
-        context: &mut NameResolverContext,
-        cluster: Option<Owned>,
-        is_final: bool,
-    ) {
-        context.cluster = cluster.is_some();
-        if let Some(cluster) = cluster {
-            context.private_data = Some(Box::new(cluster));
-        }
-        context.is_final = is_final;
     }
 
     /// `swoole_name_resolver_add({lookup, resolver, TYPE_PHP})` for an object: the
@@ -248,18 +228,6 @@ fn remove(call: &Call) {
     call.set_bool(kept.is_some());
 }
 
-/// `method(arg)` on the object `object` holds: the result (`IS_UNDEF` if it
-/// threw). Upstream leaves the result of a call that bailed out, so does this.
-fn call_method(
-    object: &Value,
-    method: &[u8],
-    arg: Option<&Value>,
-) -> Result<ManuallyDrop<Owned>, bailout::Bailout> {
-    object
-        .call_method(None, method, arg.as_slice())
-        .map(ManuallyDrop::new)
-}
-
 /// `php_swoole_name_resolver_lookup`: ask the `Swoole\NameResolver` object `data` names
 /// (registered only by [`php_swoole_name_resolver_add`], and skipped unless this thread
 /// keeps it) for `name`, keeping a returned cluster in the context and popping a node
@@ -293,66 +261,107 @@ fn lookup_php(
     answered && !bailout::pending()
 }
 
-/// The lookup's steps, as upstream's; `None` is an empty result. Upstream
-/// returns early from some steps without releasing a call's result; so does
-/// this ([`call_method`]'s `ManuallyDrop`).
+/// Decode PHP resolver results before allowing a lookup to fall back to DNS.
 fn resolve(
     resolver: &Value,
     name: &[u8],
     context: &mut NameResolverContext,
 ) -> Result<Option<Vec<u8>>, bailout::Bailout> {
-    let mut cluster = native::swoole_name_resolver_context_cluster(context);
-    if let Some(kept) = &cluster {
-        let count = call_method(kept, b"count", None)?.long();
-        if bailout::pending() {
+    let options = context.options.get();
+    let cluster = context
+        .private_data
+        .as_ref()
+        .and_then(|state| state.downcast_ref::<Owned>())
+        .map(|cluster| cluster.copy());
+    context.is_final = true;
+    let cluster = if let Some(kept) = cluster {
+        kept
+    } else {
+        context.release();
+        context.cluster = false;
+        bailout::outcome(())?;
+        let argument = Owned::string(ZString::new(name));
+        let found = resolver.call_method(None, b"lookup", &[&argument])?;
+        if !swoole_rs_zend::host::exception().is_null() {
             return Ok(None);
         }
-        if count == 0 {
-            // No available node: release the cluster and resolve again.
-            cluster = None;
-            // The context's cluster is an `Owned`, whose drop releases it inside
-            // `zend_try` and defers a destructor's bailout.
-            context.release();
-            bailout::outcome(())?;
+        match found.kind() {
+            IS_STRING => {
+                let host = found.bytes().unwrap_or_default();
+                if host.is_empty() || family_of(host) == Some(options.0) {
+                    return Ok(Some(host.to_vec()));
+                }
+                swoole_rs_zend::value_error(c"NameResolver::lookup() returned an invalid IP address for the requested family");
+                return Ok(None);
+            }
+            IS_ARRAY => return Ok(node_address(&found, options)),
+            IS_FALSE | IS_NULL => {
+                context.is_final = false;
+                return Ok(None);
+            }
+            IS_OBJECT
+                if found.instance_of_named(&ZString::new(br"Swoole\NameResolver\Cluster"))?
+                    == Some(true) =>
+            {
+                let Some(found) = found.clone_object()? else {
+                    return Ok(None);
+                };
+                let kept = found.copy();
+                context.private_data = Some(Box::new(found));
+                context.cluster = true;
+                kept
+            }
+            _ => {
+                swoole_rs_zend::type_error(c"NameResolver::lookup() must return a Cluster, node array, IP string, false or null");
+                return Ok(None);
+            }
+        }
+    };
+    loop {
+        let node = cluster.call_method(None, b"pop", &[])?;
+        if !swoole_rs_zend::host::exception().is_null() || node.kind() == IS_FALSE {
+            return Ok(None);
+        }
+        let address = node_address(&node, options);
+        if address.is_some() || !swoole_rs_zend::host::exception().is_null() {
+            return Ok(address);
         }
     }
-    let cluster = if let Some(cluster) = cluster {
-        cluster
-    } else {
-        let zname = Owned::string(ZString::new(name));
-        let found = call_method(resolver, b"lookup", Some(&zname))?;
-        let kind = found.kind();
-        let answer = (kind == IS_STRING).then(|| found.bytes().unwrap_or_default().to_vec());
-        // The context takes an object result's reference; any other is left, as upstream.
-        let found = (kind == IS_OBJECT).then(|| ManuallyDrop::into_inner(found));
-        let kept = found.as_ref().map(|found| found.copy());
-        native::swoole_name_resolver_context_settle(context, found, kind == IS_STRING);
-        match (kind, kept) {
-            (IS_OBJECT, Some(kept)) => kept,
-            (IS_STRING, _) => return Ok(answer),
-            _ => return Ok(None),
-        }
-    };
-    let node = call_method(&cluster, b"pop", None)?;
+}
+
+fn family_of(host: &[u8]) -> Option<libc::c_int> {
+    let text = CString::new(host).ok()?;
+    [libc::AF_INET, libc::AF_INET6]
+        .into_iter()
+        .find(|&family| swoole_rs_clients::address::verify_ip(family, &text))
+}
+
+fn node_address(node: &Value, (family, with_port): (libc::c_int, bool)) -> Option<Vec<u8>> {
     let Some(entry) = node.array() else {
-        return Ok(None);
+        swoole_rs_zend::type_error(c"NameResolver cluster nodes must be arrays");
+        return None;
     };
-    let Some(host) = entry.find(b"host").and_then(Value::bytes) else {
-        return Ok(None);
+    let host = entry
+        .find(b"host")
+        .and_then(Value::bytes)
+        .and_then(|host| Some((host, family_of(host)?)));
+    let port = entry
+        .find(b"port")
+        .and_then(Value::as_long)
+        .filter(|p| (1..=65535).contains(p));
+    let (Some((host, host_family)), Some(port)) = (host, port) else {
+        swoole_rs_zend::value_error(c"NameResolver node must contain a valid IP host and an integer port between 1 and 65535");
+        return None;
     };
+    if host_family != family {
+        return None;
+    }
     let mut result = host.to_vec();
-    // The PHP calls may have re-run `__construct`: read `with_port` now, as upstream.
-    if context.options.get().1 {
-        result.push(b':');
-        let Some(port) = entry.find(b"port").and_then(Value::applied_long) else {
-            return Ok(None);
-        };
+    if with_port {
+        result.push(if family == libc::AF_INET6 { b'@' } else { b':' });
         result.extend_from_slice(port.to_string().as_bytes());
     }
-    // Our reference to the popped node, released inside `zend_try`: a destructor's
-    // bailout stays pending, and stops the lookup.
-    drop(ManuallyDrop::into_inner(node));
-    bailout::outcome(Some(result))
+    Some(result)
 }
 
 swoole_rs_zend::handlers! {

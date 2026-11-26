@@ -79,7 +79,6 @@ PENDING_PORTS = {
         'swoole_function/sendfile_object.phpt',
         'swoole_http_server/create_request.phpt',
     ],
-    5656: ['swoole_function/name_resolver_contract.phpt'],
 }
 PENDING = {f'tests/{test}': issue for issue, tests in PENDING_PORTS.items() for test in tests}
 
