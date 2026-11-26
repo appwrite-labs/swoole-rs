@@ -392,17 +392,30 @@ fn wait_signal(call: &Call) {
         call.set_bool(false);
         return;
     };
-    let mut signals = Vec::new();
-    if let Some(given) = call.value(1) {
-        if let Some(array) = given.array() {
-            signals.extend(array.entries().map(|(_, item)| item.long()));
-        } else {
-            signals.push(given.long());
+    let Some(given) = call.value(1) else { return };
+    let convert = |value: &swoole_rs_zend::Value| {
+        let number = value.applied_long()?;
+        swoole_rs_zend::host::exception()
+            .is_null()
+            .then_some(number)
+    };
+    let signals = if let Some(array) = given.array() {
+        let Some(list) = array
+            .entries()
+            .map(|(_, item)| convert(item))
+            .collect::<Option<Vec<_>>>()
+        else {
+            return;
+        };
+        if list.is_empty() {
+            call.argument_value_error(1, c"must not be empty");
+            return;
         }
-    }
-    if swoole_rs_zend::bailout::pending() {
-        return;
-    }
+        list
+    } else {
+        let Some(number) = convert(given) else { return };
+        vec![number]
+    };
     // Not dropped while the coroutine waits, so no frame here owns a drop if a
     // fatal error ends the wait.
     let signals = std::mem::ManuallyDrop::new(signals);
