@@ -786,6 +786,13 @@ mod tests {
     }
 
     #[test]
+    fn header_value_whitespace() {
+        let (_, r) = parsed(b"POST / HTTP/1.1\r\nHost: localhost\r\nConnection:\tkeep-alive\r\nContent-Type:\tmultipart/form-data; boundary=test\r\n\r\n");
+        assert!(r.keep_alive);
+        assert!(r.form.is_some());
+    }
+
+    #[test]
     fn header_info_and_values() {
         let text = b"POST /x HTTP/1.1\r\nHost: a\r\nConnection: keep-alive\r\nContent-Length: 12\r\n\r\nbody";
         let (i, r) = parsed(text);
