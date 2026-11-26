@@ -3,7 +3,9 @@
 The Swoole reactor (backends, wait loop, handlers, callbacks, deferred queues),
 `Socket` I/O and output queues. Rust sources are in
 `crates/corebase/src/reactor/`; `crates/corebase/src/tls/upstream.rs` and `reactor_write.rs` hold the
-`Socket` and write-path members that also touch TLS.
+`Socket` and write-path members that also touch TLS. The reactor reaches that write
+path and the reactor create and destroy hooks only through `reactor::UpperLayer`, which
+`swoole_init` registers (`register_upper_layer`).
 
 `swoole_socket.h` exposes the socket members native code uses.
 `reactor_state.rs` constructs and frees the reactor state
