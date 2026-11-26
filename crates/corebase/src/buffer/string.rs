@@ -737,8 +737,9 @@ pub fn thread_buffer() -> *mut c_void {
     THREAD_BUFFER.get().cast()
 }
 
-/// Sets `SwooleTG.buffer_stack` to `buffer`, another thread's ([`thread_buffer`]).
-pub fn set_thread_buffer(buffer: *mut c_void) {
+/// Sets `SwooleTG.buffer_stack` to `buffer`, another thread's live one ([`thread_buffer`]):
+/// crate-private, as [`try_with_thread_buffer`] lends what it names.
+pub(crate) fn set_thread_buffer(buffer: *mut c_void) {
     THREAD_BUFFER.set(buffer.cast());
 }
 
