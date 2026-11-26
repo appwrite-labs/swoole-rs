@@ -157,9 +157,13 @@ impl ConnectionRecord {
         self.websocket_status.get()
     }
 
-    /// Stores the status its WebSocket state moved to.
-    fn mark(&self, status: WebSocketStatus) {
-        self.websocket_status.set(status);
+    /// Moves the WebSocket state from `from` (whatever it is, for `None`) to `to`. A
+    /// handle moves only the state it was read in: another process may have moved it
+    /// since (a worker's `disconnect`).
+    fn advance(&self, from: Option<WebSocketStatus>, to: WebSocketStatus) {
+        if from.is_none_or(|from| self.websocket_status.get() == from) {
+            self.websocket_status.set(to);
+        }
     }
 }
 
@@ -277,7 +281,8 @@ pub struct Closing<'a>(&'a ConnectionRecord);
 impl Closing<'_> {
     /// The peer answered the close frame.
     pub fn answered(self) {
-        self.0.mark(WebSocketStatus::None);
+        self.0
+            .advance(Some(WebSocketStatus::Closing), WebSocketStatus::None);
     }
 }
 
@@ -292,7 +297,10 @@ impl<'a> Requested<'a> {
         reason = "a transition, made for its effect"
     )]
     pub fn handshake(self) -> Handshaking<'a> {
-        self.0.mark(WebSocketStatus::Handshake);
+        self.0.advance(
+            Some(WebSocketStatus::Connection),
+            WebSocketStatus::Handshake,
+        );
         Handshaking(self.0)
     }
 }
@@ -305,13 +313,17 @@ impl<'a> Handshaking<'a> {
         reason = "a transition, made for its effect"
     )]
     pub fn open(self) -> Open<'a> {
-        self.0.mark(WebSocketStatus::Active);
+        self.0
+            .advance(Some(WebSocketStatus::Handshake), WebSocketStatus::Active);
         Open(self.0)
     }
 
     /// The handshake was answered with another status.
     pub fn fail(self) {
-        self.0.mark(WebSocketStatus::HandshakeFailed);
+        self.0.advance(
+            Some(WebSocketStatus::Handshake),
+            WebSocketStatus::HandshakeFailed,
+        );
     }
 }
 
@@ -456,13 +468,13 @@ impl<'a> Connection<'a> {
         reason = "a transition, made for its effect"
     )]
     pub fn websocket_requested(self) -> Requested<'a> {
-        self.record.mark(WebSocketStatus::Connection);
+        self.record.advance(None, WebSocketStatus::Connection);
         Requested(self.record)
     }
 
     /// `disconnect` sent the close frame.
     pub fn websocket_closing(self) {
-        self.record.mark(WebSocketStatus::Closing);
+        self.record.advance(None, WebSocketStatus::Closing);
     }
 
     /// `OP_STORE_CLIENT_CERT`: `cert` is the connection's client certificate, which
