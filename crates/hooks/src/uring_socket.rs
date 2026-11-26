@@ -385,7 +385,8 @@ pub(crate) fn swr_v1_hook_uring_connect(ops: &UringSocketOps<'_>, peer: &SocketA
     let result = ops.bound(Events::RDWR, || {
         uring::connect(host, fd, peer, ops.connect_timeout)
     });
-    if result.is_err() {
+    if let Err(error) = result {
+        (ops.set_err)(ops.socket, error.raw_os_error().unwrap_or(libc::EIO));
         return false;
     }
     ops.socket
