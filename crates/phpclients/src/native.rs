@@ -387,8 +387,7 @@ impl Co {
 
     /// One receiving [`Transfer`] into `buffer`'s room under `timeout`.
     pub(crate) fn receive(self, op: Transfer, buffer: &mut ZBuf, timeout: f64) -> Option<usize> {
-        let _timeout =
-            (!matches!(op, Transfer::Peek)).then(|| self.timeout(timeout, TimeoutKind::READ));
+        let _timeout = self.timeout(timeout, TimeoutKind::READ);
         self.fill(Some(op), buffer)
     }
 
@@ -398,7 +397,7 @@ impl Co {
         use swoole_rs_hooks::socket_members::Receive;
         let op = match op {
             None => Receive::Peer,
-            Some(Transfer::Peek) => Receive::Peek,
+            Some(Transfer::Peek(flags)) => Receive::Peek(flags),
             Some(Transfer::RecvAll) => Receive::All,
             Some(Transfer::RecvLine) => Receive::Line,
             Some(Transfer::RecvWithBuffer) => Receive::Buffered,
@@ -687,13 +686,12 @@ pub(crate) enum ErrorKind {
 
 /// What `swoole_socket_coro_transfer` does.
 #[derive(Clone, Copy)]
-#[repr(i32)]
 pub(crate) enum Transfer {
-    Peek = 0,
-    Recv = 1,
-    RecvAll = 2,
-    RecvLine = 3,
-    RecvWithBuffer = 4,
-    Send = 5,
-    SendAll = 6,
+    Peek(c_int),
+    Recv,
+    RecvAll,
+    RecvLine,
+    RecvWithBuffer,
+    Send,
+    SendAll,
 }

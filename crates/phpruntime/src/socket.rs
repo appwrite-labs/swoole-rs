@@ -191,7 +191,7 @@ impl Socket {
                 .flatten(),
             RecvOp::Recv => lend_spare(out, |out| socket.recv(out)).0,
             RecvOp::Once => socket.recv_once(out),
-            RecvOp::Peek => lend_spare(out, |out| socket.peek(out)).0,
+            RecvOp::Peek => lend_spare(out, |out| socket.peek(out, 0)).0,
         }
     }
 

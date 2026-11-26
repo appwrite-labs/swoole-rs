@@ -144,7 +144,7 @@ pub fn recv(fd: c_int, buf: &mut [u8], flags: c_int) -> io::Result<usize> {
         return sys::recv(fd, buf, flags).ok_or_else(io::Error::last_os_error);
     };
     if flags & libc::MSG_PEEK != 0 {
-        lend_spare(buf, |out| socket.peek(out)).0
+        lend_spare(buf, |out| socket.peek(out, flags)).0
     } else {
         lend_spare(buf, |out| socket.recv(out)).0
     }

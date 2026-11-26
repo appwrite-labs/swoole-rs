@@ -1676,7 +1676,7 @@ fn peek() {
 
         let mut data = [0_u8; 128];
         let sock = Sock::with_fd(pairs[1], SW_SOCK_UNIX_STREAM);
-        let result = lend_spare(&mut data[..5], |out| sock.co().peek(out))
+        let result = lend_spare(&mut data[..5], |out| sock.co().peek(out, 0))
             .0
             .map_or(-1, usize::cast_signed);
         sock.close();

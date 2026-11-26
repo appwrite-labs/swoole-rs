@@ -534,7 +534,10 @@ fn peek(call: &Call) {
     };
     let length = usize::try_from(length).unwrap_or(0);
     let mut buffer = ZBuf::with_capacity(length);
-    if socket.receive(Transfer::Peek, &mut buffer, 0.0).is_none() {
+    if socket
+        .receive(Transfer::Peek(0), &mut buffer, 0.0)
+        .is_none()
+    {
         report_socket(call, socket);
         return call.set_bool(false);
     }

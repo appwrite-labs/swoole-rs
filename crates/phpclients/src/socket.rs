@@ -517,17 +517,26 @@ fn buffer_length(length: i64) -> usize {
     usize::try_from(if length <= 0 { BUFFER_SIZE_BIG } else { length }).unwrap_or(usize::MAX)
 }
 
-/// `peek(int $length = 65536): string|false`.
+/// Peek at the next bytes with an optional read timeout and receive flags.
 fn peek(call: &Call) {
-    let Ok(length) = call
-        .arity(0, 1)
-        .and_then(|()| call.long(1, BUFFER_SIZE_BIG))
-    else {
+    let parsed = call.arity(0, 3).and_then(|()| {
+        Ok((
+            call.long(1, BUFFER_SIZE_BIG)?,
+            call.double(2, 0.0)?,
+            call.long(3, 0)?,
+        ))
+    });
+    let Ok((length, timeout, flags)) = parsed else {
         return call.set_bool(false);
     };
-    let length = buffer_length(length);
     let Some(socket) = open(call) else { return };
-    receive(call, socket, Transfer::Peek, length, 0.0);
+    receive(
+        call,
+        socket,
+        Transfer::Peek(flags.c_cast()),
+        buffer_length(length),
+        timeout,
+    );
 }
 
 /// Fill a new string of `length` bytes with one transfer and return it.
@@ -777,10 +786,12 @@ fn recvfrom(call: &mut Call) {
     let mut buffer = ZBuf::with_capacity(length);
     let bytes = socket.recvfrom(&mut buffer, timeout);
     sync(call, socket);
+    if bytes.is_some() {
+        call.assign(1, address(socket).into_owned());
+    }
     if bytes <= Some(0) {
         return set_received(call, buffer, bytes);
     }
-    call.assign(1, address(socket).into_owned());
     call.set_zstring(buffer.into_zstring());
 }
 
