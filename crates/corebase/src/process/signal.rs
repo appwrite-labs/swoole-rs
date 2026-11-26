@@ -183,6 +183,7 @@ pub fn signal_set(
 ) -> Handler {
     let handler = handler.0;
     HOOKS.get_or_init(|| (callback, has_reactor));
+    register_with_reactor();
     if let Some(slot) = slot(signo) {
         if handler == 0 && slot.activated.load(Relaxed) {
             slot.reset();
@@ -202,6 +203,23 @@ pub fn signal_set(
     }
     let async_handler: extern "C" fn(c_int) = if safety { deferred } else { immediate };
     Handler(set_action(signo, address(async_handler), false, true))
+}
+
+/// Registers the loop's signal entries (`reactor::Signals`) once. Every installer that
+/// can mark a signal pending ([`signal_set`]'s deferred handler) or add a kqueue signal
+/// (`signal_kqueue_set`) calls it first, so the loop always reaches what they set.
+pub(crate) fn register_with_reactor() {
+    crate::reactor::set_signals(crate::reactor::Signals {
+        dispatch: dispatch_if_pending,
+        #[cfg(any(
+            target_os = "macos",
+            target_os = "freebsd",
+            target_os = "openbsd",
+            target_os = "netbsd",
+            target_os = "dragonfly"
+        ))]
+        kqueue: crate::process::signal_kqueue::signal_kqueue_dispatch,
+    });
 }
 
 /// `signal_handler_safety`: marks the signal for the next dispatch.
@@ -455,8 +473,10 @@ mod tests {
         // SAFETY: SIGUSR2 has the deferred handler installed above.
         unsafe { libc::raise(libc::SIGUSR2) };
         assert_eq!(SEEN.load(Relaxed), 0);
-        swoole_signal_dispatch();
+        // Through the entry `signal_set` registered with the loop, as its end callback runs it.
+        assert!(crate::reactor::signals::dispatch());
         assert_eq!(SEEN.swap(0, Relaxed), libc::SIGUSR2);
+        assert!(!crate::reactor::signals::dispatch());
 
         // Removing a handler puts back the action from before its registration.
         set_action(libc::SIGUSR2, 0, false, false);

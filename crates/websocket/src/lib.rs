@@ -68,16 +68,13 @@ pub const KEY_LEN: usize = swoole_rs_corebase::constants::SW_WEBSOCKET_KEY_LENGT
 pub const ENCODED_KEY_LEN: usize = KEY_LEN.div_ceil(3) * 4;
 
 /// RFC 6455's handshake GUID (`SW_WEBSOCKET_GUID`).
-const GUID: &[u8] = b"258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
+const GUID: &[u8; 36] = b"258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
 
 /// `Sec-WebSocket-Accept` for a `Sec-WebSocket-Key`: base64(SHA-1(key + GUID)),
 /// as the server handshake computes it (every byte of the key, NULs included).
 #[must_use]
 pub fn accept(key: &[u8]) -> [u8; 28] {
-    let mut input = Vec::with_capacity(key.len() + GUID.len());
-    input.extend_from_slice(key);
-    input.extend_from_slice(GUID);
-    let digest = sha1::digest(&input);
+    let digest = sha1::digest_with_suffix(key, GUID);
     // 4 * ceil(20 / 3) = 28 characters and the encoder's trailing NUL.
     let mut encoded = [0u8; 29];
     swoole_rs_base64::encode(&digest, &mut encoded);

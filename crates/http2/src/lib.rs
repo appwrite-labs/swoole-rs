@@ -173,16 +173,6 @@ pub fn sw_rs_http2_window_plan(
     Http2WindowPlan { value, increment }
 }
 
-#[must_use]
-pub fn sw_rs_http2_data_rejected(
-    current: usize,
-    additional: usize,
-    maximum: u32,
-    ended: bool,
-) -> bool {
-    current.wrapping_add(additional) > maximum as usize || ended
-}
-
 /// HTTP/2 error codes used by both the wire handlers and PHP registration.
 pub mod error_code {
     pub const NO_ERROR: u32 = 0;

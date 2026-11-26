@@ -38,12 +38,6 @@ fn want(tls: &mut SocketTls, read: bool, write: bool) {
     tls.want_write = write;
 }
 
-/// `Socket::ssl_clear_error`: clears this thread's OpenSSL error queue and the want flags.
-pub fn swr_v1_socket_ssl_clear(tls: &mut SocketTls) {
-    clear_errors();
-    want(tls, false, false);
-}
-
 /// A TLS read or write: what `ssl_recv`/`ssl_send` return, the errno to set when
 /// nonzero, and whether to log a protocol error first.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -422,8 +416,7 @@ pub(crate) fn socket_ssl_new_over(
     flags: c_int,
     bios: Option<(crate::tls::OwnedBio, Option<crate::tls::OwnedBio>)>,
 ) -> Result<(), SslNewError> {
-    socket.edit(|record| want(&mut record.tls, false, false));
-    clear_errors();
+    socket.edit(crate::reactor::SocketFields::ssl_clear_error);
     let Some(mut made) = crate::tls::handle::SSL_new(context) else {
         // The record's SSL becomes the null `SSL_new` returned, as upstream's.
         socket.edit(|record| record.set_ssl(None));
@@ -457,7 +450,7 @@ pub(crate) fn socket_ssl_new_over(
         // The new SSL, whose connection ex data is null or this record.
         record.set_ssl(Some(made));
         if made_up.is_ok() {
-            record.tls.state = SslState::SW_SSL_STATE_HANDSHAKE;
+            record.start_tls_handshake();
         }
     });
     made_up
@@ -515,12 +508,10 @@ mod tests {
                 (true, false),
                 "and replaces the flags"
             );
-            swr_v1_socket_ssl_clear(&mut tls);
-            assert_eq!(
-                (tls.want_read, tls.want_write),
-                (false, false),
-                "nothing pending"
-            );
+            let mut record = crate::reactor::SocketRecord::new();
+            record.tls = tls;
+            record.ssl_clear_error();
+            assert!(record.tls_wants().is_empty(), "nothing pending");
             SSL_free(ssl);
         }
     }

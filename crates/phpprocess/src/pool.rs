@@ -21,8 +21,7 @@ use std::{
     rc::Rc,
     sync::atomic::{AtomicPtr, Ordering},
 };
-use swoole_rs_corebase::reactor::Heap;
-use swoole_rs_corebase::reactor::signal_upstream::Handler as SignalHandler;
+use swoole_rs_corebase::process::signal_upstream::Handler as SignalHandler;
 use swoole_rs_corebase::{CCast, CellExt};
 use swoole_rs_corebase::{ossupport::QueueRecord, process};
 use swoole_rs_phpstubs::process_pool;
@@ -958,10 +957,7 @@ fn get_process(call: &Call) {
                     props.long(c"id", current_id);
                     props.long(c"pid", i64::from(copy.pid()));
                     if view.ipc_mode() == IpcMode::UnixSock {
-                        props.long(
-                            c"pipe",
-                            pipe.map_or(-1, |pipe| i64::from(Heap::lent(pipe).fd())),
-                        );
+                        props.long(c"pipe", pipe.map_or(-1, |pipe| i64::from(pipe.fd())));
                     }
                 }
                 // Upstream passes PIPE_TYPE_STREAM as enable_coroutine and async as the pipe

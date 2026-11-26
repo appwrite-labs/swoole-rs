@@ -8,8 +8,8 @@
 use std::cell::Cell;
 use std::ffi::{c_int, c_void};
 use std::sync::atomic::{AtomicI32, Ordering};
-use swoole_rs_corebase::reactor::wait_upstream::{swoole_waitpid, system_wait, system_waitpid};
 use swoole_rs_corebase::swoole_rand;
+use swoole_rs_corebase::waits::wait_upstream::{swoole_waitpid, system_wait, system_waitpid};
 use swoole_rs_ffi::event_api::swoole_event_wait;
 use swoole_rs_ffi::swoole_event_init;
 
@@ -295,7 +295,7 @@ fn daemon() {
             assert_eq!(sid, getsid(getpid()));
             assert!(isatty(STDIN_FILENO) != 0);
 
-            assert_eq!(swoole_rs_corebase::ossupport::swoole_daemon(0, 0), Ok(()));
+            assert_eq!(swoole_rs_corebase::swoole_daemon(0, 0), Ok(()));
             assert_ne!(sid, getsid(getpid()));
 
             assert!(isatty(STDIN_FILENO) == 0);

@@ -21,7 +21,7 @@ pub(crate) const CLOSE_ACTIVELY: c_int = 1 << 2;
 /// [`crate::hybrid::Step`] over `serv`, in the master.
 fn lifecycle_step(serv: crate::view::Server<'_>, step: crate::hybrid::Step) -> bool {
     use crate::hybrid::Step;
-    use swoole_rs_corebase::reactor::signal_upstream::{self, Handler};
+    use swoole_rs_corebase::process::signal_upstream::{self, Handler};
     /// `SW_FD_PIPE` and `SW_EVENT_READ`.
     const SW_FD_PIPE: c_int = swoole_rs_corebase::constants::FdType::SW_FD_PIPE as c_int;
     let state = serv.state();
@@ -34,7 +34,7 @@ fn lifecycle_step(serv: crate::view::Server<'_>, step: crate::hybrid::Step) -> b
                 _ => swoole_rs_corebase::swoole_redirect_stdout_file(c"/dev/null"),
             }
             // The master, before it starts any thread.
-            return swoole_rs_corebase::ossupport::swoole_daemon(0, 1).is_ok();
+            return swoole_rs_corebase::swoole_daemon(0, 1).is_ok();
         }
         Step::FactoryStart => return start(serv),
         // In the master, after the process factory forks and before any reactor

@@ -3,13 +3,15 @@
 //! `swoole::Timer` (upstream `src/core/timer.cc`, which the timer patch deletes): a
 //! Rust-owned record over the queue and its nodes, accessed by typed Rust paths.
 use crate::CCast;
-use crate::reactor::{event_api, swr_v1_event_set_end_callback, swr_v1_event_set_exit_condition};
+use crate::reactor::{
+    event_api, swr_v1_event_set_end_callback, swr_v1_event_set_exit_condition, thread_reactor,
+};
 use crate::timer::{
     Status, Timer as Queue, TimerView, absolute_msec, swr_v1_timer_backend,
     swr_v1_timer_delay_deadline, swr_v1_timer_rearm_after_add, swr_v1_timer_relative_msec,
     swr_v1_timer_system_set,
 };
-use crate::{log, swr_v1_core_set_signal_alarm, thread_reactor};
+use crate::{log, swr_v1_core_set_signal_alarm};
 use std::cell::Cell;
 use std::ffi::{CStr, c_int, c_long, c_void};
 use std::rc::Rc;
@@ -253,8 +255,8 @@ impl Owner {
             self.reactor.set(reactor);
             attach();
         } else if backend != MANUAL {
-            let alarm = crate::reactor::signal_upstream::Handler::new(alarm);
-            _ = crate::reactor::signal_upstream::set(libc::SIGALRM, alarm, false);
+            let alarm = crate::process::signal_upstream::Handler::new(alarm);
+            _ = crate::process::signal_upstream::set(libc::SIGALRM, alarm, false);
         }
     }
 

@@ -26,6 +26,9 @@ try {
         $cookies = $client->cookies;
         check($cookies['token'] === "one two three\0tail", 'binary cookie decode');
         check($cookies['odd;name'] === 'value', 'native first equals cookie grammar');
+        check($cookies['empty'] === '', 'empty cookie value');
+        check($cookies['escaped'] === '%zz %', 'malformed escape stays literal');
+        check(in_array('escaped=%zz+%25; Path=/', $client->set_cookie_headers, true), 'raw cookie header retained');
         check(in_array('nameless', $cookies, true), 'anonymous cookie');
         check($client->statusCode === ($mode === 'retry' ? 200 : 502), 'status after retry decision');
         check(($mode === 'retry' ? $client->body : implode('', $chunks)) === ($mode === 'retry' ? 'ok' : 'old'), 'exact response bytes');

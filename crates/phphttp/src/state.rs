@@ -64,11 +64,7 @@ pub(crate) struct Request {
     pub(crate) body_at: usize,
     pub(crate) body_length: usize,
     /// An HTTP/2 request's body, as its DATA frames arrive.
-    #[expect(
-        clippy::box_collection,
-        reason = "all zeroes must be valid: a null Box is None"
-    )]
-    pub(crate) h2_data: Option<Box<Vec<u8>>>,
+    pub(crate) h2_data: Option<Box<swoole_rs_corebase::buffer::BoundedBytes>>,
     pub(crate) zobject: Slot,
     /// The array properties made so far, a bit per `parse::Property`.
     pub(crate) arrays: u8,
@@ -77,6 +73,8 @@ pub(crate) struct Request {
 /// The parser's own bookkeeping (`ContextState::parse_`). All zeroes is the
 /// initial state, which `context::alloc` writes.
 pub(crate) struct Parse {
+    /// Raw byte limit for incremental `Request::parse` calls.
+    pub(crate) package_max_length: Option<u32>,
     pub(crate) header_value_len: usize,
     /// `Request::parse()`: spans llhttp flushed at the end of an input buffer.
     pub(crate) url_length: usize,
@@ -87,16 +85,7 @@ pub(crate) struct Parse {
     pub(crate) input_name: Option<Box<[u8]>>,
     /// The current upload's `$_FILES` entry (`IS_UNDEF` when there is none).
     pub(crate) multipart_header: Owned,
-    #[expect(
-        clippy::box_collection,
-        reason = "all zeroes must be valid: a null Box is None"
-    )]
-    pub(crate) form_data: Option<Box<Vec<u8>>>,
-    #[expect(
-        clippy::box_collection,
-        reason = "all zeroes must be valid: a null Box is None"
-    )]
-    pub(crate) chunked_body: Option<Box<Vec<u8>>>,
+    pub(crate) chunked_body: Option<Box<swoole_rs_corebase::buffer::BoundedBytes>>,
     pub(crate) input_var_num: u16,
 }
 

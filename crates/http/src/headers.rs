@@ -184,6 +184,23 @@ pub struct HttpCookie {
 fn get(data: &[u8], at: usize) -> Result<u8, i32> {
     data.get(at).copied().ok_or(INVALID)
 }
+/// The key in one semicolon-delimited token. Leading C whitespace is ignored.
+fn cookie_key(token: &[u8]) -> Option<Range<usize>> {
+    let end = token.iter().position(|&b| b == b'=').unwrap_or(token.len());
+    let start = token.get(..end)?.iter().position(|&b| !space(b))?;
+    Some(start..end)
+}
+
+/// Whether a Content-Disposition value contains the filename parameter.
+#[must_use]
+pub fn multipart_has_filename(data: &[u8]) -> bool {
+    let text = data.split(|&b| b == 0).next().unwrap_or_default();
+    text.split(|&b| b == b';').any(|token| {
+        cookie_key(token)
+            .and_then(|key| token.get(key))
+            .is_some_and(|key| super::case_equal(key, b"filename"))
+    })
+}
 /// Tokenize the next cookie of `data` from `cursor`, as legacy `strtok_r`: the
 /// delimiter after it and its '=' become NULs. Reads stop at the NUL that ends the
 /// cookies; None there.
@@ -198,8 +215,8 @@ pub fn cookie_next(data: &mut [u8], cursor: &mut usize) -> Result<Option<HttpCoo
         if get(data, *cursor)? == 0 {
             return Ok(None);
         }
-        let mut key = *cursor;
-        let mut end = key;
+        let start = *cursor;
+        let mut end = start;
         while !matches!(get(data, end)?, b';' | 0) {
             end += 1;
         }
@@ -208,26 +225,17 @@ pub fn cookie_next(data: &mut [u8], cursor: &mut usize) -> Result<Option<HttpCoo
             *delimiter = 0;
             *cursor += 1;
         }
-        let equal = data
-            .get(key..end)
-            .and_then(|token| token.iter().position(|&byte| byte == b'='))
-            .map(|at| key + at);
-        while key < end && space(get(data, key)?) {
-            key += 1;
-        }
-        if key == end || equal == Some(key) {
+        let Some(key) = cookie_key(data.get(start..end).ok_or(INVALID)?) else {
             continue;
-        }
-        let value = equal.map(|equal| {
-            if let Some(byte) = data.get_mut(equal) {
+        };
+        let key = start + key.start..start + key.end;
+        let value = (key.end < end).then(|| {
+            if let Some(byte) = data.get_mut(key.end) {
                 *byte = 0;
             }
-            equal + 1..end
+            key.end + 1..end
         });
-        return Ok(Some(HttpCookie {
-            key: key..equal.unwrap_or(end),
-            value,
-        }));
+        return Ok(Some(HttpCookie { key, value }));
     }
 }
 #[cfg(test)]

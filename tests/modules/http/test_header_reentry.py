@@ -123,3 +123,47 @@ def test_url_rewrite_rules_warn_only_for_patterns_upstream_runs_and_this_server_
         for pattern in ('~(a)\\1~', '~a(?=b)~')
     }
     assert rows == {**{pattern: [] for pattern in rows}, **warned}
+
+
+@pytest.mark.parametrize("mode", ["configured", "default"])
+def test_incremental_request_byte_limit(engine, mode):
+    code = r'''
+    $header = "POST / HTTP/1.1\r\nContent-Length: %d\r\n\r\n";
+    if ($argv[1] === 'default') {
+        $limit = 2 * 1024 * 1024;
+        // Both the full request and its body have seven-digit lengths.
+        $body = str_repeat('a', $limit - strlen(sprintf($header, $limit)));
+        $r = Swoole\Http\Request::create();
+    } else {
+        $body = 'abc';
+        $limit = strlen(sprintf($header, strlen($body))) + strlen($body);
+        $r = Swoole\Http\Request::create(['package_max_length' => $limit]);
+    }
+    $head = sprintf($header, strlen($body));
+    var_dump($r->parse($head) === strlen($head));
+    var_dump($r->parse($body . 'x') === false, swoole_last_error() === SWOOLE_ERROR_PACKAGE_LENGTH_TOO_LARGE);
+    var_dump($r->getData() === $head, !$r->isCompleted());
+    var_dump($r->parse($body) === strlen($body), $r->isCompleted(), strlen($r->getData()) === $limit, $r->getContent() === $body);
+    '''
+    result = subprocess.run(engine.command('-r', code, mode), capture_output=True, text=True, timeout=10)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert result.stdout.splitlines() == ['bool(true)'] * 9
+
+
+def test_incremental_multipart_fields_reuse_buffer(engine):
+    code = r'''
+    $value = str_repeat("a\0b", 4096);
+    $first = "--foo\r\nContent-Disposition: form-data; name=\"first\"\r\n\r\n";
+    $rest = "\r\n--foo\r\nContent-Disposition: form-data; name=\"empty\"\r\n\r\n" .
+            "\r\n--foo\r\nContent-Disposition: form-data; name=\"last\"\r\n\r\nz\r\n--foo--\r\n";
+    $length = strlen($first) + strlen($value) + strlen($rest);
+    $head = "POST / HTTP/1.1\r\nContent-Type: multipart/form-data; boundary=foo\r\nContent-Length: $length\r\n\r\n";
+    $r = Swoole\Http\Request::create(['package_max_length' => strlen($head) + $length]);
+    foreach ([$head . $first, ...str_split($value, 1000), $rest] as $piece) {
+        if ($r->parse($piece) !== strlen($piece)) throw new RuntimeException('short parse');
+    }
+    var_dump($r->isCompleted(), $r->post === ['first' => $value, 'empty' => '', 'last' => 'z']);
+    '''
+    result = subprocess.run(engine.command('-r', code), capture_output=True, text=True, timeout=10)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert result.stdout.splitlines() == ['bool(true)'] * 2

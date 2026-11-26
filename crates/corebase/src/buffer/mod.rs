@@ -6,6 +6,85 @@ use std::ffi::c_void;
 use std::mem;
 pub use typed::{Detached as TypedDetached, Front as TypedFront, Kind as EntryKind};
 
+/// Contiguous peer input with a byte limit fixed at construction.
+#[derive(Debug)]
+pub struct BoundedBytes {
+    bytes: Vec<u8>,
+    limit: usize,
+}
+
+impl BoundedBytes {
+    #[must_use]
+    pub fn new(limit: usize, initial_capacity: usize) -> Self {
+        Self {
+            bytes: Vec::with_capacity(initial_capacity.min(limit)),
+            limit,
+        }
+    }
+
+    /// Discard buffered bytes after delivery, retaining storage and the limit.
+    pub fn clear(&mut self) {
+        self.bytes.clear();
+    }
+
+    #[must_use]
+    pub fn limit(&self) -> usize {
+        self.limit
+    }
+
+    /// Append a whole chunk.
+    /// # Errors
+    /// Returns the configured byte limit and leaves the buffer intact if the chunk cannot fit.
+    #[inline]
+    pub fn append(&mut self, chunk: &[u8]) -> Result<(), usize> {
+        let len = self.bytes.len();
+        if chunk.len() > self.limit - len {
+            return Err(self.limit);
+        }
+        self.reserve_to(len + chunk.len());
+        self.bytes.extend_from_slice(chunk);
+        Ok(())
+    }
+
+    /// Lend an initialized prefix, retaining the storage for subsequent writes.
+    /// # Errors
+    /// Returns the configured limit when the prefix would exceed it.
+    pub fn writable_prefix(&mut self, length: usize) -> Result<&mut [u8], usize> {
+        if length > self.limit {
+            return Err(self.limit);
+        }
+        if length > self.bytes.len() {
+            self.reserve_to(length);
+            self.bytes.resize(length, 0);
+        }
+        Ok(self.bytes.split_at_mut(length).0)
+    }
+
+    /// Transfer the allocation to the caller after writing the buffer.
+    #[must_use]
+    pub fn into_vec(self) -> Vec<u8> {
+        self.bytes
+    }
+
+    fn reserve_to(&mut self, needed: usize) {
+        if needed > self.bytes.capacity() {
+            let capacity = self
+                .bytes
+                .capacity()
+                .saturating_mul(2)
+                .max(needed)
+                .min(self.limit);
+            self.bytes.reserve_exact(capacity - self.bytes.len());
+        }
+    }
+}
+
+impl AsRef<[u8]> for BoundedBytes {
+    fn as_ref(&self) -> &[u8] {
+        &self.bytes
+    }
+}
+
 /// Why a queue operation failed; the queue is unchanged.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Error {

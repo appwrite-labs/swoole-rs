@@ -2,9 +2,8 @@
 //! value or an array, or freed.
 use crate::sys::{swr_zend_string_alloc, zend_string, zend_ulong};
 use std::mem::{MaybeUninit, offset_of};
-use swoole_rs_corebase::lent::{
-    Count, In, Spare, SpareVectors, lend_in, lend_spare, lend_spare_vectors,
-};
+use swoole_rs_corebase::lent::{Count, In, Spare, lend_in, lend_spare};
+use swoole_rs_corebase::reactor::{SpareVectors, lend_spare_vectors};
 
 unsafe extern "C" {
     /// `zend_hash_func`: it reads only the lent bytes.

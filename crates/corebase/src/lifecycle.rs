@@ -1,8 +1,12 @@
 // SPDX-License-Identifier: Apache-2.0
-// Compatibility derived from Swoole v6.2.4 src/core/base.cc (Swoole contributors).
-//! base.cc's init, thread, clean and fork sequences, and `SwooleTG`.
+// Compatibility derived from Swoole v6.2.4 src/core/base.cc and src/os/base.cc
+// (Swoole contributors).
+//! core/base.cc's init, thread, clean and fork sequences, and `SwooleTG`; os/base.cc's
+//! `swoole_daemon`, which forks.
 //! Runtime resources are initialized and cleaned through their owners in this crate.
-use crate::buffer::string::StringBuffer;
+use crate::buffer::string::{
+    free_thread_buffer, init_thread_buffer, set_thread_buffer, thread_buffer,
+};
 use crate::constants::SW_STACK_BUFFER_SIZE;
 use crate::log;
 use crate::memory::members::pool;
@@ -12,13 +16,6 @@ use std::ffi::{c_int, c_void};
 use std::ptr;
 use std::sync::atomic::{AtomicPtr, Ordering};
 
-thread_local! {
-    /// This thread's `SwooleTG.buffer_stack`, which lives as long as the thread.
-    /// C++ keeps a pointer to the slot, so it is set once in place and replaced
-    /// only when the thread is cleaned.
-    static BUFFER: Cell<StringBuffer> = const { Cell::new(StringBuffer::EMPTY) };
-}
-
 /// `SW_FORK_EXEC`, `SW_FORK_DAEMON` and `SW_FORK_PRECHECK`.
 const FORK_EXEC: c_int = crate::constants::ForkType::SW_FORK_EXEC as c_int;
 const FORK_DAEMON: c_int = crate::constants::ForkType::SW_FORK_DAEMON as c_int;
@@ -27,13 +24,13 @@ const FORK_PRECHECK: c_int = crate::constants::ForkType::SW_FORK_PRECHECK as c_i
 const OPERATION_NOT_SUPPORT: c_int =
     swoole_rs_error::ErrorCode::SW_ERROR_OPERATION_NOT_SUPPORT as c_int;
 
-/// `swoole::ThreadGlobal`, `SwooleTG`: each thread's, which only Rust reads.
+/// `swoole::ThreadGlobal`, `SwooleTG`: each thread's, which only Rust reads. Its
+/// `reactor` is the reactor's own ([`crate::reactor::thread_reactor`]) and its
+/// `buffer_stack` the buffer's ([`crate::buffer::string::thread_buffer`]).
 struct ThreadGlobal {
     id: Cell<u16>,
     kind: Cell<u8>,
     main_thread: Cell<bool>,
-    buffer_stack: Cell<*mut c_void>,
-    reactor: Cell<*mut c_void>,
     timer: Cell<*mut c_void>,
     async_threads: Cell<*mut c_void>,
 }
@@ -44,8 +41,6 @@ thread_local! {
             id: Cell::new(0),
             kind: Cell::new(0),
             main_thread: Cell::new(false),
-            buffer_stack: Cell::new(ptr::null_mut()),
-            reactor: Cell::new(ptr::null_mut()),
             timer: Cell::new(ptr::null_mut()),
             async_threads: Cell::new(ptr::null_mut()),
         }
@@ -68,12 +63,6 @@ fn with<T>(field: impl FnOnce(&ThreadGlobal) -> T) -> T {
     THREAD.with(field)
 }
 
-/// `SwooleTG.reactor`.
-#[must_use]
-pub fn thread_reactor() -> *mut c_void {
-    with(|thread| thread.reactor.get())
-}
-
 /// `swoole_get_thread_type()`: `SwooleTG.type`.
 #[must_use]
 pub fn thread_kind() -> u8 {
@@ -92,11 +81,6 @@ pub fn set_thread(kind: u8, id: u16) {
 #[must_use]
 pub fn thread_id() -> u16 {
     with(|thread| thread.id.get())
-}
-
-/// Sets `SwooleTG.reactor`.
-pub fn set_thread_reactor(reactor: *mut c_void) {
-    with(|thread| thread.reactor.set(reactor));
 }
 
 /// `SwooleTG.async_threads`.
@@ -123,6 +107,7 @@ pub fn init_with_default_fatal_handler() {
 /// The archive supplies the C variadic fatal handler; Rust callers may omit it.
 pub fn swr_v1_core_swoole_init(fatal_error: Option<crate::FatalError>) {
     crate::log::init();
+    register_upper_layer();
     if !crate::swr_v1_core_init() {
         return;
     }
@@ -151,17 +136,26 @@ pub fn swr_v1_core_swoole_init(fatal_error: Option<crate::FatalError>) {
     crate::config_state::init();
 }
 
+/// Registers the reactor's upper-layer entries ([`crate::reactor::UpperLayer`]) once:
+/// the write path over TLS, the reactor create and destroy hooks and whether this is
+/// the main thread. `swoole_init`
+/// calls it before any reactor exists; a test making a reactor without it calls it.
+pub fn register_upper_layer() {
+    use crate::tls::reactor_write as write;
+    crate::reactor::set_upper_layer(crate::reactor::UpperLayer {
+        write: write::reactor_write,
+        writev: write::reactor_writev,
+        close: write::reactor_close,
+        writable: write::reactor_writable_callback,
+        created: |reactor| crate::hook::call(crate::hook::Hook::ReactorCreate(reactor)),
+        destroyed: |reactor| crate::hook::call(crate::hook::Hook::ReactorDestroy(reactor)),
+        main_thread: swoole_is_main_thread,
+    });
+}
+
 /// `void swoole_thread_init(bool main_thread)`.
 pub fn swoole_thread_init(main_thread: bool) {
-    if with(|thread| thread.buffer_stack.get().is_null()) {
-        let mut fresh = StringBuffer::EMPTY;
-        fresh.alloc(SW_STACK_BUFFER_SIZE as usize, None);
-        let buffer = BUFFER.with(|buffer| {
-            buffer.set(fresh);
-            buffer.as_ptr().cast()
-        });
-        with(|thread| thread.buffer_stack.set(buffer));
-    }
+    init_thread_buffer(SW_STACK_BUFFER_SIZE as usize);
     if !main_thread {
         crate::signal_block_all();
     }
@@ -173,13 +167,10 @@ pub fn swoole_thread_clean(_main_thread: bool) {
     if with(|thread| !thread.timer.get().is_null()) {
         crate::timer::swoole_timer_free();
     }
-    if with(|thread| !thread.reactor.get().is_null()) {
+    if !crate::reactor::thread_reactor().is_null() {
         crate::reactor::swoole_event_free();
     }
-    if with(|thread| !thread.buffer_stack.get().is_null()) {
-        BUFFER.with(|buffer| buffer.replace(StringBuffer::EMPTY).dispose());
-        with(|thread| thread.buffer_stack.set(ptr::null_mut()));
-    }
+    free_thread_buffer();
 }
 
 /// `bool swoole_is_main_thread()`.
@@ -192,7 +183,7 @@ pub fn swoole_is_main_thread() -> bool {
 /// logger and the memory pool, and `SwooleG` last.
 pub fn swoole_clean() {
     crate::hook::clear();
-    crate::reactor::signal_upstream::clear();
+    crate::process::signal_upstream::clear();
     swoole_thread_clean(true);
     crate::utilities::process_logger()
         .into_iter()
@@ -265,10 +256,104 @@ pub extern "C-unwind" fn swoole_fork(flags: c_int) -> libc::pid_t {
             .into_iter()
             .for_each(crate::utilities::Logger::close);
     }
-    crate::reactor::signal_upstream::clear();
+    crate::process::signal_upstream::clear();
     crate::signal_mask::restore_after_fork(previous, true);
     crate::hook::call(crate::hook::Hook::AfterFork);
     0
+}
+
+// libc's own declarations, each a call over plain values that reads and writes no
+// caller memory.
+unsafe extern "C" {
+    #[cfg(target_vendor = "apple")]
+    safe fn setsid() -> libc::pid_t;
+    /// Leaves the process at once, running no exit handler and no destructor.
+    #[cfg(target_vendor = "apple")]
+    safe fn _exit(status: c_int) -> !;
+    /// Forks and leaves the parent, as `daemon(3)`.
+    #[cfg(not(target_vendor = "apple"))]
+    safe fn daemon(nochdir: c_int, noclose: c_int) -> c_int;
+}
+
+/// `swoole_daemon`'s Darwin steps before the fork: `chdir("/")` unless `nochdir`,
+/// then stdin/stdout/stderr onto `/dev/null` unless `noclose`. Logs the failed step.
+#[cfg(target_vendor = "apple")]
+fn daemon_detach(nochdir: bool, noclose: bool) -> bool {
+    use crate::sys;
+    if !nochdir && sys::chdir(c"/").is_err() {
+        log::sys_warning(c"swoole_daemon", format_args!("chdir() failed"));
+        return false;
+    }
+    if noclose {
+        return true;
+    }
+    let Ok(fd) = sys::open(c"/dev/null", libc::O_RDWR, 0) else {
+        log::sys_warning(c"swoole_daemon", format_args!("open() failed"));
+        return false;
+    };
+    // dup2 onto the standard descriptors, as upstream.
+    let redirected = (0..3).all(|target| sys::dup2(fd, target).is_ok());
+    if !redirected {
+        log::sys_warning(c"swoole_daemon", format_args!("dup2() failed"));
+    }
+    _ = sys::close(fd);
+    redirected
+}
+
+/// The operation that prevented the process from becoming a daemon.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum DaemonError {
+    /// Detaching from the working directory or standard streams failed.
+    Detach,
+    /// The fork precheck or fork failed.
+    Fork,
+    /// The child could not create a new session.
+    #[cfg(target_vendor = "apple")]
+    Session,
+}
+
+/// `int swoole_daemon(int nochdir, int noclose)`. Darwin's `daemon(3)` is
+/// deprecated, so it detaches, forks and calls `setsid` itself.
+#[cfg(target_vendor = "apple")]
+/// # Errors
+/// Returns the step that prevented daemonization.
+pub fn swoole_daemon(nochdir: c_int, noclose: c_int) -> Result<(), DaemonError> {
+    if !daemon_detach(nochdir != 0, noclose != 0) {
+        return Err(DaemonError::Detach);
+    }
+    // Upstream's fork; it rejects a coroutine or async-thread caller itself.
+    let pid = swoole_fork(FORK_DAEMON);
+    if pid < 0 {
+        log::sys_warning(c"swoole_daemon", format_args!("fork() failed"));
+        return Err(DaemonError::Fork);
+    }
+    if pid > 0 {
+        // The parent leaves without running exit handlers, as upstream.
+        _exit(0);
+    }
+    if setsid() < 0 {
+        log::sys_warning(c"swoole_daemon", format_args!("setsid() failed"));
+        return Err(DaemonError::Session);
+    }
+    Ok(())
+}
+
+/// `int swoole_daemon(int nochdir, int noclose)`: `daemon(3)`, then the
+/// after-fork hooks, since the pid changed (PHP 8.5 refreshes its memory
+/// manager after a fork, and `daemon(3)` forks behind its back).
+#[cfg(not(target_vendor = "apple"))]
+/// # Errors
+/// Returns the step that prevented daemonization.
+pub fn swoole_daemon(nochdir: c_int, noclose: c_int) -> Result<(), DaemonError> {
+    // Upstream's fork precheck; it forks nothing (-1 before `swoole_init`).
+    if swoole_fork(FORK_PRECHECK) < 0 {
+        return Err(DaemonError::Fork);
+    }
+    if daemon(nochdir, noclose) != 0 {
+        return Err(DaemonError::Detach);
+    }
+    crate::hook::call(crate::hook::Hook::AfterFork);
+    Ok(())
 }
 
 /// `swoole_fork_exec`: the child runs `child` and exits 0; the parent gets the
@@ -288,28 +373,6 @@ pub fn fork_exec<E>(child: impl FnOnce() -> Result<(), E>) -> Result<libc::pid_t
     }
 }
 
-/// `sw_tg_buffer()`: `SwooleTG.buffer_stack`.
-#[must_use]
-pub fn thread_buffer() -> *mut c_void {
-    with(|thread| thread.buffer_stack.get())
-}
-
-thread_local! {
-    /// Whether a [`lend_thread_buffer`] is running on this thread.
-    static BUFFER_LENT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
-}
-
-/// Runs `f` as the one Rust borrower of [`thread_buffer`] on this thread: a lend
-/// inside `f` panics instead of aliasing the buffer. A thread-context coroutine's
-/// thread shares the buffer, but no other runs while `f` does.
-/// # Panics
-/// Inside another lend's `f` on this thread.
-pub fn lend_thread_buffer<R>(f: impl FnOnce() -> R) -> R {
-    assert!(!BUFFER_LENT.replace(true), "sw_tg_buffer() is lent already");
-    let _lent = core::mem::DropGuard::new((), |()| BUFFER_LENT.set(false));
-    f()
-}
-
 /// The `SwooleTG` members a thread-context coroutine's thread shares with the
 /// thread that activated coroutines: the buffer stack, reactor, timer and async
 /// threads.
@@ -320,8 +383,8 @@ pub struct SharedThread([AtomicPtr<c_void>; 4]);
 pub fn shared_thread() -> SharedThread {
     SharedThread(with(|thread| {
         [
-            thread.buffer_stack.get(),
-            thread.reactor.get(),
+            thread_buffer(),
+            crate::reactor::thread_reactor(),
             thread.timer.get(),
             thread.async_threads.get(),
         ]
@@ -336,11 +399,11 @@ pub fn adopt_shared_thread(shared: &SharedThread) {
         .each_ref()
         .map(|member| member.load(Ordering::Relaxed));
     with(|thread| {
-        thread.buffer_stack.set(buffer_stack);
-        thread.reactor.set(reactor);
         thread.timer.set(timer);
         thread.async_threads.set(async_threads);
     });
+    set_thread_buffer(buffer_stack);
+    crate::reactor::set_thread_reactor(reactor);
 }
 
 #[cfg(test)]
@@ -383,6 +446,7 @@ mod tests {
     }
 
     fn reactor() {
+        register_upper_layer();
         assert_eq!(crate::reactor::swoole_event_init(0), Ok(()));
         crate::reactor::event_api::on_destroy(|_| {
             std::thread::sleep(std::time::Duration::from_millis(200));
@@ -411,7 +475,7 @@ mod tests {
         assert!(crate::swr_v1_core_init());
         std::thread::spawn(|| {
             reactor();
-            _ = crate::reactor::signal_upstream::set(
+            _ = crate::process::signal_upstream::set(
                 libc::SIGTERM,
                 crate::process::signal::Handler::new(ignore),
                 true,
@@ -422,7 +486,7 @@ mod tests {
             }
             assert_eq!(unsafe { libc::kill(pid, libc::SIGTERM) }, 0);
             let status = wait(pid);
-            crate::reactor::signal_upstream::clear();
+            crate::process::signal_upstream::clear();
             crate::reactor::swoole_event_free();
             assert!(
                 libc::WIFSIGNALED(status) && libc::WTERMSIG(status) == libc::SIGTERM,

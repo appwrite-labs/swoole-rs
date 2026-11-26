@@ -49,13 +49,20 @@ fn room(length: usize) -> uInt {
     uInt::try_from(length).unwrap_or(uInt::MAX)
 }
 
+enum Output<'a> {
+    Spare(&'a mut [MaybeUninit<u8>]),
+    Bytes(&'a mut [u8]),
+}
+
 impl<'a> Lent<'a> {
     /// `z` with `input` as its input and `out` as its output room.
-    fn new(z: &'a mut Z, input: &'a [u8], out: &'a mut [MaybeUninit<u8>]) -> Self {
+    fn new(z: &'a mut Z, input: &'a [u8], out: Output<'a>) -> Self {
         z.0.next_in = input.as_ptr().cast_mut();
         z.0.avail_in = room(input.len());
-        z.0.next_out = out.as_mut_ptr().cast();
-        z.0.avail_out = room(out.len());
+        (z.0.next_out, z.0.avail_out) = match out {
+            Output::Spare(bytes) => (bytes.as_mut_ptr().cast(), room(bytes.len())),
+            Output::Bytes(bytes) => (bytes.as_mut_ptr(), room(bytes.len())),
+        };
         Self(z, PhantomData)
     }
 }
@@ -194,18 +201,40 @@ impl Stream {
     /// One `inflate(flush)` or `deflate(flush)` into `out`'s spare capacity, appending
     /// what it wrote; `input` advances past what it read.
     pub fn run_into(&mut self, input: &mut &[u8], out: &mut Vec<u8>, flush: c_int) -> Step {
+        self.run_into_limited(input, out, flush, out.capacity() - out.len())
+    }
+
+    /// As [`Self::run_into`], lending at most `maximum` spare bytes to zlib.
+    pub fn run_into_limited(
+        &mut self,
+        input: &mut &[u8],
+        out: &mut Vec<u8>,
+        flush: c_int,
+        maximum: usize,
+    ) -> Step {
         let spare = out.spare_capacity_mut();
-        let (avail_in, avail_out) = (room(input.len()), room(spare.len()));
+        let size = spare.len().min(maximum);
+        let step = self.run(input, Output::Spare(spare.split_at_mut(size).0), flush);
+        // SAFETY: zlib initialized the first `written` spare bytes, within capacity.
+        unsafe { out.set_len(out.len() + step.written) };
+        step
+    }
+
+    /// Run one step into the supplied output slice, advancing the consumed input.
+    pub fn run_into_slice(&mut self, input: &mut &[u8], out: &mut [u8], flush: c_int) -> Step {
+        self.run(input, Output::Bytes(out), flush)
+    }
+
+    fn run(&mut self, input: &mut &[u8], out: Output<'_>, flush: c_int) -> Step {
         let call = if self.deflate { deflate } else { inflate };
-        let status = call(Lent::new(&mut self.z, input, spare), flush);
+        let lent = Lent::new(&mut self.z, input, out);
+        let (avail_in, avail_out) = (lent.0.0.avail_in, lent.0.0.avail_out);
+        let status = call(lent, flush);
         let used = |before: uInt, after: uInt| usize::try_from(before - after).unwrap_or(0);
         *input = input
             .get(used(avail_in, self.z.0.avail_in)..)
             .unwrap_or_default();
         let written = used(avail_out, self.z.0.avail_out);
-        // SAFETY: zlib wrote the first `written` spare bytes, so the new length is
-        // initialised and within capacity.
-        unsafe { out.set_len(out.len() + written) };
         Step { status, written }
     }
 

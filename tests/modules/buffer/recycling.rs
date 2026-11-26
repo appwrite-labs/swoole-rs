@@ -27,3 +27,30 @@ fn warm_cache_preserves_live_fronts_and_reuses_blocks_without_allocating() {
     assert_eq!(owner.stats(), (0, 0));
     assert!(unsafe { &*owner.0 }.recycled_bytes <= 65536);
 }
+
+#[test]
+fn bounded_append_accepts_exact_fit_and_preserves_bytes_on_refusal() {
+    let mut bytes = super::BoundedBytes::new(3, 1);
+    assert_eq!(bytes.append(b"a"), Ok(()));
+    assert_eq!(bytes.append(b"bcd"), Err(3));
+    assert_eq!(bytes.append(b"bc"), Ok(()));
+    assert_eq!(bytes.append(b""), Ok(()));
+    assert_eq!(bytes.append(b"d"), Err(3));
+    assert_eq!(bytes.as_ref(), b"abc");
+    let mut empty = super::BoundedBytes::new(0, 8192);
+    assert_eq!(empty.append(b""), Ok(()));
+    assert_eq!(empty.append(b"x"), Err(0));
+}
+
+#[test]
+fn writable_prefix_reuses_storage_and_caps_growth() {
+    let mut bytes = super::BoundedBytes::new(13, 8);
+    bytes.writable_prefix(8).unwrap().fill(1);
+    assert_eq!(bytes.writable_prefix(3).unwrap(), &[1; 3]);
+    let full = bytes.writable_prefix(13).unwrap();
+    assert_eq!(&full[..8], &[1; 8]);
+    assert_eq!(&full[8..], &[0; 5]);
+    assert_eq!(bytes.writable_prefix(14), Err(13));
+    assert_eq!(bytes.bytes.capacity(), 13);
+    assert_eq!(bytes.as_ref().len(), 13);
+}

@@ -29,7 +29,7 @@ pub mod iouring;
 pub mod lifecycle;
 pub mod packet;
 pub mod putenv;
-pub use swoole_rs_corebase::reactor::socket_poll as poll;
+pub use swoole_rs_corebase::waits::socket_poll as poll;
 pub mod reactor_handlers;
 pub mod resolve;
 pub mod sendfile;
@@ -52,7 +52,7 @@ pub mod uring_socket;
 #[cfg(feature = "iouring")]
 pub mod uring_tls;
 pub mod vector;
-pub use swoole_rs_corebase::reactor::wait_event;
+pub use swoole_rs_corebase::waits::wait_event;
 pub mod wait_signal;
 
 /// Preserve the pinned two divisions rather than changing timeout rounding.

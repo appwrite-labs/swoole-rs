@@ -7,7 +7,7 @@
     clippy::indexing_slicing,
     reason = "test helpers outside #[test] fns; a panic fails the case"
 )]
-use swoole_rs_http2::hpack::{Decoder, Encoder, Error, Field};
+use swoole_rs_http2::hpack::{Decoder, Encoder, Error, Field, MAX_DECODED_STRING};
 use swoole_rs_oracle::nghttp2;
 
 type Headers = Vec<(Vec<u8>, Vec<u8>)>;
@@ -172,7 +172,7 @@ const SIZE_256: &str = "3fe101";
 
 fn decode_examples(examples: &[Example], prefix: &str) {
     for split in [usize::MAX, 1, 2, 3, 7] {
-        let decoder = Decoder::default();
+        let decoder = Decoder::new(MAX_DECODED_STRING);
         for (at, &(block, headers, size)) in examples.iter().enumerate() {
             let block = hex(&format!("{}{block}", if at == 0 { prefix } else { "" }));
             let decoded = decode(&decoder, &block, split).unwrap();
@@ -190,7 +190,10 @@ fn integers() {
     assert_eq!(encode(&mut Encoder::new(10), &Vec::new()), hex("2a"));
     assert_eq!(encode(&mut Encoder::new(1337), &Vec::new()), hex("3f9a0a"));
     let block = hex("3f9a0a");
-    assert_eq!(decode(&Decoder::default(), &block, 1), Ok(Vec::new()));
+    assert_eq!(
+        decode(&Decoder::new(MAX_DECODED_STRING), &block, 1),
+        Ok(Vec::new())
+    );
 }
 
 /// C.2: one field of each representation.
@@ -210,7 +213,7 @@ fn fields() {
         ),
         ("82", (":method", "GET"), 0),
     ] {
-        let decoder = Decoder::default();
+        let decoder = Decoder::new(MAX_DECODED_STRING);
         let decoded = decode(&decoder, &hex(block), usize::MAX).unwrap();
         assert_eq!(decoded, list(&[header]), "{block}");
         assert_eq!(decoder.table_size(), size, "{block}");
@@ -257,7 +260,7 @@ fn encode_requests() {
 /// with both tables in step.
 #[test]
 fn encode_responses() {
-    let (mut encoder, decoder) = (Encoder::new(256), Decoder::default());
+    let (mut encoder, decoder) = (Encoder::new(256), Decoder::new(MAX_DECODED_STRING));
     for (at, &(_, headers, _)) in C6.iter().enumerate() {
         let block = encode(&mut encoder, &list(headers));
         assert_eq!(block.starts_with(&hex(SIZE_256)), at == 0, "response {at}");
@@ -300,7 +303,10 @@ fn encode_static_name_groups() {
         let headers = list(&[(name, value)]);
         let block = encode(&mut Encoder::new(4096), &headers);
         assert_eq!(block[0] & 0x80, 0, "{name}: {value} is a literal");
-        assert_eq!(decode(&Decoder::default(), &block, 1), Ok(headers));
+        assert_eq!(
+            decode(&Decoder::new(MAX_DECODED_STRING), &block, 1),
+            Ok(headers)
+        );
     }
 }
 
@@ -319,7 +325,7 @@ fn encode_indexing() {
     let block = encode(&mut encoder, &headers);
     assert_eq!(encoder.table_size(), 0, "nothing indexed");
     assert_eq!(block[0], 0x1f, "authorization never indexed, by name 23");
-    let decoder = Decoder::default();
+    let decoder = Decoder::new(MAX_DECODED_STRING);
     assert_eq!(decode(&decoder, &block, 5), Ok(headers.clone()));
     let again = encode(&mut encoder, &headers);
     assert_eq!(again, block, "nothing to reuse");
@@ -340,7 +346,7 @@ fn encode_table_size() {
     let block = encode(&mut encoder, &Vec::new());
     assert!(block.is_empty(), "sent once");
     encoder.set_table_size(100);
-    let decoder = Decoder::default();
+    let decoder = Decoder::new(MAX_DECODED_STRING);
     let block = encode(&mut encoder, &headers);
     assert_eq!(block[..2], hex("3f45"), "100");
     assert_eq!(decode(&decoder, &block, usize::MAX), Ok(headers));
@@ -364,7 +370,7 @@ fn decode_errors() {
         ("ff80808080808000", "integer too long"),
         ("407f818004", "name longer than 65536"),
     ] {
-        let decoder = Decoder::default();
+        let decoder = Decoder::new(MAX_DECODED_STRING);
         assert_eq!(
             decode(&decoder, &hex(block), usize::MAX),
             Err(Error),
@@ -385,7 +391,7 @@ fn decode_errors() {
 /// carries over), and the block ends on an empty final call.
 #[test]
 fn steps() {
-    let (decoder, mut field) = (Decoder::default(), Field::default());
+    let (decoder, mut field) = (Decoder::new(MAX_DECODED_STRING), Field::default());
     let block = hex("8286");
     let step = decoder.decode(&block, true, &mut field).unwrap();
     assert_eq!((step.read, step.flags()), (1, 2), "first field");
@@ -451,14 +457,14 @@ fn client_block_then_table_size_update() {
         }
     };
     let (first, second) = (hex("82"), hex("3fe1018286"));
-    let decoder = Decoder::default();
+    let decoder = Decoder::new(MAX_DECODED_STRING);
     client_block(&decoder, &first, false).unwrap();
     assert_eq!(
         client_block(&decoder, &second, false),
         Err(Error),
         "still in block"
     );
-    let decoder = Decoder::default();
+    let decoder = Decoder::new(MAX_DECODED_STRING);
     client_block(&decoder, &first, true).unwrap();
     assert_eq!(client_block(&decoder, &second, true), Ok(()), "a new block");
 }
@@ -565,7 +571,12 @@ fn lockstep_once(block: &str, split: usize) -> (Headers, bool) {
         0,
         "inflater"
     );
-    let result = lockstep(&Decoder::default(), inflater, &hex(block), split);
+    let result = lockstep(
+        &Decoder::new(MAX_DECODED_STRING),
+        inflater,
+        &hex(block),
+        split,
+    );
     // SAFETY: the inflater made above.
     unsafe { nghttp2::nghttp2_hd_inflate_del(inflater) };
     result
@@ -601,7 +612,7 @@ fn matches_nghttp2() {
     let mut random = Random(7541);
     for connection in 0..400 {
         let mut encoder = Encoder::new(if connection % 3 == 0 { 256 } else { 4096 });
-        let decoder = Decoder::default();
+        let decoder = Decoder::new(MAX_DECODED_STRING);
         let mut inflater = std::ptr::null_mut();
         // SAFETY: `inflater` is writable.
         assert_eq!(
@@ -641,4 +652,31 @@ fn matches_nghttp2() {
         // SAFETY: the inflater made above.
         unsafe { nghttp2::nghttp2_hd_inflate_del(inflater) };
     }
+}
+
+#[test]
+fn decoded_string_limit_applies_to_indexed_and_fragmented_literals() {
+    // RFC 7541 C.4.1, with a Huffman-encoded www.example.com authority.
+    let huffman = hex("418cf1e3c2e5f23a6ba0ab90f4ff");
+    assert!(decode(&Decoder::new(15), &huffman, 1).is_ok());
+    assert_eq!(decode(&Decoder::new(14), &huffman, 1), Err(Error));
+    // Literal name and value, each exactly two bytes.
+    let literal = hex("00026162026364");
+    assert!(decode(&Decoder::new(2), &literal, 1).is_ok());
+    assert_eq!(decode(&Decoder::new(1), &literal, 1), Err(Error));
+    // Static index 2 is :method GET.
+    assert_eq!(decode(&Decoder::new(6), &[0x82], 1), Err(Error));
+    assert!(decode(&Decoder::new(7), &[0x82], 1).is_ok());
+}
+
+#[test]
+fn reused_field_uses_the_current_decoders_limit() {
+    let mut field = Field::default();
+    let wide = Decoder::new(7);
+    let narrow = Decoder::new(6);
+    // Static index 2 has a seven-byte name. Reusing the caller's storage must
+    // still apply the second decoder's limit to that name.
+    assert!(wide.decode(&[0x82], true, &mut field).is_ok());
+    assert_eq!(narrow.decode(&[0x82], true, &mut field), Err(Error));
+    assert!(wide.decode(&[0x82], true, &mut field).is_ok());
 }

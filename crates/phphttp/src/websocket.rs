@@ -83,15 +83,6 @@ fn close(server: view::Server<'_>, fd: zend_long, reset: bool) -> bool {
     server_methods::close(server, fd, reset)
 }
 
-/// The port's `open_websocket_{close,ping,pong}_frame` bits, or `None` when
-/// the session is gone (`get_port_by_session_id`).
-fn port_frames(server: view::Server<'_>, fd: zend_long) -> Option<u8> {
-    let conn = server.by_session(fd)?;
-    server
-        .port_of_fd(conn.fd())
-        .map(|port| port.websocket_frames.get())
-}
-
 /// The `websocket_subprotocol` of the port listening on `server_fd`.
 fn port_protocol(server: view::Server<'_>, server_fd: c_int) -> Option<Arc<Vec<u8>>> {
     server
@@ -312,12 +303,15 @@ fn message(
     let info = request.info();
     let (server_fd, ext_flags) = (c_int::from(info.server_fd), info.ext_flags);
     let server = view;
-    let Some(settings) = port_frames(server, fd) else {
+    let Some(port) = server
+        .by_session(fd)
+        .and_then(|conn| server.port_of_fd(conn.fd()))
+    else {
         return Ok(false);
     };
     let mut data = php_swoole_get_recv_data(view, request);
     let [opcode, flags] = ext_flags.to_be_bytes();
-    let delivery = message_policy(Opcode::from_code(opcode), settings);
+    let delivery = message_policy(Opcode::from_code(opcode), port.websocket_frames.get());
     if delivery != Delivery::Deliver {
         if delivery == Delivery::Pong
             && let Some(pong) = encode(
@@ -332,7 +326,8 @@ fn message(
     }
     // RFC 7692: the payload is deflated.
     if flags & FLAG_RSV1 != 0 {
-        let Some(plain) = uncompress(data.bytes().unwrap_or_default()) else {
+        let max = port.protocol.get().package_max_length as usize;
+        let Some(plain) = uncompress(data.bytes().unwrap_or_default(), max) else {
             return Ok(true);
         };
         data = plain;

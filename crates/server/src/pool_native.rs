@@ -485,7 +485,7 @@ impl PoolNative for Native {
     }
 
     fn waitpid(&self, pid: c_int) -> bool {
-        swoole_rs_corebase::reactor::wait_upstream::swoole_waitpid(pid, Some(&mut 0), 0) >= 0
+        swoole_rs_corebase::waits::wait_upstream::swoole_waitpid(pid, Some(&mut 0), 0) >= 0
     }
 
     fn new_pipe(&self, call: &PoolCall) -> Result<(), PipeError> {
@@ -687,13 +687,12 @@ impl PoolNative for Native {
             io(c, |c| {
                 // The worker's pipe, in this thread's loop.
                 c.lent_socket()
-                    .map(Heap::lent)
                     .and_then(|pipe| event_write(pipe, c.bytes()))
                     .map_or(-1, usize::cast_signed)
             });
         } else {
             // The worker's pipe the call lends.
-            send_on(c, |c| c.lent_socket().map(|pipe| *Heap::lent(pipe)));
+            send_on(c, |c| c.lent_socket().map(|pipe| *pipe));
         }
     }
 

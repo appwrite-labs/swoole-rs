@@ -60,7 +60,6 @@ field-leak swoole_rs_corebase::reactor::socket::SocketMarks::reactor
 field-leak swoole_rs_corebase::reactor::socket_record::SocketFields::fd
 field-leak swoole_rs_corebase::reactor::socket_record::SocketFields::owner
 field-leak swoole_rs_corebase::reactor::socket_record::SocketFields::recv_buffer
-field-leak swoole_rs_corebase::reactor::socket_record::SocketFields::tls
 field-leak swoole_rs_corebase::reactor::socket_record::SocketRecord::fields
 field-leak swoole_rs_corebase::resolver_request::ResolverRequest::fields
 field-leak swoole_rs_corebase::small_fn::SmallFn::ops
@@ -207,7 +206,7 @@ module-cycle swoole_rs_corebase::buffer,swoole_rs_corebase::config_state,swoole_
 module-cycle swoole_rs_corebase::coroutine::context,swoole_rs_corebase::coroutine::facade,swoole_rs_corebase::coroutine::fcontext,swoole_rs_corebase::coroutine::live,swoole_rs_corebase::coroutine::scheduler,swoole_rs_corebase::coroutine::state
 module-cycle swoole_rs_corebase::memory::global,swoole_rs_corebase::memory::members,swoole_rs_corebase::memory::table
 module-cycle swoole_rs_corebase::process::methods,swoole_rs_corebase::process::pool,swoole_rs_corebase::process::process_pool,swoole_rs_corebase::process::reaper,swoole_rs_corebase::process::reload_task,swoole_rs_corebase::process::signal,swoole_rs_corebase::process::task_file,swoole_rs_corebase::process::worker_globals,swoole_rs_corebase::process::worker_record
-module-cycle swoole_rs_corebase::reactor::callbacks,swoole_rs_corebase::reactor::change,swoole_rs_corebase::reactor::deferred,swoole_rs_corebase::reactor::event_api,swoole_rs_corebase::reactor::handlers,swoole_rs_corebase::reactor::poll,swoole_rs_corebase::reactor::reactor_state,swoole_rs_corebase::reactor::reactor_upstream,swoole_rs_corebase::reactor::readiness,swoole_rs_corebase::reactor::registration,swoole_rs_corebase::reactor::registry,swoole_rs_corebase::reactor::socket,swoole_rs_corebase::reactor::socket_methods,swoole_rs_corebase::reactor::socket_poll,swoole_rs_corebase::reactor::socket_record,swoole_rs_corebase::reactor::socket_upstream,swoole_rs_corebase::reactor::wait_event,swoole_rs_corebase::reactor::wait_loop,swoole_rs_corebase::reactor::write
+module-cycle swoole_rs_corebase::reactor::callbacks,swoole_rs_corebase::reactor::change,swoole_rs_corebase::reactor::deferred,swoole_rs_corebase::reactor::event_api,swoole_rs_corebase::reactor::handlers,swoole_rs_corebase::reactor::poll,swoole_rs_corebase::reactor::reactor_state,swoole_rs_corebase::reactor::reactor_upstream,swoole_rs_corebase::reactor::readiness,swoole_rs_corebase::reactor::registration,swoole_rs_corebase::reactor::registry,swoole_rs_corebase::reactor::socket,swoole_rs_corebase::reactor::socket_methods,swoole_rs_corebase::reactor::socket_record,swoole_rs_corebase::reactor::socket_upstream,swoole_rs_corebase::reactor::wait_loop,swoole_rs_corebase::reactor::write
 module-cycle swoole_rs_corebase::timer::owner,swoole_rs_corebase::timer::wrapper
 module-cycle swoole_rs_corebase::tls::context,swoole_rs_corebase::tls::handle
 module-cycle swoole_rs_corebase::tls::owned,swoole_rs_corebase::tls::socket,swoole_rs_corebase::tls::upstream
@@ -222,6 +221,7 @@ shallow-module swoole_rs_corebase::lent
 shallow-module swoole_rs_corebase::locks
 shallow-module swoole_rs_corebase::log
 shallow-module swoole_rs_corebase::memory::members::pool
+shallow-module swoole_rs_corebase::reactor
 shallow-module swoole_rs_corebase::sys
 shallow-module swoole_rs_corebase::timer::wrapper
 shallow-module swoole_rs_curl_sys

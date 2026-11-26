@@ -192,7 +192,7 @@ fn begin(minit: &swoole_rs_zend::Minit, kind: c_int) {
 /// is shutting down.
 pub fn check_reactor() {
     let shutting_down = module::globals().req_status.get() == ReqStatus::RshutdownBegin;
-    if !shutting_down && swoole_rs_corebase::thread_reactor().is_null() {
+    if !shutting_down && swoole_rs_corebase::reactor::thread_reactor().is_null() {
         _ = reactor_init();
     }
 }

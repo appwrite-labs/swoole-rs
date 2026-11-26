@@ -21,7 +21,7 @@ use swoole_rs_zend::{
     bailout::{self, Bailout},
 };
 
-use swoole_rs_corebase::reactor::signal_upstream::{self, Handler};
+use swoole_rs_corebase::process::signal_upstream::{self, Handler};
 
 /// `SW_ERROR_WRONG_OPERATION`.
 const WRONG_OPERATION: c_int = swoole_rs_error::ErrorCode::SW_ERROR_WRONG_OPERATION as c_int;

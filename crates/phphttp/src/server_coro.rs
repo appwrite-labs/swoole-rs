@@ -906,7 +906,7 @@ fn serve(conn: &mut Connection, peer: &Peer) -> Result<(), bailout::Bailout> {
                 break;
             }
             // The parser `context` initialised.
-            let parsed = parse_request(context.state(), data(&buffer, 0, header_length));
+            let parsed = parse_request(context.state(), data(&buffer, 0, header_length), max);
             if parsed != header_length {
                 context.state().response.status = BAD_REQUEST;
                 break;
@@ -943,7 +943,8 @@ fn serve(conn: &mut Connection, peer: &Peer) -> Result<(), bailout::Bailout> {
                 length = length.min(max - offset);
             }
             // `offset + length` lies within the buffer.
-            let parsed = parse_request(context.state(), data(&buffer, offset, offset + length));
+            let parsed =
+                parse_request(context.state(), data(&buffer, offset, offset + length), max);
             let next = buffer.offset() + i64::try_from(parsed).unwrap_or(i64::MAX);
             buffer.set_offset(next);
             let error = context.state().parser.error;

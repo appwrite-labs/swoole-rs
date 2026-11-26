@@ -1,16 +1,15 @@
 // SPDX-License-Identifier: Apache-2.0
 // Compatibility derived from Swoole v6.2.4 src/os/signal.cc (Swoole contributors).
 //! `swoole_signal_set`, `_callback`, `_get_handler`, `_get_listener_num` and `_clear`
-//! as Rust operations over `corebase::process`'s signal loop, and the
-//! event-loop effects that loop asks for: the signalfd socket, its reactor handler,
-//! exit condition and destroy callback, and the warnings. The process patch deletes
-//! `src/os/signal.cc`.
+//! as Rust operations over the signal loop, and the event-loop effects that loop asks
+//! for: the signalfd socket, its reactor handler, exit condition and destroy callback,
+//! and the warnings. The process patch deletes `src/os/signal.cc`.
 use crate::log;
 pub use crate::process::signal::Handler;
 use crate::process::signal::signal_name;
 use crate::process::signal_loop::{self, Ops, Report};
 use crate::reactor::ReactorPrepared;
-use crate::reactor::socket_sync::set_errno;
+use crate::sys::set_errno;
 use std::ffi::c_int;
 
 /// `SW_FD_SIGNAL` and `SW_ERROR_UNREGISTERED_SIGNAL`.

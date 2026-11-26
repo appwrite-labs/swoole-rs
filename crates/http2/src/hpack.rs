@@ -3,13 +3,17 @@
 //! updates, limits and errors, so either peer sees the bytes it saw before.
 
 use std::cell::Cell;
+use swoole_rs_corebase::buffer::BoundedBytes;
 
 /// Bytes an entry costs beyond its name and value (RFC 7541 4.1).
 const ENTRY_OVERHEAD: usize = 32;
 /// `SETTINGS_HEADER_TABLE_SIZE`'s default, and the decoder's fixed limit.
 const DEFAULT_TABLE_SIZE: usize = 4096;
-/// nghttp2's `NGHTTP2_HD_MAX_NV`: the longest name or value it decodes.
+/// nghttp2's `NGHTTP2_HD_MAX_NV`: the longest encoded name or value.
 const MAX_STRING: usize = 65536;
+/// Largest decoded name or value the pinned wire limit permits. The shortest
+/// RFC 7541 Huffman code is five bits.
+pub const MAX_DECODED_STRING: usize = MAX_STRING * 8 / 5;
 
 /// `NGHTTP2_ERR_HEADER_COMP`, the one error decoding reports. Once a decoder
 /// fails, every later call fails too: its table is out of step with the peer's.
@@ -191,7 +195,7 @@ struct Bits {
 
 impl Bits {
     /// EOS fails as soon as its bytes arrive, as nghttp2's failure state does.
-    fn decode(&mut self, input: &[u8], out: &mut Vec<u8>) -> Result<(), Error> {
+    fn decode(&mut self, input: &[u8], out: &mut BoundedBytes) -> Result<(), Error> {
         for &byte in input {
             for shift in (0..8).rev() {
                 self.code = (self.code << 1) | u32::from((byte >> shift) & 1);
@@ -207,7 +211,8 @@ impl Bits {
                         .copied()
                         .ok_or(Error)?;
                     // EOS (256) is no byte.
-                    out.push(u8::try_from(symbol).map_err(|_| Error)?);
+                    out.append(&[u8::try_from(symbol).map_err(|_| Error)?])
+                        .map_err(|_| Error)?;
                     *self = Self::default();
                 }
             }
@@ -357,10 +362,25 @@ fn encode_string(out: &mut Vec<u8>, text: &[u8]) {
 /// The buffers `Decoder::decode` decodes a header field into. The caller owns
 /// them, so a field a step returns borrows them and not the decoder, and the
 /// decoder reuses their capacity field after field.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct Field {
-    name: Vec<u8>,
-    value: Vec<u8>,
+    name: BoundedBytes,
+    value: BoundedBytes,
+}
+
+impl Field {
+    fn new(limit: usize) -> Self {
+        Self {
+            name: BoundedBytes::new(limit, 0),
+            value: BoundedBytes::new(limit, 0),
+        }
+    }
+}
+
+impl Default for Field {
+    fn default() -> Self {
+        Self::new(MAX_DECODED_STRING)
+    }
 }
 
 /// One `decode` call's outcome.
@@ -424,6 +444,7 @@ enum State {
 /// decodes through a shared reference: a holder never takes it out or borrows
 /// it between steps, and the field a step emits is in the caller's `Field`.
 pub struct Decoder {
+    string_limit: usize,
     /// Taken out only past the static table: a dynamic lookup, an insertion or
     /// a resize.
     table: Cell<Table>,
@@ -436,9 +457,12 @@ pub struct Decoder {
     bad: Cell<bool>,
 }
 
-impl Default for Decoder {
-    fn default() -> Self {
+impl Decoder {
+    /// Decode header names and values of at most `string_limit` bytes each.
+    #[must_use]
+    pub fn new(string_limit: usize) -> Self {
         Self {
+            string_limit,
             table: Cell::new(Table::new(DEFAULT_TABLE_SIZE)),
             state: Cell::new(State::Opcode),
             in_block: Cell::new(false),
@@ -447,9 +471,7 @@ impl Default for Decoder {
             bad: Cell::new(false),
         }
     }
-}
 
-impl Decoder {
     /// Decode up to the next header field of a block (`nghttp2_hd_inflate_hd`):
     /// call again with the rest of the input until it is consumed, and with
     /// `last` on the block's final fragment. A representation cut short by a
@@ -468,10 +490,13 @@ impl Decoder {
         if self.bad.get() {
             return Err(Error);
         }
+        if field.name.limit() != self.string_limit {
+            *field = Field::new(self.string_limit);
+        }
         match self.step(input, last, field) {
             Ok((read, emitted)) => Ok(Step {
                 read,
-                header: emitted.then_some((field.name.as_slice(), field.value.as_slice())),
+                header: emitted.then_some((field.name.as_ref(), field.value.as_ref())),
                 done: last && !emitted && read == input.len(),
             }),
             Err(error) => {
@@ -526,7 +551,7 @@ impl Decoder {
                     bits.decode(text, out)?;
                     self.huffman.set(bits);
                 } else {
-                    out.extend_from_slice(text);
+                    out.append(text).map_err(|_| Error)?;
                 }
                 let left = left - text.len();
                 self.state.set(State::Text {
@@ -623,16 +648,16 @@ impl Decoder {
                     return Ok(true);
                 };
                 field.name.clear();
-                field.name.extend_from_slice(name);
+                field.name.append(name).map_err(|_| Error)?;
                 field.value.clear();
-                field.value.extend_from_slice(text);
+                field.value.append(text).map_err(|_| Error)?;
                 return Ok(true);
             }
             Integer::Name if value == 0 => self.state.set(State::Length { value: false }),
             Integer::Name => {
                 if let Some(&(name, _)) = STATIC.get(value - 1) {
                     field.name.clear();
-                    field.name.extend_from_slice(name);
+                    field.name.append(name).map_err(|_| Error)?;
                 } else {
                     self.dynamic(value, field, false)?;
                 }
@@ -667,23 +692,22 @@ impl Decoder {
     /// and its value too if `value`.
     fn dynamic(&self, index: usize, field: &mut Field, value: bool) -> Result<(), Error> {
         self.with_table(|table| {
-            let (name, text) = table.get(index)?;
+            let (name, text) = table.get(index).ok_or(Error)?;
             field.name.clear();
-            field.name.extend_from_slice(name);
+            field.name.append(name).map_err(|_| Error)?;
             if value {
                 field.value.clear();
-                field.value.extend_from_slice(text);
+                field.value.append(text).map_err(|_| Error)?;
             }
-            Some(())
+            Ok(())
         })
-        .ok_or(Error)
     }
 
     /// A literal is complete: index it if asked.
     fn emit(&self, field: &Field) -> bool {
         self.state.set(State::Opcode);
         if self.indexing.get() {
-            self.with_table(|table| table.insert(&field.name, &field.value));
+            self.with_table(|table| table.insert(field.name.as_ref(), field.value.as_ref()));
         }
         true
     }

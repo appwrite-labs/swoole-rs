@@ -154,7 +154,7 @@ impl Facts for Live<'_> {
     }
 
     fn has_reactor(&mut self) -> bool {
-        !swoole_rs_corebase::thread_reactor().is_null()
+        !swoole_rs_corebase::reactor::thread_reactor().is_null()
     }
 
     fn sockets(&mut self) -> u64 {

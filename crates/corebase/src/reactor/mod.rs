@@ -41,6 +41,9 @@ pub use socket::{Heap, KeptSockets, OwnedSocket, Socket, SocketLoans};
 mod callbacks;
 pub use callbacks::*;
 
+pub(crate) mod signals;
+pub use signals::{Signals, set_signals};
+
 mod handlers;
 pub use handlers::*;
 
@@ -95,15 +98,7 @@ pub mod reactor_upstream;
 #[cfg(unix)]
 pub mod readiness;
 #[cfg(unix)]
-pub mod signal_upstream;
-#[cfg(unix)]
-pub mod socket_poll;
-#[cfg(unix)]
 pub mod socket_upstream;
-#[cfg(unix)]
-pub mod wait_event;
-#[cfg(unix)]
-pub mod wait_upstream;
 
 mod iov_progress;
 pub use iov_progress::*;

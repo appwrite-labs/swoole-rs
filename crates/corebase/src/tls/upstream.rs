@@ -18,9 +18,8 @@ use crate::sys::ReadSlot;
 use crate::sys::Text;
 use crate::tls::{
     Accept, Cert, CertRef, HandshakeLog, SocketTls, Ssl, SslIoResult, ssl_recv_into, ssl_shutdown,
-    swr_v1_socket_ssl_accept, swr_v1_socket_ssl_clear, swr_v1_socket_ssl_connect,
-    swr_v1_socket_ssl_error_reason, swr_v1_socket_ssl_peek_reason, swr_v1_socket_ssl_send,
-    swr_v1_socket_ssl_verify,
+    swr_v1_socket_ssl_accept, swr_v1_socket_ssl_connect, swr_v1_socket_ssl_error_reason,
+    swr_v1_socket_ssl_peek_reason, swr_v1_socket_ssl_send, swr_v1_socket_ssl_verify,
 };
 use crate::{log, set_errno};
 use openssl_sys::{X509_V_ERR_DEPTH_ZERO_SELF_SIGNED_CERT, X509_V_OK};
@@ -65,6 +64,48 @@ impl SocketFields {
     ) -> crate::ossupport::Sendfile {
         crate::ossupport::swr_v1_os_sendfile(self.fd, fd, Some(offset), length)
     }
+
+    /// `Socket::ssl_clear_error`: clears this thread's OpenSSL error queue and the
+    /// session's want flags.
+    #[inline]
+    pub fn ssl_clear_error(&mut self) {
+        crate::tls::clear_errors();
+        self.tls.want_read = false;
+        self.tls.want_write = false;
+    }
+
+    /// One TLS step of `socket`'s session: `step` over a copy of its TLS group and what
+    /// `pick` reads in the same borrow, then the group stored back. The step runs
+    /// outside any borrow of the record, which OpenSSL's info callback reads meanwhile.
+    /// None when `pick` reads none.
+    fn tls_step<P, R>(
+        socket: Socket<'_>,
+        pick: impl FnOnce(&Self) -> Option<P>,
+        step: impl FnOnce(&mut SocketTls, P) -> R,
+    ) -> Option<R> {
+        let (before, picked) = socket.read(|record| Some((record.tls, pick(record)?)))?;
+        let mut tls = before;
+        let result = step(&mut tls, picked);
+        // Most transfers leave the group as it was, and then the record needs no edit.
+        if tls != before {
+            socket.edit(|record| record.tls = tls);
+        }
+        Some(result)
+    }
+}
+
+/// [`SocketFields::tls_step`] with the socket's SSL, retained in the same read as the
+/// TLS group and held for the step: None without one.
+fn with_tls<P, R>(
+    socket: Socket<'_>,
+    pick: impl FnOnce(&SocketFields) -> P,
+    step: impl FnOnce(&mut SocketTls, Ssl, P) -> R,
+) -> Option<R> {
+    SocketFields::tls_step(
+        socket,
+        |record| Some((Ssl::retained(socket, record)?, pick(record))),
+        |tls, (held, picked)| step(tls, held.get(), picked),
+    )
 }
 
 /// `Address::get_addr()` and `get_port()` of the socket's own address, as its logs print them.
@@ -115,26 +156,6 @@ pub fn peer(info: &SocketAddress) -> (String, c_int) {
         },
     );
     (host, c_int::from(u16::from_be(port)))
-}
-
-/// `step` over a copy of the record's TLS group, its SSL (None without one) and what
-/// `pick` reads in the same borrow, then the group stored back: OpenSSL's info
-/// callback reads the record meanwhile.
-fn with_tls<P, R>(
-    socket: Socket<'_>,
-    pick: impl FnOnce(&SocketFields) -> P,
-    step: impl FnOnce(&mut SocketTls, Ssl, P) -> R,
-) -> Option<R> {
-    let (ssl, (before, picked)) = Ssl::of_reading(socket, |record| (record.tls, pick(record)));
-    let held = ssl?;
-    let ssl = held.get();
-    let mut tls = before;
-    let result = step(&mut tls, ssl, picked);
-    // Most transfers leave the group as it was, and then the record needs no edit.
-    if tls != before {
-        socket.edit(|record| record.tls = tls);
-    }
-    Some(result)
 }
 
 /// The peer's certificate chain, each certificate as PEM (at most
@@ -529,7 +550,7 @@ impl<S: ReadSlot> SyncEffects for Call<'_, '_, S> {
         self.socket.edit(|record| {
             record.make_nonblocking();
             if !record.ssl().is_null() {
-                swr_v1_socket_ssl_clear(&mut record.tls);
+                record.ssl_clear_error();
             }
         });
     }

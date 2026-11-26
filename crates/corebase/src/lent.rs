@@ -9,9 +9,6 @@
 //! lifetime, which only one lending of a live buffer mints, so each call gets an address
 //! and the count that buffer holds, and is declared `safe`.
 use crate::net_types::{AddressStorage, Room, SocketAddress, StoredLength};
-use crate::reactor::{
-    IovState, Plain, ReactorIov, swr_v1_reactor_iov_view, swr_v1_socket_iov_owned,
-};
 use crate::sys::ReadSlot;
 use std::ffi::{c_char, c_int, c_void};
 use std::io::IoSlice;
@@ -24,8 +21,8 @@ fn count(n: isize) -> Option<usize> {
 }
 
 /// A lifetime `'id` that names one lending: invariant, so no other lending's tokens
-/// unify with it.
-type Brand<'id> = PhantomData<fn(&'id ()) -> &'id ()>;
+/// unify with it. The crate's own lenders (the reactor's vectored rooms) carry it too.
+pub(crate) type Brand<'id> = PhantomData<fn(&'id ()) -> &'id ()>;
 
 /// Where a lent buffer starts, for a call that writes up to its [`Count`]'s `T`s there:
 /// null, or writable for that many and reached through nothing else for `'id`. Only a
@@ -1006,55 +1003,4 @@ pub unsafe trait Ring {
     fn readv(&mut self, vectors: &mut [ReadVec<'_>]) -> Option<usize>;
     /// Sends the vectors' bytes, in order.
     fn writev(&mut self, vectors: &[IoSlice<'_>]) -> Option<usize>;
-}
-
-/// Ordered rooms lent to vectored receives: a cursor over a copy of their descriptors,
-/// and how many bytes from the first room's start the receives wrote. Only
-/// [`transfer`](Self::transfer) moves either, by what a receive wrote.
-pub struct SpareVectors<'s> {
-    vectors: ReactorIov<'s>,
-    filled: usize,
-    lent: Brand<'s>,
-}
-
-/// Lends several rooms in order: the operation's result and how many bytes it wrote
-/// across them.
-pub fn lend_spare_vectors<'a, R>(
-    rooms: impl IntoIterator<Item = &'a mut [MaybeUninit<u8>], IntoIter: ExactSizeIterator>,
-    fill: impl for<'s> FnOnce(&mut SpareVectors<'s>) -> R,
-) -> (R, usize) {
-    let Some(vectors) = ReactorIov::rooms(rooms.into_iter().map(ReadVec::new)) else {
-        // `IOVector`'s constructor throws here, which ended at this Rust frame.
-        crate::fatal("the I/O vectors can't be built");
-    };
-    let mut out = SpareVectors {
-        vectors,
-        filled: 0,
-        lent: PhantomData,
-    };
-    let result = fill(&mut out);
-    (result, out.filled)
-}
-
-impl SpareVectors<'_> {
-    /// One receive into the rooms past the written bytes, as
-    /// [`swr_v1_socket_iov_owned`]: what it wrote, counted.
-    pub fn transfer(
-        &mut self,
-        plain: Plain<'_>,
-        tls: Option<&(
-            impl Fn(&mut Spare<'_>) -> Option<usize>,
-            impl Fn(Drain<'_>) -> Option<usize>,
-        )>,
-    ) -> Option<usize> {
-        let received = swr_v1_socket_iov_owned(plain, &mut self.vectors, tls);
-        self.filled += received.unwrap_or(0);
-        received
-    }
-
-    /// The cursor: where the receives stopped and the descriptors left.
-    #[must_use]
-    pub fn state(&self) -> IovState {
-        swr_v1_reactor_iov_view(&self.vectors)
-    }
 }

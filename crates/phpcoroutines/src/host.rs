@@ -235,7 +235,7 @@ pub(crate) fn stats(stats: &mut Stats) {
     }
     // `corebase::reactor` counts this thread's listeners.
     stats.signal_listener_num =
-        i64::from(swoole_rs_corebase::reactor::signal_upstream::swoole_signal_get_listener_num());
+        i64::from(swoole_rs_corebase::process::signal_upstream::swoole_signal_get_listener_num());
     let s = swoole_rs_corebase::coroutine::counters();
     stats.c_stack_size = i64::try_from(s.stack_size).unwrap_or(i64::MAX);
     stats.coroutine_num = i64::try_from(count()).unwrap_or(i64::MAX);
@@ -687,7 +687,7 @@ pub(crate) fn set_dns_cache_capacity(capacity: c_long) {
 /// Install (`set`) or clear this thread's reactor's user exit condition,
 /// which calls `Co::set`'s `exit_condition`; nothing without a reactor.
 pub(crate) fn set_exit_condition(set: bool) {
-    if swoole_rs_corebase::thread_reactor().is_null() {
+    if swoole_rs_corebase::reactor::thread_reactor().is_null() {
         return;
     }
     if set {

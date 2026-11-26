@@ -18,11 +18,10 @@ use swoole_rs_http2::{
     Http2RespondFacts, Http2WindowPlan, Media, PING_PAYLOAD, Respond, WindowAction, decode_packet,
     hpack::{Encoder, Error},
     send_frame_size, sw_rs_http2_chunk, sw_rs_http2_content_length_rejected,
-    sw_rs_http2_data_rejected, sw_rs_http2_file_complete, sw_rs_http2_header_defaults,
-    sw_rs_http2_header_plan, sw_rs_http2_headers_flags, sw_rs_http2_inflate_step,
-    sw_rs_http2_media_kind, sw_rs_http2_pack_frame_header, sw_rs_http2_respond_next,
-    sw_rs_http2_response_status, sw_rs_http2_setting_plan, sw_rs_http2_window_action,
-    sw_rs_http2_window_plan,
+    sw_rs_http2_file_complete, sw_rs_http2_header_defaults, sw_rs_http2_header_plan,
+    sw_rs_http2_headers_flags, sw_rs_http2_inflate_step, sw_rs_http2_media_kind,
+    sw_rs_http2_pack_frame_header, sw_rs_http2_respond_next, sw_rs_http2_response_status,
+    sw_rs_http2_setting_plan, sw_rs_http2_window_action, sw_rs_http2_window_plan,
 };
 use swoole_rs_phpserver::RecvData;
 use swoole_rs_server::{Connection, view};
@@ -989,7 +988,7 @@ fn header_block(session: &Session, stream: &Stream, flags: u32, payload: &[u8]) 
         const ENHANCE_YOUR_CALM: u32 = 11;
         return reset_stream(session, stream, ENHANCE_YOUR_CALM);
     }
-    if !discard && !headers_complete(stream) {
+    if !discard && !headers_complete(stream, session.max_body_size) {
         return false;
     }
     stream.headers_received.set(true);
@@ -1007,7 +1006,7 @@ fn content_length_valid(session: &Session, value: &[u8]) -> bool {
 
 /// `http2_server_on_headers_complete`: the request's Content-Length, body
 /// parser and compression, from its whole initial header block.
-fn headers_complete(stream: &Stream) -> bool {
+fn headers_complete(stream: &Stream, limit: u32) -> bool {
     let ctx = stream.ctx();
     if stream.bad_length.get() {
         send_status_code(ctx, REQUEST_ENTITY_TOO_LARGE.cast_unsigned());
@@ -1021,10 +1020,7 @@ fn headers_complete(stream: &Stream) -> bool {
         let media = sw_rs_http2_media_kind(folded.get(..length).unwrap_or_default());
         if media == Media::UrlEncoded {
             set(ctx, Field::Form, 1);
-        } else if media == Media::Multipart
-            // SAFETY: a live context and the header value.
-            && !ctx.multipart_start(value.bytes())
-        {
+        } else if media == Media::Multipart && !ctx.multipart_start(value.bytes(), limit) {
             return false;
         }
     }
@@ -1142,13 +1138,10 @@ fn data(session: &Session, stream_id: u32, flags: u32, payload: &[u8]) -> bool {
     let ctx = stream.ctx();
     let length = payload.len();
     if length > 0 {
-        let buffered = ctx.data_start();
-        let ended = get(ctx, Field::End) != 0;
-        if sw_rs_http2_data_rejected(buffered, length, session.max_body_size, ended) {
+        if get(ctx, Field::End) != 0 || ctx.data_append(payload, session.max_body_size).is_err() {
             connection_flow(session, ctx, length);
             return reset_stream(session, &stream, 0);
         }
-        ctx.data_append(payload);
         flow(session, &stream, ctx, stream_id, length);
     }
     if flags & FLAG_END_STREAM != 0 {

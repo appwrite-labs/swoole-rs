@@ -130,7 +130,8 @@ back, except where a raw stream's first chunk can't trigger upstream's first-chu
 retry. The uncompressed body, whole and in the same chunks, decodes without a panic.
 `http_decompress` does the same for the HTTP client's Brotli and zstd decoders
 (`swoole_rs_inflate::brotli` and `zstd`): the compressed body comes back in any chunks,
-and the body itself decodes in chunks of at most 16 bytes until the output passes 16 MiB.
+and the body itself decodes in chunks of at most 16 bytes with output capped at the smaller
+of its input length and 16 MiB.
 
 libFuzzer writes new inputs to the first corpus directory, so keep `corpus/`
 (ignored) first and the committed `seeds/` second. A failure leaves its input in

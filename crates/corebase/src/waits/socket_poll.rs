@@ -6,7 +6,7 @@
 use crate::coroutine::Waker;
 use crate::offload::WakerSlot;
 use crate::reactor::Events;
-use crate::reactor::wait_event::{from_poll, to_poll};
+use crate::waits::wait_event::{from_poll, to_poll};
 use std::cell::Cell;
 use std::ffi::c_void;
 use std::ptr::NonNull;
@@ -324,10 +324,10 @@ pub fn poll<S>(
 }
 
 /// System's poll operations: the reactor, the timer and the current coroutine.
-pub static NATIVE: PollOps<crate::reactor::wait_event::Watch> = PollOps {
+pub static NATIVE: PollOps<crate::waits::wait_event::Watch> = PollOps {
     add: native::add,
     timer_add: native::timer_add,
-    current: crate::reactor::wait_event::native::current,
+    current: crate::waits::wait_event::native::current,
     park: crate::offload::park,
     wake: Wake {
         timer_del: native::timer_del,
@@ -337,14 +337,15 @@ pub static NATIVE: PollOps<crate::reactor::wait_event::Watch> = PollOps {
 
 pub(crate) mod native {
     use super::{Events, Registered, Timer};
+    use crate::constants::FdType;
     use crate::coroutine::Waker;
     use crate::reactor::event_api::{Deferred, swoole_event_defer_value};
-    use crate::reactor::wait_event::native::{Object, Watch};
+    use crate::waits::wait_event::native::Watch;
 
     use crate::timer::{add_fn_sec, del_id};
 
     pub(super) fn add(fd: i32, events: Events, task: Registered) -> Option<Watch> {
-        Watch::add(fd, events, Object::Poll(task)).ok()
+        Watch::add(fd, events, FdType::SW_FD_CO_POLL, task.as_ptr()).ok()
     }
 
     pub(super) fn timer_add(timeout: f64, task: Registered) -> Option<Timer> {

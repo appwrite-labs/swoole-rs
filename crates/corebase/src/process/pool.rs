@@ -159,8 +159,8 @@ impl<'a> PoolCall<'a> {
     /// The worker's pipe end the hook works on, lent for this borrow of the call;
     /// `None` without one.
     #[must_use]
-    pub fn lent_socket(&self) -> Option<crate::process::worker_record::NativeSocket<'_>> {
-        crate::process::worker_record::NativeSocket::lend(self.socket)
+    pub fn lent_socket(&self) -> Option<crate::reactor::Heap<'_>> {
+        crate::reactor::Heap::lend(self.socket)
     }
 
     /// The call's bytes as they are now; none without a buffer.

@@ -25,6 +25,7 @@ pub enum RequestOption {
     CompressionLevel,
     WebsocketCompression,
     UploadTmpDir,
+    PackageMaxLength,
 }
 
 /// The option `key` names (case-insensitively), `None` for an unknown key or one the
@@ -32,7 +33,7 @@ pub enum RequestOption {
 /// options.
 #[must_use]
 pub fn request_option(key: &[u8], capabilities: u32) -> Option<RequestOption> {
-    const OPTIONS: [(&[u8], u32, RequestOption); 7] = [
+    const OPTIONS: [(&[u8], u32, RequestOption); 8] = [
         (b"parse_cookie", 0, RequestOption::ParseCookie),
         (b"parse_body", 0, RequestOption::ParseBody),
         (b"parse_files", 0, RequestOption::ParseFiles),
@@ -43,6 +44,7 @@ pub fn request_option(key: &[u8], capabilities: u32) -> Option<RequestOption> {
             2,
             RequestOption::WebsocketCompression,
         ),
+        (b"package_max_length", 0, RequestOption::PackageMaxLength),
         (b"upload_tmp_dir", 0, RequestOption::UploadTmpDir),
     ];
     OPTIONS

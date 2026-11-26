@@ -12,7 +12,7 @@ use std::{
 };
 use swoole_rs_corebase::CellExt;
 use swoole_rs_http2::{
-    hpack::{Decoder, Encoder, Field},
+    hpack::{Decoder, Encoder, Field, MAX_DECODED_STRING},
     sw_rs_http2_default_settings,
 };
 use swoole_rs_zend::bailout;
@@ -141,7 +141,7 @@ impl SessionState {
         Self {
             fd,
             streams: Cell::default(),
-            inflater: Decoder::default(),
+            inflater: Decoder::new(MAX_DECODED_STRING),
             field: Cell::default(),
             deflater: Cell::default(),
             local,

@@ -14,8 +14,8 @@ use crate::sys::errno;
 /// The SIGCHLD registry: the coroutine effects `corebase::process`'s wait loop asks for.
 mod registry {
     use super::{c_int, c_void, wait_count};
+    use crate::process::signal_upstream::{self, Handler};
     use crate::process::wait::{Coroutines, Wake, wait_reap};
-    use crate::reactor::signal_upstream::{self, Handler};
     use std::ptr;
     use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -142,7 +142,7 @@ pub extern "C" fn system_waitpid(
     let waited =
         crate::process::wait::wait_pid(pid, status, options, timeout, &registry::COROUTINES);
     if waited.timed_out {
-        crate::reactor::socket_sync::set_errno(libc::ETIMEDOUT);
+        crate::set_errno(libc::ETIMEDOUT);
         log::set_last_error(libc::ETIMEDOUT);
     }
     waited.pid.map_or(-1, |pid| pid.unwrap_or(0))

@@ -3,6 +3,7 @@
 //! the reactor as an `EventWaiter`, whose reactor socket and coroutine `EventWaitOps`
 //! drive (the reactor's [`Watch`] and the coroutine's under `System::wait_event`, fakes
 //! in tests).
+use crate::constants::FdType;
 use crate::coroutine::Waker;
 use crate::offload::WakerSlot;
 pub use crate::reactor::Events;
@@ -143,7 +144,7 @@ pub(crate) fn from_poll(revents: i16) -> Events {
 pub fn wait_event(fd: i32, events: Events, timeout: f64) -> Result<Events, WaitError> {
     let ops = EventWaitOps {
         current: native::current,
-        add: |fd, events, waiter| Watch::add(fd, events, native::Object::Waiter(waiter)),
+        add: |fd, events, waiter| Watch::add(fd, events, FdType::SW_FD_CO_EVENT, waiter.as_ptr()),
         park: native::park,
     };
     let waited = wait_with(fd, events, timeout, &ops);
@@ -158,12 +159,12 @@ pub fn wait_event(fd: i32, events: Events, timeout: f64) -> Result<Events, WaitE
 /// The event waiter's reactor socket and coroutine: upstream's `make_socket`,
 /// `swoole_event_add`/`del` and `Coroutine::yield_ex`.
 pub(crate) mod native {
-    use crate::constants::FdType;
+    use super::FdType;
     use crate::log;
     use crate::reactor::{ChangeOp, event_api, reactor_upstream};
     use crate::reactor::{Events, SocketRecord};
     use crate::tls::event_socket::EventSocket;
-    use core::ffi::c_int;
+    use core::ffi::{c_int, c_void};
 
     /// `Coroutine::get_current_safe()`.
     pub(crate) use crate::coroutine::current_safe as current;
@@ -171,35 +172,27 @@ pub(crate) mod native {
     /// `SW_ERROR_WRONG_OPERATION`: there is no event loop to register with.
     const WRONG_OPERATION: c_int = swoole_rs_error::ErrorCode::SW_ERROR_WRONG_OPERATION as c_int;
 
-    /// What a watch's socket carries, with the fd type whose readiness handler
-    /// (`crate::reactor::readiness`) takes that object. Each is a parked wait's own
-    /// registration, live until the wait drops its watches.
-    #[derive(Clone, Copy)]
-    pub(crate) enum Object {
-        /// A hooked poll's task (`SW_FD_CO_POLL`).
-        Poll(crate::reactor::socket_poll::Registered),
-        /// A `wait_event` waiter (`SW_FD_CO_EVENT`).
-        Waiter(super::Registered),
-    }
-
     /// A reactor socket over an fd its owner borrows (upstream's `make_socket`), on
     /// the thread's reactor with an object the readiness handlers reach. Dropping it
     /// takes it off the reactor and frees the record, leaving the fd open.
     pub struct Watch(Option<EventSocket>);
 
     impl Watch {
-        /// Registers `fd` for `events`, with `object` and its fd type. The readiness
-        /// handlers reach `object`'s task or waiter through the record until the watch
-        /// drops, which its `Registered` keeps live until then.
+        /// Registers `fd` for `events`, with `object` and its fd type: a hooked poll's
+        /// task (`SW_FD_CO_POLL`) or a `wait_event` waiter (`SW_FD_CO_EVENT`), which
+        /// that type's readiness handler (`crate::waits::readiness`) takes. The
+        /// handlers reach it through the record until the watch drops, which the
+        /// object's `Registered` keeps live until then.
         ///
         /// # Errors
         /// The last error, when there is no reactor or it refuses the socket.
-        pub(crate) fn add(fd: i32, events: Events, object: Object) -> Result<Self, i32> {
+        pub(crate) fn add(
+            fd: i32,
+            events: Events,
+            fd_type: FdType,
+            object: *mut c_void,
+        ) -> Result<Self, i32> {
             let reactor = event_api::available().ok_or(WRONG_OPERATION)?;
-            let (fd_type, object) = match object {
-                Object::Poll(task) => (FdType::SW_FD_CO_POLL, task.as_ptr()),
-                Object::Waiter(waiter) => (FdType::SW_FD_CO_EVENT, waiter.as_ptr()),
-            };
             let mut record = SocketRecord::with_fd(fd, fd_type as c_int);
             record.attach_object(object);
             // The record is this watch's until it drops, off the reactor by then.
