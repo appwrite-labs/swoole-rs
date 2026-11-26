@@ -139,6 +139,11 @@ impl<'a, E: Effects> StaticHandler<'a, E> {
     }
 
     #[must_use]
+    pub fn directory_redirect(&self) -> Option<Vec<u8>> {
+        self.context.directory_redirect()
+    }
+
+    #[must_use]
     pub fn etag(&self) -> String {
         self.context.observe().etag()
     }

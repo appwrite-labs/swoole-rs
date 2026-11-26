@@ -187,6 +187,20 @@ pub fn send_event_to_connection(serv: Server<'_>, info: &DataHead, data: &[u8]) 
     to_connection(serv, info, data, None)
 }
 
+fn missing_session(info: &DataHead) {
+    let session = info.fd;
+    let code = E::SW_ERROR_SESSION_NOT_EXIST;
+    if info.event() == Some(ServerEvent::SendData) {
+        let length = info.len;
+        let m = format_args!("send {length} byte failed, session#{session} does not exist");
+        error(LOG_TRACE, code, m);
+    } else {
+        let kind = info.kind;
+        let m = format_args!("send event[{kind}] failed, session#{session} does not exist");
+        error(LOG_TRACE, code, m);
+    }
+}
+
 /// [`send_to_connection`] of the event `info` with its `data`, where `first` is what
 /// [`send_now`] already sent, short of all of it.
 fn to_connection(serv: Server<'_>, info: &DataHead, data: &[u8], first: Option<i64>) -> bool {
@@ -200,16 +214,7 @@ fn to_connection(serv: Server<'_>, info: &DataHead, data: &[u8], first: Option<i
     };
     let found = state.connection(session, lookup);
     let Some((conn, sock)) = found.and_then(|conn| Some((conn, conn.socket()?))) else {
-        let code = E::SW_ERROR_SESSION_NOT_EXIST;
-        if kind == Some(ServerEvent::SendData) {
-            let length = info.len;
-            let m = format_args!("send {length} byte failed, session#{session} does not exist");
-            error(LOG_TRACE, code, m);
-        } else {
-            let kind = info.kind;
-            let m = format_args!("send event[{kind}] failed, session#{session} does not exist");
-            error(LOG_TRACE, code, m);
-        }
+        missing_session(info);
         return false;
     };
     let reactor = Reactor::thread();
@@ -222,7 +227,10 @@ fn to_connection(serv: Server<'_>, info: &DataHead, data: &[u8], first: Option<i
     );
     let send_yield = config.send_yield.get();
     let yield_error = || log::set_last_error(E::SW_ERROR_OUTPUT_SEND_YIELD as c_int);
-    if conn.overflow() && config.mode_ != Mode::Process {
+    if conn.overflow()
+        && config.mode_ != Mode::Process
+        && matches!(kind, Some(ServerEvent::SendFile | ServerEvent::SendData))
+    {
         if send_yield {
             yield_error();
         } else {
@@ -230,6 +238,9 @@ fn to_connection(serv: Server<'_>, info: &DataHead, data: &[u8], first: Option<i
             error(LOG_WARNING, E::SW_ERROR_OUTPUT_BUFFER_OVERFLOW, m);
         }
         return false;
+    }
+    if close && i32::from(info.ext_flags) & crate::factory::CLOSE_RESET != 0 {
+        conn.set_close_reset(true);
     }
     if close && (conn.close_reset() || conn.close_force() || conn.peer_closed()) {
         crate::conn_io::close_connection(serv, reactor, Some(sock));

@@ -262,6 +262,7 @@ fn http_static_select() {
                 "SW_HTTP_PAGE_CSS",
                 "SW_HTTP_POWER_BY",
                 "SW_HTTP_PAGE_404",
+                "SW_STRL",
                 "sw_unlikely",
             ]),
     )

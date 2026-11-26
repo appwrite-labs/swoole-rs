@@ -371,10 +371,10 @@ impl Connection for Read<'_> {
     }
 
     fn serve_static(&mut self) -> bool {
-        let (server, session, socket) = (self.server, self.conn.session_id(), self.socket);
-        self.request.as_deref().is_some_and(|request| {
-            static_select(server, request, self.recv.view(), session, socket)
-        })
+        let (server, session) = (self.server, self.conn.session_id());
+        self.request
+            .as_deref()
+            .is_some_and(|request| static_select(server, request, self.recv.view(), session))
     }
 
     #[inline]
