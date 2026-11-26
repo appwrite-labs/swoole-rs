@@ -428,12 +428,10 @@ Upstream PHPTs for this module run in the merge tier's PHPT gate (the `phpt-*` j
   for more than 2 MiB from a randomly smaller file).
 - Mixed Rust/native ASan linking fails on macOS.
 
-The v6.2.6 `core-tests/src/protocol/http.cpp` tests in the `http_url` suite
-map to Rust tests of the same names. `url_length.rs` runs
-`impossible_lengths_fail_before_reading_input` on the length check before any
-slice access. `helpers.rs` runs `terminator_stays_within_the_requested_allocation`,
-`unreserved_bytes_and_explicit_length_keep_their_behavior`,
-`all_byte_values_keep_their_encoding_and_round_trip`, and
-`allocation_failure_preserves_errno_and_releases_storage`. The last exercises
-the upstream success branch using caller-owned stack storage for the entire
-encoding. The Rust API has no intermediate allocation to free.
+The v6.3.0 `core-tests/src/protocol/http.cpp` suite `http_url` maps to
+same-named Rust tests in `helpers.rs` for the seven byte and boundary cases,
+and in `url_length.rs` for `impossible_lengths_fail_before_reading_input`.
+The native-only `allocation_failure_returns_null` has no Rust allocation site:
+the caller supplies the output slice. The separate caller-owned storage and
+short-buffer tests exercise that interface. The randomized codec comparison
+runs both directions against the compiled v6.3.0 upstream bodies.

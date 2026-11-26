@@ -112,7 +112,7 @@ fn http() {
         ),
         slice(
             &source,
-            "static int url_htoi(",
+            "static constexpr int url_hex_value(",
             "int Request::get_protocol()",
         ),
     ]
