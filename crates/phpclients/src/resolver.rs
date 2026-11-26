@@ -179,7 +179,7 @@ fn add(call: &Call) {
             call.value(1)
                 .map(Value::dereferenced)
                 .as_deref()
-                .is_some_and(php_swoole_name_resolver_add),
+                .is_some_and(|resolver| register(resolver, false)),
         ),
         Err(_) => call.set_bool(false),
     }
@@ -188,6 +188,10 @@ fn add(call: &Call) {
 /// `php_swoole_name_resolver_add`: register `resolver` (an object) if it is a
 /// `Swoole\NameResolver`, holding a reference to it.
 pub fn php_swoole_name_resolver_add(resolver: &Value) -> bool {
+    register(resolver, true)
+}
+
+fn register(resolver: &Value, configured: bool) -> bool {
     // Autoloads as upstream's known string does, inside `zend_try`.
     let instance = match resolver.instance_of_named(&ZString::new(RESOLVER_CLASS)) {
         Ok(instance) => instance,
@@ -196,6 +200,10 @@ pub fn php_swoole_name_resolver_add(resolver: &Value) -> bool {
             return false;
         }
     };
+    if configured && instance != Some(true) {
+        swoole_rs_phpswoole::invalid_setting(c"name_resolver entries must be NameResolver objects");
+        return false;
+    }
     let class = String::from_utf8_lossy(RESOLVER_CLASS);
     let Some(instance) = instance else {
         warn(true, &format!("Class \"{class}\" not found"));

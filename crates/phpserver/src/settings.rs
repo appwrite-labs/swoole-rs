@@ -367,8 +367,9 @@ fn options(s: &Settings, this: ServerObject<'_>) -> Result<bool, Stop> {
     if !swoole_rs_phpswoole::set_global(vht) {
         return Err(Stop);
     }
-    swoole_rs_phpcoroutines::set_coroutine_option(vht);
-    checked()?;
+    if !swoole_rs_phpcoroutines::set_coroutine_option(vht) {
+        return Err(Stop);
+    }
     swoole_rs_phpswoole::php_swoole_set_aio_option(vht);
     s.string_option(c"chroot", |v| s.text(ServerText::Chroot, v))?;
     s.string_option(c"user", |v| s.text(ServerText::User, v))?;

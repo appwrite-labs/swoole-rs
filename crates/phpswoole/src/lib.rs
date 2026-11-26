@@ -51,7 +51,7 @@ pub use module::{
     load_library, php_swoole_register_shutdown_function, zif_swoole_set_process_name,
 };
 pub use optional::{set_blocking, socket_cast, socket_create};
-pub use options::{php_swoole_parse_to_size, set_global, sw_zval_is_serializable};
+pub use options::{invalid_setting, php_swoole_parse_to_size, set_global, sw_zval_is_serializable};
 pub use serialize::{serialize, unserialize, unserialize_from};
 pub use swoole_rs_corebase::{Switch, built_with};
 

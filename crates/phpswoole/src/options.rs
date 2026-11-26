@@ -55,7 +55,8 @@ fn setting_ok() -> bool {
     !bailout::pending() && swoole_rs_zend::host::exception().is_null()
 }
 
-fn invalid_setting(message: &CStr) {
+/// Raise a configuration exception unless PHP already has a pending failure.
+pub fn invalid_setting(message: &CStr) {
     if setting_ok() {
         crate::exception().throw(
             message,

@@ -112,8 +112,10 @@ fn run_worker(object: ServerObject<'_>) -> Result<(), Bailout> {
     bailed?;
     Props::own(object).set(c"setting", &setting);
     // The coroutine options are thread-local: each worker thread sets them once.
-    if let Some(options) = setting.array() {
-        swoole_rs_phpcoroutines::set_coroutine_option(options);
+    if let Some(options) = setting.array()
+        && !swoole_rs_phpcoroutines::set_coroutine_option(options)
+    {
+        return bailout::outcome(());
     }
     // A conversion's bailout ends the start here, as upstream's did.
     if bailout::pending() {

@@ -573,10 +573,7 @@ fn set(call: &Call) {
     if !swoole_rs_phpswoole::set_global(options) {
         return;
     }
-    swoole_rs_phpcoroutines::set_coroutine_option(options);
-    // Each setter stops at a conversion's bailout, which upstream's ended the
-    // call at; the handler raises it.
-    if swoole_rs_zend::bailout::pending() {
+    if !swoole_rs_phpcoroutines::set_coroutine_option(options) {
         return;
     }
     swoole_rs_phpswoole::php_swoole_set_aio_option(options);

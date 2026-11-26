@@ -221,13 +221,13 @@ fn start_tasks(scheduler: &Scheduler, call: &Call) -> Result<bool, Bailout> {
 
 /// `php_swoole_set_coroutine_option`. It stops at a deferred bailout, where
 /// upstream's ended the call, so a caller checks [`bailout::pending`] after it.
-pub fn set_coroutine_option(options: &swoole_rs_zend::Array) {
+pub fn set_coroutine_option(options: &swoole_rs_zend::Array) -> bool {
     if let Some(value) = options
         .get(b"max_coro_num")
         .or_else(|| options.get(b"max_coroutine"))
     {
         let Some(max) = value.applied_long() else {
-            return;
+            return false;
         };
         let max = if max <= 0 {
             runtime::DEFAULT_MAX_NUM
@@ -241,7 +241,7 @@ pub fn set_coroutine_option(options: &swoole_rs_zend::Array) {
     }
     if let Some(value) = options.get(b"hook_flags") {
         let Some(flags) = value.applied_long() else {
-            return;
+            return false;
         };
         set_hook_flags(flags.c_cast::<u32>());
     }
@@ -257,10 +257,14 @@ pub fn set_coroutine_option(options: &swoole_rs_zend::Array) {
     if let Some(value) = options.get(b"name_resolver") {
         if let Some(resolvers) = value.array() {
             for (_, resolver) in resolvers.entries() {
-                host::add_name_resolver(resolver);
+                if !host::add_name_resolver(resolver.referred()) {
+                    swoole_rs_phpswoole::invalid_setting(c"failed to register name_resolver");
+                    return false;
+                }
             }
         } else {
-            host::fatal_error(E_WARNING, c"name_resolver must be an array");
+            swoole_rs_phpswoole::invalid_setting(c"name_resolver must be an array");
+            return false;
         }
     }
     // zend_hash_merge(current, options, zval_add_ref, overwrite)
@@ -279,6 +283,7 @@ pub fn set_coroutine_option(options: &swoole_rs_zend::Array) {
             old
         });
     }
+    !bailout::pending() && swoole_rs_zend::host::exception().is_null()
 }
 
 /// Edit this thread's options, an empty array until the first edit. The edit
@@ -319,8 +324,7 @@ fn set(call: &Call) {
     if !swoole_rs_phpswoole::set_global(array) {
         return;
     }
-    set_coroutine_option(array);
-    if bailout::pending() {
+    if !set_coroutine_option(array) {
         return;
     }
     if let Some(value) = array.get(b"dns_cache_expire") {
