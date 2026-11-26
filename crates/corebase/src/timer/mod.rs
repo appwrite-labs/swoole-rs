@@ -1086,8 +1086,10 @@ mod tests {
         for forever in [0, -1, i32::MIN] {
             assert_eq!(Deadline::from_msec(forever), Deadline::never(), "{forever}");
         }
-        // 2^63 seconds is still a valid `timespec`, which the kernel saturates.
-        for forever in [-1.0, -0.0, 0.0, f64::NAN, 1e12, 2f64.powi(63)] {
+        // 2^63 seconds (the nearest f64 to 9.223372036854776e18 is exactly 2^63) is still a
+        // valid `timespec`, which the kernel saturates. Written out: Miri adds rounding error
+        // to `powi`, which would make it 2^63 + 1 ulp, an invalid one.
+        for forever in [-1.0, -0.0, 0.0, f64::NAN, 1e12, 9.223_372_036_854_776e18] {
             let deadline = Deadline::from_futex_timeout(forever);
             assert_eq!(deadline, Some(Deadline::never()), "{forever}");
         }
@@ -1095,15 +1097,22 @@ mod tests {
             assert_eq!(Deadline::from_futex_timeout(invalid), None, "{invalid}");
         }
         let futex = |seconds| Deadline::from_futex_timeout(seconds).unwrap();
-        let deadlines = [
-            (Deadline::from_msec(1500), 1_500_000_000),
-            (futex(0.0015), 1_500_000),
-            (futex(1.000_000_001), 1_000_000_001),
+        let deadlines: [(&dyn Fn() -> Deadline, u64); 3] = [
+            (&|| Deadline::from_msec(1500), 1_500_000_000),
+            (&|| futex(0.0015), 1_500_000),
+            (&|| futex(1.000_000_001), 1_000_000_001),
         ];
         for (deadline, nanos) in deadlines {
-            let left = deadline.remaining().unwrap();
+            // What passed around the two clock reads, as in `deadline_of_a_timeout`:
+            // Miri's clock moves on with every step.
+            let began = std::time::Instant::now();
+            let left = deadline().remaining().unwrap();
+            let passed = began.elapsed();
             let nanos = std::time::Duration::from_nanos(nanos);
-            assert!(left <= nanos && left > nanos / 2, "{nanos:?}: {left:?}");
+            assert!(
+                left <= nanos && left + passed >= nanos,
+                "{nanos:?}: {left:?} {passed:?}"
+            );
         }
     }
 }
