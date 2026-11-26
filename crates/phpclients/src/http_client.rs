@@ -583,6 +583,11 @@ impl Client {
         let published = zsocket.copy();
         drop(self.conn.zsocket.replace(zsocket));
         self.conn.socket.set(Some(socket));
+        let conn = Rc::clone(&self.conn);
+        swoole_rs_hooks::socket_extra::set_close_hook(
+            socket.handle(),
+            Box::new(move |_| socket_closed(&conn, socket)),
+        );
         if self.ssl && !socket.enable_ssl() {
             self.set_socket_error(socket, ErrorStatus::ConnectFailed);
             self.close(true);
@@ -597,14 +602,10 @@ impl Client {
             open.end();
         }
         self.accept_websocket_compression.set(false);
-        let conn = Rc::clone(&self.conn);
         socket
             .handle()
             .set_resolve_context(Some(Rc::clone(&self.resolve)));
-        socket.configure_http(
-            self.connect_timeout.get(),
-            Box::new(move |_| socket_closed(&conn, socket)),
-        );
+        socket.configure_http(self.connect_timeout.get());
         if !socket.connect_http(&self.host, c_int::from(self.port)) {
             self.set_socket_error(socket, ErrorStatus::ConnectFailed);
             self.close(true);

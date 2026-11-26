@@ -273,8 +273,11 @@ fn set(s: &Array, socket: Co) -> Result<bool, Stop> {
     if let Some(v) = s.get(b"bind_address") {
         bind_address = string(v)?;
     }
-    if !bind_address.is_empty() {
-        ret &= socket.bind(&bind_address, bind_port);
+    if !bind_address.is_empty() && !socket.bind(&bind_address, bind_port) {
+        let message =
+            socket.with_error(|_, error| [b"failed to bind socket: ", error.to_bytes()].concat());
+        invalid_setting(&text(&message));
+        return Ok(false);
     }
     if let Some(v) = s.get(b"socket_buffer_size") {
         let size = size(v)?;

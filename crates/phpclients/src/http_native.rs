@@ -5,7 +5,6 @@ use std::ffi::CStr;
 use swoole_rs_corebase::buffer::string::StringBuffer;
 use swoole_rs_corebase::{ProxyState, log};
 use swoole_rs_hooks::hooked::{swoole_coroutine_close, write};
-use swoole_rs_hooks::socket_extra::{CloseHook, set_close_hook};
 use swoole_rs_hooks::stdio::{
     swoole_coroutine_ftruncate, swoole_coroutine_lseek, swoole_coroutine_open,
 };
@@ -102,9 +101,8 @@ impl Co {
         .flatten()
     }
 
-    /// Connect timeout (0: the default), the close hook and the zend string
-    /// allocator.
-    pub(crate) fn configure_http(self, timeout: f64, hook: CloseHook) {
+    /// Connect timeout (0: the default) and the zend string allocator.
+    pub(crate) fn configure_http(self, timeout: f64) {
         let timeout = if timeout == 0.0 {
             swoole_rs_corebase::reactor::SOCKET_DEFAULTS.connect.get()
         } else {
@@ -112,7 +110,6 @@ impl Co {
         };
         self.set_timeout(timeout, TimeoutKind::CONNECT);
         self.use_zend_strings();
-        set_close_hook(self.handle(), hook);
     }
 
     /// `connect(host, port)` under the timeout `configure_http` set.

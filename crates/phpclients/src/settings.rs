@@ -235,6 +235,13 @@ pub(crate) fn apply(cli: Cli<'_>, settings: &Array) -> Option<bool> {
         && !address.bytes().is_empty()
         && !bind(cli, address.bytes(), bind_port)
     {
+        let message = [
+            b"failed to bind client to ",
+            address.c_str().to_bytes(),
+            format!(":{bind_port}").as_bytes(),
+        ]
+        .concat();
+        swoole_rs_phpswoole::invalid_setting(&native::c_text(&message));
         return Some(false);
     }
     if options.truthy("open_tcp_nodelay").unwrap_or(true)

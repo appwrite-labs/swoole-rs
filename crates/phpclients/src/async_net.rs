@@ -322,7 +322,7 @@ fn connect(call: &Call) {
     };
     if let Some(zset) = net::settings(object)
         && let Some(zset) = zset.array()
-        && crate::settings::apply(fresh.cli(), zset).is_none()
+        && crate::settings::apply(fresh.cli(), zset) != Some(true)
     {
         return call.set_bool(false);
     }
