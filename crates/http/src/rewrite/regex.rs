@@ -620,38 +620,41 @@ impl Regex {
         &self,
         list: &mut Vec<(usize, Slots)>,
         seen: &mut [usize],
-        pc: usize,
-        slots: Slots,
+        mut pc: usize,
+        mut slots: Slots,
         (hay, begin): (&[u8], usize),
         at: usize,
     ) {
-        let mut stack = vec![(pc, slots)];
-        while let Some((pc, mut slots)) = stack.pop() {
-            let (Some(last), Some(&inst)) = (seen.get_mut(pc), self.program.get(pc)) else {
-                continue;
-            };
-            if std::mem::replace(last, at) == at {
-                continue;
-            }
-            match inst {
-                Inst::Jmp(to) => stack.push((to, slots)),
-                Inst::Split(first, second) => {
-                    stack.push((second, slots.clone()));
-                    stack.push((first, slots));
+        // Only a split leaves a second branch to visit. Follow its preferred
+        // branch immediately, then resume the most recently deferred branch.
+        let mut pending = Vec::new();
+        loop {
+            while let (Some(last), Some(&inst)) = (seen.get_mut(pc), self.program.get(pc)) {
+                if std::mem::replace(last, at) == at {
+                    break;
                 }
-                Inst::Save(slot) => {
-                    if let Some(slot) = slots.get_mut(slot) {
-                        *slot = Some(at);
+                pc = match inst {
+                    Inst::Jmp(to) => to,
+                    Inst::Split(first, second) => {
+                        pending.push((second, slots.clone()));
+                        first
                     }
-                    stack.push((pc + 1, slots));
-                }
-                Inst::Look(look) => {
-                    if look.holds(hay, begin, at) {
-                        stack.push((pc + 1, slots));
+                    Inst::Save(slot) => {
+                        if let Some(slot) = slots.get_mut(slot) {
+                            *slot = Some(at);
+                        }
+                        pc + 1
                     }
-                }
-                Inst::Set(_) | Inst::Match => list.push((pc, slots)),
+                    Inst::Look(look) if look.holds(hay, begin, at) => pc + 1,
+                    Inst::Look(_) => break,
+                    Inst::Set(_) | Inst::Match => {
+                        list.push((pc, slots));
+                        break;
+                    }
+                };
             }
+            let Some(next) = pending.pop() else { break };
+            (pc, slots) = next;
         }
     }
 }
