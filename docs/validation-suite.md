@@ -11,6 +11,7 @@ PHPTs (see [corpus](../corpus/README.md)). `EXT` is a path to a built
 | Original upstream PHPTs | `python3 corpus/upstream/run.py --engine NAME=EXT --require-all` |
 | HTTP/1 framing ambiguities (smuggling corpus) | `python3 -m pytest tests/modules/http/test_smuggling.py --engine upstream=EXT --engine cargo=EXT` |
 | HTTP/1, h2c and WebSocket resource abuse (bounded RSS and time per connection) | `python3 -m pytest tests/modules/http/test_abuse.py --engine cargo=EXT` |
+| Fuzz allocation bounds (decode targets) | `cargo test --manifest-path fuzz/Cargo.toml`, and every `cargo fuzz run` of a decode target |
 | PHP-API differential fuzzing | `python3 tests/differential/fuzz.py --engine upstream=EXT --engine cargo=EXT --seed S --programs N --cases tests/differential/cases --keep DIR` |
 | WebSocket raw transport | `python3 -m pytest tests/modules/websocket/test_close.py --engine upstream=EXT --engine cargo=EXT` |
 | WebSocket invalid-frame policy | `python3 -m pytest tests/modules/websocket/test_invalid.py --engine upstream=EXT --engine cargo=EXT` |
@@ -46,3 +47,22 @@ them to raise it. Moving a baseline down needs `needs:decision`: the PR tier's
 `tooling` job fails a PR that removes a case line unless it carries that label
 (re-run the job after adding it). The merge tier runs h2spec, and the PR tier
 does when a PR touches HTTP/2 code or the runner.
+
+## Fuzz allocation bounds
+
+The decode targets in `fuzz/` (`ws_inflate`, `http_inflate`, `http_decompress`,
+`http2_hpack`, `http2_frame`, `resp_*`, `framing_*`, `http_multipart`, `http_chunked`)
+run through `fuzz/src/bound.rs`: a counting global allocator records the most Rust
+holds live while a target runs on one input, and the target fails when that passes
+`k` bytes per input byte plus `c`, set per target. A cap a target hands its decoder
+(an inflate output limit, HPACK's decoded-string limit) is part of its bound. Only
+Rust's allocations are counted; C libraries (zlib, Brotli, zstd, nghttp2) and the
+oracle's C++ are left to libFuzzer's RSS limit. The bounds run wherever the fuzz
+targets do:
+
+- the PR tier's `required` job: "Check fuzz harness" builds them, and "Test fuzz
+  harness" replays each decode target's `fuzz/seeds` against its bound
+  (`bound::tests::seeds_stay_bounded`);
+- ClusterFuzzLite on PRs (`cflite_pr.yml`, two minutes of the targets a change
+  reaches) and nightly (`cflite_batch.yml`, an hour across every target, then a prune);
+- a local `cargo +nightly fuzz run` (`fuzz/README.md`).

@@ -363,7 +363,7 @@ pub fn http_rewrite(bytes: &[u8]) {
 /// `swoole_rs_inflate::message` return, and the first byte as a level (-1 to 9) with
 /// the rest as a message round-trips through `swoole_rs_deflate::message`.
 pub fn ws_inflate(bytes: &[u8]) {
-    let _ = swoole_rs_inflate::message(bytes, 64 * 1024);
+    let _ = swoole_rs_inflate::message(bytes, crate::bound::WS_INFLATE_CAP);
     let Some((&level, data)) = bytes.split_first() else {
         return;
     };
