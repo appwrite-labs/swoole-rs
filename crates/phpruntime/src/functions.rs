@@ -499,7 +499,7 @@ fn detach_class(ce: ClassRef) {
 }
 
 /// The library's PHP replacements of ext-sockets.
-const SOCKETS: [&CStr; 26] = [
+const SOCKETS: [&CStr; 27] = [
     c"socket_create",
     c"socket_create_listen",
     c"socket_create_pair",
@@ -526,6 +526,7 @@ const SOCKETS: [&CStr; 26] = [
     c"socket_clear_error",
     c"socket_last_error",
     c"socket_import_stream",
+    c"socket_export_stream",
 ];
 
 /// The native curl replacements, registered as `swoole_native_<name>`.

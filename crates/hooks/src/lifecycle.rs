@@ -136,9 +136,6 @@ fn close(socket: Co, sys: Sys) -> bool {
         set_err(socket, libc::EBADF);
         return false;
     }
-    if socket.with_state(|state| state.flags.get().connected) {
-        shutdown(socket, libc::SHUT_RDWR, sys);
-    }
     if !socket
         .with_state(|state| state.bound_co(Events::READ | Events::WRITE))
         .is_null()
@@ -290,13 +287,10 @@ mod tests {
         }
     }
 
-    fn upstream_close(s: Co, sys: Sys) -> bool {
+    fn upstream_close(s: Co, _: Sys) -> bool {
         if s.is_closed() {
             set_err(s, libc::EBADF);
             return false;
-        }
-        if s.with_state(|state| state.flags.get().connected) {
-            upstream_shutdown(s, libc::SHUT_RDWR, sys);
         }
         if s.with_state(|state| state.bound_co(Events::READ | Events::WRITE).is_null()) {
             s.move_fd();

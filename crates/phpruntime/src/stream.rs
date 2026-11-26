@@ -1179,6 +1179,25 @@ fn stream_from_socket(
     Ok(stream)
 }
 
+/// Create a PHP stream resource that takes ownership of the supplied socket fd.
+///
+/// # Errors
+/// Allocating the PHP stream bailed out.
+pub fn socket_resource(
+    fd: c_int,
+    domain: c_int,
+    kind: c_int,
+    protocol: c_int,
+) -> Result<Option<Owned>, Bailout> {
+    Ok(
+        stream_from_socket(fd, domain, kind, protocol)?.map(|stream| {
+            let resource = Owned::default();
+            swr_zend_stream_to_zval(stream, &resource);
+            resource
+        }),
+    )
+}
+
 swoole_rs_zend::handlers! {
     zif_swoole_stream_socket_pair => stream_socket_pair;
 }
@@ -1212,9 +1231,7 @@ fn socket_pair(call: &Call) -> Result<(), Bailout> {
     check_reactor();
     let mut streams = OwnedArray::default();
     for fd in pair {
-        if let Some(stream) = stream_from_socket(fd, domain, kind, protocol)? {
-            let resource = Owned::default();
-            swr_zend_stream_to_zval(stream, &resource);
+        if let Some(resource) = socket_resource(fd, domain, kind, protocol)? {
             streams.push(resource);
         }
     }

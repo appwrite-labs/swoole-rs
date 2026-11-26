@@ -172,6 +172,7 @@ method_table! {
         c"getsockname" => zim_swoole_socket_coro_getsockname, &socket_coro::arginfo_class_Swoole_Coroutine_Socket_getsockname, z::ZEND_ACC_PUBLIC;
         c"isClosed" => zim_swoole_socket_coro_isClosed, &socket_coro::arginfo_class_Swoole_Coroutine_Socket_isClosed, z::ZEND_ACC_PUBLIC;
         c"import" => crate::socket_options::zim_swoole_socket_coro_import, &socket_coro::arginfo_class_Swoole_Coroutine_Socket_import, z::ZEND_ACC_PUBLIC | z::ZEND_ACC_STATIC;
+        c"export" => zim_swoole_socket_coro_export, &socket_coro::arginfo_class_Swoole_Coroutine_Socket_export, z::ZEND_ACC_PUBLIC;
     ];
 }
 
@@ -265,6 +266,37 @@ pub(crate) fn open(call: &Call) -> Option<Co> {
         return None;
     }
     Some(socket)
+}
+
+/// Export an independently owned stream over the same socket.
+fn export(call: &Call) {
+    if call.arity(0, 0).is_err() {
+        return;
+    }
+    let Some(socket) = open(call) else { return };
+    let fd = match swoole_rs_corebase::sys::dup(socket.fd()) {
+        Ok(fd) => fd,
+        Err(error) => {
+            let code = error.raw_os_error().unwrap_or(0);
+            set_error(call, code, &strerror(code));
+            crate::net::warn_sys("dup() failed", code);
+            return call.set_bool(false);
+        }
+    };
+    let s = socket.handle();
+    match swoole_rs_phpruntime::socket_resource(
+        fd,
+        s.sock_domain(),
+        s.sock_type(),
+        s.sock_protocol(),
+    ) {
+        Ok(Some(resource)) => call.set_owned(resource),
+        Ok(None) => {
+            warn(false, "failed to create stream");
+            call.set_bool(false);
+        }
+        Err(error) => error.defer(),
+    }
 }
 
 /// `strerror(code)` of a system error: `swoole_strerror` passes those to it.
@@ -882,6 +914,7 @@ swoole_rs_zend::handlers! {
     zim_swoole_socket_coro_connect => connect;
     zim_swoole_socket_coro_checkLiveness => check_liveness;
     zim_swoole_socket_coro_getBoundCid => bound_cid;
+    zim_swoole_socket_coro_export => export;
     zim_swoole_socket_coro_peek => peek;
     zim_swoole_socket_coro_recv => recv;
     zim_swoole_socket_coro_recvAll => recv_all;
