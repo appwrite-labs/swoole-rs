@@ -79,10 +79,6 @@ PENDING_PORTS = {
         'swoole_function/sendfile_object.phpt',
         'swoole_http_server/create_request.phpt',
     ],
-    5653: [
-        'swoole_server_port/set_return_value.phpt',
-        'swoole_server_port/set_return_value_inherited.phpt',
-    ],
     5654: ['swoole_timer/defer_next_round.phpt'],
     5655: [
         'swoole_coroutine/empty_settings.phpt',

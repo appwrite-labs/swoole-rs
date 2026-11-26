@@ -1261,7 +1261,23 @@ fn before_start(object: ServerObject<'_>, serv: view::Server<'_>) -> Result<(), 
         {
             // `$port->set($setting)`, Port's own method.
             let set = zport.call_method(Some(&crate::PORT), b"set", &[setting]);
-            trapped(set.is_err())?;
+            let result = set.map_err(|bailed| {
+                bailed.defer();
+                Stop
+            })?;
+            if !swoole_rs_zend::host::exception().is_null() {
+                return Err(Stop);
+            }
+            if !result.truthy() {
+                let port = PortInfo::of(crate::port::bound_port(zport).ok_or(Stop)?);
+                let text = message!(
+                    "failed to set the options of port[{}:{}]",
+                    String::from_utf8_lossy(&port.host),
+                    port.port
+                );
+                crate::port_settings::invalid_setting(text.as_cstr());
+                return Err(Stop);
+            }
         }
     }
     for zport in &ports {

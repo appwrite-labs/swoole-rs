@@ -386,10 +386,17 @@ fn finish(call: &Call, settings: &Value) -> Result<(), bailout::Bailout> {
     if swoole_rs_phpswoole::enable_library() {
         swoole_rs_zend::host::named_call(br"\Swoole\Server\Helper::checkOptions", &[settings])?;
     }
+    if !swoole_rs_zend::host::exception().is_null() {
+        return Ok(());
+    }
     if let Some(props) = call.props(Some(&PORT)) {
         props.merge(c"setting", settings);
     }
-    bailout::outcome(())
+    bailout::outcome(())?;
+    if swoole_rs_zend::host::exception().is_null() {
+        call.set_bool(true);
+    }
+    Ok(())
 }
 
 fn set(call: &Call) {

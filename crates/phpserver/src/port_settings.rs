@@ -13,7 +13,7 @@ use swoole_rs_corebase::tls::{self as tls, OwnedTlsContext, Text, Value};
 use swoole_rs_ports::lifecycle::{context_dup, sni_add};
 use swoole_rs_server::port_config::{LengthOwner, PortConfig};
 use swoole_rs_server::view;
-use swoole_rs_zend::{E_ERROR, E_WARNING, Message};
+use swoole_rs_zend::{E_ERROR, Message};
 
 /// `SW_SSL_DTLS`.
 const SSL_DTLS: i64 = tls::SslVersion::SW_SSL_DTLS.bits() as i64;
@@ -373,6 +373,16 @@ pub(crate) struct Zend<'a> {
     pub(crate) port: view::Port<'a>,
 }
 
+pub(crate) fn invalid_setting(message: &CStr) -> Stop {
+    if swoole_rs_zend::host::exception().is_null() {
+        swoole_rs_phpswoole::exception().throw(
+            message,
+            swoole_rs_error::ErrorCode::SW_ERROR_INVALID_PARAMS as i64,
+        );
+    }
+    Stop
+}
+
 impl Source for Zend<'_> {
     fn long(&self, key: &CStr) -> Result<Option<i64>, Stop> {
         self.settings.get(key).map(Settings::long).transpose()
@@ -444,15 +454,15 @@ impl Source for Zend<'_> {
         };
         let Some(certs) = certs.array() else {
             let message = c"ssl_sni_certs requires an array mapping host names to cert paths";
-            return Err(self.fatal(E_WARNING, message));
+            return Err(invalid_setting(message));
         };
         for (key, value) in certs.entries() {
             let Some(name) = key else {
                 let message = c"ssl_sni_certs array requires string host name keys";
-                return Err(self.fatal(E_WARNING, message));
+                return Err(invalid_setting(message));
             };
             let Some(vht) = value.array() else {
-                return Err(self.fatal(E_WARNING, c"invalid SNI_cert setting"));
+                return Err(invalid_setting(c"invalid SNI_cert setting"));
             };
             let context = self.config(context_dup);
             let item = Zend {
@@ -465,7 +475,7 @@ impl Source for Zend<'_> {
             files(&item, &mut context.borrow_configuration())?;
             let added = self.config(|c| sni_add(c, name, context));
             if !added {
-                return Err(self.fatal(E_ERROR, c"ssl_add_sni_cert() failed"));
+                return Err(invalid_setting(c"ssl_add_sni_cert() failed"));
             }
         }
         Ok(())
