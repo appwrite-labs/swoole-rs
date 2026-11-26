@@ -33,6 +33,7 @@ pub struct CoroutineLock {
     word: Arc<LockWord>,
     /// The owner's id, 0 for none (ids start at 1).
     cid: Cell<i64>,
+    depth: Cell<u32>,
 }
 
 /// Storage whose address stays stable while the coroutine lock is borrowed.
@@ -85,6 +86,7 @@ impl CoroutineLock {
             host,
             word: Arc::new(word),
             cid: Cell::new(0),
+            depth: Cell::new(0),
         });
         lock.word.store(0, Ordering::Relaxed);
         lock
@@ -102,6 +104,8 @@ impl CoroutineLock {
             return outside(host);
         };
         if cid == self.cid.get() {
+            self.depth
+                .set(self.depth.get().checked_add(1).ok_or(libc::EAGAIN)?);
             return Ok(());
         }
         let word = &self.word;
@@ -140,21 +144,30 @@ impl CoroutineLock {
             }
         }
         self.cid.set(cid);
+        self.depth.set(1);
         Ok(())
     }
 
     /// `CoroutineLock::unlock`.
     ///
     /// # Errors
-    /// The error code: out of coroutine, or the wake's errno.
+    /// The error code: out of coroutine, a different owner (`EPERM`), or the wake's errno.
     pub fn unlock(&self) -> Result<(), i32> {
         let host = self.host;
         // Query the current coroutine before accessing ownership, as upstream does.
-        if (host.current)().is_none() {
+        let Some(cid) = (host.current)() else {
             return outside(host);
-        }
+        };
         let word = &self.word;
         if word.load(Ordering::Relaxed) == 0 {
+            return Ok(());
+        }
+        if cid != self.cid.get() {
+            return Err(libc::EPERM);
+        }
+        let remaining = self.depth.get() - 1;
+        self.depth.set(remaining);
+        if remaining != 0 {
             return Ok(());
         }
         // Release: the next holder, perhaps another process, sees what this one wrote.
@@ -215,7 +228,9 @@ mod tests {
         });
         // Model the old owner resuming while the contender is suspended.
         if releases {
-            _ = unsafe { &*lock }.unlock();
+            switch(1, 7);
+            assert_eq!(unsafe { &*lock }.unlock(), Ok(()));
+            switch(2, 8);
         }
         if let Some(others) = ON_SLEEP.with(|f| f.borrow_mut().take()) {
             let (current, cid) = STATE.with(|state| (state.borrow().current, state.borrow().cid));
@@ -314,6 +329,7 @@ mod tests {
                 assert_eq!(self::lock(lock, operation | libc::LOCK_NB), libc::EBUSY);
                 switch(1, 1);
                 assert_eq!(unlock(lock), 0);
+                assert_eq!(unlock(lock), 0);
             }));
         });
         switch(2, 2);
@@ -358,9 +374,16 @@ mod tests {
         let lock = CoroutineLock::new(false, &SLEEP);
         assert_eq!(lock.acquire(NEVER), Ok(()));
         assert_eq!(lock.acquire(None), Ok(()));
-        STATE.with(|state| state.borrow_mut().cid += 1);
+        switch(2, 8);
         assert_eq!(lock.acquire(None), Err(libc::EBUSY));
+        assert_eq!(lock.unlock(), Err(libc::EPERM));
+        switch(1, 7);
         assert_eq!(lock.unlock(), Ok(()));
+        switch(2, 8);
+        assert_eq!(lock.acquire(None), Err(libc::EBUSY));
+        switch(1, 7);
+        assert_eq!(lock.unlock(), Ok(()));
+        switch(2, 8);
         assert_eq!(lock.acquire(None), Ok(()));
         assert_eq!(lock.unlock(), Ok(()));
         assert_eq!(lock.unlock(), Ok(()));
