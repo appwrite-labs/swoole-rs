@@ -533,14 +533,14 @@ fn offers_compression(mut header: &[u8]) -> bool {
             .iter()
             .position(|b| matches!(b, b';' | b','))
             .unwrap_or(header.len());
-        let name = &header[..end];
+        let (name, parameters) = header.split_at(end);
         let mut token = name
             .split(|b| matches!(b, b' ' | b'\t'))
             .filter(|s| !s.is_empty());
         if token.next() == Some(b"permessage-deflate") && token.next().is_none() {
             return true;
         }
-        let mut params = header[end..].iter();
+        let mut params = parameters.iter();
         let mut quoted = false;
         while let Some(byte) = params.next() {
             match byte {

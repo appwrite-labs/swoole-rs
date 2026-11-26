@@ -631,6 +631,10 @@ fn read(call: &Call) {
         call.set_bool(false);
         return;
     };
+    if size <= 0 {
+        fatal(E_WARNING, &message!("size must be greater than 0"));
+        return call.set_bool(false);
+    }
     let process = this(call);
     let Some(worker) = checked(process) else {
         return;

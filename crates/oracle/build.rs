@@ -170,9 +170,9 @@ fn definition(text: &str, signature: &str) -> String {
 fn http_frame() {
     let text = fs::read_to_string("upstream/src/protocol/http.cc").expect("vendored http.cc");
     let mut parts = vec![slice(&text, "static const char *method_strings[]", "\n};") + "\n};"];
+    parts.push(include_str!("shim/http_get_protocol_v630.inc").to_owned());
     for signature in [
         "void Request::parse_header_info(",
-        "int Request::get_protocol(",
         "int Request::get_header_length(",
         "static bool is_http_token_char(",
         "static bool is_http_quoted_char(",

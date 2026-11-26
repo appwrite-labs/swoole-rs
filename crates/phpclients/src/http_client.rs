@@ -1574,7 +1574,7 @@ fn on_header_value(hooks: &Hooks, name: &[u8], data: &[u8]) -> Flow {
     let lowered = name.to_ascii_lowercase();
     let name = lowered.as_slice();
     let end = data.iter().rposition(|byte| !matches!(byte, b' ' | b'\t'));
-    let data = &data[..end.map_or(0, |last| last + 1)];
+    let data = end.and_then(|last| data.get(..=last)).unwrap_or_default();
     hooks.props.edit_array(c"headers", |headers| {
         headers.merge(name, Owned::from(ZString::new(data)));
     });
