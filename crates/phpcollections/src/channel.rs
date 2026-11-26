@@ -163,7 +163,10 @@ fn push(call: &Call) {
         return;
     };
     let Some(data) = call.value(1) else { return };
-    match queue.push(data.copy(), timeout) {
+    match queue.push(
+        data.copy(),
+        swoole_rs_corebase::timer::Deadline::from_timeout(timeout),
+    ) {
         Ok(()) => {
             set_error(call, ERROR_OK);
             call.set_bool(true);
@@ -183,7 +186,7 @@ fn pop(call: &Call) {
         call.set_bool(false);
         return;
     };
-    match queue.pop(timeout) {
+    match queue.pop(swoole_rs_corebase::timer::Deadline::from_timeout(timeout)) {
         Ok(value) => {
             call.set_owned(value);
             set_error(call, ERROR_OK);

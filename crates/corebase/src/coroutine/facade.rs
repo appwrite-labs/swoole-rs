@@ -13,7 +13,8 @@ use crate::coroutine::state::{self as coroutine, Co, Sched, run};
 use crate::coroutine::thread::{
     Entry, THREAD, swr_v1_thread_context_clean, swr_v1_thread_context_init,
 };
-use crate::coroutine::{Coroutine, Resume, Routine, STACK_MARK, STACK_PROTECT, Scheduler};
+use crate::coroutine::{Resume, Routine, STACK_MARK, STACK_PROTECT, Scheduler};
+use crate::timer::Deadline;
 use crate::{
     Switch, built_with, fatal_error,
     log::{self, set_last_error},
@@ -189,17 +190,6 @@ fn cancel_wait(co: Co) -> bool {
     canceler.consume()
 }
 
-/// `yield_ex`'s timer: the wait of coroutine `cid`, which waits there until this
-/// resumes it, timed out.
-fn timed_out(cid: c_long) {
-    let s = Sched::this();
-    let Some(co) = s.with(|s| s.live_co(cid)) else {
-        return;
-    };
-    co.with(Coroutine::mark_timed_out);
-    coroutine::resume_parked(s, co);
-}
-
 /// `yield_ex`'s result for a [`yield_timed`]'s code: false, with the last error,
 /// when it timed out or was canceled.
 #[must_use]
@@ -215,8 +205,8 @@ pub fn yield_resumed(code: Resume) -> bool {
 /// `yield_ex` without its last error: how the yield ended. `co` is the running coroutine
 /// (this aborts otherwise); as [`suspend`](crate::coroutine::suspend), it asks nothing more.
 #[must_use]
-pub fn yield_timed(co: *mut c_void, timeout: f64) -> Resume {
-    yield_timed_armed(co, timeout, |_| ())
+pub fn yield_timed(co: *mut c_void, deadline: Deadline) -> Resume {
+    yield_timed_armed(co, deadline, |_| ())
 }
 
 /// [`yield_timed`], handing `arm` the [`Waker`](crate::coroutine::Waker) that ends this park
@@ -224,30 +214,16 @@ pub fn yield_timed(co: *mut c_void, timeout: f64) -> Resume {
 #[must_use]
 pub fn yield_timed_armed(
     co: *mut c_void,
-    timeout: f64,
+    deadline: Deadline,
     arm: impl FnOnce(crate::coroutine::Waker),
 ) -> Resume {
     let running = Co::running(Sched::this(), co.cast());
-    let timer = if timeout > 0.0 {
-        // It fires only while `co` waits below, or is cleared first.
-        let cid = running.with(|co| co.cid);
-        crate::timer::add_fn_sec(timeout, false, move || timed_out(cid))
-            .map_or(0, crate::timer::Held::id)
-    } else {
-        0
-    };
-    // The canceled coroutine is `running`, which waits below while its canceler is set.
+    // The canceled coroutine is `running`, which waits while its canceler is set.
     let resume_canceled = move || {
         coroutine::resume_parked(Sched::this(), running);
         true
     };
-    yield_with_cancel_armed(co, resume_canceled, arm);
-    // `co` runs again.
-    let code = running.with(|co| co.resume_code);
-    if code != Resume::TimedOut && timer != 0 {
-        _ = crate::timer::swoole_timer_clear(timer);
-    }
-    code
+    yield_with_cancel_armed(co, deadline, resume_canceled, arm)
 }
 
 /// `static void Coroutine::print_list()`.

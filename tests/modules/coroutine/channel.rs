@@ -199,11 +199,9 @@ mod rt {
 #[derive(Clone, Copy)]
 struct Chan(usize);
 
-/// The test runtime's effects, as Swoole's: a timer for a positive timeout and a
+/// The test runtime's effects, as Swoole's: a timer at the deadline and a
 /// cancel function, each resuming the waiter.
-struct Rt {
-    timeout: f64,
-}
+struct Rt;
 
 impl Effects for Rt {
     type Waiter = *mut c_void;
@@ -211,7 +209,7 @@ impl Effects for Rt {
         rt::me() as *mut c_void
     }
 
-    fn wait(&mut self) -> u32 {
+    fn wait(&mut self, deadline: Deadline) -> u32 {
         use std::sync::{
             Arc,
             atomic::{AtomicBool, Ordering},
@@ -219,8 +217,8 @@ impl Effects for Rt {
         let co = rt::me();
         let timedout = Arc::new(AtomicBool::new(false));
         let fired = Arc::clone(&timedout);
-        let timer = (self.timeout > 0.0).then(|| {
-            rt::timer_add(self.timeout, move || {
+        let timer = deadline.remaining().map(|left| {
+            rt::timer_add(left.as_secs_f64(), move || {
                 fired.store(true, Ordering::Relaxed);
                 rt::resume(co);
             })
@@ -257,16 +255,16 @@ impl Chan {
         self.push_for(data, -1.0)
     }
     fn push_for(self, data: *mut c_void, timeout: f64) -> bool {
-        push(self.cell(), &mut Rt { timeout }, data).is_ok()
+        push(self.cell(), &mut Rt, data, Deadline::from_timeout(timeout)).is_ok()
     }
     fn pop(self) -> *mut c_void {
         self.pop_for(-1.0)
     }
     fn pop_for(self, timeout: f64) -> *mut c_void {
-        pop(self.cell(), &mut Rt { timeout }).unwrap_or(null_mut())
+        pop(self.cell(), &mut Rt, Deadline::from_timeout(timeout)).unwrap_or(null_mut())
     }
     fn close(self) -> bool {
-        close(self.cell(), &mut Rt { timeout: 0.0 })
+        close(self.cell(), &mut Rt)
     }
     fn get_error(self) -> i32 {
         // SAFETY: as above.
@@ -463,7 +461,7 @@ impl Effects for Log {
     fn current(&self) -> *mut c_void {
         9 as *mut c_void
     }
-    fn wait(&mut self) -> u32 {
+    fn wait(&mut self, _: Deadline) -> u32 {
         self.flags
     }
     fn resume(&mut self, co: *mut c_void) {
@@ -478,15 +476,15 @@ fn cancel_wins_over_timeout() {
         flags: CANCELED | TIMEDOUT,
         resumed: vec![],
     };
-    assert_eq!(pop(&ch, &mut fx), None);
+    assert_eq!(pop(&ch, &mut fx, Deadline::never()), None);
     assert_eq!(ch.get_mut().error(), ERROR_CANCELED);
     fx.flags = TIMEDOUT;
-    assert_eq!(pop(&ch, &mut fx), None);
+    assert_eq!(pop(&ch, &mut fx, Deadline::never()), None);
     assert_eq!(ch.get_mut().error(), ERROR_TIMEOUT);
     assert_eq!(ch.get_mut().consumer_num(), 0);
     let value = 17 as *mut c_void;
-    assert_eq!(push(&ch, &mut fx, value), Ok(()));
-    assert_eq!(pop(&ch, &mut fx), Some(value));
+    assert_eq!(push(&ch, &mut fx, value, Deadline::never()), Ok(()));
+    assert_eq!(pop(&ch, &mut fx, Deadline::never()), Some(value));
     assert_eq!(
         stats(&ch).error,
         ERROR_TIMEOUT,

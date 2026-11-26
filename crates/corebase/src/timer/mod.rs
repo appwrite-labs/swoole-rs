@@ -14,8 +14,8 @@ use std::ffi::c_void;
 use std::hash::{BuildHasherDefault, Hasher};
 use std::{mem, ptr};
 pub use wrapper::{
-    Held, add_fn, add_fn_sec, add_owned, cancel_held, cancel_issued, del_disarmed, del_id,
-    delay_held, delete_held, php, schedule_owned, swoole_timer_clear, swoole_timer_create,
+    Deadline, Held, add_fn, add_fn_sec, add_owned, cancel_held, cancel_issued, del_disarmed,
+    del_id, delay_held, delete_held, php, schedule_owned, swoole_timer_clear, swoole_timer_create,
     swoole_timer_free, swoole_timer_get_next_msec, swoole_timer_is_available, swoole_timer_select,
     thread_timer_count, thread_timer_detached, thread_timer_reinit,
 };
@@ -1026,5 +1026,37 @@ mod tests {
         assert_eq!(q.q().end().status(), Status::Busy);
         q.complete(original.id, Status::Release);
         q.end();
+    }
+
+    /// `yield_ex`'s timeouts: only a positive one ends, `sec2msec`'s milliseconds from now.
+    #[test]
+    fn deadline_of_a_timeout() {
+        for forever in [-1.0, -0.0, 0.0, f64::NAN, f64::INFINITY, f64::MAX] {
+            assert_eq!(
+                Deadline::from_timeout(forever),
+                Deadline::never(),
+                "{forever}"
+            );
+        }
+        assert_eq!(Deadline::never().remaining(), None);
+        // `sec2msec`'s milliseconds: truncated, at least one.
+        for (seconds, ms) in [
+            (0.5, 500),
+            (0.0015, 1),
+            (0.0001, 1),
+            (0.3, 300),
+            (1.9999, 1999),
+        ] {
+            // What passed around the two clock reads, so a pause between them
+            // only widens the lower bound.
+            let began = std::time::Instant::now();
+            let left = Deadline::from_timeout(seconds).remaining().unwrap();
+            let passed = began.elapsed();
+            let ms = std::time::Duration::from_millis(ms);
+            assert!(
+                left <= ms && left + passed >= ms,
+                "{seconds}: {left:?} {passed:?}"
+            );
+        }
     }
 }

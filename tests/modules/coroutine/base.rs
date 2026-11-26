@@ -34,6 +34,7 @@ use swoole_rs_corebase::coroutine::{
     coroutine_get as swoole_coroutine_get, counters, current_cid as get_current_cid, print_list,
     swoole_coroutine_iterator_each, swoole_coroutine_iterator_reset,
 };
+use swoole_rs_corebase::timer::Deadline;
 use swoole_rs_ffi::swoole_event_init;
 
 const SW_ERROR_CO_CANNOT_CANCEL: c_int = 10015;
@@ -163,12 +164,12 @@ impl View {
         self.co().resume_code == Resume::TimedOut
     }
     fn yield_(&self) {
-        swoole_rs_corebase::coroutine::suspend(self.0.cast());
+        _ = swoole_rs_corebase::coroutine::suspend(self.0.cast(), Deadline::never());
     }
     fn yield_ex(&self, timeout: f64) -> bool {
         swoole_rs_corebase::coroutine::yield_resumed(swoole_rs_corebase::coroutine::yield_timed(
             self.0.cast(),
-            timeout,
+            Deadline::from_timeout(timeout),
         ))
     }
     fn resume(&self) {

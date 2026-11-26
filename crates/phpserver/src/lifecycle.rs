@@ -1407,7 +1407,7 @@ pub fn php_swoole_server_send_yield(
         waiters.with_taken(|queue| queue.push_back(Rc::clone(&waiter)));
         let timeout = server.config().send_timeout.get();
         // `onBufferEmpty` or `onClose` wakes it.
-        if !waiter.wait_for(timeout) {
+        if !waiter.wait_for(swoole_rs_corebase::timer::Deadline::from_timeout(timeout)) {
             waiters.with_taken(|queue| {
                 queue.retain(|queued| !Rc::ptr_eq(queued, &waiter));
             });

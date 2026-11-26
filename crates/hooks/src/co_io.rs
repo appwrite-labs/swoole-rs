@@ -168,8 +168,10 @@ mod native {
         } else {
             Events::WRITE
         };
-        swoole_rs_corebase::coroutine::yield_with_cancel_armed(
+        // The socket's own timer ends the wait.
+        _ = swoole_rs_corebase::coroutine::yield_with_cancel_armed(
             co,
+            swoole_rs_corebase::timer::Deadline::never(),
             move || socket.cancel(event),
             |waker| socket.with_state(|state| state.arm(event, waker)),
         );
