@@ -644,16 +644,15 @@ fn http(s: &Settings, this: ServerObject<'_>) -> Result<bool, Stop> {
     s.flag(c"enable_static_handler", f::ENABLE_STATIC_HANDLER);
     if let Some(value) = s.get(c"document_root") {
         let path_max = s.fact(f::PATH_MAX);
-        let fits = Settings::string(value, |root| {
+        let configured = Settings::string(value, |root| {
             if i64::try_from(root.len()).unwrap_or(i64::MAX) >= path_max {
                 let text = message!("The length of document_root must be less than {path_max}");
                 fatal(E_ERROR, text.as_cstr());
                 return false;
             }
-            server_methods::set_document_root(s.serv, root);
-            true
+            server_methods::set_document_root(s.serv, root)
         })?;
-        if !fits {
+        if !configured {
             return Err(Stop);
         }
     }
