@@ -156,6 +156,13 @@ const E_NOTICE: i32 = swoole_rs_zend::sys::E_NOTICE.cast_signed();
 struct NetStream {
     socket: Rc<Socket>,
     blocking: std::cell::Cell<bool>,
+    zero_timeout: std::cell::Cell<bool>,
+}
+
+impl NetStream {
+    fn wait_for_io(&self) -> bool {
+        self.blocking.get() && (!self.zero_timeout.get() || self.socket.has_ssl())
+    }
 }
 
 /// Report a trapped bailout through `flag`; `failed` stands in for the result.
@@ -248,6 +255,7 @@ fn alloc(
         let net = Box::into_raw(Box::new(NetStream {
             socket,
             blocking: std::cell::Cell::new(true),
+            zero_timeout: std::cell::Cell::new(swr_zend_stream_default_timeout() == 0),
         }));
         fresh
             .stream()
@@ -347,17 +355,12 @@ fn write(stream: Stream<'_>, data: &[u8]) -> Result<isize, Bailout> {
             .send(SendOp::Sync, data)
             .map_or(-1, usize::cast_signed));
     }
-    let mut written = if blocking {
-        socket
-            .send(SendOp::All, data)
-            .map_or(-1, usize::cast_signed)
+    let sent = if net.wait_for_io() {
+        socket.send(SendOp::All, data)
     } else {
-        let written = socket
-            .send(SendOp::Once, data)
-            .map_or(-1, usize::cast_signed);
-        socket.set_error(if written < 0 { errno() } else { 0 });
-        written
+        write_once(&socket, data, blocking)
     };
+    let mut written = sent.map_or(-1, usize::cast_signed);
     // PHP retries a positive short write. A canceled blocking send must stop that retry.
     if blocking
         && written > 0
@@ -388,6 +391,33 @@ fn write(stream: Stream<'_>, data: &[u8]) -> Result<isize, Bailout> {
     Ok(written)
 }
 
+/// A blocking stream with a zero timeout may retry only while its fd is writable.
+fn write_once(socket: &Socket, data: &[u8], blocking: bool) -> Option<usize> {
+    loop {
+        if let Some(written) = socket.send(SendOp::Once, data) {
+            socket.set_error(0);
+            return Some(written);
+        }
+        let code = errno();
+        if !blocking || socket.catch_error(code) != Some(Caught::Wait) {
+            socket.set_error(code);
+            return None;
+        }
+        let mut fd = [libc::pollfd {
+            fd: socket.fd(),
+            events: libc::POLLOUT,
+            revents: 0,
+        }];
+        match swoole_rs_corebase::sys::poll(&mut fd, 0) {
+            Ok(0) => socket.set_error(libc::ETIMEDOUT),
+            Ok(_) => continue,
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(error) => socket.set_error(error.raw_os_error().unwrap_or(libc::EIO)),
+        }
+        return None;
+    }
+}
+
 swoole_rs_zend::exports! {
 /// The stream's `read` (`socket_read`): bytes read, or -1.
 #[unsafe(no_mangle)]
@@ -401,13 +431,14 @@ fn read(stream: Stream<'_>, out: &mut [MaybeUninit<u8>]) -> Result<isize, Bailou
     let Some(net) = stream.net() else {
         return Ok(-1);
     };
-    let (socket, blocking) = (Rc::clone(&net.socket), net.blocking.get());
+    let socket = Rc::clone(&net.socket);
     if !vm_active() {
         return Ok(socket
             .recv(RecvOp::Sync, out)
             .map_or(-1, usize::cast_signed));
     }
-    let mut read = if blocking && !stream.fields(|stream| swr_zend_stream_buffered(stream)) {
+    let mut read = if net.wait_for_io() && !stream.fields(|stream| swr_zend_stream_buffered(stream))
+    {
         socket
             .recv(RecvOp::Recv, out)
             .map_or(-1, usize::cast_signed)
@@ -415,7 +446,7 @@ fn read(stream: Stream<'_>, out: &mut [MaybeUninit<u8>]) -> Result<isize, Bailou
         let read = socket
             .recv(RecvOp::Once, out)
             .map_or(-1, usize::cast_signed);
-        socket.set_error(errno());
+        socket.set_error(if read < 0 { errno() } else { 0 });
         read
     };
     if read > 0 {
@@ -587,8 +618,10 @@ extern "C" fn swr_v1_phpruntime_socket_option(
         meta_data(stream, &socket, net.blocking.get(), data);
     }
     if let Some(time) = timeout {
-        // PHP socket streams share this timeout between reads and writes
-        socket.set_timeout(seconds(time), TimeoutKind::RDWR);
+        let zero = time.tv_sec == 0 && time.tv_usec == 0;
+        net.zero_timeout.set(zero);
+        socket.set_error(0);
+        socket.set_timeout(if zero { -1.0 } else { seconds(time) }, TimeoutKind::RDWR);
     }
     let Some(param) = crypto else {
         return true;
