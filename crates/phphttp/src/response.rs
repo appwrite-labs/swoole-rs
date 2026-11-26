@@ -256,9 +256,21 @@ fn send_file(call: &Call) {
             return None;
         };
         let name = file.bytes();
+        if name.contains(&0) {
+            call.argument_value_error(1, c"must not contain any null bytes");
+            return None;
+        }
         if name.is_empty() {
             host::notice("file name is empty");
             return None;
+        }
+        for (parameter, value) in [("offset", offset), ("length", requested)] {
+            if value < 0 {
+                host::notice(&format!(
+                    "parameter ${parameter}[{value}] must be greater than or equal to 0"
+                ));
+                return None;
+            }
         }
         let stat = stat(file).ok()?;
         if stat.st_mode & libc::S_IFMT != libc::S_IFREG {
