@@ -719,7 +719,7 @@ fn read_vector(call: &Call, socket: Co, op: c_int, array: &Array, timeout: f64) 
             );
             return call.set_bool(false);
         };
-        let Ok(length) = usize::try_from(length) else {
+        let Ok(length @ 1..) = usize::try_from(length) else {
             throw(
                 libc::EINVAL,
                 &format!("Item #[{index}] must be greater than 0"),

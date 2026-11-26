@@ -1,6 +1,9 @@
 //! Upstream `http_server::StaticHandler`'s state: the request URL, the paths and texts
 //! derived from it, the file's facts, the directory listing and the range tasks. The
 //! filesystem, MIME, random and calendar effects are the caller's [`StaticEffects`].
+use crate::conditional::{
+    Calendar, Conditional, PreconditionStatus, conditional, matches_etag, parse_http_date,
+};
 use crate::static_meta::joined;
 use crate::static_path::{self, Action};
 use crate::{HttpStaticPath, HttpStaticTask, HttpTasks, INVALID, OVERFLOW};
@@ -55,6 +58,45 @@ pub struct HttpStaticObservation {
     pub status: i32,
     pub kind: StaticFileKind,
     pub file_ready: bool,
+}
+
+impl HttpStaticObservation {
+    /// Strong validator derived from the metadata of the selected file.
+    #[must_use]
+    pub fn etag(&self) -> String {
+        format!(
+            "\"{:x}-{:x}-{:x}\"",
+            self.mtime, self.filesize, self.mtime_nsec
+        )
+    }
+
+    /// Return the HTTP status after evaluating the request's four conditional headers.
+    pub fn preconditions(
+        &self,
+        if_match: &[u8],
+        unmodified: &[u8],
+        none_match: &[u8],
+        modified: &[u8],
+        calendar: &impl Calendar,
+    ) -> PreconditionStatus {
+        if !if_match.is_empty() {
+            if !matches_etag(if_match, self.etag().as_bytes(), false) {
+                return PreconditionStatus::Failed;
+            }
+        } else if parse_http_date(unmodified, calendar).is_some_and(|date| self.mtime > date) {
+            return PreconditionStatus::Failed;
+        }
+        let cached = if none_match.is_empty() {
+            conditional(modified, Conditional::ModifiedSince, self.mtime, calendar)
+        } else {
+            matches_etag(none_match, self.etag().as_bytes(), true)
+        };
+        if cached {
+            PreconditionStatus::NotModified
+        } else {
+            PreconditionStatus::Ok
+        }
+    }
 }
 pub struct HttpStaticContext {
     original: Vec<u8>,

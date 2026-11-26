@@ -801,12 +801,14 @@ fn compare_conditional(old: &Upstream, server: &Server, file: i64, date: &[u8], 
         observed(|| handler.is_modified(date))
     } else {
         observed(|| {
-            HttpStaticObservation {
-                mtime: file,
-                filesize: 17,
-                ..Default::default()
-            }
-            .modified_range(date, &Scripted)
+            Scripted.if_range_changed(
+                date,
+                &HttpStaticObservation {
+                    mtime: file,
+                    filesize: 17,
+                    ..Default::default()
+                },
+            )
         })
     };
     assert_eq!(
@@ -966,8 +968,8 @@ fn preconditions_and_if_range_share_validators() {
     assert_eq!(status("", "", &format!("\"other\", {tag}"), ""), 304);
     assert_eq!(status("", "", "\"other\"", date), 200);
     assert_eq!(status("", "Sun, 27 Oct 2024 02:33:20 GMT", "", ""), 412);
-    assert!(!file.modified_range(tag.as_bytes(), &Scripted));
-    assert!(file.modified_range(weak.as_bytes(), &Scripted));
-    assert!(file.modified_range(b"\"other\"", &Scripted));
+    assert!(!Scripted.if_range_changed(tag.as_bytes(), &file));
+    assert!(Scripted.if_range_changed(weak.as_bytes(), &file));
+    assert!(Scripted.if_range_changed(b"\"other\"", &file));
     assert_eq!(status("", "", "   ", ""), 200);
 }

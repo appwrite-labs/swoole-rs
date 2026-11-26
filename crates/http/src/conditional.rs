@@ -35,7 +35,7 @@ pub enum Conditional {
     Range,
 }
 
-fn parse_http_date(date: &[u8], calendar: &impl Calendar) -> Option<i64> {
+pub(crate) fn parse_http_date(date: &[u8], calendar: &impl Calendar) -> Option<i64> {
     if date.is_empty() || date.len() > 63 {
         return None;
     }
@@ -73,7 +73,7 @@ fn skip_ows(mut bytes: &[u8]) -> &[u8] {
     bytes
 }
 
-fn matches_etag(mut list: &[u8], tag: &[u8], weak: bool) -> bool {
+pub(crate) fn matches_etag(mut list: &[u8], tag: &[u8], weak: bool) -> bool {
     loop {
         list = skip_ows(list);
         if let Some(rest) = list.strip_prefix(b"*") {
@@ -107,45 +107,6 @@ pub enum PreconditionStatus {
     Ok = 200,
     NotModified = 304,
     Failed = 412,
-}
-
-impl crate::HttpStaticObservation {
-    /// Strong validator derived from the metadata of the selected file.
-    #[must_use]
-    pub fn etag(&self) -> String {
-        format!(
-            "\"{:x}-{:x}-{:x}\"",
-            self.mtime, self.filesize, self.mtime_nsec
-        )
-    }
-
-    /// Return the HTTP status after evaluating the request's four conditional headers.
-    pub fn preconditions(
-        &self,
-        if_match: &[u8],
-        unmodified: &[u8],
-        none_match: &[u8],
-        modified: &[u8],
-        calendar: &impl Calendar,
-    ) -> PreconditionStatus {
-        if !if_match.is_empty() {
-            if !matches_etag(if_match, self.etag().as_bytes(), false) {
-                return PreconditionStatus::Failed;
-            }
-        } else if parse_http_date(unmodified, calendar).is_some_and(|date| self.mtime > date) {
-            return PreconditionStatus::Failed;
-        }
-        let cached = if none_match.is_empty() {
-            conditional(modified, Conditional::ModifiedSince, self.mtime, calendar)
-        } else {
-            matches_etag(none_match, self.etag().as_bytes(), true)
-        };
-        if cached {
-            PreconditionStatus::NotModified
-        } else {
-            PreconditionStatus::Ok
-        }
-    }
 }
 
 /// `get_date()` (now, when `mtime` is None) or `get_date_last_modified()`: the time

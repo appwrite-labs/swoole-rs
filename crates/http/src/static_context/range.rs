@@ -5,17 +5,6 @@ use crate::range_response::HttpRangeFormat;
 use crate::static_meta::{static_boundary, static_multipart};
 use crate::{HttpSpan, OVERFLOW};
 
-impl crate::HttpStaticObservation {
-    /// A quoted If-Range validator must match the file's strong entity tag exactly.
-    pub fn modified_range(&self, value: &[u8], effects: &impl StaticEffects) -> bool {
-        if value.starts_with(b"\"") {
-            value != self.etag().as_bytes()
-        } else {
-            effects.modified_range(value, self.mtime)
-        }
-    }
-}
-
 impl HttpStaticContext {
     /// Select the file spans and build their response headers.
     pub fn parse_range(
@@ -33,7 +22,7 @@ impl HttpStaticContext {
         let if_range = crate::c_text(if_range.unwrap_or_default());
         let selection = if size == 0
             || !crate::case_prefix(range, b"bytes=")
-            || (!if_range.is_empty() && self.facts.modified_range(if_range, effects))
+            || (!if_range.is_empty() && effects.if_range_changed(if_range, &self.facts))
         {
             Ok(None)
         } else {

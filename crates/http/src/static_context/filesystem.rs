@@ -65,6 +65,14 @@ pub trait StaticEffects {
     /// `is_modified_range(if_range)`: the `If-Range` date differs from the file's
     /// modification time `mtime`.
     fn modified_range(&self, if_range: &[u8], mtime: i64) -> bool;
+    /// A quoted If-Range validator must match the file's strong entity tag exactly.
+    fn if_range_changed(&self, value: &[u8], file: &HttpStaticObservation) -> bool {
+        if value.starts_with(b"\"") {
+            value != file.etag().as_bytes()
+        } else {
+            self.modified_range(value, file.mtime)
+        }
+    }
     /// A range part's header overflowed libc's int: `errno = EOVERFLOW`.
     fn overflow(&self);
 }
