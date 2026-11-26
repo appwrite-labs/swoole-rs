@@ -470,10 +470,6 @@ fn route<'a>(facts: &Receive<'a>) -> Route<'a> {
     }
 }
 
-fn notice(message: &str) {
-    log::notice(format_args!("{message}"));
-}
-
 /// Parse the request, fill `$request->server` and pick the handler. The
 /// session's connection is looked up at each use: parsing an upgrade and the
 /// hooks write it.
@@ -494,10 +490,13 @@ fn handle(
         context::send(ctx, SW_HTTP_BAD_REQUEST_PACKET.as_bytes());
         context::close(ctx);
         let parser = &ctx.state().parser;
+        let warn = |message| log::warning(c"php_swoole_http_server_onReceive", message);
         if parser.error == HPE_OK {
-            notice("Incomplete HTTP request: parsed successfully but missing required components");
+            warn(format_args!(
+                "Incomplete HTTP request: parsed successfully but missing required components"
+            ));
         } else {
-            notice(&format!(
+            warn(format_args!(
                 "Invalid HTTP request discarded: {} bytes unprocessed. Reason: {}",
                 data.len() - parsed,
                 parser.reason()
