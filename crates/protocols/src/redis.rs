@@ -221,66 +221,6 @@ pub fn resp_php_next(
     Ok(event)
 }
 
-pub(crate) fn decimal(mut value: u64, buffer: &mut [u8; 20]) -> &[u8] {
-    let mut offset = buffer.len();
-    for slot in buffer.iter_mut().rev() {
-        *slot = b'0' + (value % 10) as u8;
-        offset -= 1;
-        value /= 10;
-        if value == 0 {
-            break;
-        }
-    }
-    buffer.get(offset..).unwrap_or_default()
-}
-
-/// kind=0 error,2 status,4 bulk,7 explicit nil,8 integer. Other string overloads
-/// produce no output. Integer formatting ignores the native `ReplyType`.
-/// No output queries the exact size; one too short is left unwritten, returning 0.
-#[must_use]
-pub fn resp_format(kind: u8, value: &[u8], integer: i64, output: Option<&mut [u8]>) -> usize {
-    let mut digits = [0u8; 20];
-    let (prefix, body, suffix): (&[u8], &[u8], &[u8]) = match kind {
-        0 | 2 => {
-            let body = if value.is_empty() {
-                if kind == 0 { &b"ERR"[..] } else { &b"OK"[..] }
-            } else {
-                value.split(|b| *b == 0).next().unwrap_or_default()
-            };
-            (if kind == 0 { b"-" } else { b"+" }, body, b"\r\n")
-        }
-        4 if !value.is_empty() => (decimal(value.len() as u64, &mut digits), value, b"\r\n"),
-        7 => (b"", b"$-1", b"\r\n"),
-        8 => (
-            if integer < 0 { b":-" } else { b":" },
-            decimal(integer.unsigned_abs(), &mut digits),
-            b"\r\n",
-        ),
-        _ => return 0,
-    };
-    // Bulk strings wrap their length prefix in '$' and a header CRLF.
-    let (dollar, header): (&[u8], &[u8]) = if kind == 4 {
-        (b"$", b"\r\n")
-    } else {
-        (b"", b"")
-    };
-    let parts = [dollar, prefix, header, body, suffix];
-    let Some(size) = parts
-        .iter()
-        .try_fold(0usize, |size, part| size.checked_add(part.len()))
-    else {
-        return 0;
-    };
-    let Some(output) = output else {
-        return size;
-    };
-    let Some(out) = output.get_mut(..size) else {
-        return 0;
-    };
-    crate::concat(out, &parts);
-    size
-}
-
 /// `swRedis_receive_state`: what the parser reads next. Zero is the first state, so a
 /// zeroed request starts a message.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
@@ -579,18 +519,6 @@ mod tests {
         assert_eq!(spans[1].length, 0);
         assert_eq!(spans[2].integer, -1);
         assert_eq!(scan(b"$99\r\nx\r\n", |_| {}), None);
-    }
-    #[test]
-    fn format_queries_its_size_and_leaves_a_short_output_alone() {
-        assert_eq!(resp_format(4, b"abc", 0, None), 9);
-        let mut out = [0; 9];
-        assert_eq!(resp_format(4, b"abc", 0, Some(&mut out)), 9);
-        assert_eq!(&out, b"$3\r\nabc\r\n");
-        let mut short = [7; 8];
-        assert_eq!(resp_format(4, b"abc", 0, Some(&mut short)), 0);
-        assert_eq!(short, [7; 8]);
-        assert_eq!(resp_format(8, b"", -42, None), 6);
-        assert_eq!(resp_format(3, b"x", 0, None), 0);
     }
     #[test]
     fn full_request_and_partial_receive_state() {

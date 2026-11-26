@@ -14,25 +14,6 @@ pub enum Reply<'a> {
     IntegerKey(u64),
 }
 
-fn number(output: &mut Vec<u8>, value: u64) {
-    let mut digits = [0; 20];
-    output.extend_from_slice(crate::redis::decimal(value, &mut digits));
-}
-
-fn header(output: &mut Vec<u8>, flag: u8, value: u64) {
-    output.push(flag);
-    number(output, value);
-    output.extend_from_slice(b"\r\n");
-}
-
-fn integer(output: &mut Vec<u8>, flag: u8, value: i64) {
-    output.push(flag);
-    if value < 0 {
-        output.push(b'-');
-    }
-    number(output, value.unsigned_abs());
-}
-
 fn c_text(value: &[u8]) -> &[u8] {
     value.split(|&byte| byte == 0).next().unwrap_or_default()
 }
@@ -41,45 +22,110 @@ impl Reply<'_> {
     /// Append the PHP reply's bytes. Present empty status/error stays empty;
     /// bulk strings are binary, while text and string map keys stop at NUL.
     pub fn append_to(self, output: &mut Vec<u8>) {
-        match self {
-            Self::Error(value) | Self::Status(value) => {
-                let error = matches!(self, Self::Error(_));
-                output.push(if error { b'-' } else { b'+' });
-                output.extend_from_slice(c_text(value.unwrap_or(if error {
-                    b"ERR"
-                } else {
-                    b"OK"
-                })));
+        self.with_parts(|parts| {
+            for part in parts {
+                #[cfg_attr(protocol_buffer_lint, expect(clippy::disallowed_methods, reason = "each reply copies its payload once plus at most 25 RESP framing bytes"))]
+                output.extend_from_slice(part);
             }
-            Self::Nil => output.extend_from_slice(b"$-1"),
-            Self::Integer(value) => integer(output, b':', value),
-            Self::Bulk(value) | Self::StringKey(value) => {
-                // A string map key's declared size includes bytes after its first NUL.
-                header(output, b'$', value.len() as u64);
-                output.extend_from_slice(if matches!(self, Self::StringKey(_)) {
+        });
+    }
+
+    fn with_parts<R>(self, write: impl FnOnce(&[&[u8]]) -> R) -> R {
+        let mut digits = [0; 20];
+        match self {
+            Self::Error(value) => write(&[b"-", c_text(value.unwrap_or(b"ERR")), b"\r\n"]),
+            Self::Status(value) => write(&[b"+", c_text(value.unwrap_or(b"OK")), b"\r\n"]),
+            Self::Nil => write(&[b"$-1\r\n"]),
+            Self::Integer(value) => write(&[
+                if value < 0 { b":-" } else { b":" },
+                decimal(value.unsigned_abs(), &mut digits),
+                b"\r\n",
+            ]),
+            Self::Bulk(value) | Self::StringKey(value) => write(&[
+                b"$",
+                decimal(value.len() as u64, &mut digits),
+                b"\r\n",
+                // A string map key declares its entire length but stops at NUL.
+                if matches!(self, Self::StringKey(_)) {
                     c_text(value)
                 } else {
                     value
-                });
-            }
+                },
+                b"\r\n",
+            ]),
             Self::Set(count) | Self::Map(count) => {
-                // Native printf receives an unsigned32 count as signed32, after
-                // the map count multiplication wraps.
-                let count = count.wrapping_mul(if matches!(self, Self::Map(_)) { 2 } else { 1 });
-                integer(output, b'*', i64::from(count.cast_signed()));
+                let count = count
+                    .wrapping_mul(if matches!(self, Self::Map(_)) { 2 } else { 1 })
+                    .cast_signed();
+                write(&[
+                    if count < 0 { b"*-" } else { b"*" },
+                    decimal(u64::from(count.unsigned_abs()), &mut digits),
+                    b"\r\n",
+                ])
             }
-            Self::IntegerKey(value) => {
-                let mut digits = [0; 20];
-                return Reply::Bulk(crate::redis::decimal(value, &mut digits)).append_to(output);
-            }
+            Self::IntegerKey(value) => Reply::Bulk(decimal(value, &mut digits)).with_parts(write),
         }
-        output.extend_from_slice(b"\r\n");
     }
+}
+
+fn decimal(mut value: u64, buffer: &mut [u8; 20]) -> &[u8] {
+    let mut offset = buffer.len();
+    for slot in buffer.iter_mut().rev() {
+        *slot = b'0' + (value % 10) as u8;
+        offset -= 1;
+        value /= 10;
+        if value == 0 {
+            break;
+        }
+    }
+    buffer.get(offset..).unwrap_or_default()
+}
+
+/// kind=0 error,2 status,4 bulk,7 explicit nil,8 integer. Other string overloads
+/// produce no output. Integer formatting ignores the native `ReplyType`.
+/// No output queries the exact size; one too short is left unwritten, returning 0.
+#[must_use]
+pub fn resp_format(kind: u8, value: &[u8], integer: i64, output: Option<&mut [u8]>) -> usize {
+    let text = (!value.is_empty()).then_some(value);
+    let reply = match kind {
+        0 => Reply::Error(text),
+        2 => Reply::Status(text),
+        4 if !value.is_empty() => Reply::Bulk(value),
+        7 => Reply::Nil,
+        8 => Reply::Integer(integer),
+        _ => return 0,
+    };
+    reply.with_parts(|parts| {
+        let Some(size) = parts
+            .iter()
+            .try_fold(0usize, |n, part| n.checked_add(part.len()))
+        else {
+            return 0;
+        };
+        let Some(output) = output else { return size };
+        let Some(out) = output.get_mut(..size) else {
+            return 0;
+        };
+        crate::concat(out, parts);
+        size
+    })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn format_queries_its_size_and_leaves_a_short_output_alone() {
+        assert_eq!(resp_format(4, b"abc", 0, None), 9);
+        let mut out = [0; 9];
+        assert_eq!(resp_format(4, b"abc", 0, Some(&mut out)), 9);
+        assert_eq!(&out, b"$3\r\nabc\r\n");
+        let mut short = [7; 8];
+        assert_eq!(resp_format(4, b"abc", 0, Some(&mut short)), 0);
+        assert_eq!(short, [7; 8]);
+        assert_eq!(resp_format(8, b"", -42, None), 6);
+        assert_eq!(resp_format(3, b"x", 0, None), 0);
+    }
     fn encode(reply: Reply<'_>) -> Vec<u8> {
         let mut bytes = Vec::new();
         reply.append_to(&mut bytes);

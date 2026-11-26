@@ -5,7 +5,7 @@ import subprocess
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-CRATES = ('brotli', 'deflate', 'framing', 'inflate', 'websocket', 'zlib')
+CRATES = ('brotli', 'deflate', 'framing', 'inflate', 'protocols', 'websocket', 'zlib')
 METHODS = (
     'std::vec::Vec::push', 'std::iter::Extend::extend',
     'std::vec::Vec::extend_from_slice', 'std::vec::Vec::extend_from_within',
@@ -31,7 +31,7 @@ def main():
     packages = [arg for name in CRATES for arg in ('-p', f'swoole-rs-{name}')]
     return subprocess.run(
         ['cargo', 'clippy', '--locked', '--lib', '--all-features', *packages,
-         '--', '--no-deps', '-D', 'warnings'],
+         '--', '--no-deps', '--cfg', 'protocol_buffer_lint', '-D', 'warnings'],
         cwd=ROOT, env={**os.environ, 'CLIPPY_CONF_DIR': str(config)},
     ).returncode
 
