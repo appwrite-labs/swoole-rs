@@ -282,8 +282,10 @@ fn statvfs(call: &Call) {
     // Zend rejects a path with a NUL in it.
     let path = CString::new(path).unwrap_or_default();
     let mut stat: libc::statvfs = swoole_rs_corebase::sys::zeroed();
-    // On failure it stays zeroed.
-    swoole_coroutine_statvfs(path.as_c_str().into(), &mut stat);
+    if swoole_coroutine_statvfs(path.as_c_str().into(), &mut stat) < 0 {
+        call.set_bool(false);
+        return;
+    }
     call.set_array();
     let fields = [
         (c"bsize", field(stat.f_bsize)),
