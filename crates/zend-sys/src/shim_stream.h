@@ -39,7 +39,7 @@ zend_long swr_zend_try_stream_zval_read(zval *value, char *buffer, size_t size);
  * with its native debug ABI: the body set once at MINIT, then the bailout it trapped, then
  * the original factory the body names, if any, with the same arguments. */
 typedef php_stream *(*swr_zend_stream_factory_body)(const char *proto, size_t protolen,
-    const char *name, const char *persistent, php_stream_context *context, bool *bailed,
+    const char *name, const char *persistent, php_stream_context *context, bool is_client, bool *bailed,
     php_stream_transport_factory *original);
 void swr_zend_stream_factory_set(swr_zend_stream_factory_body body);
 php_stream *swr_zend_stream_factory(const char *proto, size_t protolen, const char *name,

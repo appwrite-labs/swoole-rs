@@ -110,7 +110,7 @@ php_stream *swr_zend_stream_factory(const char *proto, size_t protolen, const ch
     php_stream_context *context STREAMS_DC) {
     bool bailed = false;
     php_stream_transport_factory original = NULL;
-    php_stream *stream = factory_body(proto, protolen, name, persistent, context, &bailed, &original);
+    php_stream *stream = factory_body(proto, protolen, name, persistent, context, !(flags & STREAM_XPORT_SERVER), &bailed, &original);
     if (bailed) {
         zend_bailout();
     }

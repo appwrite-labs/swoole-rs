@@ -965,7 +965,7 @@ fn enable_crypto(stream: Stream<'_>, socket: &Socket, activate: bool) -> Result<
     let context = stream.context();
     if activate && !socket.ssl_available() {
         socket.enable_ssl();
-        if !ssl_set_options(socket, context)? || !socket.ssl_handshake() {
+        if !ssl_set_options(socket, context, true)? || !socket.ssl_handshake() {
             return Ok(false);
         }
     } else if !activate && socket.ssl_available() && socket.has_ssl() {
@@ -1064,17 +1064,27 @@ const SSL_ALIASES: [(&str, &str); 10] = [
 
 /// `socket_ssl_set_options`: an encrypted socket takes the context's `ssl`
 /// options; false if Swoole refuses them.
-fn ssl_set_options(socket: &Socket, context: Option<StreamContext<'_>>) -> Result<bool, Bailout> {
+fn ssl_set_options(
+    socket: &Socket,
+    context: Option<StreamContext<'_>>,
+    is_client: bool,
+) -> Result<bool, Bailout> {
     // `php_swoole_array_get_value_ex`: present and not null.
     let ssl = context
         .and_then(StreamContext::options)
         .and_then(|options| options.get(b"ssl")?.array());
-    let Some(ssl) = ssl.filter(|_| socket.ssl_enabled()) else {
+    if !socket.ssl_enabled() || (ssl.is_none() && !is_client) {
         return Ok(true);
-    };
+    }
     let mut aliases = OwnedArray::default();
+    if is_client {
+        aliases.insert(b"ssl_verify_peer", Owned::bool(true));
+    }
     for (name, alias) in SSL_ALIASES {
-        if let Some(value) = ssl.get(name.as_bytes()) {
+        if let Some(value) = ssl
+            .and_then(|options| options.get(name.as_bytes()))
+            .filter(|value| !value.is_null())
+        {
             aliases.insert(alias.as_bytes(), value.copy());
         }
     }
@@ -1092,6 +1102,7 @@ pub(crate) type FactoryBody = extern "C" fn(
     name: Text<'_>,
     persistent: Option<Text<'_>>,
     context: Option<StreamContext<'_>>,
+    is_client: bool,
     bailed: &mut bool,
     original: &mut Option<crate::transport::Factory>,
 ) -> *mut php_stream;
@@ -1106,6 +1117,7 @@ pub(crate) extern "C" fn transport_factory_body(
     name: Text<'_>,
     persistent: Option<Text<'_>>,
     context: Option<StreamContext<'_>>,
+    is_client: bool,
     flag: &mut bool,
     original: &mut Option<crate::transport::Factory>,
 ) -> *mut php_stream {
@@ -1144,7 +1156,7 @@ pub(crate) extern "C" fn transport_factory_body(
             else {
                 return Ok(ptr::null_mut());
             };
-            if !ssl_set_options(&socket, context)? {
+            if !ssl_set_options(&socket, context, is_client)? {
                 drop(socket);
                 if swr_zend_try_stream_close(stream) != 0 {
                     return Err(Bailout);
