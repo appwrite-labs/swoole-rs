@@ -130,8 +130,7 @@ fn set_error(call: &Call, code: i64) {
     call.update_property_long(Some(&CHANNEL), c"errCode", code);
 }
 
-/// `__construct(int $size = 1)`: capacity below 1 becomes 1. Upstream neither
-/// rejects a second call nor frees the channel it replaces.
+/// `__construct(int $size = 1)`: initialize the queue once, with at least one slot.
 fn construct(call: &Call) {
     let Some(chan) = call.custom::<Chan>() else {
         return;
@@ -141,7 +140,16 @@ fn construct(call: &Call) {
         return;
     };
     let capacity = capacity.max(1);
-    chan.0.open(usize::try_from(capacity).unwrap_or(usize::MAX));
+    if !chan
+        .0
+        .try_open(usize::try_from(capacity).unwrap_or(usize::MAX))
+    {
+        bailout::defer(swoole_rs_phpswoole::swoole_fatal_error(
+            SW_ERROR_WRONG_OPERATION,
+            c"channel has already been constructed",
+        ));
+        return;
+    }
     call.update_property_long(Some(&CHANNEL), c"capacity", capacity);
 }
 

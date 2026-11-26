@@ -20,7 +20,7 @@ use swoole_rs_zend::bailout;
 const OUT_OF_COROUTINE: c_int = swoole_rs_error::ErrorCode::SW_ERROR_CO_OUT_OF_COROUTINE as c_int;
 
 /// A coroutine channel slot (upstream's `Channel *` of a channel object): none
-/// until [`Channel::open`].
+/// until [`Channel::try_open`].
 pub struct Channel<T>(Cell<Option<Queue<T>>>);
 
 impl<T> Default for Channel<T> {
@@ -35,11 +35,15 @@ impl<T> Channel<T> {
         Self(Cell::new(None))
     }
 
-    /// A new queue of `capacity` values in place of any other, whose waiters
-    /// keep it.
-    pub fn open(&self, capacity: usize) {
+    /// Install the queue only when the slot is empty.
+    #[must_use]
+    pub fn try_open(&self, capacity: usize) -> bool {
+        if self.queue().is_some() {
+            return false;
+        }
         let queue = chan::Channel::new(capacity);
         self.0.set(Some(Queue(Rc::new(UnsafeCell::new(queue)))));
+        true
     }
 
     /// The queue. An operation keeps it alive until it returns, so a queue
