@@ -1,7 +1,7 @@
 //! Parse a complete bytes range set before preparing the file sends.
 use super::HttpSpan;
 
-pub(crate) const MAX_RANGES: usize = 16;
+pub const MAX_RANGES: usize = 16;
 
 fn trim(mut bytes: &[u8]) -> &[u8] {
     while let [b' ' | b'\t', rest @ ..] = bytes {

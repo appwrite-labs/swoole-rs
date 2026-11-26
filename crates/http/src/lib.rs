@@ -37,6 +37,7 @@ pub use rewrite::{RewriteRules, Unsupported};
 mod static_context;
 pub use static_context::*;
 mod tasks;
+pub use range::MAX_RANGES as MAX_RANGE_TASKS;
 pub use tasks::HttpStaticTask;
 use tasks::HttpTasks;
 mod static_meta;
