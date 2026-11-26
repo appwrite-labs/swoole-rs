@@ -54,11 +54,25 @@ impl<T> Pool<T> {
     pub fn push(&mut self, key: &[u8], token: T) -> Result<(), OutOfMemory> {
         if !self.queues.contains_key(key) {
             let mut owned = Vec::new();
+            #[cfg_attr(
+                protocol_buffer_lint,
+                expect(
+                    clippy::disallowed_methods,
+                    reason = "the new key reserves exactly the caller-provided key length, preserving fallible allocation"
+                )
+            )]
             if !key.is_empty()
                 && (!allocation_allowed() || owned.try_reserve_exact(key.len()).is_err())
             {
                 return Err(OutOfMemory);
             }
+            #[cfg_attr(
+                protocol_buffer_lint,
+                expect(
+                    clippy::disallowed_methods,
+                    reason = "the key copy fills the exact reservation above"
+                )
+            )]
             owned.extend_from_slice(key);
             if self.queues.len() == self.queues.capacity()
                 && (!allocation_allowed() || self.queues.try_reserve(1).is_err())

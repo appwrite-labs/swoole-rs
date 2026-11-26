@@ -3,7 +3,9 @@
 
 The first engine is the control: the run fails when a case does worse on another engine than
 on it, in either field (OK, then NON-STRICT, then INFORMATIONAL, then anything else), or when
-the suite's results are missing or incomplete. Strict passes are counted, not required.
+the suite's results are missing or incomplete. It also fails when a case in autobahn.baseline
+that ran is not a strict pass (both fields OK) on an engine other than upstream, whatever
+upstream does; strict passes the baseline lacks are printed, to be added to it.
 """
 import argparse
 import ast
@@ -17,7 +19,7 @@ import sys
 import uuid
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
-from tools.harness import ROOT, parse_engines, server, write_report
+from tools.harness import ROOT, against_baseline, parse_engines, server, write_report
 
 IMAGE = 'crossbario/autobahn-testsuite@sha256:519915fb568b04c9383f70a1c405ae3ff44ab9e35835b085239c258b6fac3074'
 PROFILE = ['1.*', '2.*', '3.*', '4.*', '5.*', '6.*', '7.*', '10.*', '12.1.1', '13.1.1']
@@ -104,12 +106,22 @@ def main():
                     'strict_passed': sum(row['behavior'] == 'OK' and row['behaviorClose'] == 'OK' for row in cases.values())})
             control, *others = [engine['name'] for engine in report['engines']]
             report['regressions'] = {name: regressions(data.get(control, {}), data.get(name, {})) for name in others}
+            report['baseline'] = {}
+            for name in sorted(set(data) - {'upstream'}):
+                strict = [case for case, row in data[name].items() if row['behavior'] == row['behaviorClose'] == 'OK']
+                lost, new = against_baseline(Path(__file__).with_suffix('.baseline'), strict, planned)
+                report['baseline'][name] = {'lost': lost, 'new': new}
         else:
             report['error'] = report.get('error', 'Autobahn produced no master index')
         write_report(args.output, report)
     print(json.dumps(report, indent=2))
+    for name, rows in report.get('baseline', {}).items():
+        for label, cases in (('lost from autobahn.baseline', rows['lost']), ('new strict passes, add them', rows['new'])):
+            if cases:
+                print(f'{name}: {label}: {" ".join(cases)}')
     return int(bool(report.get('error')) or report['exit_code'] != 0 or not report['results'] or
-               any(row['total'] == 0 for row in report['results']) or any(report.get('regressions', {}).values()))
+               any(row['total'] == 0 for row in report['results']) or any(report.get('regressions', {}).values()) or
+               any(rows['lost'] for rows in report.get('baseline', {}).values()))
 
 
 if __name__ == '__main__':

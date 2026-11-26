@@ -69,6 +69,9 @@ jobs:
   tooling:
     runs-on: gcrunner=${{ github.run_id }}/runner=standard
     timeout-minutes: 10
+    permissions:
+      contents: read
+      pull-requests: read
     steps:
       # Two commits: the PR's merge commit and, as HEAD^1, main, which tools/budget.py compares against.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -93,6 +96,19 @@ jobs:
         env:
           PR_BODY: ${{ github.event.pull_request.body }}
         run: python3 tools/budget.py --base HEAD^1
+      # The conformance baselines (tests/modules/*/*.baseline) only grow: removing a case needs
+      # the needs:decision label (#5707). The labels are read now, not from the event, so
+      # re-running this job after adding the label passes.
+      - name: Check conformance baselines
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if git diff -U0 HEAD^1 -- 'tests/modules/*/*.baseline' | grep -E '^-[^-#]' &&
+              ! gh pr view ${{ github.event.pull_request.number }} -R "$GITHUB_REPOSITORY" --json labels \
+                -q '.labels[].name' | grep -qx 'needs:decision'; then
+            echo 'A conformance baseline lost the cases above; lowering it needs needs:decision.' >&2
+            exit 1
+          fi
       - name: Test tooling
         run: tests/dev/run.sh
 

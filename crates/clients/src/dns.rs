@@ -22,9 +22,8 @@ const PACKET: usize = swoole_rs_corebase::constants::SW_BUFFER_SIZE_STD as usize
 const HEADER: usize = 12;
 /// The fixed part of a resource record after its (compressed) name.
 const RECORD: usize = 10;
-/// Answers read, and bytes kept per answer's data.
+/// Maximum number of answers read from a packet.
 const MAX_ANSWERS: usize = 10;
-const RDATA: usize = 254;
 const A: u16 = 0x01;
 const AAAA: u16 = 0x1c;
 
@@ -227,8 +226,11 @@ pub fn query(
     );
     let mut steps = HEADER + c_len(packet.get(HEADER..).unwrap_or_default()) + 2 + 4;
 
+    if u16_at(&packet, 0) != request_id {
+        return Err(RESOLVE_FAILED);
+    }
+    let mut found = false;
     let answers = usize::from(u16_at(&packet, 6)).min(MAX_ANSWERS);
-    let mut records = Vec::with_capacity(answers);
     for _ in 0..answers {
         let Some(fields) = after_name(packet.get(..received).unwrap_or_default(), steps) else {
             break;
@@ -237,26 +239,20 @@ pub fn query(
         let kind = u16_at(&packet, steps);
         let length = usize::from(u16_at(&packet, steps + 8));
         steps += RECORD;
-        let mut data = [0u8; RDATA];
         let source = packet.get(steps..).unwrap_or_default();
-        for (slot, &byte) in data.iter_mut().zip(source).take(length) {
-            *slot = byte;
-        }
-        records.push((kind, data));
-        steps = steps.saturating_add(length);
-    }
-
-    if u16_at(&packet, 0) != request_id {
-        return Err(RESOLVE_FAILED);
-    }
-    let mut found = false;
-    for (kind, data) in &records {
-        let version = match *kind {
+        steps += length;
+        let version = match kind {
             A => 4,
             AAAA => 6,
             _ => continue,
         };
-        let text = swr_v1_clients_ip_text(version, data);
+        // A and AAAA use at most 16 bytes. Preserve the zero-filled suffix
+        // when the record or its available data is shorter than the address.
+        let mut data = [0; 16];
+        for (slot, &byte) in data.iter_mut().zip(source).take(length) {
+            *slot = byte;
+        }
+        let text = swr_v1_clients_ip_text(version, &data);
         let length = usize::try_from(text.length).unwrap_or(0);
         exchange.push(text.bytes.get(..length).unwrap_or_default());
         found = true;
@@ -294,6 +290,13 @@ impl<S: DnsSocket> DnsExchange for Exchange<S> {
     }
 
     fn push(&mut self, address: &[u8]) {
+        #[cfg_attr(
+            protocol_buffer_lint,
+            expect(
+                clippy::disallowed_methods,
+                reason = "query emits at most MAX_ANSWERS addresses, each rendered into a 40-byte array"
+            )
+        )]
         self.found.push(address.to_vec());
     }
 }
@@ -303,11 +306,7 @@ impl<S: DnsSocket> DnsExchange for Exchange<S> {
 #[must_use]
 pub fn server() -> (Vec<u8>, c_int) {
     let config = config();
-    // Sized for the NUL, so the push doesn't reallocate.
-    let mut host = Vec::with_capacity(config.host.len() + 1);
-    host.extend_from_slice(&config.host);
-    host.push(0);
-    (host, config.port)
+    ([config.host.as_slice(), &[0]].concat(), config.port)
 }
 
 /// The next query's id (upstream's `static uint16_t dns_request_id`).
@@ -438,8 +437,6 @@ mod tests {
             if self.cancelled {
                 return Err(RecvError::Canceled);
             }
-            let id = [self.query[0], self.query[1]];
-            self.reply[..2].copy_from_slice(&id);
             let n = self.reply.len().min(out.len());
             out[..n].copy_from_slice(&self.reply[..n]);
             Ok(n)
@@ -452,7 +449,7 @@ mod tests {
     fn reply(records: &[(u16, &[u8])]) -> Vec<u8> {
         let mut packet = vec![
             0,
-            0,
+            7,
             0x81,
             0x80,
             0,
@@ -544,6 +541,15 @@ mod tests {
             ask(libc::AF_INET, truncated, false).1.results,
             ["192.0.2.1"]
         );
+    }
+
+    #[test]
+    fn only_matching_replies_publish_addresses() {
+        let mut packet = reply(&[(A, &[192, 0, 2, 1])]);
+        packet[1] = 8;
+        let (error, exchange) = ask(libc::AF_INET, packet, false);
+        assert_eq!(error, RESOLVE_FAILED);
+        assert_eq!(exchange.results, Vec::<String>::new());
     }
 
     #[test]

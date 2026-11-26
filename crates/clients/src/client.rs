@@ -1158,12 +1158,11 @@ fn inet_addr(this: Handle<'_>, host: &CStr, port: c_int) -> bool {
             let Some(next) = this.with_proxy(which, |proxy| {
                 proxy.set_string(3, host.to_bytes());
                 proxy.update(|fields| fields.target_port = port);
-                (proxy.string(0), proxy.fields().port)
+                (proxy.string_with_nul(0), proxy.fields().port)
             }) else {
                 continue;
             };
             (proxy_host, port) = next;
-            proxy_host.push(0);
             host = CStr::from_bytes_until_nul(&proxy_host).unwrap_or_default();
         }
         this.get().server_host.set(Some(host.to_owned()));
@@ -1193,6 +1192,13 @@ fn dns_lookup(this: Handle<'_>) -> bool {
     let id = LAST_LOOKUP.get() + 1;
     LAST_LOOKUP.set(id);
     // The entry outlives this call; `free` drops it with the client.
+    #[cfg_attr(
+        protocol_buffer_lint,
+        expect(
+            clippy::disallowed_methods,
+            reason = "one registry entry per pending local DNS lookup, removed on completion or client teardown"
+        )
+    )]
     with_awaiting(|awaiting| awaiting.push((id, Handle::raw(this.0))));
     let lookup = Lookup(id);
     // The pool's copy holds its own reference to the request.

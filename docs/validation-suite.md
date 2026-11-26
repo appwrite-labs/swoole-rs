@@ -14,6 +14,7 @@ PHPTs (see [corpus](../corpus/README.md)). `EXT` is a path to a built
 | WebSocket raw transport | `python3 -m pytest tests/modules/websocket/test_close.py --engine upstream=EXT --engine cargo=EXT` |
 | WebSocket invalid-frame policy | `python3 -m pytest tests/modules/websocket/test_invalid.py --engine upstream=EXT --engine cargo=EXT` |
 | Autobahn RFC suite | `python3 tests/modules/websocket/autobahn.py --engine upstream=EXT --engine cargo=EXT` |
+| h2spec (HTTP/2) | `python3 tests/modules/http2/h2spec.py --engine upstream=EXT --engine cargo=EXT` |
 | Timer fork / bailout | `python3 -m pytest tests/modules/timer --engine upstream=EXT --engine cargo=EXT` |
 | Pinned Hyperf skeleton | `python3 corpus/thirdparty/hyperf.py --prepare`, then corpus project `12-hyperf-skeleton` ([scope](../corpus/thirdparty/README.md)) |
 
@@ -31,3 +32,16 @@ or `behaviorClose` (`OK`, then `NON-STRICT`, then `INFORMATIONAL`, then anything
 else), or when results are missing. Strict passes (both `OK`) are counted. The
 merge tier's `autobahn` job runs the default profile on upstream and the Cargo
 build; `conformance.yml` runs the full suite on them nightly.
+
+## Conformance baselines
+
+Upstream is not the only control: each suite checks in the cases the Cargo build
+passes strictly, one per line, and a run fails when a listed case that ran no
+longer passes, whatever upstream does. `tests/modules/websocket/autobahn.baseline`
+lists Autobahn cases with both fields `OK` (a bounded run checks the ones it ran);
+`tests/modules/http2/h2spec.baseline` lists h2spec cases as `MODE CASE`, strict
+cases included, for h2c and TLS. Each run prints passes its baseline lacks: add
+them to raise it. Moving a baseline down needs `needs:decision`: the PR tier's
+`tooling` job fails a PR that removes a case line unless it carries that label
+(re-run the job after adding it). The merge tier runs h2spec, and the PR tier
+does when a PR touches HTTP/2 code or the runner.

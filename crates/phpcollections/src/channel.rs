@@ -159,6 +159,7 @@ fn construct(call: &Call) {
     clippy::disallowed_methods,
     reason = "PHP's $timeout: -1 waits forever, as upstream's"
 )]
+#[inline]
 fn deadline(call: &Call, required: u32) -> Result<Deadline, Invalid> {
     if call.num_args() == required {
         return Ok(Deadline::never());

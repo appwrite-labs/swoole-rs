@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 """Exercise real Event descriptor, loop and callback ownership on each extension."""
 import argparse
+import errno
 import json
+import os
 from pathlib import Path
 import sys
 
@@ -46,19 +48,6 @@ CASES = {
         Swoole\Event::wait();
         echo json_encode($out), "\n";
     ''', '[1,2]\n'),
-    # The nested pass must not free the cycle task its callback just cleared.
-    'cycle_clear_dispatch': (r'''
-        $out = [];
-        Swoole\Event::cycle(function() use (&$out) {
-            Swoole\Event::cycle(null);
-            $out[] = 'cleared';
-            Swoole\Event::dispatch();
-            $out[] = 'after';
-        });
-        Swoole\Event::defer(function() use (&$out) { $out[] = 'deferred'; });
-        Swoole\Event::wait();
-        echo json_encode($out), "\n";
-    ''', '["deferred","cleared","after"]\n'),
     'descriptors': (r'''
         $warnings = [];
         set_error_handler(function($level, $message) use (&$warnings) {
@@ -121,6 +110,28 @@ SOCKET_CASE = (r"""
 
 
 BAILOUTS = {
+    # v6.3 rejects recursive dispatch after the cycle callback clears itself.
+    'cycle_clear_dispatch': (r'''
+        Swoole\Coroutine::set(['log_level' => SWOOLE_LOG_ERROR]);
+        ini_set('display_errors', '0');
+        ini_set('log_errors', '0');
+        $out = [];
+        register_shutdown_function(function() use (&$out) {
+            $error = error_get_last();
+            $out[] = $error['type'] === E_ERROR ? $error['message'] : null;
+            echo json_encode($out), "\n";
+        });
+        Swoole\Event::cycle(function() use (&$out) {
+            Swoole\Event::cycle(null);
+            $out[] = 'cleared';
+            Swoole\Event::dispatch();
+            $out[] = 'after';
+        });
+        Swoole\Event::defer(function() use (&$out) { $out[] = 'deferred'; });
+        Swoole\Event::wait();
+    ''', json.dumps(["deferred", "cleared",
+                     rf"Swoole\Event::dispatch(): reactor wait failed, Error: {os.strerror(errno.EBUSY)}[{errno.EBUSY}]"],
+                    separators=(',', ':')) + '\n', 255),
     'deferred_exit': (r"Swoole\Event::defer(function() { echo 'deferred'; exit(7); }); Swoole\Event::wait();", None, 255),
     'cycle_exit': (r"Swoole\Event::cycle(function() { echo 'cycle'; exit(8); }); Swoole\Event::defer(function() {}); Swoole\Event::wait();", None, 255),
     'warning_exit': (r"set_error_handler(function() { echo 'caught'; exit(9); }); Swoole\Event::add(-1, function() {});", 'caughtcaught', 9),
