@@ -225,9 +225,12 @@ pub(crate) fn contains_ignore_case(value: &[u8], needle: &[u8]) -> bool {
 /// built with (`features`: 1 zlib, 2 brotli, 4 zstd); None without any.
 pub(crate) fn accept_encoding(features: u32) -> Option<&'static [u8]> {
     match (features & 1 != 0, features & 2 != 0, features & 4 != 0) {
-        (true, true, _) => Some(b"gzip, deflate, br"),
-        (true, false, _) => Some(b"gzip, deflate"),
-        (false, true, _) => Some(b"br"),
+        (true, true, true) => Some(b"gzip, deflate, br, zstd"),
+        (true, true, false) => Some(b"gzip, deflate, br"),
+        (true, false, true) => Some(b"gzip, deflate, zstd"),
+        (true, false, false) => Some(b"gzip, deflate"),
+        (false, true, true) => Some(b"br, zstd"),
+        (false, true, false) => Some(b"br"),
         (false, false, true) => Some(b"zstd"),
         (false, false, false) => None,
     }
@@ -406,6 +409,9 @@ mod tests {
             Some(&b"gzip, deflate, br"[..]),
             "zlib and brotli"
         );
+        assert_eq!(accept_encoding(5), Some(&b"gzip, deflate, zstd"[..]));
+        assert_eq!(accept_encoding(6), Some(&b"br, zstd"[..]));
+        assert_eq!(accept_encoding(7), Some(&b"gzip, deflate, br, zstd"[..]));
         assert_eq!(accept_encoding(4), Some(&b"zstd"[..]), "zstd only");
         assert_eq!(accept_encoding(0), None, "none");
         assert!(

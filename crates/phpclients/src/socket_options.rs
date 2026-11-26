@@ -9,7 +9,7 @@ use libc::{c_char, c_int};
 use std::ffi::{CStr, CString};
 use swoole_rs_clients::protocol::Protocol;
 use swoole_rs_corebase::CCast;
-use swoole_rs_corebase::net_types::{PacketLength, SocketAddress};
+use swoole_rs_corebase::net_types::SocketAddress;
 use swoole_rs_corebase::tls::{self as tls, Text};
 use swoole_rs_phpswoole::{
     SocketSettings as Settings, Switch, built_with, invalid_setting, setting_ok,
@@ -24,20 +24,10 @@ use swoole_rs_corebase::reactor::TimeoutKind;
 const EOF_MAXLEN: usize = swoole_rs_corebase::constants::SW_DATA_EOF_MAXLEN as usize;
 /// `open_fastcgi_protocol`'s length: the record's content and padding lengths
 /// plus its 8-byte header. A partial header needs more data.
-fn fastcgi_length(
-    _protocol: &Protocol,
-    _: Option<u8>,
-    _owner: Option<std::rc::Rc<dyn std::any::Any>>,
-    pl: &mut PacketLength,
-) -> Option<usize> {
-    Some(
-        pl.bytes()
-            .first_chunk::<8>()
-            .map_or(0, fastcgi_record_length),
-    )
-}
-
-fn fastcgi_record_length(header: &[u8; 8]) -> usize {
+fn fastcgi_record_length(bytes: &[u8]) -> usize {
+    let Some(header) = bytes.first_chunk::<8>() else {
+        return 0;
+    };
     let content = u16::from_be_bytes([header[4], header[5]]);
     header.len() + usize::from(content) + usize::from(header[6])
 }
@@ -201,7 +191,8 @@ fn set_protocol(s: &Array, socket: Co) -> Result<bool, Stop> {
             p.package_length_size = 8;
             p.package_length_offset = 0;
             p.package_body_offset = 0;
-            p.get_package_length = Some(fastcgi_length);
+            p.get_package_length =
+                Some(|_, _, _, packet| Some(fastcgi_record_length(packet.bytes())));
         });
     }
     if let Some(v) = s.get(b"open_mqtt_protocol") {
@@ -807,6 +798,7 @@ mod tests {
 
     #[test]
     fn fastcgi_lengths() {
+        assert_eq!(fastcgi_record_length(&[0; 7]), 0);
         assert_eq!(fastcgi_record_length(&[1, 6, 0, 1, 1, 2, 3, 0]), 269);
         for padding in [0, 1, 255] {
             assert_eq!(

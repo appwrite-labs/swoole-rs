@@ -397,6 +397,28 @@ impl Drop for Server {
 }
 
 #[test]
+fn malformed_path_escapes_return_400_before_filesystem_lookup() {
+    let config = Config::default();
+    let server = Server::new(&config);
+    for url in [
+        b"/file%".as_slice(),
+        b"/file%2",
+        b"/file%x0",
+        b"/file%0x",
+        b"/file%00.txt",
+    ] {
+        script(Script::default());
+        let original = Upstream::new(&config, url);
+        let mut handler = server.handler(url);
+        assert!(original.try_serve(), "{url:?}");
+        assert!(handler.try_serve(), "{url:?}");
+        assert_eq!(handler.status(), swoole_rs_http::status::BAD_REQUEST);
+        assert!(upstream_trace().is_empty(), "{url:?}");
+        assert!(trace().is_empty(), "{url:?}");
+    }
+}
+
+#[test]
 fn oversized_rewrite_handles_404_before_filesystem_lookup() {
     let server = Server::new(&Config::default());
     let mut handler = server.handler(b"/file.txt");
