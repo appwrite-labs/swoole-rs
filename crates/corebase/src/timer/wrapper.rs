@@ -4,13 +4,14 @@
 //! patch deletes): this thread's `SwooleTG.timer`, its lazy creation, unit
 //! conversion and warnings, over the Rust-owned timer (`owner.rs`). Timer
 //! callbacks own their captures and operations use issued timer IDs.
-use super::MIN_SEC;
+use super::{MIN_MS, MIN_SEC};
 use crate::CCast;
 use crate::timer::owner::{Owner as Timer, TimerNode};
 pub use crate::timer_key::Held;
 use crate::{log, swoole_print_backtrace};
 use std::ffi::{CStr, c_long, c_void};
 use std::rc::Rc;
+use std::time::{Duration, Instant};
 
 pub(crate) fn timer() -> *mut Timer {
     crate::thread_timer().cast()
@@ -119,6 +120,50 @@ fn held(ms: c_long, persistent: bool, node: TimerNode) -> Option<Held> {
         timer.remove(id);
     }
     held
+}
+
+/// When a wait ends: an instant on the monotonic clock, or never. Every wait takes
+/// one, so a wait with no end is written [`Deadline::never`] where it is made.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Deadline(Option<Instant>);
+
+impl Deadline {
+    /// A wait that only its waker, a cancel or a close ends. Only the PHP-API
+    /// boundary, where upstream's API waits forever, reaches it.
+    #[must_use]
+    pub const fn never() -> Self {
+        Self(None)
+    }
+
+    /// Upstream's `timeout` seconds, as `Coroutine::yield_ex` reads them: a positive
+    /// one ends that long from now; zero, a negative one or NaN is [`Deadline::never`],
+    /// as is one past what the clock holds. Only the PHP-API boundary passes it a
+    /// timeout of its user's.
+    #[must_use]
+    pub fn from_timeout(seconds: f64) -> Self {
+        if seconds > 0.0
+            && let Ok(after) = Duration::try_from_secs_f64(seconds)
+        {
+            Self(Instant::now().checked_add(after))
+        } else {
+            Self::never()
+        }
+    }
+
+    /// The time left until the deadline, zero once it passed; none when it never comes.
+    #[must_use]
+    pub fn remaining(self) -> Option<Duration> {
+        Some(self.0?.saturating_duration_since(Instant::now()))
+    }
+
+    /// A one-shot `f` (as [`add_fn`]) at the deadline, rounded up to the
+    /// millisecond and at least `SW_TIMER_MIN_SEC` away; none when it never comes.
+    #[must_use]
+    pub fn add_fn(self, f: impl Fn() + 'static) -> Option<Held> {
+        let left = self.remaining()?;
+        let ms = c_long::try_from(left.as_nanos().div_ceil(1_000_000)).unwrap_or(c_long::MAX);
+        add_fn(ms.max(MIN_MS.into()), false, f)
+    }
 }
 
 /// [`add_fn`] of `timeout` seconds, at least `SW_TIMER_MIN_SEC`.

@@ -14,8 +14,8 @@ use std::ffi::c_void;
 use std::hash::{BuildHasherDefault, Hasher};
 use std::{mem, ptr};
 pub use wrapper::{
-    Held, add_fn, add_fn_sec, add_owned, cancel_held, cancel_issued, del_disarmed, del_id,
-    delay_held, delete_held, php, schedule_owned, swoole_timer_clear, swoole_timer_create,
+    Deadline, Held, add_fn, add_fn_sec, add_owned, cancel_held, cancel_issued, del_disarmed,
+    del_id, delay_held, delete_held, php, schedule_owned, swoole_timer_clear, swoole_timer_create,
     swoole_timer_free, swoole_timer_get_next_msec, swoole_timer_is_available, swoole_timer_select,
     thread_timer_count, thread_timer_detached, thread_timer_reinit,
 };
@@ -1026,5 +1026,22 @@ mod tests {
         assert_eq!(q.q().end().status(), Status::Busy);
         q.complete(original.id, Status::Release);
         q.end();
+    }
+
+    /// `yield_ex`'s timeouts: only a positive one ends, and it ends no later
+    /// than that long from now.
+    #[test]
+    fn deadline_of_a_timeout() {
+        for forever in [-1.0, -0.0, 0.0, f64::NAN, f64::INFINITY, f64::MAX] {
+            assert_eq!(
+                Deadline::from_timeout(forever),
+                Deadline::never(),
+                "{forever}"
+            );
+        }
+        assert_eq!(Deadline::never().remaining(), None);
+        let left = Deadline::from_timeout(0.5).remaining().unwrap();
+        assert!(left <= std::time::Duration::from_millis(500), "{left:?}");
+        assert!(left > std::time::Duration::from_millis(400), "{left:?}");
     }
 }

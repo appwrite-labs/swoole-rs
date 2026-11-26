@@ -13,6 +13,7 @@ use swoole_rs_corebase::coroutine::{
     Resume,
     chan::{self, CANCELED, Effects, TIMEDOUT},
 };
+use swoole_rs_corebase::timer::Deadline;
 use swoole_rs_zend::bailout;
 
 /// `SW_ERROR_CO_OUT_OF_COROUTINE`.
@@ -71,29 +72,29 @@ impl<T> Clone for Queue<T> {
 }
 
 impl<T> Queue<T> {
-    /// `Channel::push`.
+    /// `Channel::push`, waiting until `deadline` for room.
     /// # Errors
     /// `value`, not queued, with the queue's error: it is closed, or the wait
     /// timed out or was canceled. Outside a coroutine, also Swoole's fatal
     /// error (deferred).
-    pub fn push(self, value: T, timeout: f64) -> Result<(), (T, i32)> {
-        let Some(mut php) = Php::current(timeout) else {
+    pub fn push(self, value: T, deadline: Deadline) -> Result<(), (T, i32)> {
+        let Some(mut php) = Php::current() else {
             let error = self.stats().error;
             return Err((value, error));
         };
         // A coroutine that never resumes retains this frame and its queue.
-        chan::push(&self.0, &mut php, value).map_err(|value| (value, self.stats().error))
+        chan::push(&self.0, &mut php, value, deadline).map_err(|value| (value, self.stats().error))
     }
 
-    /// `Channel::pop`: the oldest value.
+    /// `Channel::pop`: the oldest value, waiting until `deadline` for one.
     /// # Errors
     /// The queue's error: it is closed and empty, or the wait timed out or was
     /// canceled. Outside a coroutine, also Swoole's fatal error (deferred).
-    pub fn pop(self, timeout: f64) -> Result<T, i32> {
-        let Some(mut php) = Php::current(timeout) else {
+    pub fn pop(self, deadline: Deadline) -> Result<T, i32> {
+        let Some(mut php) = Php::current() else {
             return Err(self.stats().error);
         };
-        chan::pop(&self.0, &mut php).ok_or_else(|| self.stats().error)
+        chan::pop(&self.0, &mut php, deadline).ok_or_else(|| self.stats().error)
     }
 
     /// `Channel::close`: wakes every waiter; false if closed already.
@@ -124,7 +125,6 @@ impl<T> Queue<T> {
 /// PHP's coroutines for one push or pop, from the running coroutine.
 struct Php {
     co: Co,
-    timeout: f64,
 }
 
 /// PHP's coroutines for a close, which only resumes waiters.
@@ -134,12 +134,12 @@ impl Php {
     /// The running coroutine, or Swoole's fatal error (deferred) outside one,
     /// where upstream's `Coroutine::get_current_safe()` raises it.
     #[inline]
-    fn current(timeout: f64) -> Option<Self> {
+    fn current() -> Option<Self> {
         let Some(co) = host::current() else {
             out_of_coroutine();
             return None;
         };
-        Some(Self { co, timeout })
+        Some(Self { co })
     }
 }
 
@@ -160,8 +160,8 @@ impl Effects for Php {
 
     /// Upstream's timer and cancel function remove the waiter, then resume
     /// it; the queue removes it here before anything else runs.
-    fn wait(&mut self) -> u32 {
-        match host::wait(self.co, self.timeout) {
+    fn wait(&mut self, deadline: Deadline) -> u32 {
+        match host::wait(self.co, deadline) {
             Resume::Canceled => CANCELED,
             Resume::TimedOut => TIMEDOUT,
             Resume::Ok => 0,
@@ -180,7 +180,7 @@ impl Effects for Closing {
         swoole_rs_corebase::fatal("a channel close never waits")
     }
 
-    fn wait(&mut self) -> u32 {
+    fn wait(&mut self, _: Deadline) -> u32 {
         swoole_rs_corebase::fatal("a channel close never waits")
     }
 

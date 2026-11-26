@@ -202,7 +202,11 @@ pub(crate) fn yield_(
     timeout: f64,
     arm: &mut dyn FnMut(swoole_rs_corebase::coroutine::Waker),
 ) -> bool {
-    let code = swoole_rs_corebase::coroutine::yield_timed_armed(co, timeout, arm);
+    let code = swoole_rs_corebase::coroutine::yield_timed_armed(
+        co,
+        swoole_rs_corebase::timer::Deadline::from_timeout(timeout),
+        arm,
+    );
     // `yield_ex`: the last error of a timeout or a cancel.
     !swoole_rs_corebase::coroutine::yield_resumed(code) && code == Resume::Canceled
 }

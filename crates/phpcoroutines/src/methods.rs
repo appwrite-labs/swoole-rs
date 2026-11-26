@@ -13,6 +13,7 @@ use crate::{
 use std::{cell::Cell, ffi::c_long, ptr, rc::Rc};
 use swoole_rs_corebase::CCast;
 use swoole_rs_corebase::CellExt;
+use swoole_rs_corebase::timer::Deadline;
 use swoole_rs_zend::{Call, Callable, E_ERROR, E_WARNING, OwnedArray, Php, bailout::Bailout};
 
 /// `DEBUG_BACKTRACE_PROVIDE_OBJECT`.
@@ -145,7 +146,9 @@ fn yield_(call: &Call) {
         return;
     };
     set_yielded(host::cid(co), true);
-    swoole_rs_corebase::coroutine::yield_with_cancel(co.raw(), move || cancel_yield(co));
+    _ = swoole_rs_corebase::coroutine::yield_with_cancel(co.raw(), Deadline::never(), move || {
+        cancel_yield(co)
+    });
     if host::is_canceled(co) {
         host::set_last_error(SW_ERROR_CO_CANCELED);
         call.set_bool(false);
@@ -289,7 +292,7 @@ fn join(call: &Call) {
     });
     // This frame lives on the running coroutine's stack, which no bailout
     // unwinds while it waits.
-    if !host::yield_ex(co, timeout) {
+    if !host::yield_ex(co, Deadline::from_timeout(timeout)) {
         join.forget();
         join.canceled.set(true);
         call.set_bool(false);

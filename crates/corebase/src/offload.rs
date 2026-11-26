@@ -5,6 +5,7 @@ pub mod threads;
 
 use crate::coroutine::Waker;
 use crate::set_errno;
+use crate::timer::Deadline;
 use core::ffi::{c_int, c_void};
 use core::sync::atomic::{AtomicI32, AtomicIsize, AtomicU8, Ordering::Relaxed};
 
@@ -13,17 +14,16 @@ pub type WakerSlot = core::cell::Cell<Option<Waker>>;
 
 /// `co->yield()` of the current coroutine (fatal outside one), its waker in `waker`.
 pub fn park(waker: &WakerSlot) {
-    crate::coroutine::park(crate::coroutine::current_safe().cast(), |park| {
-        waker.set(Some(park));
-    });
+    let co = crate::coroutine::current_safe().cast();
+    _ = crate::coroutine::park(co, Deadline::never(), |park| waker.set(Some(park)));
 }
 
 /// `co->yield_ex(timeout)` of the current coroutine (fatal outside one), its waker
 /// in `waker`.
 pub fn park_for_armed(timeout: f64, waker: &WakerSlot) -> bool {
     let arm = |park| waker.set(Some(park));
-    let code =
-        crate::coroutine::yield_timed_armed(crate::coroutine::current_safe().cast(), timeout, arm);
+    let co = crate::coroutine::current_safe().cast();
+    let code = crate::coroutine::yield_timed_armed(co, Deadline::from_timeout(timeout), arm);
     crate::coroutine::yield_resumed(code)
 }
 

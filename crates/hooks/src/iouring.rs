@@ -92,7 +92,13 @@ fn suspend(co: *mut c_void, event: u64, arm: &mut dyn FnMut(swoole_rs_corebase::
             uring::cancel(&HOST, event)
         }
     };
-    swoole_rs_corebase::coroutine::yield_with_cancel_armed(co, cancel, arm);
+    // The ring's own timeout, linked to the request, ends the wait.
+    _ = swoole_rs_corebase::coroutine::yield_with_cancel_armed(
+        co,
+        swoole_rs_corebase::timer::Deadline::never(),
+        cancel,
+        arm,
+    );
 }
 
 fn submit_failed() {
