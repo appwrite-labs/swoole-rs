@@ -41,6 +41,9 @@ pub use socket::{Heap, KeptSockets, OwnedSocket, Socket, SocketLoans};
 mod callbacks;
 pub use callbacks::*;
 
+pub(crate) mod signals;
+pub use signals::{Signals, set_signals};
+
 mod handlers;
 pub use handlers::*;
 
@@ -94,8 +97,6 @@ pub mod event_api;
 pub mod reactor_upstream;
 #[cfg(unix)]
 pub mod readiness;
-#[cfg(unix)]
-pub mod signal_upstream;
 #[cfg(unix)]
 pub mod socket_upstream;
 

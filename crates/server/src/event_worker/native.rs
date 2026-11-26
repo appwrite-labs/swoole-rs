@@ -516,7 +516,7 @@ pub(crate) fn swr_workers_signal_set(
     handler: SignalHandler,
     own: extern "C" fn(c_int),
 ) {
-    use swoole_rs_corebase::reactor::signal_upstream::{self, Handler};
+    use swoole_rs_corebase::process::signal_upstream::{self, Handler};
     let handler = match handler {
         SignalHandler::None => Handler::NONE,
         SignalHandler::Ignore => Handler::IGNORE,

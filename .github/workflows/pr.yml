@@ -171,7 +171,7 @@ jobs:
               echo "$variant"
             fi
           done > variants <<'EOF'
-          iouring native/(hooks|reactor)/|crates/corebase/src/(reactor|waits)/|crates/(hooks|phpcoroutines|phplocks)/|\.devcontainer/install\.sh$
+          iouring native/(hooks|reactor)/|crates/corebase/src/(reactor|waits)/|crates/corebase/src/process/signal_upstream\.rs$|crates/(hooks|phpcoroutines|phplocks)/|\.devcontainer/install\.sh$
           cares crates/(clients|corebase|cares-sys)/
           zts crates/corebase/src/locks/|crates/(phplocks|phpthread|phpstubs|zend[^/]*)/|crates/(corebase|process|server|phpserver)/src/([^/]+/)*thread[^/]*\.rs$|native/(locks|phpthread)/|\.devcontainer/(install|php)\.sh$
           threadcontext crates/corebase/src/coroutine/|native/(coroutine|phpcoroutines)/|crates/(phpcoroutines|phpcollections|phpevents|phpprocess|process|zend)/|crates/ext/build\.rs$|crates/hooks/src/wait_signal\.rs$|crates/corebase/src/waits/wait_upstream\.rs$

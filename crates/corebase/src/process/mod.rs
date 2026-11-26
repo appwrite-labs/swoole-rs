@@ -19,6 +19,8 @@ pub mod signal;
 ))]
 pub mod signal_kqueue;
 pub mod signal_loop;
+#[cfg(unix)]
+pub mod signal_upstream;
 #[cfg(target_os = "linux")]
 pub mod signalfd;
 pub mod stream;

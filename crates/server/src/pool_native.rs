@@ -687,13 +687,12 @@ impl PoolNative for Native {
             io(c, |c| {
                 // The worker's pipe, in this thread's loop.
                 c.lent_socket()
-                    .map(Heap::lent)
                     .and_then(|pipe| event_write(pipe, c.bytes()))
                     .map_or(-1, usize::cast_signed)
             });
         } else {
             // The worker's pipe the call lends.
-            send_on(c, |c| c.lent_socket().map(|pipe| *Heap::lent(pipe)));
+            send_on(c, |c| c.lent_socket().map(|pipe| *pipe));
         }
     }
 

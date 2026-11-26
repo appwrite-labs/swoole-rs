@@ -192,7 +192,7 @@ pub fn swoole_is_main_thread() -> bool {
 /// logger and the memory pool, and `SwooleG` last.
 pub fn swoole_clean() {
     crate::hook::clear();
-    crate::reactor::signal_upstream::clear();
+    crate::process::signal_upstream::clear();
     swoole_thread_clean(true);
     crate::utilities::process_logger()
         .into_iter()
@@ -265,7 +265,7 @@ pub extern "C-unwind" fn swoole_fork(flags: c_int) -> libc::pid_t {
             .into_iter()
             .for_each(crate::utilities::Logger::close);
     }
-    crate::reactor::signal_upstream::clear();
+    crate::process::signal_upstream::clear();
     crate::signal_mask::restore_after_fork(previous, true);
     crate::hook::call(crate::hook::Hook::AfterFork);
     0
@@ -411,7 +411,7 @@ mod tests {
         assert!(crate::swr_v1_core_init());
         std::thread::spawn(|| {
             reactor();
-            _ = crate::reactor::signal_upstream::set(
+            _ = crate::process::signal_upstream::set(
                 libc::SIGTERM,
                 crate::process::signal::Handler::new(ignore),
                 true,
@@ -422,7 +422,7 @@ mod tests {
             }
             assert_eq!(unsafe { libc::kill(pid, libc::SIGTERM) }, 0);
             let status = wait(pid);
-            crate::reactor::signal_upstream::clear();
+            crate::process::signal_upstream::clear();
             crate::reactor::swoole_event_free();
             assert!(
                 libc::WIFSIGNALED(status) && libc::WTERMSIG(status) == libc::SIGTERM,

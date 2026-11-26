@@ -245,8 +245,8 @@ impl Owner {
             self.reactor.set(reactor);
             attach();
         } else if backend != MANUAL {
-            let alarm = crate::reactor::signal_upstream::Handler::new(alarm);
-            _ = crate::reactor::signal_upstream::set(libc::SIGALRM, alarm, false);
+            let alarm = crate::process::signal_upstream::Handler::new(alarm);
+            _ = crate::process::signal_upstream::set(libc::SIGALRM, alarm, false);
         }
     }
 

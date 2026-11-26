@@ -743,7 +743,7 @@ pub use swoole_rs_corebase::process::worker_record::PipeEnd;
 #[inline]
 #[must_use]
 pub fn worker_pipe_end(worker: Worker<'_>, end: PipeEnd) -> Option<Heap<'_>> {
-    worker.pipe(end).map(Heap::lent)
+    worker.pipe(end)
 }
 
 /// The master end (`master`) or the worker end of `worker`'s pipe, or `None` while

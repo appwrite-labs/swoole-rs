@@ -25,12 +25,12 @@ use swoole_rs_corebase::process::methods::{
 use swoole_rs_corebase::process::process_pool::{
     CallbackError, Hooks, PoolObjectKey, PoolRecord as Pool, PoolRef, Protocol, RecvData, TaskFn,
 };
+use swoole_rs_corebase::process::signal_upstream::{self as signal, Handler as SignalHandler};
 use swoole_rs_corebase::process::task_file::Packed;
 use swoole_rs_corebase::process::worker_record::{
     Worker as WorkerHandle, WorkerRecord as Worker, WorkerStatus, swr_v1_worker_init,
     swr_v1_worker_shutdown,
 };
-use swoole_rs_corebase::reactor::signal_upstream::{self as signal, Handler as SignalHandler};
 use swoole_rs_corebase::signal_block_all;
 use swoole_rs_corebase::swoole_random_int;
 use swoole_rs_corebase::{swoole_thread_clean, swoole_thread_init};
@@ -41,7 +41,7 @@ use libc::{
     EACCES, ECHILD, IPC_CREAT, IPC_PRIVATE, SHUT_RDWR, SIG_DFL, SIG_IGN, SIGIO, SIGPIPE, SIGTERM,
     SIGWINCH,
 };
-use swoole_rs_corebase::reactor::signal_upstream::swoole_signal_clear;
+use swoole_rs_corebase::process::signal_upstream::swoole_signal_clear;
 use swoole_rs_corebase::timer::{swoole_timer_clear, swoole_timer_free, swoole_timer_is_available};
 
 const SW_OK: c_int = 0;

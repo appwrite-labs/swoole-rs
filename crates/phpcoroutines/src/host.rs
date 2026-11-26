@@ -235,7 +235,7 @@ pub(crate) fn stats(stats: &mut Stats) {
     }
     // `corebase::reactor` counts this thread's listeners.
     stats.signal_listener_num =
-        i64::from(swoole_rs_corebase::reactor::signal_upstream::swoole_signal_get_listener_num());
+        i64::from(swoole_rs_corebase::process::signal_upstream::swoole_signal_get_listener_num());
     let s = swoole_rs_corebase::coroutine::counters();
     stats.c_stack_size = i64::try_from(s.stack_size).unwrap_or(i64::MAX);
     stats.coroutine_num = i64::try_from(count()).unwrap_or(i64::MAX);

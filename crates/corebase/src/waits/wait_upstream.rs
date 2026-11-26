@@ -14,8 +14,8 @@ use crate::sys::errno;
 /// The SIGCHLD registry: the coroutine effects `corebase::process`'s wait loop asks for.
 mod registry {
     use super::{c_int, c_void, wait_count};
+    use crate::process::signal_upstream::{self, Handler};
     use crate::process::wait::{Coroutines, Wake, wait_reap};
-    use crate::reactor::signal_upstream::{self, Handler};
     use std::ptr;
     use std::sync::atomic::{AtomicBool, Ordering};
 
