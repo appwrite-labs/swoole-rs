@@ -325,6 +325,7 @@ pub fn http2_hpack(bytes: &[u8]) {
 /// letters, digits and `/` (all literal) replaces each occurrence, left to right, as
 /// `std::regex_replace` does. libstdc++ itself is compared in `tests/modules/http/rewrite.rs`.
 pub fn http_rewrite(bytes: &[u8]) {
+    const LIMIT: usize = 4096;
     let mut parts = bytes.splitn(3, |&b| b == 0);
     let (pattern, replacement, url) = (
         parts.next().unwrap_or_default(),
@@ -337,7 +338,7 @@ pub fn http_rewrite(bytes: &[u8]) {
     let mut rules = swoole_rs_http::RewriteRules::default();
     // A backreference or lookahead is added unsupported and never matches (#5277).
     let added = rules.add(&[b"~", pattern, b"~"].concat(), replacement);
-    let rewritten = rules.apply(url);
+    let rewritten = rules.apply(url, LIMIT);
     let literal = pattern
         .iter()
         .all(|&b| b.is_ascii_alphanumeric() || b == b'/');
@@ -347,13 +348,21 @@ pub fn http_rewrite(bytes: &[u8]) {
     assert!(added.is_ok(), "a literal pattern is supported");
     let (mut expected, mut rest) = (Vec::new(), url);
     while let Some(at) = rest.windows(pattern.len()).position(|w| w == pattern) {
+        if expected.len() + at + replacement.len() > LIMIT {
+            assert_eq!(rewritten, Err(LIMIT));
+            return;
+        }
         expected.extend_from_slice(&rest[..at]);
         expected.extend_from_slice(replacement);
         rest = &rest[at + pattern.len()..];
     }
+    if expected.len() + rest.len() > LIMIT {
+        assert_eq!(rewritten, Err(LIMIT));
+        return;
+    }
     expected.extend_from_slice(rest);
     assert_eq!(
-        rewritten,
+        rewritten.unwrap(),
         Some(expected).filter(|expected| expected != url),
         "~{pattern:?}~ -> {replacement:?} on {url:?}"
     );
