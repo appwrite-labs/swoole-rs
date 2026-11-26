@@ -85,11 +85,6 @@ pub(crate) struct Parse {
     pub(crate) input_name: Option<Box<[u8]>>,
     /// The current upload's `$_FILES` entry (`IS_UNDEF` when there is none).
     pub(crate) multipart_header: Owned,
-    #[expect(
-        clippy::box_collection,
-        reason = "all zeroes must be valid: a null Box is None"
-    )]
-    pub(crate) form_data: Option<Box<Vec<u8>>>,
     pub(crate) chunked_body: Option<Box<swoole_rs_corebase::buffer::BoundedBytes>>,
     pub(crate) input_var_num: u16,
 }

@@ -351,8 +351,8 @@ impl Ctx<'_> {
     /// A `multipart/form-data` content type's boundary starts the request's
     /// multipart parser; false when it has none.
     #[must_use]
-    pub fn multipart_start(mut self, content_type: &[u8]) -> bool {
-        parse::multipart_start(self.state(), content_type)
+    pub fn multipart_start(mut self, content_type: &[u8], limit: u32) -> bool {
+        parse::multipart_start(self.state(), content_type, limit as usize)
     }
 
     /// `sapi_module.treat_data(PARSE_STRING, ...)`: a query string's pairs into
