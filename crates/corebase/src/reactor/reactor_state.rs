@@ -33,6 +33,9 @@ pub struct UpperLayer {
     /// `SW_GLOBAL_HOOK_ON_REACTOR_CREATE` (`DESTROY`), given the reactor.
     pub created: fn(crate::reactor::Running<'_>),
     pub destroyed: fn(crate::reactor::Running<'_>),
+    /// `swoole_is_main_thread()`: only the main thread's reactor dispatches signals
+    /// and trims malloc at its end.
+    pub main_thread: fn() -> bool,
 }
 
 static UPPER_LAYER: std::sync::OnceLock<UpperLayer> = std::sync::OnceLock::new();
@@ -360,7 +363,10 @@ pub fn swr_v1_reactor_new(max_event: c_int, kind: c_int) -> OwnedReactor {
     let reactor = crate::reactor::Running::leak(owner);
     (upper.created)(reactor);
     // The hook has returned.
-    reactor.with(|state| crate::reactor::callbacks::install_builtins(&mut state.callbacks));
+    let main_thread = (upper.main_thread)();
+    reactor.with(|state| {
+        crate::reactor::callbacks::install_builtins(&mut state.callbacks, main_thread);
+    });
     OwnedReactor(reactor)
 }
 
@@ -433,13 +439,18 @@ pub fn swoole_event_init(flags: c_int) -> Result<(), InitError> {
     }
     handle.with(|state| state.fields.wait_exit = flags & SW_EVENTLOOP_WAIT_EXIT != 0);
     crate::reactor::readiness::init_reactor(handle);
-    crate::set_thread_reactor(handle.as_ptr());
+    set_thread_reactor(handle.as_ptr());
     // A reactor this replaces stays allocated, as upstream's overwritten pointer did.
     EVENT_REACTOR.set(Some(reactor));
     Ok(())
 }
 
 thread_local! {
+    /// `SwooleTG.reactor`: the reactor this thread runs, or null. A thread-context
+    /// coroutine's thread shares the one of the thread that activated coroutines.
+    static THREAD_REACTOR: std::cell::Cell<*mut c_void> = const {
+        std::cell::Cell::new(ptr::null_mut())
+    };
     /// The reactor `swoole_event_init` made on this thread, which `swoole_event_free`
     /// deletes.
     static EVENT_REACTOR: std::cell::Cell<Option<OwnedReactor>> = const {
@@ -449,6 +460,17 @@ thread_local! {
     static DELETING: std::cell::Cell<Option<crate::reactor::Running<'static>>> = const {
         std::cell::Cell::new(None)
     };
+}
+
+/// `SwooleTG.reactor`.
+#[must_use]
+pub fn thread_reactor() -> *mut c_void {
+    THREAD_REACTOR.get()
+}
+
+/// Sets `SwooleTG.reactor`.
+pub fn set_thread_reactor(reactor: *mut c_void) {
+    THREAD_REACTOR.set(reactor);
 }
 
 /// Whether `swoole_event_free` is deleting this thread's reactor: code its delete runs
@@ -491,7 +513,7 @@ pub fn swoole_event_free() -> bool {
     else {
         return false;
     };
-    crate::set_thread_reactor(ptr::null_mut());
+    set_thread_reactor(ptr::null_mut());
     match EVENT_REACTOR.take() {
         Some(owned) if owned.as_ptr() == reactor => {
             let _deleting = Deleting::enter(&owned);
@@ -830,7 +852,7 @@ pub(crate) mod tests {
         for kind in [3, native_kind] {
             let state = state(kind, 4);
             let reactor = running(state.owner);
-            crate::set_thread_reactor(state.owner.cast());
+            set_thread_reactor(state.owner.cast());
             let (owned, writer) = registered(reactor);
             assert_eq!(
                 owned.socket().mark().load(Ordering::Relaxed),
@@ -850,7 +872,7 @@ pub(crate) mod tests {
             if kind != 3 {
                 assert_eq!(kernel_wait(reactor, true, &mut entries).ok(), Some(0));
             }
-            crate::set_thread_reactor(ptr::null_mut());
+            set_thread_reactor(ptr::null_mut());
             unsafe { free(state.owner) };
             drop(unsafe { Box::from_raw(record.as_ptr()) });
             unsafe { libc::close(fd) };

@@ -101,7 +101,7 @@ impl LiveServer {
         // The thread's reactor, with corebase's socket I/O and without coroutine/client handlers.
         swoole_rs_corebase::register_upper_layer();
         let reactor = swoole_rs_corebase::reactor::swr_v1_reactor_new(4096, 0);
-        swoole_rs_corebase::set_thread_reactor(reactor.as_ptr());
+        swoole_rs_corebase::reactor::set_thread_reactor(reactor.as_ptr());
         Self {
             server,
             shared,
@@ -207,7 +207,7 @@ impl LiveServer {
 
 impl Drop for LiveServer {
     fn drop(&mut self) {
-        swoole_rs_corebase::set_thread_reactor(core::ptr::null_mut());
+        swoole_rs_corebase::reactor::set_thread_reactor(core::ptr::null_mut());
         if let Some(reactor) = self.reactor.take() {
             swoole_rs_corebase::reactor::swr_v1_reactor_delete(reactor);
         }

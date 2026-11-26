@@ -139,7 +139,7 @@ fn async_set(call: &Call) {
         call.set_bool(true);
         return;
     }
-    if !swoole_rs_corebase::thread_reactor().is_null() {
+    if !swoole_rs_corebase::reactor::thread_reactor().is_null() {
         // E_ERROR bails out: upstream goes no further.
         fatal_error(
             E_ERROR,

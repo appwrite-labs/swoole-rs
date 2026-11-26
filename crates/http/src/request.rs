@@ -465,13 +465,7 @@ impl Parts<'_> for Rewrite<'_> {
         }
         let disposition = case_equal(name, b"content-disposition");
         form.header_name.clear();
-        if !disposition {
-            return Flow::Go;
-        }
-        // `parse_cookie` over a NUL-terminated copy, stopping at the first `filename`.
-        let mut value = data.to_vec();
-        value.push(0);
-        if crate::multipart_filename(&mut value) != Ok(true) {
+        if !disposition || !crate::multipart_has_filename(data) {
             return Flow::Go;
         }
         let form = form_of(self.request);

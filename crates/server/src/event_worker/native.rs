@@ -554,7 +554,7 @@ pub(crate) fn signal(serv: view::Server<'_>, signo: c_int) {
 
 /// `Server::drain_worker_pipe()`: each worker's pipes, when this thread has a reactor.
 pub fn drain_worker_pipe(serv: view::Server<'_>) {
-    if swoole_rs_corebase::thread_reactor().is_null() {
+    if swoole_rs_corebase::reactor::thread_reactor().is_null() {
         return;
     }
     for id in 0..all_core_workers(serv.config()) {

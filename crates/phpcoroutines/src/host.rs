@@ -687,7 +687,7 @@ pub(crate) fn set_dns_cache_capacity(capacity: c_long) {
 /// Install (`set`) or clear this thread's reactor's user exit condition,
 /// which calls `Co::set`'s `exit_condition`; nothing without a reactor.
 pub(crate) fn set_exit_condition(set: bool) {
-    if swoole_rs_corebase::thread_reactor().is_null() {
+    if swoole_rs_corebase::reactor::thread_reactor().is_null() {
         return;
     }
     if set {

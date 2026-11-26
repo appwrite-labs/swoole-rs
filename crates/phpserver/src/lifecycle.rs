@@ -273,7 +273,7 @@ fn fact(serv: view::Server<'_>, id: Fact) -> bool {
         Fact::HasOnClose => serv.has_callback(swoole_rs_server::callbacks::CallbackKind::Close),
         Fact::UnsafeEvents => c.dispatch_mode.get().is_hash() || c.enable_unsafe_event.get(),
         Fact::HashDispatch => c.dispatch_mode.get().is_hash(),
-        Fact::Reactor => !swoole_rs_corebase::thread_reactor().is_null(),
+        Fact::Reactor => !swoole_rs_corebase::reactor::thread_reactor().is_null(),
     }
 }
 
