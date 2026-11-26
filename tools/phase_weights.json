@@ -34,6 +34,7 @@
  "format": 3,
  "framing-unit": 1,
  "hooks-unit": 3,
+ "http-abuse": 11,
  "http-smuggling": 5,
  "http-unit": 10,
  "http2-unit": 2,
