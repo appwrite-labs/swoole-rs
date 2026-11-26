@@ -491,7 +491,8 @@ fn get_option(call: &Call) {
             Ok(None) => {}
         }
     }
-    if name == i64::from(libc::SO_LINGER) {
+    let socket_level = level == i64::from(libc::SOL_SOCKET);
+    if socket_level && name == i64::from(libc::SO_LINGER) {
         let mut linger = libc::linger {
             l_onoff: 0,
             l_linger: 0,
@@ -504,7 +505,9 @@ fn get_option(call: &Call) {
         call.add_assoc_long(c"l_linger", i64::from(linger.l_linger));
         return;
     }
-    if (name == i64::from(libc::SO_RCVTIMEO)) || (name == i64::from(libc::SO_SNDTIMEO)) {
+    if socket_level
+        && (name == i64::from(libc::SO_RCVTIMEO) || name == i64::from(libc::SO_SNDTIMEO))
+    {
         let kind = if name == i64::from(libc::SO_RCVTIMEO) {
             TimeoutKind::READ
         } else {
@@ -521,10 +524,11 @@ fn get_option(call: &Call) {
         return;
     }
     #[cfg(target_os = "linux")]
-    if name_int == libc::TCP_INFO {
+    if level == i64::from(libc::IPPROTO_TCP) && name == i64::from(libc::TCP_INFO) {
         let mut info: libc::tcp_info = swoole_rs_corebase::sys::zeroed();
         if getsockopt(fd, libc::SOL_TCP, libc::TCP_INFO, &mut info).is_err() {
-            return warn_sys(&format!("getsockopt({fd}, SOL_TCP, TCP_INFO)"), errno());
+            warn_sys(&format!("getsockopt({fd}, SOL_TCP, TCP_INFO)"), errno());
+            return call.set_bool(false);
         }
         call.set_array();
         for (key, value) in swoole_rs_server::tcp_fields(&info) {
@@ -537,8 +541,7 @@ fn get_option(call: &Call) {
         return failed();
     };
     if length == 1 {
-        let byte = other.to_ne_bytes()[0];
-        call.set_long(i64::from(c_char::from_ne_bytes([byte])));
+        call.set_long(i64::from(other.to_ne_bytes()[0]));
     } else {
         call.set_long(i64::from(other));
     }
@@ -589,7 +592,6 @@ fn set_option(call: &Call) {
     };
     let Some(socket) = open(call) else { return };
     let (level_int, name_int) = (level.c_cast::<c_int>(), name.c_cast::<c_int>());
-    let mut plain = false;
     if level == i64::from(libc::IPPROTO_IP) || level == i64::from(libc::IPPROTO_IPV6) {
         let result = if level == i64::from(libc::IPPROTO_IPV6) {
             multicast::set_ipv6(socket, level_int, name_int, value)
@@ -597,14 +599,14 @@ fn set_option(call: &Call) {
             multicast::set_ip(socket, level_int, name_int, value)
         };
         let Ok(result) = result else { return };
-        match result {
-            None => plain = true,
-            Some(ok) => return call.set_bool(ok),
+        if let Some(ok) = result {
+            return call.set_bool(ok);
         }
     }
+    let socket_level = level == i64::from(libc::SOL_SOCKET);
+    let linger = socket_level && name == i64::from(libc::SO_LINGER);
     // The option, set once every argument is read.
-    let set: &dyn Fn(c_int) -> std::io::Result<()> = if !plain && name == i64::from(libc::SO_LINGER)
-    {
+    let set: &dyn Fn(c_int) -> std::io::Result<()> = if linger {
         let Some(table) = option_table(call, value, "SO_LINGER") else {
             return;
         };
@@ -625,7 +627,7 @@ fn set_option(call: &Call) {
             l_linger: c_int::from(clamp_u16(wait)),
         };
         &move |fd| setsockopt(fd, level_int, name_int, &linger)
-    } else if !plain
+    } else if socket_level
         && (name == i64::from(libc::SO_RCVTIMEO) || name == i64::from(libc::SO_SNDTIMEO))
     {
         let read = name == i64::from(libc::SO_RCVTIMEO);
@@ -648,7 +650,7 @@ fn set_option(call: &Call) {
         };
         socket.set_timeout(timeout, kind);
         return call.set_bool(true);
-    } else if !plain && bind_to_device(name) {
+    } else if socket_level && bind_to_device(name) {
         let device = value.bytes().unwrap_or_default();
         &move |fd| setsockopt_bytes(fd, level_int, name_int, device)
     } else {
