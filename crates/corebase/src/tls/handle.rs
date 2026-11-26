@@ -756,30 +756,6 @@ impl CertRef<'_> {
         X509_check_host(self, name.into(), Measured::UpToNul, 0, None) == 1
     }
 
-    /// Compare the certificate digest with a hexadecimal fingerprint.
-    #[must_use]
-    pub fn matches_fingerprint(self, algorithm: &CStr, expected: &[u8]) -> bool {
-        let Some(method) = EVP_get_digestbyname(algorithm.into()) else {
-            return false;
-        };
-        let mut digest = [0; openssl_sys::EVP_MAX_MD_SIZE as usize];
-        let mut length = 0;
-        if X509_digest(self, method, &mut digest, &mut length) != 1
-            || expected.len() != length as usize * 2
-            || length == 0
-        {
-            return false;
-        }
-        digest
-            .iter()
-            .zip(expected.as_chunks::<2>().0)
-            .all(|(&byte, &[high, low])| {
-                let high = char::from(high).to_digit(16);
-                let low = char::from(low).to_digit(16);
-                high == Some(u32::from(byte >> 4)) && low == Some(u32::from(byte & 15))
-            })
-    }
-
     /// `_ssl_read_x509_file`: the certificate as PEM into at most `buffer`'s length.
     ///
     /// # Errors
@@ -822,6 +798,30 @@ pub enum PemError {
 pub struct Cert(pub(crate) NonNull<X509>);
 
 impl Cert {
+    /// Compare the certificate digest with a hexadecimal fingerprint.
+    #[must_use]
+    pub fn matches_fingerprint(&self, algorithm: &CStr, expected: &[u8]) -> bool {
+        let Some(method) = EVP_get_digestbyname(algorithm.into()) else {
+            return false;
+        };
+        let mut digest = [0; openssl_sys::EVP_MAX_MD_SIZE as usize];
+        let mut length = 0;
+        if X509_digest(self.get(), method, &mut digest, &mut length) != 1
+            || expected.len() != length as usize * 2
+            || length == 0
+        {
+            return false;
+        }
+        digest
+            .iter()
+            .zip(expected.as_chunks::<2>().0)
+            .all(|(&byte, &[high, low])| {
+                let high = char::from(high).to_digit(16);
+                let low = char::from(low).to_digit(16);
+                high == Some(u32::from(byte >> 4)) && low == Some(u32::from(byte & 15))
+            })
+    }
+
     #[must_use]
     pub fn as_ptr(&self) -> *mut X509 {
         self.0.as_ptr()

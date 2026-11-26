@@ -1001,7 +1001,7 @@ fn fingerprint_matches(socket: &Socket, expected: &Value) -> bool {
             40 => c"sha1",
             _ => return false,
         };
-        return cert.get().matches_fingerprint(algorithm, hex);
+        return cert.matches_fingerprint(algorithm, hex);
     }
     expected.array().is_some_and(|list| {
         list.count() > 0
@@ -1009,8 +1009,7 @@ fn fingerprint_matches(socket: &Socket, expected: &Value) -> bool {
                 let (Some(key), Some(hex)) = (key, value.bytes()) else {
                     return false;
                 };
-                CString::new(key)
-                    .is_ok_and(|algorithm| cert.get().matches_fingerprint(&algorithm, hex))
+                CString::new(key).is_ok_and(|algorithm| cert.matches_fingerprint(&algorithm, hex))
             })
     })
 }
