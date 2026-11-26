@@ -10,6 +10,7 @@ use swoole_rs_corebase::CCast;
 use swoole_rs_corebase::coroutine::Waker;
 use swoole_rs_corebase::offload::WakerSlot;
 use swoole_rs_corebase::process::signal_upstream::Handler;
+use swoole_rs_corebase::timer::Deadline;
 
 /// `SW_SIGNO_MAX`.
 const SIGNO_MAX: i32 = swoole_rs_corebase::constants::SW_SIGNO_MAX.cast_signed();
@@ -44,9 +45,9 @@ struct SignalOps {
     listen: fn(i32, &Rc<Records>, bool) -> bool,
     /// The reactor exit condition and `signal_async_listener_num++` (true), or `--`.
     waiting: fn(bool),
-    /// `co->yield_ex(timeout)`, its waker stored first: false on timeout or
-    /// cancellation.
-    yield_for: fn(f64, &WakerSlot) -> bool,
+    /// `co->yield_ex(timeout)` until the deadline, its waker stored first: false on
+    /// timeout or cancellation.
+    yield_for: fn(Deadline, &WakerSlot) -> bool,
     /// `co->resume()` of a parked coroutine.
     resume: fn(Waker),
 }
@@ -155,7 +156,7 @@ fn narrow(signo: c_long) -> i32 {
 /// Another listener is registered, a signal is invalid, registration cannot reach
 /// the reactor, or the wait ends without a signal.
 pub fn system_wait_signal(signals: &[c_long], timeout: f64) -> Result<i32, SignalWaitError> {
-    let result = wait_signal(signals, timeout, &NATIVE);
+    let result = wait_signal(signals, Deadline::from_timeout(timeout), &NATIVE);
     let error = match result {
         Err(SignalWaitError::Busy) => libc::EBUSY,
         Err(SignalWaitError::InvalidSignal) => libc::EINVAL,
@@ -168,10 +169,10 @@ pub fn system_wait_signal(signals: &[c_long], timeout: f64) -> Result<i32, Signa
     result
 }
 
-/// Waits for any of `signals` for up to `timeout` seconds.
+/// Waits for any of `signals` until `deadline`.
 fn wait_signal(
     signals: &[c_long],
-    timeout: f64,
+    deadline: Deadline,
     ops: &'static SignalOps,
 ) -> Result<i32, SignalWaitError> {
     // Fatal outside a coroutine.
@@ -207,7 +208,7 @@ fn wait_signal(
     if listening {
         (ops.waiting)(true);
     }
-    let woken = listening && (ops.yield_for)(timeout, &waiting.waker);
+    let woken = listening && (ops.yield_for)(deadline, &waiting.waker);
     // However the wait ended, no signal wakes it any more.
     drop(published);
     for signo in signals {
@@ -389,20 +390,20 @@ mod tests {
         log(format!("waiting {on}"));
     }
     /// Stands in for a park during which SIGUSR2 arrives.
-    fn signalled(_: f64, waker: &WakerSlot) -> bool {
+    fn signalled(_: Deadline, waker: &WakerSlot) -> bool {
         waker.set(Some(Waker::NONE));
         swr_v1_hook_signal_wake(libc::SIGUSR2);
         swr_v1_hook_signal_wake(libc::SIGUSR2);
         true
     }
-    fn timed_out(_: f64, _: &WakerSlot) -> bool {
+    fn timed_out(_: Deadline, _: &WakerSlot) -> bool {
         false
     }
     fn resume(_: Waker) {
         log("resume".into());
     }
 
-    const fn ops(busy_check: fn() -> bool, park: fn(f64, &WakerSlot) -> bool) -> SignalOps {
+    const fn ops(busy_check: fn() -> bool, park: fn(Deadline, &WakerSlot) -> bool) -> SignalOps {
         SignalOps {
             current,
             busy: busy_check,
@@ -425,7 +426,7 @@ mod tests {
     fn wait(signals: &[i32], ops: &'static SignalOps) -> (Signalled, Vec<String>) {
         LOG.with_borrow_mut(Vec::clear);
         let signals: Vec<c_long> = signals.iter().map(|&signo| signo.into()).collect();
-        let result = match wait_signal(&signals, 1.0, ops) {
+        let result = match wait_signal(&signals, Deadline::never(), ops) {
             Ok(signo) => Signalled {
                 signo,
                 last_error: 0,

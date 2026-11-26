@@ -10,6 +10,7 @@ use swoole_rs_clients::dns::{DnsSocket, RecvError, received};
 use swoole_rs_clients::resolver::{self, Request};
 use swoole_rs_corebase::lent::lend_spare;
 use swoole_rs_corebase::offload::{AsyncEvent, COROUTINE_ASYNC, Handler, swr_v1_hook_async};
+use swoole_rs_corebase::timer::Deadline;
 use swoole_rs_corebase::{
     NameResolverContext, log, swoole_rand_any, swr_v1_core_dns_lookup_random,
     swr_v1_core_name_resolver_resolve,
@@ -22,41 +23,48 @@ extern "C" fn handler_getaddrinfo(event: &mut AsyncEvent) {
     }
 }
 
-/// `coroutine::async(handler, event, timeout)` over `request`: the completion's
-/// error, or none. `request_error` is checked only once the pool finished.
+/// `coroutine::async(handler, event, timeout)` over `request`, ending at `deadline`:
+/// the completion's error, or none. `request_error` is checked only once the pool
+/// finished.
 fn run(
     request: &Request,
     handler: Handler,
     retval: isize,
-    timeout: f64,
+    deadline: Deadline,
     request_error: bool,
 ) -> Option<c_int> {
     let mut event = AsyncEvent::empty();
     event.set_record(request.reference());
     event.set_result(retval, 0);
-    swr_v1_hook_async(&mut event, handler, timeout, &COROUTINE_ASYNC);
+    swr_v1_hook_async(&mut event, handler, deadline, &COROUTINE_ASYNC);
     let (retval, error) = event.result();
     request.failed(retval, error, request_error)
 }
 
 /// `gethostbyname_impl_with_async`: the address, or empty with the last error set.
-fn gethostbyname_with_async(name: &[u8], domain: c_int, timeout: f64) -> Vec<u8> {
+fn gethostbyname_with_async(name: &[u8], domain: c_int, deadline: Deadline) -> Vec<u8> {
     let request = Request::new(domain, 0, 0, name, b"");
-    if let Some(error) = run(&request, resolver::handler_gethostbyname, 1, timeout, false) {
+    if let Some(error) = run(
+        &request,
+        resolver::handler_gethostbyname,
+        1,
+        deadline,
+        false,
+    ) {
         log::set_last_error(error);
         return Vec::new();
     }
     request.address()
 }
 
-/// `System::gethostbyname`: the DNS cache, then c-ares or the async pool; empty on
-/// failure.
+/// `System::gethostbyname`: the DNS cache, then c-ares or the async pool until
+/// `deadline`; empty on failure.
 #[must_use]
-pub fn system_gethostbyname(name: &[u8], domain: c_int, timeout: f64) -> Vec<u8> {
+pub fn system_gethostbyname(name: &[u8], domain: c_int, deadline: Deadline) -> Vec<u8> {
     if let Some(cached) = crate::dns_cache::get(domain, name) {
         return cached;
     }
-    let result = match swoole_rs_clients::cares_lookup(&resolver::c_name(name), domain, timeout) {
+    let result = match swoole_rs_clients::cares_lookup(&resolver::c_name(name), domain, deadline) {
         Some(list) if list.is_empty() => Vec::new(),
         Some(mut list) => {
             let at = if swr_v1_core_dns_lookup_random() {
@@ -66,7 +74,7 @@ pub fn system_gethostbyname(name: &[u8], domain: c_int, timeout: f64) -> Vec<u8>
             };
             list.swap_remove(at)
         }
-        None => gethostbyname_with_async(name, domain, timeout),
+        None => gethostbyname_with_async(name, domain, deadline),
     };
     crate::dns_cache::set(domain, name, &result);
     result
@@ -82,7 +90,8 @@ pub fn name_resolver_lookup(name: &[u8], ctx: &mut NameResolverContext, out: &mu
     *out = if swoole_rs_corebase::coroutine::current().is_null() {
         resolver::gethostbyname(ctx.options.get().0, name)
     } else {
-        system_gethostbyname(name, ctx.options.get().0, ctx.timeout)
+        let deadline = Deadline::from_timeout(ctx.timeout);
+        system_gethostbyname(name, ctx.options.get().0, deadline)
     };
 }
 
@@ -101,8 +110,8 @@ pub(crate) fn socket_lookup(
     ctx.options.get().1
 }
 
-/// `System::getaddrinfo` for crates/phpcoroutines: the addresses, or none with
-/// the last error set.
+/// `System::getaddrinfo` for crates/phpcoroutines, until `deadline`: the addresses,
+/// or none with the last error set.
 #[must_use]
 pub fn system_getaddrinfo(
     host: &[u8],
@@ -110,10 +119,10 @@ pub fn system_getaddrinfo(
     socktype: c_int,
     protocol: c_int,
     service: &[u8],
-    timeout: f64,
+    deadline: Deadline,
 ) -> Vec<Vec<u8>> {
     let request = Request::new(family, socktype, protocol, host, service);
-    if let Some(error) = run(&request, handler_getaddrinfo, 0, timeout, true) {
+    if let Some(error) = run(&request, handler_getaddrinfo, 0, deadline, true) {
         log::set_last_error(error);
         return Vec::new();
     }
@@ -124,14 +133,13 @@ pub fn system_getaddrinfo(
 struct DnsUdp(crate::co_socket::OwnedCo);
 
 impl DnsUdp {
-    /// The socket, with `timeout` set when positive.
-    fn open(timeout: f64) -> Self {
+    /// The socket, its timeout the time left until `deadline` when there is one.
+    fn open(deadline: Deadline) -> Self {
         let socket = Self(crate::hooked::open(libc::AF_INET, libc::SOCK_DGRAM, 0));
-        if timeout > 0.0 {
-            socket
-                .0
-                .co()
-                .set_timeout(timeout, swoole_rs_corebase::reactor::TimeoutKind::ALL);
+        if let Some(left) = deadline.remaining() {
+            let timeout = left.as_secs_f64().max(swoole_rs_corebase::timer::MIN_SEC);
+            let all = swoole_rs_corebase::reactor::TimeoutKind::ALL;
+            socket.0.co().set_timeout(timeout, all);
         }
         socket
     }
@@ -149,11 +157,11 @@ impl DnsSocket for DnsUdp {
     }
 }
 
-/// `coroutine::dns_lookup(domain, family, timeout)`, in a coroutine: each address of
-/// `domain` (up to its first NUL, as C reads it), up to its own first NUL; none on a
-/// failure, which is the last error.
+/// `coroutine::dns_lookup(domain, family, timeout)`, in a coroutine, until `deadline`:
+/// each address of `domain` (up to its first NUL, as C reads it), up to its own first
+/// NUL; none on a failure, which is the last error.
 #[must_use]
-pub fn dns_lookup(domain: &[u8], family: c_int, timeout: f64) -> Vec<Vec<u8>> {
+pub fn dns_lookup(domain: &[u8], family: c_int, deadline: Deadline) -> Vec<Vec<u8>> {
     // Only IPv4 and IPv6.
     let family = if family == libc::AF_INET6 {
         libc::AF_INET6
@@ -161,8 +169,10 @@ pub fn dns_lookup(domain: &[u8], family: c_int, timeout: f64) -> Vec<Vec<u8>> {
         libc::AF_INET
     };
     let name = resolver::c_name(domain);
-    let mut addresses = swoole_rs_clients::cares_lookup(&name, family, timeout)
-        .unwrap_or_else(|| swoole_rs_clients::dns::lookup(&name, family, || DnsUdp::open(timeout)));
+    let mut addresses =
+        swoole_rs_clients::cares_lookup(&name, family, deadline).unwrap_or_else(|| {
+            swoole_rs_clients::dns::lookup(&name, family, || DnsUdp::open(deadline))
+        });
     for address in &mut addresses {
         let end = address.iter().position(|&byte| byte == 0);
         address.truncate(end.unwrap_or(address.len()));

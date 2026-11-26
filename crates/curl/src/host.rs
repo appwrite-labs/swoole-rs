@@ -14,6 +14,7 @@ use swoole_rs_corebase::CellExt;
 use swoole_rs_corebase::coroutine::Resume;
 use swoole_rs_corebase::reactor::Events;
 use swoole_rs_corebase::reactor::{SocketFields, SocketRecord, event_api};
+use swoole_rs_corebase::timer::Deadline;
 use swoole_rs_corebase::tls::event_socket::EventSocket;
 use swoole_rs_curl_sys::{
     CURL_CSELECT_ERR, CURL_CSELECT_IN, CURL_CSELECT_OUT, CURLE_FAILED_INIT, CURLcode,
@@ -34,7 +35,8 @@ pub(crate) struct Ops {
     pub timer_del: fn(swoole_rs_corebase::timer::Held),
     pub current: fn() -> *mut c_void,
     pub current_cid: fn() -> c_long,
-    pub yield_: fn(*mut c_void, f64, &mut dyn FnMut(swoole_rs_corebase::coroutine::Waker)) -> bool,
+    pub yield_:
+        fn(*mut c_void, Deadline, &mut dyn FnMut(swoole_rs_corebase::coroutine::Waker)) -> bool,
     pub wake: fn(swoole_rs_corebase::coroutine::Waker),
     pub defer: fn(&Multi),
 }
@@ -195,18 +197,14 @@ pub(crate) fn current() -> *mut c_void {
 /// `Coroutine::get_current_cid()`.
 pub(crate) use swoole_rs_corebase::coroutine::current_cid;
 
-/// `co->yield_ex(timeout)` of `co`, the running coroutine (aborting otherwise), then
-/// whether it was canceled.
+/// `co->yield_ex(timeout)` of `co`, the running coroutine (aborting otherwise), until
+/// `deadline`, then whether it was canceled.
 pub(crate) fn yield_(
     co: *mut c_void,
-    timeout: f64,
+    deadline: Deadline,
     arm: &mut dyn FnMut(swoole_rs_corebase::coroutine::Waker),
 ) -> bool {
-    let code = swoole_rs_corebase::coroutine::yield_timed_armed(
-        co,
-        swoole_rs_corebase::timer::Deadline::from_timeout(timeout),
-        arm,
-    );
+    let code = swoole_rs_corebase::coroutine::yield_timed_armed(co, deadline, arm);
     // `yield_ex`: the last error of a timeout or a cancel.
     !swoole_rs_corebase::coroutine::yield_resumed(code) && code == Resume::Canceled
 }

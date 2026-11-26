@@ -193,7 +193,7 @@ mod tests {
         Ok(Socket(socket))
     }
     /// The reactor fires write, then read, on the waiter's socket.
-    fn park(_: f64, waker: &crate::offload::WakerSlot) -> Result<(), i32> {
+    fn park(_: crate::timer::Deadline, waker: &crate::offload::WakerSlot) -> Result<(), i32> {
         waker.set(Some(crate::coroutine::Waker::NONE));
         let mut event = unsafe {
             Event::of(

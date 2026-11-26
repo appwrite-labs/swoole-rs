@@ -27,6 +27,7 @@ use swoole_rs_corebase::reactor::{
     Drain, Event, Running, Socket, SocketAddress, SocketFields, SocketRecord, SpareVectors,
 };
 use swoole_rs_corebase::sys::{self, ReadSlot, strerror};
+use swoole_rs_corebase::timer::Deadline;
 use swoole_rs_corebase::tls::upstream::{
     peek_spare, recv, recv_spare, send, send_drain, sendfile as socket_sendfile_fd,
     socket_ssl_peer_certificate_pem,
@@ -400,7 +401,8 @@ impl Co {
         let mut address = SocketAddress::default();
         let mut assigned = assign(&mut address, kind, host, port);
         if !assigned && log::last_error() == BAD_HOST_ADDR {
-            let ip = crate::resolve::system_gethostbyname(host, domain, timeout);
+            let ip =
+                crate::resolve::system_gethostbyname(host, domain, Deadline::from_timeout(timeout));
             if !ip.is_empty() {
                 assigned = assign(&mut address, kind, &ip, port);
             }

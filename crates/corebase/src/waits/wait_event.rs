@@ -7,6 +7,7 @@ use crate::constants::FdType;
 use crate::coroutine::Waker;
 use crate::offload::WakerSlot;
 pub use crate::reactor::Events;
+use crate::timer::Deadline;
 use core::cell::Cell;
 use core::ffi::c_void;
 
@@ -20,9 +21,9 @@ pub struct EventWaitOps<S> {
     /// `make_socket(fd, SW_FD_CO_EVENT)` carrying `waiter`, added to the reactor for
     /// `events`; the last error if the reactor refuses it.
     pub(crate) add: fn(fd: i32, events: Events, waiter: Registered) -> Result<S, i32>,
-    /// `co->yield_ex(timeout)`, its waker stored first: the last error if it timed
-    /// out or was cancelled.
-    pub(crate) park: fn(timeout: f64, waker: &WakerSlot) -> Result<(), i32>,
+    /// `co->yield_ex(timeout)` until the deadline, its waker stored first: the last
+    /// error if it timed out or was cancelled.
+    pub(crate) park: fn(deadline: Deadline, waker: &WakerSlot) -> Result<(), i32>,
 }
 
 /// A parked `wait_event` (the object of its reactor socket): its coroutine's waker
@@ -76,9 +77,14 @@ pub(crate) fn event_ready(waiter: &Waiter, event: Events) -> Option<Parked> {
         .map(Parked)
 }
 
-/// Park the current coroutine until `events` fire on `fd` or `timeout` passes: the
+/// Park the current coroutine until `events` fire on `fd` or `deadline` passes: the
 /// fired events, or the error.
-fn park<S>(fd: i32, events: Events, timeout: f64, ops: &EventWaitOps<S>) -> Result<Events, i32> {
+fn park<S>(
+    fd: i32,
+    events: Events,
+    deadline: Deadline,
+    ops: &EventWaitOps<S>,
+) -> Result<Events, i32> {
     // Fatal outside a coroutine.
     (ops.current)();
     let waiter = Waiter {
@@ -91,7 +97,7 @@ fn park<S>(fd: i32, events: Events, timeout: f64, ops: &EventWaitOps<S>) -> Resu
         events,
         Registered((&raw const waiter).cast_mut().cast()),
     )?;
-    let parked = (ops.park)(timeout, &waiter.waker);
+    let parked = (ops.park)(deadline, &waiter.waker);
     drop(socket);
     parked.map(|()| waiter.revents.get())
 }
@@ -218,8 +224,8 @@ pub(crate) mod native {
         }
     }
 
-    pub(super) fn park(timeout: f64, waker: &super::WakerSlot) -> Result<(), i32> {
-        if crate::offload::park_for_armed(timeout, waker) {
+    pub(super) fn park(deadline: super::Deadline, waker: &super::WakerSlot) -> Result<(), i32> {
+        if crate::offload::park_for_armed(deadline, waker) {
             Ok(())
         } else {
             Err(log::last_error())
@@ -256,7 +262,8 @@ pub(crate) fn wait_with<S>(
             .map_or(libc::ETIMEDOUT, |error| error.raw_os_error().unwrap_or(0));
         return Err(WaitError::Poll(error));
     }
-    let fired = park(fd, events, timeout, ops).map_err(WaitError::Coroutine)?;
+    let deadline = Deadline::from_timeout(timeout);
+    let fired = park(fd, events, deadline, ops).map_err(WaitError::Coroutine)?;
     // Error readiness becomes the requested read/write bits.
     let result = if fired.intersects(Events::ERROR) {
         fired.without(Events::ERROR) | events
@@ -324,7 +331,7 @@ mod tests {
         Ok(Socket)
     }
     /// The reactor fires an error then a read before the deferred resume runs.
-    fn fires_error(_: f64, waker: &WakerSlot) -> Result<(), i32> {
+    fn fires_error(_: Deadline, waker: &WakerSlot) -> Result<(), i32> {
         waker.set(Some(Waker::NONE));
         assert_eq!(
             event_ready(waiter(), Events::ERROR).map(|co| co.waker()),
@@ -333,10 +340,10 @@ mod tests {
         assert!(event_ready(waiter(), Events::READ).is_none());
         Ok(())
     }
-    fn times_out(_: f64, _: &WakerSlot) -> Result<(), i32> {
+    fn times_out(_: Deadline, _: &WakerSlot) -> Result<(), i32> {
         Err(libc::ETIMEDOUT)
     }
-    fn unused(_: f64, _: &WakerSlot) -> Result<(), i32> {
+    fn unused(_: Deadline, _: &WakerSlot) -> Result<(), i32> {
         unreachable!()
     }
     thread_local! {
@@ -344,7 +351,7 @@ mod tests {
     }
     /// A read fires, then the timer times the wait out before the deferred
     /// resume runs: that resume names the park the timeout ended.
-    fn fires_then_times_out(_: f64, waker: &WakerSlot) -> Result<(), i32> {
+    fn fires_then_times_out(_: Deadline, waker: &WakerSlot) -> Result<(), i32> {
         PARKS.set(PARKS.get() + 1);
         waker.set(Some(Waker::NONE));
         assert_eq!(
@@ -368,7 +375,7 @@ mod tests {
         fd: i32,
         events: Events,
         timeout: f64,
-        park: fn(f64, &WakerSlot) -> Result<(), i32>,
+        park: fn(Deadline, &WakerSlot) -> Result<(), i32>,
     ) -> WaitEvent {
         let ops = EventWaitOps { current, add, park };
         match wait_with(fd, events, timeout, &ops) {

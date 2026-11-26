@@ -211,7 +211,7 @@ fn getaddrinfo(
         socktype,
         protocol,
         service.to_bytes(),
-        timeout,
+        swoole_rs_corebase::timer::Deadline::from_timeout(timeout),
     )
     .into_iter()
     .map(|address| String::from_utf8(address).unwrap())
