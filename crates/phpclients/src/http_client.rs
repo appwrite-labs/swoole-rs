@@ -133,7 +133,8 @@ struct Client {
     keep_alive: Cell<bool>,
     http_compression: Cell<bool>,
     body_decompression: Cell<bool>,
-    websocket: Cell<bool>,
+    /// Where the client is in a WebSocket upgrade ([`Client::websocket`]).
+    websocket: Cell<Upgrade>,
     accept_websocket_compression: Cell<bool>,
     ws: ClientWebSocket,
     /// Cloned out before each call, so `set()` from the callback can replace it.
@@ -423,7 +424,7 @@ impl Client {
             keep_alive: Cell::new(true),
             http_compression: Cell::new(true),
             body_decompression: Cell::new(true),
-            websocket: Cell::new(false),
+            websocket: Cell::new(Upgrade::Http),
             accept_websocket_compression: Cell::new(false),
             ws: ClientWebSocket::default(),
             write_func: Cell::default(),
@@ -591,7 +592,9 @@ impl Client {
         }
         let settings = self.property(c"setting");
         self.apply_setting(&settings, false);
-        self.websocket.set(false);
+        if let WebSocket::Open(open) = self.websocket() {
+            open.end();
+        }
         self.accept_websocket_compression.set(false);
         let conn = Rc::clone(&self.conn);
         socket
@@ -1088,7 +1091,8 @@ impl Client {
             self.close(true);
             return false;
         }
-        if self.websocket.get() {
+        let open = matches!(self.websocket(), WebSocket::Open(_));
+        if open {
             if !self.verify_handshake() {
                 self.set_error(
                     HANDSHAKE_FAILED,
@@ -1100,7 +1104,7 @@ impl Client {
             }
             socket.websocket_protocol();
         }
-        if !self.websocket.get() && (!self.keep_alive.get() || self.connection_close.get()) {
+        if !open && (!self.keep_alive.get() || self.connection_close.get()) {
             self.close(true);
         } else {
             self.reset();
@@ -1139,34 +1143,6 @@ impl Client {
         swoole_rs_clients::ws::accept_valid(key, accept)
     }
 
-    fn recv_websocket_frame(&self, call: &Call, timeout: f64) {
-        let Some(socket) = self.co() else {
-            return call.set_bool(false);
-        };
-        let frame = self.ws.recv(socket, timeout);
-        let kind = frame.kind();
-        let empty = frame.bytes().is_some_and(<[u8]>::is_empty);
-        call.set_owned(frame);
-        if bailout::pending() {
-            return;
-        }
-        if empty {
-            self.close(true);
-            return;
-        }
-        if kind == swoole_rs_zend::sys::IS_FALSE {
-            let code = socket_error_properties(self.props(), socket);
-            self.set_status(ErrorStatus::ServerReset);
-            if code != libc::ETIMEDOUT {
-                self.close(true);
-            }
-            return;
-        }
-        if kind == swoole_rs_zend::sys::IS_NULL {
-            call.set_bool(false);
-        }
-    }
-
     fn upgrade(&self, path: &[u8]) -> bool {
         self.defer.set(false);
         self.props().bytes(c"requestMethod", b"GET");
@@ -1188,11 +1164,23 @@ impl Client {
                 );
             }
         });
-        if !self.exec(path) {
+        if let WebSocket::Http(http) = self.websocket() {
+            http.upgrade();
+        }
+        let sent = self.exec(path);
+        let open = match self.websocket() {
+            WebSocket::Open(_) => true,
+            WebSocket::Handshaking(handshaking) => {
+                handshaking.fail();
+                false
+            }
+            WebSocket::Http(_) => false,
+        };
+        if !sent {
             return false;
         }
         let status = self.status.get();
-        if i32::from(status) != SWITCHING_PROTOCOLS || !self.websocket.get() {
+        if i32::from(status) != SWITCHING_PROTOCOLS || !open {
             self.set_error(
                 HANDSHAKE_FAILED,
                 c"websocket handshake failed: expected HTTP 101 with valid WebSocket upgrade headers",
@@ -1204,27 +1192,141 @@ impl Client {
         true
     }
 
-    fn push(&self, data: &Value, opcode: i64, flags: i64, code: i64) -> bool {
-        if !self.websocket.get() {
-            swoole_rs_corebase::log::set_last_error(HANDSHAKE_FAILED);
-            warn(true, c"websocket handshake failed, cannot push data");
-            let last = swoole_rs_corebase::log::last_error();
-            self.props().long(c"errCode", i64::from(last));
-            self.props()
-                .bytes(c"errMsg", b"websocket handshake failed, cannot push data");
-            self.set_status(ErrorStatus::ConnectFailed);
-            return false;
+    /// The client's place in a WebSocket upgrade, read once.
+    fn websocket(&self) -> WebSocket<'_> {
+        match self.websocket.get() {
+            Upgrade::Http => WebSocket::Http(Http(self)),
+            Upgrade::Handshaking => WebSocket::Handshaking(Handshaking(self)),
+            Upgrade::Open => WebSocket::Open(Open(self)),
         }
-        let Some(socket) = self.co() else {
+    }
+
+    /// The response is a 101 naming `websocket`: the socket carries frames from
+    /// here on, whatever the state, as upstream sets `websocket` on any request's
+    /// response. [`Self::recv_response`] then verifies the handshake and closes
+    /// the socket if it fails.
+    fn switched(&self) {
+        self.websocket.set(Upgrade::Open);
+    }
+
+    /// A frame operation on the open WebSocket, or upstream's refusal when the
+    /// client isn't open: false, with the handshake error.
+    fn with_open(&self, frame: impl FnOnce(Open<'_>) -> bool) -> bool {
+        if let WebSocket::Open(open) = self.websocket() {
+            return frame(open);
+        }
+        swoole_rs_corebase::log::set_last_error(HANDSHAKE_FAILED);
+        warn(true, c"websocket handshake failed, cannot push data");
+        let last = swoole_rs_corebase::log::last_error();
+        self.props().long(c"errCode", i64::from(last));
+        self.props()
+            .bytes(c"errMsg", b"websocket handshake failed, cannot push data");
+        self.set_status(ErrorStatus::ConnectFailed);
+        false
+    }
+}
+
+/// [`Client::websocket`]'s stored state: upstream's `websocket` flag (`Open`),
+/// with the upgrade request in between.
+#[derive(Clone, Copy)]
+enum Upgrade {
+    Http,
+    Handshaking,
+    Open,
+}
+
+/// Where a client is in a WebSocket upgrade ([`Client::websocket`]).
+enum WebSocket<'a> {
+    /// Requests and responses are HTTP: it can only send an upgrade request.
+    Http(Http<'a>),
+    /// `upgrade()` sent its request and awaits the 101, which opens it.
+    Handshaking(Handshaking<'a>),
+    /// A 101 named `websocket`: the socket carries frames.
+    Open(Open<'a>),
+}
+
+/// A client speaking HTTP.
+struct Http<'a>(&'a Client);
+
+/// A client whose upgrade request awaits its 101.
+struct Handshaking<'a>(&'a Client);
+
+/// An open WebSocket client: the only one with frames.
+#[derive(Clone, Copy)]
+struct Open<'a>(&'a Client);
+
+impl Http<'_> {
+    /// `upgrade()` sends its request.
+    fn upgrade(self) {
+        self.0.websocket.set(Upgrade::Handshaking);
+    }
+}
+
+impl Handshaking<'_> {
+    /// The request failed, or its response wasn't a 101 naming `websocket`.
+    fn fail(self) {
+        self.0.websocket.set(Upgrade::Http);
+    }
+}
+
+impl Open<'_> {
+    /// The client connects again: its frames ended with the old socket.
+    fn end(self) {
+        self.0.websocket.set(Upgrade::Http);
+    }
+
+    /// `recv()`: the next frame.
+    fn recv(self, call: &Call, timeout: f64) {
+        let client = self.0;
+        let Some(socket) = client.co() else {
+            return call.set_bool(false);
+        };
+        let frame = client.ws.recv(socket, timeout);
+        let kind = frame.kind();
+        let empty = frame.bytes().is_some_and(<[u8]>::is_empty);
+        call.set_owned(frame);
+        if bailout::pending() {
+            return;
+        }
+        if empty {
+            client.close(true);
+            return;
+        }
+        if kind == swoole_rs_zend::sys::IS_FALSE {
+            let code = socket_error_properties(client.props(), socket);
+            client.set_status(ErrorStatus::ServerReset);
+            if code != libc::ETIMEDOUT {
+                client.close(true);
+            }
+            return;
+        }
+        if kind == swoole_rs_zend::sys::IS_NULL {
+            call.set_bool(false);
+        }
+    }
+
+    /// `disconnect()`'s close frame.
+    fn close(self, code: i64, reason: &Value) -> bool {
+        self.push(
+            reason,
+            i64::from(Opcode::Close.code()),
+            i64::from(FLAG_FIN),
+            code,
+        )
+    }
+
+    fn push(self, data: &Value, opcode: i64, flags: i64, code: i64) -> bool {
+        let client = self.0;
+        let Some(socket) = client.co() else {
             return false;
         };
-        let result = self.ws.push(
+        let result = client.ws.push(
             socket,
             data,
             opcode,
             flags,
             code,
-            self.accept_websocket_compression.get(),
+            client.accept_websocket_compression.get(),
         );
         match result {
             Ok(()) => true,
@@ -1232,20 +1334,23 @@ impl Client {
             Err(PushError::Pack) => {
                 swoole_rs_corebase::log::set_last_error(PACK_FAILED);
                 let last = swoole_rs_corebase::log::last_error();
-                self.props().long(c"errCode", i64::from(last));
-                self.props()
+                client.props().long(c"errCode", i64::from(last));
+                client
+                    .props()
                     .bytes(c"errMsg", b"websocket frame pack failed");
                 false
             }
             Err(PushError::Send) => {
-                socket_error_properties(self.props(), socket);
-                self.set_status(ErrorStatus::ServerReset);
-                self.close(true);
+                socket_error_properties(client.props(), socket);
+                client.set_status(ErrorStatus::ServerReset);
+                client.close(true);
                 false
             }
         }
     }
+}
 
+impl Client {
     fn reset(&self) {
         self.wait_response.set(false);
         self.event_stream.set(false);
@@ -1478,10 +1583,10 @@ fn on_header_value(hooks: &Hooks, name: &[u8], data: &[u8]) -> Flow {
     let status = hooks.parser.status_code;
     if i32::from(status) == SWITCHING_PROTOCOLS && name == b"upgrade" {
         if request::token_list_contains(data, b"websocket") {
-            client.websocket.set(true);
+            client.switched();
         }
     } else if features() & 1 != 0
-        && client.websocket.get()
+        && matches!(client.websocket(), WebSocket::Open(_))
         && client.ws.compression()
         && name == b"sec-websocket-extensions"
     {
@@ -1597,7 +1702,7 @@ fn write_download(client: &Client, body: &[u8]) -> bool {
 
 fn on_message_complete(hooks: &mut Hooks) -> Flow {
     let client = hooks.client;
-    if hooks.parser.upgrade && !client.websocket.get() {
+    if hooks.parser.upgrade && !matches!(client.websocket(), WebSocket::Open(_)) {
         hooks.parser.upgrade = false;
         return Flow::Pause;
     }
@@ -2082,8 +2187,8 @@ fn receive(call: &Call) -> bool {
     };
     let _hold = client.hold();
     let received = client.receiving(|parser| {
-        if client.websocket.get() {
-            client.recv_websocket_frame(call, timeout);
+        if let WebSocket::Open(open) = client.websocket() {
+            open.recv(call, timeout);
             return None;
         }
         Some(client.recv_response(parser, timeout))
@@ -2117,7 +2222,7 @@ fn push(call: &Call) {
         return call.set_bool(false);
     };
     let _hold = client.hold();
-    let result = client.push(data, opcode, flags & FLAGS_ALL, CLOSE_NORMAL);
+    let result = client.with_open(|open| open.push(data, opcode, flags & FLAGS_ALL, CLOSE_NORMAL));
     call.set_bool(result);
 }
 
@@ -2246,18 +2351,20 @@ fn ping(call: &Call) {
     let Some(client) = client(call) else {
         return;
     };
-    if !client.is_available() || !client.websocket.get() {
+    if !client.is_available() || !matches!(client.websocket(), WebSocket::Open(_)) {
         return call.set_bool(false);
     }
     let Ok(data) = call.arity(0, 1).and_then(|()| call.zstr(1)) else {
         return call.set_bool(false);
     };
-    let result = client.push(
-        &payload(data),
-        i64::from(Opcode::Ping.code()),
-        i64::from(FLAG_FIN),
-        CLOSE_NORMAL,
-    );
+    let result = client.with_open(|open| {
+        open.push(
+            &payload(data),
+            i64::from(Opcode::Ping.code()),
+            i64::from(FLAG_FIN),
+            CLOSE_NORMAL,
+        )
+    });
     call.set_bool(result);
 }
 
@@ -2267,7 +2374,7 @@ fn disconnect(call: &Call) {
     let Some(client) = client(call) else {
         return;
     };
-    if !client.is_available() || !client.websocket.get() {
+    if !client.is_available() || !matches!(client.websocket(), WebSocket::Open(_)) {
         return call.set_bool(false);
     }
     let parsed = call
@@ -2276,12 +2383,7 @@ fn disconnect(call: &Call) {
     let Ok((code, reason)) = parsed else {
         return call.set_bool(false);
     };
-    let result = client.push(
-        &payload(reason),
-        i64::from(Opcode::Close.code()),
-        i64::from(FLAG_FIN),
-        code,
-    );
+    let result = client.with_open(|open| open.close(code, &payload(reason)));
     call.set_bool(result);
     client.close(true);
 }
