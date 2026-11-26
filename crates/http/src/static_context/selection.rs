@@ -1,6 +1,6 @@
 //! Upstream `StaticHandler::try_serve_index_file` and `make_index_page`.
 use super::{HttpStaticContext, StaticEffects, StaticFileKind, StaticText::Index};
-use crate::index_page::{HttpIndexPage, index_page};
+use crate::index_page::index_page;
 use crate::static_path::static_index_path;
 
 impl HttpStaticContext {
@@ -73,19 +73,13 @@ impl HttpStaticContext {
         {
             return page;
         }
-        let names = self.directory.iter().map(Vec::as_slice);
-        let parts = core::iter::once((0, &[][..]))
-            .chain(names.map(|name| (1, name)))
-            .chain(core::iter::once((2, &[][..])));
-        for (part, entry) in parts {
-            let text = HttpIndexPage {
-                path: &self.directory_path,
-                entry,
-                css,
-                powered,
-            };
-            index_page(&mut page, part, &text);
-        }
+        index_page(
+            &mut page,
+            &self.directory_path,
+            self.directory.iter().map(Vec::as_slice),
+            css,
+            powered,
+        );
         page
     }
 }
@@ -250,7 +244,7 @@ mod tests {
         let mut owner = directory(&effects);
         owner.directory_path = b"/normal".to_vec();
         let expected: &[u8] = b"<html>\n<head>\n\t<meta charset='UTF-8'>\n<title>Index of /normal/</title></head>\n<body>\ncss<h1>Index of /normal/</h1>\t<ul>\n\
-            \t\t<li><a href=/normal/a>a</a></li>\n\t\t<li><a href=/normal/b>b</a></li>\n\
+            \t\t<li><a href=\"/normal/a\">a</a></li>\n\t\t<li><a href=\"/normal/b\">b</a></li>\n\
             \t</ul>\npowered</body>\n</html>\n";
         assert_eq!(owner.index_page(b"css", b"powered", &effects), expected);
         assert_eq!(owner.index_page(b"css", b"powered", &effects), expected);
