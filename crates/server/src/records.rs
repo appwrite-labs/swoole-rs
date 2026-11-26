@@ -248,8 +248,9 @@ pub enum WebSocket<'a> {
     Handshaking(Handshaking<'a>),
     /// The 101 sent: what it receives is frames (`STATUS_ACTIVE`).
     Open(Open<'a>),
-    /// `disconnect` sent its close frame (`STATUS_CLOSING`).
-    Closing,
+    /// `disconnect` sent its close frame (`STATUS_CLOSING`); a frame read before it
+    /// was marked may still be in flight.
+    Closing(Closing<'a>),
     /// Its handshake was answered with another status (`STATUS_HANDSHAKE_FAILED`).
     Failed,
 }
@@ -259,6 +260,16 @@ pub struct Requested<'a>(Connection<'a>);
 
 /// A connection whose handshake is running: it can only complete or fail it.
 pub struct Handshaking<'a>(Connection<'a>);
+
+/// A connection `disconnect` is closing: the peer's close frame answers it.
+pub struct Closing<'a>(Connection<'a>);
+
+impl Closing<'_> {
+    /// The peer answered the close frame.
+    pub fn answered(self) {
+        self.0.mark(WebSocketStatus::None);
+    }
+}
 
 /// An open WebSocket connection: the only one with frames.
 #[derive(Clone, Copy)]
@@ -429,7 +440,7 @@ impl<'a> Connection<'a> {
             WebSocketStatus::Connection => WebSocket::Requested(Requested(self)),
             WebSocketStatus::Handshake => WebSocket::Handshaking(Handshaking(self)),
             WebSocketStatus::Active => WebSocket::Open(Open(self)),
-            WebSocketStatus::Closing => WebSocket::Closing,
+            WebSocketStatus::Closing => WebSocket::Closing(Closing(self)),
             WebSocketStatus::HandshakeFailed => WebSocket::Failed,
         }
     }

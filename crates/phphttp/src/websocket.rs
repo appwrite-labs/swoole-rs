@@ -240,7 +240,7 @@ fn is_established(call: &Call) {
             conn.closed().load(Relaxed) == 0
                 && matches!(
                     state,
-                    WebSocket::Open(_) | WebSocket::Closing | WebSocket::Failed
+                    WebSocket::Open(_) | WebSocket::Closing(_) | WebSocket::Failed
                 )
         };
         Some(server.verified(fd).is_some_and(established))

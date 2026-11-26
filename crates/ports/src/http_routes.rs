@@ -159,9 +159,14 @@ pub mod exports {
         let conn = s.conn;
         // Out of the connection while this frame works on it.
         let fragment = open.take_fragment();
-        // Not `closing`: a closing connection's input is no longer read as frames.
+        // A `disconnect` (in a worker) may have marked it closing since this read began.
+        let closing = match conn.websocket() {
+            WebSocket::Closing(closing) => Some(closing),
+            _ => None,
+        };
         let mut context = Context {
             has_fragment: fragment.is_some(),
+            closing: closing.is_some(),
             ..Context::default()
         };
         if let Some(fragment) = fragment.as_deref() {
@@ -221,8 +226,7 @@ pub mod exports {
             })
         };
         match decision.action {
-            // `ServerClose` answers `closing`, which an open connection never is.
-            Action::Reject | Action::ServerClose => return false,
+            Action::Reject => return false,
             Action::Start => {
                 let mut buffer = boxed_string(payload.unwrap_or_default());
                 buffer.set_offset(ext_flags.into());
@@ -243,6 +247,12 @@ pub mod exports {
                             _ = swoole_rs_corebase::tls::upstream::send(s.socket, out.written(), 0);
                         }
                     });
+                }
+                return false;
+            }
+            Action::ServerClose => {
+                if let Some(closing) = closing {
+                    closing.answered();
                 }
                 return false;
             }

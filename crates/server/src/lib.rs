@@ -78,7 +78,7 @@ pub mod worker_methods;
 pub use static_config::Collection as StaticCollection;
 
 pub use records::{
-    Connection, ConnectionRecord, Handshaking, Open, Requested, ServerTables, Session,
+    Closing, Connection, ConnectionRecord, Handshaking, Open, Requested, ServerTables, Session,
     SessionRecord, Slot, WebSocket,
 };
 
