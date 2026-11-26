@@ -110,7 +110,7 @@ struct Slot {
     futex: Option<Arc<LockWord>>,
     id: u64,
     waker: Option<Waker>,
-    result: Option<io::Result<isize>>,
+    result: Option<isize>,
     /// The operation resumed before the completion and no longer waits for it.
     abandoned: bool,
 }
@@ -162,7 +162,7 @@ impl Slots {
 
     /// Stores the completion's `result`: the waker to resume, if one is parked. An
     /// abandoned request's number is free again instead.
-    fn complete(&mut self, id: u64, result: io::Result<isize>) -> Option<Waker> {
+    fn complete(&mut self, id: u64, result: isize) -> Option<Waker> {
         let slot = self.slot(id)?;
         if slot.abandoned {
             self.release(id);
@@ -175,7 +175,7 @@ impl Slots {
 
     /// The operation's end: the completed request's result, its number free again,
     /// or none, the request abandoned, when it has not completed.
-    fn close(&mut self, id: u64) -> Option<io::Result<isize>> {
+    fn close(&mut self, id: u64) -> Option<isize> {
         let slot = self.slot(id)?;
         slot.waker = None;
         let Some(result) = slot.result.take() else {
@@ -355,13 +355,17 @@ fn wait_status(code: c_int, status: c_int) -> c_int {
     }
 }
 
-/// The completion retains its error and publishes errno before resuming; a
-/// cancelled request (its linked timeout fired) reports `ETIMEDOUT`.
-fn complete(result: isize) -> io::Result<isize> {
+/// Publish the kernel result in the resumed coroutine. A linked timeout and
+/// explicit cancellation both complete with ECANCELED.
+fn complete(result: isize, has_timeout: bool) -> io::Result<isize> {
     if result < 0 {
         // An io_uring result is an i32 `cqe.res`.
         let error = result.wrapping_neg().c_cast::<c_int>();
-        let error = if error == libc::ECANCELED {
+        let error = if error == libc::ECANCELED
+            && has_timeout
+            && swoole_rs_corebase::coroutine::current_resume_code()
+                != Some(swoole_rs_corebase::coroutine::Resume::Canceled)
+        {
             libc::ETIMEDOUT
         } else {
             error
@@ -429,10 +433,11 @@ impl Event {
             }
         });
         // The wakeup handler stored the result before resuming this coroutine.
-        engine
+        let result = engine
             .or_else(|| original.upgrade())
             .and_then(|engine| engine.close_request(id))
-            .unwrap_or(Ok(0))
+            .unwrap_or(0);
+        complete(result, self.timeout.is_some())
     }
 }
 
@@ -444,7 +449,7 @@ impl Uring {
         })
     }
 
-    fn close_request(&self, id: u64) -> Option<io::Result<isize>> {
+    fn close_request(&self, id: u64) -> Option<isize> {
         let result = self.slots.with_taken(|slots| slots.close(id));
         if result.is_none() {
             // Only this queue is private to the engine. The kernel can already
@@ -714,9 +719,7 @@ fn harvest(engine: &Uring, ready: &mut Vec<(u64, isize)>) -> bool {
         engine.dispatch(waiting);
     }
     for (id, result) in ready.drain(..) {
-        let waker = engine
-            .slots
-            .with_taken(|slots| slots.complete(id, complete(result)));
+        let waker = engine.slots.with_taken(|slots| slots.complete(id, result));
         engine.task_num.set(engine.task_num.get() - 1);
         // The coroutine suspended in that event's operation, which may re-enter
         // the engine.
@@ -1449,10 +1452,10 @@ mod tests {
     #[test]
     fn byte_counts_keep_eof_partial_success_and_completion_errors() {
         set_errno(libc::EINTR);
-        assert_eq!(byte_count(complete(0)).unwrap(), 0);
-        assert_eq!(byte_count(complete(3)).unwrap(), 3);
+        assert_eq!(byte_count(complete(0, true)).unwrap(), 0);
+        assert_eq!(byte_count(complete(3, true)).unwrap(), 3);
         assert_eq!(errno(), libc::EINTR);
-        let error = byte_count(complete(-(libc::ECANCELED as isize))).unwrap_err();
+        let error = byte_count(complete(-(libc::ECANCELED as isize), true)).unwrap_err();
         set_errno(libc::EBADF);
         assert_eq!(error.raw_os_error(), Some(libc::ETIMEDOUT));
     }
@@ -1500,7 +1503,7 @@ mod tests {
             (-libc::ECANCELED, libc::ETIMEDOUT),
             (-libc::ETIME, libc::ETIME),
         ] {
-            let result = complete(completion as isize);
+            let result = complete(completion as isize, true);
             assert_eq!(errno(), expected);
             set_errno(libc::EINTR);
             assert_eq!(
@@ -1509,8 +1512,8 @@ mod tests {
             );
         }
         set_errno(libc::EINTR);
-        assert_eq!(complete(0).unwrap(), 0);
-        assert_eq!(complete(123).unwrap(), 123);
+        assert_eq!(complete(0, true).unwrap(), 0);
+        assert_eq!(complete(123, true).unwrap(), 123);
         assert_eq!(errno(), libc::EINTR);
     }
 
@@ -1526,10 +1529,10 @@ mod tests {
         if let Some(slot) = slots.slot(second) {
             slot.waker = Some(Waker::NONE);
         }
-        assert_eq!(slots.complete(second, Ok(7)), Some(Waker::NONE));
-        assert_eq!(slots.complete(first, Ok(3)), None, "nothing parked");
-        assert_eq!(slots.complete(99, Ok(1)), None, "an unknown number");
-        assert_eq!(slots.close(second).and_then(Result::ok), Some(7));
+        assert_eq!(slots.complete(second, 7), Some(Waker::NONE));
+        assert_eq!(slots.complete(first, 3), None, "nothing parked");
+        assert_eq!(slots.complete(99, 1), None, "an unknown number");
+        assert_eq!(slots.close(second), Some(7));
         let recycled = slots.open().unwrap();
         assert_ne!(
             recycled, second,
@@ -1546,7 +1549,7 @@ mod tests {
             "an abandoned number stays taken"
         );
         assert_eq!(
-            slots.complete(recycled, Ok(9)),
+            slots.complete(recycled, 9),
             None,
             "its completion wakes nothing"
         );
@@ -1555,7 +1558,7 @@ mod tests {
             recycled,
             "the next use has a fresh number"
         );
-        assert_eq!(slots.close(first).and_then(Result::ok), Some(3));
+        assert_eq!(slots.close(first), Some(3));
     }
 
     #[test]
@@ -1610,7 +1613,7 @@ mod tests {
                 assert_eq!(owner.strong_count(), 1);
                 engine
                     .slots
-                    .with_taken(|slots| slots.complete(id, complete(-(libc::ECANCELED as isize))));
+                    .with_taken(|slots| slots.complete(id, -(libc::ECANCELED as isize)));
                 assert_eq!(owner.strong_count(), 0, "the original CQE released it");
             },
         );
@@ -1708,15 +1711,21 @@ mod tests {
 
     #[test]
     fn completion_maps_cancel_to_timeout() {
-        assert_eq!(complete(5).unwrap_or(-1), 5, "success passes through");
+        assert_eq!(complete(5, true).unwrap_or(-1), 5, "success passes through");
         assert_eq!(
-            complete(-(libc::ECANCELED as isize)).unwrap_or(-1),
+            complete(-(libc::ECANCELED as isize), true).unwrap_or(-1),
             -1,
             "failure is -1"
         );
-        assert_eq!(errno(), libc::ETIMEDOUT, "cancelled reads as a timeout");
+        assert_eq!(errno(), libc::ETIMEDOUT, "linked timeout");
         assert_eq!(
-            complete(-(libc::EBADF as isize)).unwrap_or(-1),
+            complete(-(libc::ECANCELED as isize), false)
+                .unwrap_err()
+                .raw_os_error(),
+            Some(libc::ECANCELED)
+        );
+        assert_eq!(
+            complete(-(libc::EBADF as isize), true).unwrap_or(-1),
             -1,
             "failure is -1"
         );
