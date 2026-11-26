@@ -93,12 +93,12 @@ pub use host::{
     swr_v1_core_format_result,
 };
 pub use lifecycle::{
-    SharedThread, adopt_shared_thread, lend_thread_buffer, shared_thread, thread_buffer,
+    DaemonError, fork_exec, set_thread, set_thread_async_threads, set_thread_timer, swoole_clean,
+    swoole_daemon, swoole_fork, swoole_is_main_thread, swoole_thread_clean, swoole_thread_init,
+    swr_v1_core_swoole_init, thread_async_threads, thread_id, thread_kind, thread_timer,
 };
 pub use lifecycle::{
-    fork_exec, set_thread, set_thread_async_threads, set_thread_timer, swoole_clean, swoole_fork,
-    swoole_is_main_thread, swoole_thread_clean, swoole_thread_init, swr_v1_core_swoole_init,
-    thread_async_threads, thread_id, thread_kind, thread_timer,
+    SharedThread, adopt_shared_thread, lend_thread_buffer, shared_thread, thread_buffer,
 };
 pub use lifecycle::{init_with_default_fatal_handler, register_upper_layer};
 pub use log::fatal;
