@@ -398,9 +398,10 @@ fn handshake(mut context: Ctx) -> Result<bool, bailout::Bailout> {
             closed(c"swoole_websocket_handshake", fd);
             return Ok(false);
         };
-        // It opens as the 101 goes ([`switching`]).
+        // It opens as the 101 goes ([`switching`]); one that lost to a `disconnect`
+        // finds no handshake there.
         if let WebSocket::Requested(requested) = conn.websocket() {
-            requested.handshake();
+            _ = requested.handshake();
         }
         let server_fd = conn.server_fd();
         if let Some(protocol) = port_protocol(server, server_fd)
@@ -586,7 +587,8 @@ pub(crate) fn switching(mut context: Ctx) {
     if context.state().response.status == SWITCHING_PROTOCOLS
         && let Some(handshaking) = handshaking(&mut context)
     {
-        handshaking.open();
+        // Lost to a `disconnect`: it stays closing, and nothing is framed.
+        _ = handshaking.open();
     }
 }
 
@@ -598,7 +600,8 @@ pub(crate) fn handshaked(mut context: Ctx) {
     };
     let state = context.state();
     if state.response.status == SWITCHING_PROTOCOLS {
-        handshaking.open();
+        // As in `switching`, one that lost stays closing.
+        _ = handshaking.open();
     } else {
         state.keepalive = false;
         handshaking.fail();

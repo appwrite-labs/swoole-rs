@@ -545,7 +545,8 @@ fn handle(
     let state = ctx.state();
     state.callback = Some(callback);
     if let Some(requested) = requested {
-        requested.handshake();
+        // Lost to a `disconnect`: its response then finds no handshake to open.
+        _ = requested.handshake();
         state.upgrade = true;
     }
     Ok(Route::Request)
