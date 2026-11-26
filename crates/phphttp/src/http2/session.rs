@@ -238,9 +238,10 @@ impl StreamState {
         self.hold.ctx()
     }
 
-    /// Suspend the current coroutine until `wake`.
-    pub(crate) fn wait(&self) {
-        self.waiting.wait();
+    /// Suspend the current coroutine until `wake` or `deadline`: false when it
+    /// timed out or was canceled, with the last error saying which.
+    pub(crate) fn wait(&self, deadline: swoole_rs_corebase::timer::Deadline) -> bool {
+        self.waiting.wait_for(deadline)
     }
 
     pub(crate) fn wake(&self) -> bool {

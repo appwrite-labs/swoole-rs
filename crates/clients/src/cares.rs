@@ -18,6 +18,7 @@ use swoole_rs_corebase::constants::{FdType, SW_DNS_SERVER_PORT};
 use swoole_rs_corebase::log;
 use swoole_rs_corebase::reactor::{Event, Events, Running, SocketFields, SocketRecord, event_api};
 use swoole_rs_corebase::sys::Text;
+use swoole_rs_corebase::timer::Deadline;
 use swoole_rs_corebase::tls::event_socket::EventSocket;
 use swoole_rs_corebase::{CCast, CellExt, Hostent};
 use swoole_rs_error::ErrorCode;
@@ -269,9 +270,10 @@ extern "C" fn host(data: *mut c_void, status: i32, timeouts: i32, entry: Option<
 }
 
 /// `dns_lookup_impl_with_cares(domain, family, timeout)`: the addresses c-ares finds
-/// through the configured DNS server; a failure is the last error. All calls and
-/// callbacks for this query occur on the invoking reactor thread, in a coroutine.
-pub(crate) fn lookup(domain: &CStr, family: i32, timeout: f64) -> Vec<Vec<u8>> {
+/// through the configured DNS server by `deadline`; a failure is the last error. All
+/// calls and callbacks for this query occur on the invoking reactor thread, in a
+/// coroutine.
+pub(crate) fn lookup(domain: &CStr, family: i32, deadline: Deadline) -> Vec<Vec<u8>> {
     // The configured server's host, NUL-terminated: empty when none is set.
     let (server_host, port) = crate::dns::server();
     let server = CStr::from_bytes_until_nul(&server_host)
@@ -302,10 +304,16 @@ pub(crate) fn lookup(domain: &CStr, family: i32, timeout: f64) -> Vec<Vec<u8>> {
     let mut channel = None;
     let metadata = metadata();
     let mask = metadata.timeout_ms | metadata.tries | metadata.socket_state | metadata.lookups;
+    // Each try's milliseconds: the time left, rounded up to the whole milliseconds the
+    // deadline was made of; without one 0, which c-ares reads as its default, as it
+    // reads upstream's `timeout * 1000` of a timeout that never ends.
+    let try_ms = deadline.remaining().map_or(0, |left| {
+        c_int::try_from(left.as_nanos().div_ceil(1_000_000)).unwrap_or(c_int::MAX)
+    });
     let status = swrs_cares_init(
         &mut channel,
         c"fb".into(),
-        (timeout * 1000.0).c_cast::<i32>(),
+        try_ms,
         swoole_rs_corebase::swr_v1_core_dns_tries(),
         Some(socket_state),
         data,
@@ -335,7 +343,6 @@ pub(crate) fn lookup(domain: &CStr, family: i32, timeout: f64) -> Vec<Vec<u8>> {
             // one; no Rust reference spans the suspension. The code is the resume code
             // the coroutine holds as it runs again.
             let arm = |waker| query.waker.set(Some(waker));
-            let deadline = swoole_rs_corebase::timer::Deadline::from_timeout(timeout);
             let code = co::yield_timed_armed(coroutine, deadline, arm);
             _ = co::yield_resumed(code);
             if code == co::Resume::Canceled {

@@ -41,10 +41,14 @@ pub(super) fn verify_ip(family: c_int, ip: &str) -> bool {
 }
 
 fn lookup(domain: &CStr, family: c_int, timeout: f64) -> Vec<String> {
-    swoole_rs_hooks::resolve::dns_lookup(domain.to_bytes(), family, timeout)
-        .into_iter()
-        .map(|address| String::from_utf8(address).unwrap())
-        .collect()
+    swoole_rs_hooks::resolve::dns_lookup(
+        domain.to_bytes(),
+        family,
+        swoole_rs_corebase::timer::Deadline::from_timeout(timeout),
+    )
+    .into_iter()
+    .map(|address| String::from_utf8(address).unwrap())
+    .collect()
 }
 
 /// `get_ip_by_hosts`: its lines split by the classic locale's spaces, as

@@ -31,6 +31,7 @@ use std::{
 use swoole_rs_corebase::CellExt;
 use swoole_rs_corebase::log::{self, set_last_error};
 use swoole_rs_corebase::reactor::Events;
+use swoole_rs_corebase::timer::Deadline;
 use swoole_rs_curl_sys::{
     CURL, CURL_POLL_IN, CURL_POLL_INOUT, CURL_POLL_OUT, CURL_POLL_REMOVE, CURL_SOCKET_TIMEOUT,
     CURLE_ABORTED_BY_CALLBACK, CURLE_FAILED_INIT, CURLE_OK, CURLINFO_PRIVATE, CURLM, CURLM_OK,
@@ -482,7 +483,8 @@ impl Multi {
                     return EXEC_NEEDS_COROUTINE;
                 };
                 self.co.set(Some(waiter));
-                canceled = (self.host.yield_)(co, -1.0, &mut |waker| {
+                // Upstream's `yield_ex(-1)`: curl's own timers end the transfer.
+                canceled = (self.host.yield_)(co, Deadline::never(), &mut |waker| {
                     self.co.set(Some(waiter.parked(waker)));
                 });
                 self.co.set(None);
@@ -644,7 +646,7 @@ impl Multi {
         let waiter = Waiter::running(co, (self.host.current_cid)());
         self.co.set(waiter);
         let mut arm = |waker| self.co.set(waiter.map(|waiter| waiter.parked(waker)));
-        (self.host.yield_)(co, timeout, &mut arm);
+        (self.host.yield_)(co, Deadline::from_timeout(timeout), &mut arm);
         self.co.set(None);
         self.ready()
     }

@@ -276,11 +276,15 @@ pub fn stats() -> Option<(u32, usize, f32)> {
     })
 }
 
-/// `Iouring::futex_wait` on `word`, in a coroutine: false with errno set when
-/// it failed (upstream's nonzero).
+/// `Iouring::futex_wait` on `word`, in a coroutine, until `deadline`: false with
+/// errno set when it failed (upstream's nonzero) or timed out (`ETIMEDOUT`).
 #[must_use]
-pub fn futex_wait(word: &Arc<LockWord>) -> bool {
-    uring::futex_wait(&HOST, word).is_ok_and(|count| count == 0)
+pub fn futex_wait(word: &Arc<LockWord>, deadline: swoole_rs_corebase::timer::Deadline) -> bool {
+    // A deadline that passed links a timeout of zero, which fires at once.
+    let timeout = deadline
+        .remaining()
+        .map_or(-1.0, |left| left.as_secs_f64().max(f64::MIN_POSITIVE));
+    uring::futex_wait(&HOST, word, timeout).is_ok_and(|count| count == 0)
 }
 
 /// `Iouring::futex_wakeup` on `word`, in a coroutine: false with errno set when

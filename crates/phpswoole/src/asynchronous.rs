@@ -14,6 +14,7 @@ use std::{
     hash::{BuildHasherDefault, Hasher},
     sync::atomic::{AtomicU64, Ordering},
 };
+use swoole_rs_corebase::timer::Deadline;
 use swoole_rs_corebase::{CCast, CellExt};
 use swoole_rs_corebase::{
     log::set_last_error, swoole_rand_any, swr_v1_core_dns_lookup_random,
@@ -224,7 +225,11 @@ fn dns_lookup(call: &Call) {
     }
     crate::check_reactor();
     // The coroutine yields.
-    let mut answers = swoole_rs_hooks::resolve::dns_lookup(name, family.c_cast::<i32>(), timeout);
+    let mut answers = swoole_rs_hooks::resolve::dns_lookup(
+        name,
+        family.c_cast::<i32>(),
+        Deadline::from_timeout(timeout),
+    );
     if answers.is_empty() {
         set_last_error(DNSLOOKUP_RESOLVE_FAILED);
         call.set_bool(false);

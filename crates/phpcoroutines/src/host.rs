@@ -381,11 +381,16 @@ pub fn suspend_for(deadline: Deadline) -> bool {
 pub struct Waiter(std::cell::Cell<Option<Coroutine>>);
 
 impl Waiter {
-    /// [`suspend`] until [`Waiter::wake`], or whatever else ends the wait.
-    pub fn wait(&self) {
-        self.0.set(Coroutine::current());
-        suspend();
+    /// `co->yield()` while published, until [`Waiter::wake`] or `deadline`; unlike
+    /// [`Waiter::wait_for`], `Coroutine::cancel` can't end it: false, with
+    /// `SW_ERROR_CO_TIMEDOUT`, when it timed out, or outside a coroutine.
+    #[must_use]
+    pub fn wait(&self, deadline: Deadline) -> bool {
+        let Some(co) = current() else { return false };
+        self.0.set(Some(Coroutine(cid(co))));
+        let code = swoole_rs_corebase::coroutine::suspend(co.raw(), deadline);
         self.0.set(None);
+        swoole_rs_corebase::coroutine::yield_resumed(code)
     }
 
     /// [`suspend_for`] `deadline` while published: false when it timed out or

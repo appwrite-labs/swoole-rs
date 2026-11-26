@@ -1,5 +1,6 @@
 //! Coroutine lock state and complete acquisition/release loops.
 use crate::constants::{SW_FILE_LOCK_DEFAULT_SECOND, SW_FILE_LOCK_MAX_SECOND};
+use crate::timer::Deadline;
 use std::{
     cell::Cell,
     sync::Arc,
@@ -16,8 +17,8 @@ pub struct CoroutineHost {
     pub alloc_shared: fn() -> Option<LockWord>,
     /// `System::sleep`: false when cancelled.
     pub sleep: Option<fn(f64) -> bool>,
-    /// The futex wait: false with errno set on failure.
-    pub wait: Option<fn(&Arc<LockWord>) -> bool>,
+    /// The futex wait until the deadline: false with errno set on failure.
+    pub wait: Option<fn(&Arc<LockWord>, Deadline) -> bool>,
     /// The futex wake: false with errno set on failure.
     pub wake: Option<fn(&Arc<LockWord>) -> bool>,
     /// Warns that the lock was used outside a coroutine.
@@ -89,11 +90,12 @@ impl CoroutineLock {
         lock
     }
 
-    /// `CoroutineLock::lock_impl`: blocks (sleeping or on the futex) unless `blocking` is false.
+    /// `CoroutineLock::lock_impl`: blocks (sleeping or on the futex) until `wait`'s
+    /// deadline, or takes only a free lock when there is none (`LOCK_NB`).
     ///
     /// # Errors
-    /// The error code: out of coroutine, `EBUSY`, the wait's errno, or cancelled.
-    pub fn acquire(&self, blocking: bool) -> Result<(), i32> {
+    /// The error code: out of coroutine, `EBUSY`, `ETIMEDOUT`, the wait's errno, or cancelled.
+    pub fn acquire(&self, wait: Option<Deadline>) -> Result<(), i32> {
         let host = self.host;
         // The current-coroutine identity, once, before possible suspension.
         let Some(cid) = (host.current)() else {
@@ -111,18 +113,23 @@ impl CoroutineLock {
             {
                 break;
             }
-            if !blocking {
+            let Some(deadline) = wait else {
                 return Err(libc::EBUSY);
+            };
+            // Only a wait with an end reads the clock.
+            let left = deadline.remaining();
+            if left.is_some_and(|left| left.is_zero()) {
+                return Err(libc::ETIMEDOUT);
             }
             if let Some(wait) = host.wait {
-                if !wait(word) {
+                if !wait(word, deadline) {
                     return Err(last_errno());
                 }
             } else {
                 let Some(sleep) = host.sleep else {
                     crate::fatal("a coroutine lock host has neither wait nor sleep");
                 };
-                if !sleep(second) {
+                if !sleep(left.map_or(second, |left| second.min(left.as_secs_f64()))) {
                     return Err(ErrorCode::SW_ERROR_CO_CANCELED as i32);
                 }
                 second = super::coroutine_backoff(
@@ -216,7 +223,7 @@ mod tests {
         }
         result == 0
     }
-    fn wait(_: &Arc<LockWord>) -> bool {
+    fn wait(_: &Arc<LockWord>, _: Deadline) -> bool {
         pause(0.0)
     }
     fn wake(_: &Arc<LockWord>) -> bool {
@@ -270,7 +277,7 @@ mod tests {
         });
     }
     fn lock(lock: &CoroutineLock, operation: i32) -> i32 {
-        lock.acquire(operation & libc::LOCK_NB == 0)
+        lock.acquire((operation & libc::LOCK_NB == 0).then_some(Deadline::never()))
             .err()
             .unwrap_or(0)
     }
@@ -282,6 +289,7 @@ mod tests {
     // with the same calls and expected values. Coroutine `n` is current `n`, cid `n`. Three
     // coroutines start in order; a contended lock's sleep runs the others until it can go on.
     const OUT_OF_COROUTINE: i32 = ErrorCode::SW_ERROR_CO_OUT_OF_COROUTINE as i32;
+    const NEVER: Option<Deadline> = Some(Deadline::never());
 
     fn three_coroutines(operation: i32) {
         reset();
@@ -347,12 +355,12 @@ mod tests {
     fn ownership_reentry_and_recycled_coroutine_identity() {
         reset();
         let lock = CoroutineLock::new(false, &SLEEP);
-        assert_eq!(lock.acquire(true), Ok(()));
-        assert_eq!(lock.acquire(false), Ok(()));
+        assert_eq!(lock.acquire(NEVER), Ok(()));
+        assert_eq!(lock.acquire(None), Ok(()));
         STATE.with(|state| state.borrow_mut().cid += 1);
-        assert_eq!(lock.acquire(false), Err(libc::EBUSY));
+        assert_eq!(lock.acquire(None), Err(libc::EBUSY));
         assert_eq!(lock.unlock(), Ok(()));
-        assert_eq!(lock.acquire(false), Ok(()));
+        assert_eq!(lock.acquire(None), Ok(()));
         assert_eq!(lock.unlock(), Ok(()));
         assert_eq!(lock.unlock(), Ok(()));
         drop(lock);
@@ -361,12 +369,12 @@ mod tests {
     fn shared_allocation_and_sleeping_contender_transfer_ownership() {
         reset();
         let lock = CoroutineLock::new(true, &SLEEP);
-        assert_eq!(lock.acquire(true), Ok(()));
+        assert_eq!(lock.acquire(NEVER), Ok(()));
         contender(&lock);
-        assert_eq!(lock.acquire(false), Err(libc::EBUSY));
+        assert_eq!(lock.acquire(None), Err(libc::EBUSY));
         STATE.with(|state| state.borrow_mut().releases = true);
-        assert_eq!(lock.acquire(true), Ok(()));
-        assert_eq!(lock.acquire(false), Ok(()));
+        assert_eq!(lock.acquire(NEVER), Ok(()));
+        assert_eq!(lock.acquire(None), Ok(()));
         drop(lock);
         STATE.with(|state| {
             let state = state.borrow();
@@ -378,31 +386,50 @@ mod tests {
     fn cancellation_and_bailout_do_not_publish_contender() {
         reset();
         let lock = CoroutineLock::new(false, &SLEEP);
-        assert_eq!(lock.acquire(true), Ok(()));
+        assert_eq!(lock.acquire(NEVER), Ok(()));
         contender(&lock);
         STATE.with(|state| state.borrow_mut().result = -1);
         assert_eq!(
-            lock.acquire(true),
+            lock.acquire(NEVER),
             Err(ErrorCode::SW_ERROR_CO_CANCELED as i32)
         );
         assert_eq!(lock.cid.get(), 7);
         drop(lock);
     }
     #[test]
+    fn a_contended_wait_ends_at_its_deadline() {
+        reset();
+        let lock = CoroutineLock::new(false, &SLEEP);
+        assert_eq!(lock.acquire(NEVER), Ok(()));
+        contender(&lock);
+        let deadline = Some(Deadline::from_msec(5));
+        assert_eq!(lock.acquire(deadline), Err(libc::ETIMEDOUT));
+        assert_eq!(lock.cid.get(), 7);
+        STATE.with(|state| {
+            let sleeps = &state.borrow().sleeps;
+            // Each sleep is the backoff's, or the time left when that is less.
+            let within = |&second: &f64| second > 0.0 && second <= 0.005;
+            assert!(
+                !sleeps.is_empty() && sleeps.iter().all(within),
+                "{sleeps:?}"
+            );
+        });
+    }
+    #[test]
     fn futex_wait_and_wake_keep_errno_and_contained_bailout() {
         reset();
         let lock = CoroutineLock::new(false, &FUTEX);
-        assert_eq!(lock.acquire(true), Ok(()));
+        assert_eq!(lock.acquire(NEVER), Ok(()));
         contender(&lock);
         crate::sys::set_errno(libc::EINTR);
         STATE.with(|state| state.borrow_mut().result = -1);
-        assert_eq!(lock.acquire(true), Err(libc::EINTR));
+        assert_eq!(lock.acquire(NEVER), Err(libc::EINTR));
         STATE.with(|state| {
             let mut state = state.borrow_mut();
             state.result = 0;
             state.releases = true;
         });
-        assert_eq!(lock.acquire(true), Ok(()));
+        assert_eq!(lock.acquire(NEVER), Ok(()));
         STATE.with(|state| state.borrow_mut().result = -1);
         crate::sys::set_errno(libc::EPERM);
         assert_eq!(lock.unlock(), Err(libc::EPERM));
@@ -415,7 +442,7 @@ mod tests {
         reset();
         STATE.with(|state| state.borrow_mut().current = 0);
         let lock = CoroutineLock::new(false, &SLEEP);
-        for result in [lock.acquire(true), lock.unlock()] {
+        for result in [lock.acquire(NEVER), lock.unlock()] {
             assert_eq!(result, Err(ErrorCode::SW_ERROR_CO_OUT_OF_COROUTINE as i32));
         }
         drop(lock);
@@ -465,7 +492,7 @@ mod tests {
             scope.spawn(move || {
                 let first = first;
                 let first = &first.0;
-                assert_eq!(first.acquire(true), Ok(()));
+                assert_eq!(first.acquire(NEVER), Ok(()));
                 unsafe { *DATA.0.get() = 42 };
                 HELD.store(true, Ordering::Relaxed);
                 assert_eq!(first.unlock(), Ok(()));
@@ -476,7 +503,7 @@ mod tests {
                 while !HELD.load(Ordering::Relaxed) {
                     std::thread::yield_now();
                 }
-                assert_eq!(second.acquire(true), Ok(()));
+                assert_eq!(second.acquire(NEVER), Ok(()));
                 assert_eq!(unsafe { *DATA.0.get() }, 42);
                 assert_eq!(second.unlock(), Ok(()));
             });

@@ -81,11 +81,10 @@ mod registry {
         crate::coroutine::current().cast()
     }
 
-    fn yield_for(timeout: f64, arm: &dyn Fn(Wake)) {
+    fn yield_for(deadline: crate::timer::Deadline, arm: &dyn Fn(Wake)) {
         let co = crate::coroutine::current();
         if !co.is_null() {
             // `co->yield_ex(timeout)` of the running coroutine, its waker armed first.
-            let deadline = crate::timer::Deadline::from_timeout(timeout);
             let code = crate::coroutine::yield_timed_armed(co.cast(), deadline, |waker| {
                 let (cid, park) = waker.parts();
                 arm(Wake { cid, park });
@@ -140,8 +139,9 @@ pub extern "C" fn system_waitpid(
     if let Some(result) = iouring_waitpid(pid, Some(status), options, timeout) {
         return result;
     }
+    let deadline = crate::timer::Deadline::from_timeout(timeout);
     let waited =
-        crate::process::wait::wait_pid(pid, status, options, timeout, &registry::COROUTINES);
+        crate::process::wait::wait_pid(pid, status, options, deadline, &registry::COROUTINES);
     if waited.timed_out {
         crate::set_errno(libc::ETIMEDOUT);
         log::set_last_error(libc::ETIMEDOUT);

@@ -36,15 +36,19 @@ use swoole_rs_corebase::constants::SocketType::{
 };
 use swoole_rs_corebase::net_address::{c_str, format_into};
 
-/// `dns_lookup_impl_with_cares(domain, family, timeout)` when built with c-ares
-/// (`--enable-cares`), else `None`.
+/// `dns_lookup_impl_with_cares(domain, family, timeout)`, ending at `deadline`, when
+/// built with c-ares (`--enable-cares`), else `None`.
 #[must_use]
-pub fn cares_lookup(domain: &std::ffi::CStr, family: c_int, timeout: f64) -> Option<Vec<Vec<u8>>> {
+pub fn cares_lookup(
+    domain: &std::ffi::CStr,
+    family: c_int,
+    deadline: swoole_rs_corebase::timer::Deadline,
+) -> Option<Vec<Vec<u8>>> {
     #[cfg(feature = "cares")]
-    return Some(cares::lookup(domain, family, timeout));
+    return Some(cares::lookup(domain, family, deadline));
     #[cfg(not(feature = "cares"))]
     {
-        let _ = (domain, family, timeout);
+        let _ = (domain, family, deadline);
         None
     }
 }

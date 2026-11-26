@@ -464,7 +464,7 @@ pub(super) fn lookup(host: &CStr, domain: c_int, timeout: f64) -> String {
     String::from_utf8(swoole_rs_hooks::resolve::system_gethostbyname(
         host.to_bytes(),
         domain,
-        timeout,
+        swoole_rs_corebase::timer::Deadline::from_timeout(timeout),
     ))
     .unwrap()
 }

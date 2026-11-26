@@ -108,26 +108,27 @@ pub(crate) fn path_step(
 ) -> Result<Action, i32> {
     match state.phase {
         StaticPhase::Root => {
+            let url_length = url
+                .iter()
+                .position(|&b| b == b'?')
+                .or_else(|| url.iter().position(|&b| b == b'#'))
+                .unwrap_or(url.len());
             // One allocation for a selected path, without reserving PATH_MAX
             // for requests that stop after the location check.
             let reserve = root
                 .len()
-                .saturating_add(url.len())
+                .saturating_add(url_length)
                 .saturating_add(1)
                 .min(capacity);
             output
-                .try_reserve(reserve.saturating_sub(output.len()))
+                .try_reserve_exact(reserve.saturating_sub(output.len()))
                 .map_err(|_| OVERFLOW)?;
             // Old root copy precedes location rejection. Reject only its old
             // out-of-allocation case; exact-capacity copies remain observable.
             let Some(head) = span(output, capacity, 0, root.len()) else {
                 return Err(OVERFLOW);
             };
-            state.url_length = url
-                .iter()
-                .position(|&b| b == b'?')
-                .or_else(|| url.iter().position(|&b| b == b'#'))
-                .unwrap_or(url.len());
+            state.url_length = url_length;
             head.copy_from_slice(root);
             state.phase = StaticPhase::Locations;
             return Ok(Action::Locations);
@@ -254,7 +255,7 @@ pub(crate) fn span(
         return None;
     }
     if output.len() < to {
-        output.try_reserve(to - output.len()).ok()?;
+        output.try_reserve_exact(to - output.len()).ok()?;
         output.resize(to, 0);
     }
     output.get_mut(from..to)
@@ -315,6 +316,24 @@ mod tests {
         assert_eq!(static_index_path(&mut out, 8, 2, b"ix"), Ok(()));
         assert_eq!(out, b"/a/ix\0");
     }
+    #[test]
+    fn query_bytes_do_not_size_the_filename_buffer() {
+        let mut url = b"/a?".to_vec();
+        url.extend_from_slice(&[b'x'; 1024]);
+        let mut out = Vec::new();
+        let mut state = HttpStaticPath::default();
+        assert_eq!(
+            path_step(&url, b"/r", &mut out, 4096, &mut state, 0),
+            Ok(Action::Locations)
+        );
+        assert!(out.capacity() < url.len());
+        assert_eq!(
+            path_step(&url, b"/r", &mut out, 4096, &mut state, 0),
+            Ok(Action::Directory)
+        );
+        assert_eq!(out, b"/r/a\0");
+    }
+
     #[test]
     fn path_publication_waits_for_native_directory_allocation() {
         let mut out = vec![0xa5; 64];

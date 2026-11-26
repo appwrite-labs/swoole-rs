@@ -1920,7 +1920,11 @@ fn selected_timeout_restore_and_copy() {
 
 fn actual_async_numeric_results() {
     run(|| {
-        let host = swoole_rs_hooks::resolve::system_gethostbyname(b"127.0.0.1", AF_INET, 2.0);
+        let host = swoole_rs_hooks::resolve::system_gethostbyname(
+            b"127.0.0.1",
+            AF_INET,
+            swoole_rs_corebase::timer::Deadline::from_timeout(2.0),
+        );
         assert_eq!(host, b"127.0.0.1");
         let addresses = swoole_rs_hooks::resolve::system_getaddrinfo(
             b"127.0.0.1",
@@ -1928,7 +1932,7 @@ fn actual_async_numeric_results() {
             SOCK_STREAM,
             0,
             b"",
-            2.0,
+            swoole_rs_corebase::timer::Deadline::from_timeout(2.0),
         );
         assert!(!addresses.is_empty());
         for address in addresses {

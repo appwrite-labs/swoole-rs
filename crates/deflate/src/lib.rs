@@ -105,8 +105,7 @@ pub enum MessageFailure {
 /// `swoole::websocket::message_compress`: a permessage-deflate payload (RFC
 /// 7692), raw deflate with a sync flush and its `00 00 ff ff` tail dropped.
 /// Upstream's level clamp: `Z_NO_COMPRESSION` means the default, above 9 is 9.
-/// Output space is handed to zlib as upstream did: `deflateBound` bytes, then
-/// 4096 at a time.
+/// The first output window is `deflateBound`, as upstream uses.
 /// # Errors
 /// `deflateInit2` failed, or deflate did not end in `Z_BUF_ERROR` with at
 /// least the 4-byte tail written.
@@ -116,21 +115,25 @@ pub fn message(mut data: &[u8], level: c_int) -> Result<Vec<u8>, MessageFailure>
         level => level.min(Z_BEST_COMPRESSION),
     };
     let mut stream = stream(level, ENCODING_RAW).map_err(MessageFailure::Init)?;
-    let mut max = stream.deflate_bound(data.len());
-    let mut out = Vec::new();
+    let bound = stream.deflate_bound(data.len());
+    // Z_SYNC_FLUSH adds an empty stored block (at most six bytes). If the
+    // first window fills during the flush, zlib may emit the marker again.
+    let capacity = bound
+        .checked_add(2 * 6 + 1)
+        .ok_or(MessageFailure::Deflate)?;
+    let mut out = Vec::with_capacity(capacity);
     let result = loop {
-        if out.len() == out.capacity() {
-            // Z_SYNC_FLUSH can produce more than deflateBound(): another
-            // window, then 4096 bytes at a time.
-            out.reserve_exact(max);
-            max = 4096;
+        let end = if out.len() < bound { bound } else { capacity };
+        let room = end - out.len();
+        if room == 0 {
+            return Err(MessageFailure::Deflate);
         }
         let flush = if data.is_empty() {
             Z_SYNC_FLUSH
         } else {
             Z_NO_FLUSH
         };
-        let step = stream.run_into(&mut data, &mut out, flush);
+        let step = stream.run_into_limited(&mut data, &mut out, flush, room);
         if step.status != Z_OK {
             break step.status;
         }

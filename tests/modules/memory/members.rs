@@ -399,7 +399,8 @@ fn sleeping_coroutine_lock_releases_its_shared_word() {
     let page = pool::page();
     assert_eq!(page.strong_count(), 2);
     pool::delete();
-    assert_eq!(lock.acquire(true), Ok(()));
+    let never = Some(crate::timer::Deadline::never());
+    assert_eq!(lock.acquire(never), Ok(()));
     assert_eq!(lock.unlock(), Ok(()));
     drop(lock);
     assert_eq!(page.strong_count(), 0);
@@ -644,7 +645,8 @@ fn pooled_lock_releases_its_pin_after_using_the_shared_storage() {
         let page = pool::page();
         assert_eq!(page.strong_count(), 2);
         pool::delete();
-        lock.lock(LOCK_EX | LOCK_NB, 0, 0).unwrap();
+        let never = crate::timer::Deadline::never();
+        lock.lock(LOCK_EX | LOCK_NB, never, 0).unwrap();
         lock.unlock().unwrap();
         drop(lock);
         assert_eq!(page.strong_count(), 0);

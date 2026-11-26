@@ -84,6 +84,14 @@ pub(crate) fn command_result(state: &ServerState, request_id: i64, message: &[u8
     callback(message);
 }
 
+/// Forget `callback`, whose request stopped waiting for its reply: a reply that
+/// still comes is an invalid command result.
+pub(crate) fn forget(state: &ServerState, callback: &CommandCallback) {
+    commands(state)
+        .callbacks
+        .retain(|_, kept| !Arc::ptr_eq(kept, callback));
+}
+
 /// `Server::call_command_handler(bus, worker_id, sock)`: answers the command request
 /// in `bus`'s buffer with its handler and writes the reply back over `sock`, the
 /// pipe the request came from.
@@ -564,6 +572,20 @@ mod tests {
             .copied()
             .collect::<Vec<_>>();
         assert_eq!(waiting, vec![2]);
+        // A request that stopped waiting forgets only its own callback.
+        let abandoned = send(&live, b"hi", EVENT_WORKER, &out).callback;
+        assert!(command(&SendCommand {
+            process_id: 1,
+            callback: abandoned.clone(),
+            ..send(&live, b"hi", EVENT_WORKER, &out)
+        }));
+        forget(live.state(), &abandoned);
+        let left = commands(live.state())
+            .callbacks
+            .keys()
+            .copied()
+            .collect::<Vec<_>>();
+        assert_eq!(left, vec![2]);
         command_result(live.state(), 2, b"pong");
         assert_eq!(*out.lock().unwrap(), b"pong");
         assert!(

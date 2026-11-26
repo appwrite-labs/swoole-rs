@@ -343,7 +343,8 @@ mod tests {
         let Resource::Lock(lock) = &*resource else {
             unreachable!("made as a lock");
         };
-        assert_eq!(lock.lock(2, -1, 0), Ok(()), "locks");
+        let never = swoole_rs_corebase::timer::Deadline::never();
+        assert_eq!(lock.lock(2, never, 0), Ok(()), "locks");
         assert_eq!(lock.unlock(), Ok(()), "unlocks");
         let shared = Arc::clone(&resource);
         drop(resource);
