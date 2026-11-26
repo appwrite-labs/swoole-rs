@@ -68,7 +68,9 @@ impl HttpStaticContext {
         // Upstream pages whatever the listing's outcome.
         self.get_dir_files(effects);
         let mut page = Vec::new();
-        if self.ensure_directory_slash().is_err() {
+        if !self.directory_path.ends_with(b"/")
+            && crate::static_meta::append_parts(&mut self.directory_path, &[b"/"], 1).is_err()
+        {
             return page;
         }
         let names = self.directory.iter().map(Vec::as_slice);

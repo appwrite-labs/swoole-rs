@@ -2,6 +2,8 @@
 //! send snapshot and executes RNG/MIME/date/allocation/IO effects after return.
 use crate::range_response::{HttpRangeFormat, range_format};
 
+/// Maximum number of file sends retained by a static response.
+pub(crate) const MAX_RANGE_TASKS: usize = 256;
 const PART_HEADER: usize = 256;
 #[cfg(test)]
 const _: () = assert!(
@@ -38,8 +40,24 @@ impl HttpTasks {
         self.scratch = HttpStaticTask::default();
     }
     /// Commit the prepared value with fallible admission; error publishes no task.
+    #[cfg_attr(
+        protocol_buffer_lint,
+        expect(
+            clippy::disallowed_methods,
+            reason = "both task count and requested capacity are capped at MAX_RANGE_TASKS"
+        )
+    )]
     pub(crate) fn push(&mut self) -> Result<(), i32> {
-        self.items.try_reserve(1).map_err(|_| ALLOCATION)?;
+        let count = self.items.len();
+        if count >= MAX_RANGE_TASKS {
+            return Err(crate::OVERFLOW);
+        }
+        if count == self.items.capacity() {
+            let capacity = (count * 2).clamp(4, MAX_RANGE_TASKS);
+            self.items
+                .try_reserve_exact(capacity - count)
+                .map_err(|_| ALLOCATION)?;
+        }
         self.items.push(self.scratch);
         Ok(())
     }

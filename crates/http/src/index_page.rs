@@ -45,16 +45,7 @@ pub(crate) fn index_page(out: &mut Vec<u8>, part: u32, page: &HttpIndexPage<'_>)
     };
     // Native format_impl's result is int. Reject unsupported huge fragments
     // before mutation; ordinary page totals remain native size_t.
-    let fits = pieces
-        .iter()
-        .try_fold(0usize, |sum, piece| sum.checked_add(piece.len()))
-        .filter(|&n| i32::try_from(n).is_ok())
-        .is_some_and(|total| out.try_reserve(total).is_ok());
-    if fits {
-        for piece in pieces {
-            out.extend_from_slice(piece);
-        }
-    }
+    _ = crate::static_meta::append_parts(out, pieces, i32::MAX as usize);
 }
 
 #[cfg(test)]

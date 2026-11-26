@@ -1,13 +1,16 @@
 //! Inline static handler policy; native owns strings, RNG and MIME references.
 pub(crate) const BOUNDARY: &[u8] =
     swoole_rs_corebase::constants::SW_HTTP_SERVER_BOUNDARY_PREKEY.as_bytes();
+/// `SW_HTTP_SERVER_BOUNDARY_TOTAL_SIZE`: the boundary and its NUL.
+pub const BOUNDARY_SIZE: usize =
+    swoole_rs_corebase::constants::SW_HTTP_SERVER_BOUNDARY_TOTAL_SIZE as usize;
 const ALLOCATION: i32 = -3;
 
 /// The lazy boundary's random length while the boundary is still empty
 /// (`length == 0`), else `None`.
 #[must_use]
 pub(crate) fn static_boundary(length: usize) -> Option<usize> {
-    (length == 0).then_some(crate::static_context::BOUNDARY_SIZE - BOUNDARY.len() - 1)
+    (length == 0).then_some(BOUNDARY_SIZE - BOUNDARY.len() - 1)
 }
 /// Whether the response is multipart: more than one task.
 #[must_use]
@@ -21,17 +24,39 @@ pub(crate) fn static_content_type(boundary: &[u8]) -> Result<Vec<u8>, i32> {
 
 /// Allocate the exact combined length before copying any of the parts.
 pub(crate) fn joined(parts: &[&[u8]]) -> Result<Vec<u8>, i32> {
+    let mut bytes = Vec::new();
+    append_parts(&mut bytes, parts, isize::MAX as usize)?;
+    Ok(bytes)
+}
+
+/// Append one complete fragment, leaving existing bytes intact if it cannot fit.
+#[cfg_attr(
+    protocol_buffer_lint,
+    expect(
+        clippy::disallowed_methods,
+        reason = "reserve the checked fragment length before copying exactly those bytes"
+    )
+)]
+pub(crate) fn append_parts(
+    bytes: &mut Vec<u8>,
+    parts: &[&[u8]],
+    max_fragment: usize,
+) -> Result<(), i32> {
     let length = parts
         .iter()
         .try_fold(0usize, |n, part| n.checked_add(part.len()))
-        .filter(|&n| isize::try_from(n).is_ok())
+        .filter(|&n| n <= max_fragment)
         .ok_or(crate::OVERFLOW)?;
-    let mut bytes = Vec::new();
-    bytes.try_reserve_exact(length).map_err(|_| ALLOCATION)?;
+    if bytes.is_empty() {
+        bytes.try_reserve_exact(length)
+    } else {
+        bytes.try_reserve(length)
+    }
+    .map_err(|_| ALLOCATION)?;
     for part in parts {
         bytes.extend_from_slice(part);
     }
-    Ok(bytes)
+    Ok(())
 }
 /// Publish 404 only for the terminal location match; no native callback occurs.
 pub(crate) fn static_catch(last: bool, status: &mut i32) -> bool {
@@ -45,6 +70,18 @@ pub(crate) fn static_catch(last: bool, status: &mut i32) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn fragment_limit_is_checked_before_any_part_is_appended() {
+        let mut out = b"prefix".to_vec();
+        assert_eq!(
+            append_parts(&mut out, &[b"ab", b"cd"], 3),
+            Err(crate::OVERFLOW)
+        );
+        assert_eq!(out, b"prefix");
+        assert_eq!(append_parts(&mut out, &[b"ab", b"cd"], 4), Ok(()));
+        assert_eq!(out, b"prefixabcd");
+    }
+
     #[test]
     fn binary_content_type_keeps_the_whole_boundary() {
         assert_eq!(
