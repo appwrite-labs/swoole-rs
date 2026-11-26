@@ -108,6 +108,9 @@ pub(crate) fn path_step(
 ) -> Result<Action, i32> {
     match state.phase {
         StaticPhase::Root => {
+            if root.len() > capacity {
+                return Err(OVERFLOW);
+            }
             let url_length = url
                 .iter()
                 .position(|&b| b == b'?')
@@ -120,9 +123,7 @@ pub(crate) fn path_step(
                 .saturating_add(url_length)
                 .saturating_add(1)
                 .min(capacity);
-            output
-                .try_reserve_exact(reserve.saturating_sub(output.len()))
-                .map_err(|_| OVERFLOW)?;
+            reserve_filename(output, capacity, reserve).ok_or(OVERFLOW)?;
             // Old root copy precedes location rejection. Reject only its old
             // out-of-allocation case; exact-capacity copies remain observable.
             let Some(head) = span(output, capacity, 0, root.len()) else {
@@ -240,6 +241,23 @@ pub(crate) fn path_step(
     }
 }
 
+/// Keep the filename allocation within the native path buffer, including its NUL.
+#[cfg_attr(
+    protocol_buffer_lint,
+    expect(
+        clippy::disallowed_methods,
+        reason = "the requested filename size is checked against the native path capacity"
+    )
+)]
+fn reserve_filename(output: &mut Vec<u8>, capacity: usize, to: usize) -> Option<()> {
+    if to > capacity {
+        return None;
+    }
+    output
+        .try_reserve_exact(to.saturating_sub(output.len()))
+        .ok()
+}
+
 /// `output[from..to]`, zero-filled past what was written so far; None past `capacity`
 /// or when allocation fails. Reserve only what is written: most requests miss the
 /// configured static locations after copying just the root. Zeroing `PATH_MAX` up front
@@ -251,11 +269,15 @@ pub(crate) fn span(
     from: usize,
     to: usize,
 ) -> Option<&mut [u8]> {
-    if to > capacity {
-        return None;
-    }
+    reserve_filename(output, capacity, to)?;
     if output.len() < to {
-        output.try_reserve_exact(to - output.len()).ok()?;
+        #[cfg_attr(
+            protocol_buffer_lint,
+            expect(
+                clippy::disallowed_methods,
+                reason = "reserve_filename admitted this length within the native path capacity"
+            )
+        )]
         output.resize(to, 0);
     }
     output.get_mut(from..to)
@@ -375,8 +397,14 @@ mod tests {
     fn c_string_prefix_rules_and_root_copy_overflow_are_explicit() {
         assert!(prefix(b"/a\0different", b"/A\0suffix", true));
         assert!(!prefix(b"/A/path", b"/a", false));
-        let mut out = vec![0xa5; 4];
         let mut state = HttpStaticPath::default();
+        let mut empty = Vec::new();
+        assert_eq!(
+            path_step(b"/", b"oversized", &mut empty, 4, &mut state, 0),
+            Err(OVERFLOW)
+        );
+        assert_eq!(empty.capacity(), 0);
+        let mut out = vec![0xa5; 4];
         assert_eq!(
             path_step(b"/", b"oversized", &mut out, 4, &mut state, 0),
             Err(OVERFLOW)
