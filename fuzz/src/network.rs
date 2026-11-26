@@ -5,6 +5,7 @@ use std::cell::Cell;
 use std::ffi::{c_char, c_int};
 use std::net::IpAddr;
 use swoole_rs_clients::dns::{DnsExchange, RecvError, query};
+use swoole_rs_corebase::buffer::BoundedBytes;
 use swoole_rs_http::llhttp::{self, Callbacks, Flow as Step, Parser};
 use swoole_rs_http::multipart_parser::{Flow, MultipartParser};
 use swoole_rs_http::{
@@ -13,7 +14,7 @@ use swoole_rs_http::{
 use swoole_rs_http2::{
     frame_length, sw_rs_http2_decode_frame, sw_rs_http2_inflate_step, sw_rs_http2_unpack_setting,
 };
-use swoole_rs_inflate::Inflate;
+use swoole_rs_inflate::{DecodeError, Inflate};
 use swoole_rs_oracle::nghttp2;
 
 /// Any bytes as an HTTP/2 frame header (RFC 9113 4.1) and a SETTINGS entry (6.5.1):
@@ -374,6 +375,12 @@ pub fn ws_inflate(bytes: &[u8]) {
         Ok(data),
         "level {level}"
     );
+    if let Some(limit) = data.len().checked_sub(1) {
+        assert_eq!(
+            swoole_rs_inflate::message(&compressed, limit),
+            Err(swoole_rs_inflate::MessageFailure::Limit(limit))
+        );
+    }
 }
 
 /// An HTTP response body: the first byte picks gzip, zlib or raw deflate (and the
@@ -391,19 +398,19 @@ pub fn http_inflate(bytes: &[u8]) {
         1 => (swoole_rs_deflate::DEFLATE, false),
         _ => (-swoole_rs_deflate::DEFLATE, false),
     };
-    let decoder = || {
+    let decoder = |limit| {
         if gzip && mode & 4 != 0 {
-            Inflate::gzip_only(body.len())
+            Inflate::gzip_only(limit)
         } else {
-            Inflate::new(gzip, body.len())
+            Inflate::new(gzip, limit)
         }
     };
-    let _ = decoder().decode(body);
-    let _ = in_chunks(decoder(), |decoder, chunk| decoder.decode(chunk).ok(), body, lengths);
+    let _ = decoder(body.len()).decode(body);
+    let _ = in_chunks(decoder(body.len()), Inflate::decode, body, lengths, body.len());
     let level = c_int::from(mode >> 3) % 10;
     let stream = swoole_rs_deflate::compress(body, 2 * body.len() + 64, window_bits, level)
         .unwrap_or_else(|failure| panic!("compress {window_bits} at {level}: {failure:?}"));
-    assert_eq!(decoder().decode(&stream), Ok(body), "one call");
+    assert_eq!(decoder(body.len()).decode(&stream), Ok(body), "one call");
     // The raw retry is the first chunk's alone: a raw stream whose first two bytes
     // read as a zlib header, or whose first chunk is shorter, fails in pieces.
     if window_bits < 0
@@ -412,11 +419,7 @@ pub fn http_inflate(bytes: &[u8]) {
     {
         return;
     }
-    assert_eq!(
-        in_chunks(decoder(), |decoder, chunk| decoder.decode(chunk).ok(), &stream, lengths).as_deref(),
-        Some(body),
-        "chunks {lengths:?}"
-    );
+    check_decoded_limits(decoder, Inflate::decode, body, &stream, lengths);
 }
 
 /// An HTTP client's Brotli or zstd response body (the first byte's low bit), compressed
@@ -434,67 +437,67 @@ pub fn http_decompress(bytes: &[u8]) {
     if mode & 1 == 0 {
         let stream = brotli::compress(body, level % 12).expect("BrotliEncoderCompress");
         let new = |limit| brotli::Decoder::new(limit).expect("BrotliDecoderCreateInstance");
-        round_trip(
-            new,
-            |decoder, chunk| decoder.decode(chunk).ok(),
-            body,
-            &stream,
-            lengths,
-        );
+        round_trip(new, brotli::Decoder::decode, body, &stream, lengths);
     } else {
         // -3 to 19: zstd's fast levels and all but its slowest ultra ones.
         let stream = zstd::compress(body, level % 23 - 3).expect("ZSTD_compress");
         let new = |limit| zstd::Decoder::new(limit).expect("ZSTD_initDStream");
-        round_trip(
-            new,
-            |decoder, chunk| decoder.decode(chunk).ok(),
-            body,
-            &stream,
-            lengths,
-        );
+        round_trip(new, zstd::Decoder::decode, body, &stream, lengths);
     }
 }
 
 /// `http_decompress` for one decoder: `body` in small chunks, then `stream` in `lengths`.
 fn round_trip<D>(
     new: impl Fn(usize) -> D,
-    decode: impl for<'a> Fn(&'a mut D, &[u8]) -> Option<&'a [u8]>,
+    decode: impl for<'a> Fn(&'a mut D, &[u8]) -> Result<&'a [u8], DecodeError>,
     body: &[u8],
     stream: &[u8],
     lengths: &[u8],
 ) {
     let mut decoder = new(body.len().min(1 << 24));
     for chunk in body.chunks(lengths.first().map_or(16, |&n| usize::from(n % 16) + 1)) {
-        if decode(&mut decoder, chunk).is_none() {
+        if decode(&mut decoder, chunk).is_err() {
             break;
         }
     }
-    assert_eq!(
-        in_chunks(new(body.len()), decode, stream, lengths).as_deref(),
-        Some(body),
-        "{stream:?} in {lengths:?}"
-    );
+    check_decoded_limits(new, decode, body, stream, lengths);
+}
+
+fn check_decoded_limits<D>(
+    new: impl Fn(usize) -> D,
+    decode: impl for<'a> Fn(&'a mut D, &[u8]) -> Result<&'a [u8], DecodeError>,
+    body: &[u8],
+    stream: &[u8],
+    lengths: &[u8],
+) {
+    let decode_at = |limit| in_chunks(new(limit), &decode, stream, lengths, limit);
+    assert_eq!(decode_at(body.len()).as_deref(), Ok(body), "chunks {lengths:?}");
+    if let Some(limit) = body.len().checked_sub(1) {
+        assert_eq!(decode_at(limit), Err(DecodeError::Limit(limit)));
+    }
 }
 
 /// `stream` through `decoder` in chunks of `lengths` (0 as 1), then the rest in one:
-/// what they produced, or None once one fails.
+/// what they produced, or the decoder's first error.
 fn in_chunks<D>(
     mut decoder: D,
-    decode: impl for<'a> Fn(&'a mut D, &[u8]) -> Option<&'a [u8]>,
+    decode: impl for<'a> Fn(&'a mut D, &[u8]) -> Result<&'a [u8], DecodeError>,
     mut stream: &[u8],
     lengths: &[u8],
-) -> Option<Vec<u8>> {
-    let mut out = Vec::new();
+    limit: usize,
+) -> Result<Vec<u8>, DecodeError> {
+    let mut out = BoundedBytes::new(limit, 0);
     let lengths = lengths.iter().map(|&n| usize::from(n.max(1)));
     for length in lengths.chain([usize::MAX]) {
         if stream.is_empty() {
             break;
         }
         let (chunk, tail) = stream.split_at(length.min(stream.len()));
-        out.extend_from_slice(decode(&mut decoder, chunk)?);
+        out.append(decode(&mut decoder, chunk)?)
+            .expect("decoder returned bytes past its limit");
         stream = tail;
     }
-    Some(out)
+    Ok(out.into_vec())
 }
 
 /// The document root `http_static_path` serves from, canonical as the server's is.
