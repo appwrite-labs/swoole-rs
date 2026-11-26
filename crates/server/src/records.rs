@@ -151,6 +151,16 @@ impl ConnectionRecord {
         self.websocket_buffer.set(None);
         self.lock.store(0, Relaxed);
     }
+
+    /// The stored WebSocket status.
+    fn status(&self) -> WebSocketStatus {
+        self.websocket_status.get()
+    }
+
+    /// Stores the status its WebSocket state moved to.
+    fn mark(&self, status: WebSocketStatus) {
+        self.websocket_status.set(status);
+    }
 }
 
 /// A worker's client certificate slot: the session it was stored for, and its bytes.
@@ -256,13 +266,13 @@ pub enum WebSocket<'a> {
 }
 
 /// A connection whose upgrade request was parsed: it can only begin its handshake.
-pub struct Requested<'a>(Connection<'a>);
+pub struct Requested<'a>(&'a ConnectionRecord);
 
 /// A connection whose handshake is running: it can only complete or fail it.
-pub struct Handshaking<'a>(Connection<'a>);
+pub struct Handshaking<'a>(&'a ConnectionRecord);
 
 /// A connection `disconnect` is closing: the peer's close frame answers it.
-pub struct Closing<'a>(Connection<'a>);
+pub struct Closing<'a>(&'a ConnectionRecord);
 
 impl Closing<'_> {
     /// The peer answered the close frame.
@@ -273,7 +283,7 @@ impl Closing<'_> {
 
 /// An open WebSocket connection: the only one with frames.
 #[derive(Clone, Copy)]
-pub struct Open<'a>(Connection<'a>);
+pub struct Open<'a>(&'a ConnectionRecord);
 
 impl<'a> Requested<'a> {
     /// `onHandshake`, or the default handshake, begins.
@@ -305,23 +315,17 @@ impl<'a> Handshaking<'a> {
     }
 }
 
-impl<'a> Open<'a> {
-    /// The connection.
-    #[must_use]
-    pub fn connection(self) -> Connection<'a> {
-        self.0
-    }
-
+impl Open<'_> {
     /// The fragmented message being reassembled, taken out while a frame works on it.
     #[must_use]
     pub fn take_fragment(self) -> Option<Box<swoole_rs_corebase::buffer::string::StringBuffer>> {
-        self.0.take_websocket_buffer()
+        self.0.websocket_buffer.take()
     }
 
     /// The connection reassembles `buffer`, which must hold none (one it held is
     /// freed).
     pub fn keep_fragment(self, buffer: Box<swoole_rs_corebase::buffer::string::StringBuffer>) {
-        if let Some(mut held) = self.0.record.websocket_buffer.replace(Some(buffer)) {
+        if let Some(mut held) = self.0.websocket_buffer.replace(Some(buffer)) {
             held.dispose();
         }
     }
@@ -427,7 +431,7 @@ impl<'a> Connection<'a> {
     /// dispatch read [`Self::websocket`].
     #[must_use]
     pub fn websocket_status(self) -> WebSocketStatus {
-        self.record.websocket_status.get()
+        self.record.status()
     }
 
     /// Where the connection is in the WebSocket upgrade, read once: a handle per
@@ -435,12 +439,13 @@ impl<'a> Connection<'a> {
     #[must_use]
     #[inline]
     pub fn websocket(self) -> WebSocket<'a> {
-        match self.record.websocket_status.get() {
+        let record = self.record;
+        match record.status() {
             WebSocketStatus::None => WebSocket::Http,
-            WebSocketStatus::Connection => WebSocket::Requested(Requested(self)),
-            WebSocketStatus::Handshake => WebSocket::Handshaking(Handshaking(self)),
-            WebSocketStatus::Active => WebSocket::Open(Open(self)),
-            WebSocketStatus::Closing => WebSocket::Closing(Closing(self)),
+            WebSocketStatus::Connection => WebSocket::Requested(Requested(record)),
+            WebSocketStatus::Handshake => WebSocket::Handshaking(Handshaking(record)),
+            WebSocketStatus::Active => WebSocket::Open(Open(record)),
+            WebSocketStatus::Closing => WebSocket::Closing(Closing(record)),
             WebSocketStatus::HandshakeFailed => WebSocket::Failed,
         }
     }
@@ -451,18 +456,13 @@ impl<'a> Connection<'a> {
         reason = "a transition, made for its effect"
     )]
     pub fn websocket_requested(self) -> Requested<'a> {
-        self.mark(WebSocketStatus::Connection);
-        Requested(self)
+        self.record.mark(WebSocketStatus::Connection);
+        Requested(self.record)
     }
 
     /// `disconnect` sent the close frame.
     pub fn websocket_closing(self) {
-        self.mark(WebSocketStatus::Closing);
-    }
-
-    /// Stores the status its state moved to.
-    fn mark(self, status: WebSocketStatus) {
-        self.record.websocket_status.set(status);
+        self.record.mark(WebSocketStatus::Closing);
     }
 
     /// `OP_STORE_CLIENT_CERT`: `cert` is the connection's client certificate, which

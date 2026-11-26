@@ -292,16 +292,19 @@ pub(crate) fn on_message(
     ok
 }
 
-/// `open` is the frame's connection.
+/// `_open`: the frame's connection is open, as only an open one has frames.
 fn message(
     view: view::Server<'_>,
-    open: Open<'_>,
+    _open: Open<'_>,
     request: &mut RecvData<'_>,
 ) -> Result<bool, bailout::Bailout> {
     let info = request.info();
     let (fd, server_fd, ext_flags) = (info.fd, c_int::from(info.server_fd), info.ext_flags);
     let server = view;
-    let Some(port) = server.port_of_fd(open.connection().fd()) else {
+    let Some(port) = server
+        .by_session(fd)
+        .and_then(|conn| server.port_of_fd(conn.fd()))
+    else {
         return Ok(false);
     };
     let mut data = php_swoole_get_recv_data(view, request);
