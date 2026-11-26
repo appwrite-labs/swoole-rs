@@ -1,7 +1,7 @@
 //! Upstream `http_server::StaticHandler`'s state: the request URL, the paths and texts
 //! derived from it, the file's facts, the directory listing and the range tasks. The
 //! filesystem, MIME, random and calendar effects are the caller's [`StaticEffects`].
-use crate::range_response::{HttpRangeFormat, range_format};
+use crate::static_meta::joined;
 use crate::static_path::{self, Action};
 use crate::{HttpDirectory, HttpStaticPath, HttpStaticTask, HttpTasks, INVALID, OVERFLOW};
 mod filesystem;
@@ -74,14 +74,6 @@ pub struct HttpStaticContext {
     directory: HttpDirectory,
     tasks: HttpTasks,
 }
-fn copied(input: &[u8]) -> Result<Vec<u8>, i32> {
-    let mut result = Vec::new();
-    result
-        .try_reserve_exact(input.len())
-        .map_err(|_| ALLOCATION)?;
-    result.extend_from_slice(input);
-    Ok(result)
-}
 impl HttpStaticContext {
     /// A context for `url` whose filename may hold `capacity` bytes, the native
     /// `PATH_MAX`. None for a zero or oversized capacity, or when allocation fails.
@@ -90,7 +82,7 @@ impl HttpStaticContext {
         if capacity == 0 || capacity > isize::MAX as usize {
             return None;
         }
-        let original = copied(url).ok()?;
+        let original = joined(&[url]).ok()?;
         Some(Self {
             original,
             rewritten: None,
@@ -153,7 +145,7 @@ impl HttpStaticContext {
         );
         if result == Ok(Action::Directory) {
             let url = url.get(..self.path.url_length).ok_or(INVALID)?;
-            self.directory_path = copied(url)?;
+            self.directory_path = joined(&[url])?;
         }
         result
     }
@@ -215,7 +207,7 @@ impl HttpStaticContext {
         }
         let target = match kind {
             Url => {
-                self.rewritten = Some(copied(text)?);
+                self.rewritten = Some(joined(&[text])?);
                 return Ok(());
             }
             Directory => &mut self.directory_path,
@@ -223,7 +215,7 @@ impl HttpStaticContext {
             Boundary => &mut self.boundary,
             Original | Filename | Content | End => return Err(INVALID),
         };
-        *target = copied(text)?;
+        *target = joined(&[text])?;
         Ok(())
     }
     /// Admit the random bytes `static_boundary` asked for into an empty boundary,
@@ -236,13 +228,7 @@ impl HttpStaticContext {
         if crate::static_meta::static_boundary(self.boundary.len()) != Some(random.len()) {
             return Err(INVALID);
         }
-        let mut boundary = Vec::new();
-        boundary
-            .try_reserve_exact(prefix.len() + random.len())
-            .map_err(|_| ALLOCATION)?;
-        boundary.extend_from_slice(prefix);
-        boundary.extend_from_slice(random);
-        self.boundary = boundary;
+        self.boundary = joined(&[prefix, random])?;
         Ok(())
     }
     /// Admit a stat's facts.
@@ -259,27 +245,7 @@ impl HttpStaticContext {
     }
     /// The multipart body's closing boundary.
     fn format_end(&mut self) -> Result<(), i32> {
-        let range = HttpRangeFormat {
-            boundary: &self.boundary,
-            mime: &[],
-            offset: 0,
-            length: 0,
-            filesize: 0,
-            part: 1,
-            separator: false,
-        };
-        let mut length = 0;
-        range_format(&range, &mut [], &mut length)?;
-        let capacity = length
-            .checked_add(1)
-            .filter(|&value| isize::try_from(value).is_ok())
-            .ok_or(OVERFLOW)?;
-        let mut value = Vec::new();
-        value.try_reserve_exact(capacity).map_err(|_| ALLOCATION)?;
-        value.resize(capacity, 0);
-        range_format(&range, &mut value, &mut length)?;
-        value.truncate(length);
-        self.end = value;
+        self.end = joined(&crate::range_response::closing_boundary(&self.boundary))?;
         Ok(())
     }
 }

@@ -32,6 +32,10 @@ impl Write for Prefix<'_> {
     }
 }
 
+pub(crate) fn closing_boundary(boundary: &[u8]) -> [&[u8]; 3] {
+    [b"\r\n--", boundary, b"--\r\n"]
+}
+
 fn render(
     input: &HttpRangeFormat<'_>,
     boundary: &[u8],
@@ -39,9 +43,9 @@ fn render(
     out: &mut Prefix<'_>,
 ) -> fmt::Result {
     if input.part == 1 {
-        out.append(b"\r\n--")?;
-        out.append(boundary)?;
-        return out.append(b"--\r\n");
+        return closing_boundary(boundary)
+            .into_iter()
+            .try_for_each(|part| out.append(part));
     }
     if input.separator {
         out.append(b"\r\n")?;
