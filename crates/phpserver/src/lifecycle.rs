@@ -1040,9 +1040,12 @@ fn command(call: &Call) {
     if !sent {
         return call.set_bool(false);
     }
-    if !wait.replied.get() {
-        // `command_done` resumes it.
-        wait.waiter.wait();
+    // `command_done` resumes it. Upstream waits forever; a reply that never comes
+    // ends it at the default read timeout (`socket_read_timeout`, else 60 s), and
+    // the call fails as `Server::command`'s refusals do: false, with the last error.
+    let deadline = Deadline::of_read(swoole_rs_corebase::reactor::SOCKET_DEFAULTS.read.get());
+    if !wait.replied.get() && !wait.waiter.wait(deadline) {
+        return call.set_bool(false);
     }
     let Some(reply) = wait.reply.take() else {
         return;

@@ -44,6 +44,8 @@ the second response. `test_server.py` sends a request body over the server's
 stream, with the connection's framing intact after it (RFC 9113 6.4). A peer that
 sets a zero initial window and never sends WINDOW_UPDATE gets a GOAWAY and loses the
 connection once the response's send deadline (the server's `send_timeout`) passes.
+A `Server::command()` whose reply never comes fails with `SWOOLE_ERROR_CO_TIMEDOUT`
+at the default read timeout (`socket_read_timeout`).
 `test_header_reentry.py` serves `tests/modules/http/header_reentry.php` over h2c
 to `Swoole\Coroutine\Http2\Client`: a header or trailer value's `__toString`
 replaces the array being sent, and the response must carry the headers as they
