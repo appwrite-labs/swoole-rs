@@ -154,10 +154,10 @@ def h2_outcome(port, frames, settings=b'', until=PING_ACK):
             pass
         received, closed = ending(conn, 10, lambda received: until in received)
     at = 0
-    while at + 9 <= len(received):
-        if received[at + 3] == 7:
+    while at + 9 <= len(received) and (end := at + 9 + int.from_bytes(received[at:at + 3])) <= len(received):
+        if received[at + 3] == 7 and end - at >= 17:  # a whole GOAWAY: last stream id, then the error code
             return 'goaway %d' % int.from_bytes(received[at + 13:at + 17]) + ('' if closed else ', open')
-        at += 9 + int.from_bytes(received[at:at + 3])
+        at = end
     return 'ack' if PING_ACK in received else 'closed' if closed else 'open'
 
 
