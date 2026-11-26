@@ -9,9 +9,9 @@ use swoole_rs_corebase::{CCast, CellExt, WebSocketStatus, log};
 use swoole_rs_phpruntime::co;
 use swoole_rs_phpstubs::websocket as stubs;
 use swoole_rs_websocket::{
-    CLOSE_CODE_LEN, CLOSE_REASON_MAX_LEN, DecodeErrorKind, DecodedFrame, EncodeError, FrameFlags,
-    FrameMetadata, Opcode, control_invalid, encode_close, encode_frame, encoded_size, header,
-    pack_policy,
+    CLOSE_CODE_LEN, CLOSE_REASON_MAX_LEN, CONTROL_PAYLOAD_MAX_LEN, DecodeErrorKind, DecodedFrame,
+    EncodeError, FrameFlags, FrameMetadata, Opcode, control_invalid, encode_close, encode_frame,
+    encoded_size, header, pack_policy,
 };
 use swoole_rs_zend::{
     Array, Call, Class, Declared, Minit, Owned, Value, ZStr, ZString, bailout, handlers,
@@ -322,6 +322,19 @@ fn packed<T>(frame: &FrameObject, emit: impl FnOnce(&[u8], u8) -> Option<T>) -> 
     if bailout::pending() {
         return None;
     }
+    let opcode = Opcode::from_code(frame.opcode);
+    if opcode == Opcode::Close && data.len() > CLOSE_REASON_MAX_LEN {
+        fatal(&format!(
+            "the max length of close reason is {CLOSE_REASON_MAX_LEN}"
+        ));
+        return None;
+    }
+    if opcode.is_control() && data.len() > CONTROL_PAYLOAD_MAX_LEN {
+        fatal(&format!(
+            "websocket control frame payload must not exceed {CONTROL_PAYLOAD_MAX_LEN} bytes"
+        ));
+        return None;
+    }
     if !has_zlib() {
         warning(
             c"FrameObject::pack",
@@ -329,11 +342,7 @@ fn packed<T>(frame: &FrameObject, emit: impl FnOnce(&[u8], u8) -> Option<T>) -> 
         );
         return None;
     }
-    let (flags, deflate) = pack_policy(
-        Opcode::from_code(frame.opcode),
-        FrameFlags::from_bits(frame.flags),
-        data.len(),
-    );
+    let (flags, deflate) = pack_policy(opcode, FrameFlags::from_bits(frame.flags), data.len());
     let mut flags = flags.bits();
     let compressed = if !deflate {
         None

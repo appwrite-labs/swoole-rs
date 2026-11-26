@@ -12,7 +12,8 @@ pub const HEADER_LEN: u8 = 2;
 const MASK_LEN: u8 = 4;
 pub const MAX_HEADER_LEN: u8 = HEADER_LEN + MASK_LEN + 8;
 pub const CLOSE_CODE_LEN: usize = size_of::<u16>();
-pub const CLOSE_REASON_MAX_LEN: usize = 125;
+pub const CONTROL_PAYLOAD_MAX_LEN: usize = 125;
+pub const CLOSE_REASON_MAX_LEN: usize = CONTROL_PAYLOAD_MAX_LEN - CLOSE_CODE_LEN;
 
 /// A frame opcode, including reserved values carried through native boundaries.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
