@@ -21,37 +21,20 @@ fn set(call: &Call, n: u32) -> Option<Owned> {
     Some(value.into_owned())
 }
 
-/// `php_swoole_array_length_safe`.
-fn length(array: Option<&Owned>) -> usize {
-    array
-        .and_then(|array| array.array())
-        .map_or(0, |array| array.count() as usize)
-}
-
 /// `php_swoole_convert_to_fd`, which may warn.
 fn fd_of(element: &Value) -> Option<c_int> {
     bailed(swoole_rs_phpruntime::convert_to_fd(element))
 }
 
-/// `client_poll_get`: the slot polling `fd` among the first `count`.
-fn slot(fds: &[pollfd], count: usize, fd: c_int) -> Option<usize> {
-    fds.iter().take(count).position(|entry| entry.fd == fd)
-}
-
-/// `client_poll_add`: poll each element's fd for `event`. Every fd gets its
-/// own slot for reading; writing and errors join a slot already polling it.
-fn add(array: &Array, fds: &mut Vec<pollfd>, count: usize, event: c_short) -> Option<()> {
+/// Merge each event into the slot for its descriptor.
+fn add(array: &Array, fds: &mut Vec<pollfd>, event: c_short) -> Option<()> {
     for (_, element) in array.entries() {
         let fd = fd_of(element)?;
         if fd < 0 {
             continue;
         }
-        let index = (event != POLLIN).then(|| slot(fds, count, fd)).flatten();
-        match index.and_then(|index| fds.get_mut(index)) {
-            Some(entry) => {
-                entry.fd = fd;
-                entry.events |= event;
-            }
+        match fds.iter_mut().find(|entry| entry.fd == fd) {
+            Some(entry) => entry.events |= event,
             None => fds.push(pollfd {
                 fd,
                 events: event,
@@ -64,7 +47,7 @@ fn add(array: &Array, fds: &mut Vec<pollfd>, count: usize, event: c_short) -> Op
 
 /// `client_poll_wait`: the elements whose fd is ready for `revent`, under
 /// their keys.
-fn keep_ready(array: &Array, fds: &[pollfd], count: usize, revent: c_short) -> Option<OwnedArray> {
+fn keep_ready(array: &Array, fds: &[pollfd], revent: c_short) -> Option<OwnedArray> {
     let mut ready = OwnedArray::default();
     let mut entries = array.entries();
     while let Some((key, index, element)) = entries.next_stored() {
@@ -72,14 +55,11 @@ fn keep_ready(array: &Array, fds: &[pollfd], count: usize, revent: c_short) -> O
         if fd < 0 {
             continue;
         }
-        let Some(polled) = slot(fds, count, fd) else {
+        let Some(polled) = fds.iter().find(|entry| entry.fd == fd) else {
             warn(ErrorKind::Fatal, &format!("bad fd[{fd}]"));
             continue;
         };
-        if fds
-            .get(polled)
-            .is_some_and(|entry| entry.revents & revent != 0)
-        {
+        if polled.revents & revent != 0 {
             // The source array's keys are unique, so none is taken yet.
             match key {
                 Some(key) => ready.add_new(key, element.copy()),
@@ -93,22 +73,19 @@ fn keep_ready(array: &Array, fds: &[pollfd], count: usize, revent: c_short) -> O
 /// `swoole_client_select(?array &$read, ?array &$write, ?array &$except, float $timeout = 0.5): int|false`.
 fn select(call: &mut Call) {
     let parsed = call.arity(3, 4).and_then(|()| {
-        Ok((
-            length(call.array_or_null(1)?.as_ref()),
-            length(call.array_or_null(2)?.as_ref()),
-            length(call.array_or_null(3)?.as_ref()),
-            call.double(4, CONNECT_TIMEOUT)?,
-        ))
+        for (n, _) in SETS {
+            call.array_or_null(n)?;
+        }
+        call.double(4, CONNECT_TIMEOUT)
     });
-    let Ok((read, write, except, timeout)) = parsed else {
+    let Ok(timeout) = parsed else {
         return;
     };
-    let count = read.max(write).max(except);
-    let mut fds = Vec::with_capacity(count);
+    let mut fds = Vec::new();
     for (n, event) in SETS {
         if let Some(set) = set(call, n)
             && let Some(array) = set.array()
-            && add(array, &mut fds, count, event).is_none()
+            && add(array, &mut fds, event).is_none()
         {
             return call.set_bool(false);
         }
@@ -117,19 +94,9 @@ fn select(call: &mut Call) {
         warn(ErrorKind::Fatal, "no resource arrays were passed to select");
         return call.set_bool(false);
     }
-    // `poll` sees the first `count` slots, zeroed past what was added.
-    fds.resize(
-        fds.len().max(count),
-        pollfd {
-            fd: 0,
-            events: 0,
-            revents: 0,
-        },
-    );
     let wait = (timeout * 1000.0).c_cast::<c_int>();
     let ready = loop {
-        let polled = fds.get_mut(..count).unwrap_or_default();
-        let ready = swoole_rs_corebase::sys::poll(polled, wait);
+        let ready = swoole_rs_corebase::sys::poll(&mut fds, wait);
         match ready {
             Ok(ready) => break ready,
             Err(error) if error.raw_os_error() == Some(libc::EINTR) => {}
@@ -143,10 +110,7 @@ fn select(call: &mut Call) {
         let Some(set) = set(call, n) else {
             continue;
         };
-        let Some(ready) = set
-            .array()
-            .and_then(|array| keep_ready(array, &fds, count, event))
-        else {
+        let Some(ready) = set.array().and_then(|array| keep_ready(array, &fds, event)) else {
             return call.set_bool(false);
         };
         // `set` holds its own reference, and every later argument is read afresh.
@@ -157,24 +121,4 @@ fn select(call: &mut Call) {
 
 swoole_rs_zend::handlers! {
     zif_swoole_client_select => select;
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn entry(fd: c_int) -> pollfd {
-        pollfd {
-            fd,
-            events: 0,
-            revents: 0,
-        }
-    }
-
-    #[test]
-    fn slots_are_searched_within_the_polled_count() {
-        let fds = [entry(3), entry(4), entry(5)];
-        assert_eq!(slot(&fds, 3, 4), Some(1), "found");
-        assert_eq!(slot(&fds, 2, 5), None, "past the count");
-    }
 }
