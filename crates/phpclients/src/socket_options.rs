@@ -393,15 +393,19 @@ fn set_ssl(s: &Array, socket: Co) -> Result<bool, Stop> {
                     b"] not found",
                 ]
                 .concat();
-                fatal(E_WARNING, &message)?;
+                invalid_setting(&self::text(&message));
                 return Ok(false);
             }
         }
     }
-    match tls::has_files(&context) {
-        (true, false) => fatal(E_WARNING, b"ssl require key file")?,
-        (false, true) => fatal(E_WARNING, b"ssl require cert file")?,
-        _ => {}
+    let missing = match tls::has_files(&context) {
+        (true, false) => Some(c"ssl require key file"),
+        (false, true) => Some(c"ssl require cert file"),
+        _ => None,
+    };
+    if let Some(message) = missing {
+        invalid_setting(message);
+        return Ok(false);
     }
     if let Some(v) = s.get(b"ssl_passphrase") {
         text(&mut owner, Text::Passphrase, v)?;
