@@ -141,14 +141,6 @@ static size_t sw_snprintf(char *buf, size_t size, const char *format, ...) {
     }
     return retval;
 }
-static std::string intersection(const std::vector<std::string> &vec1, std::set<std::string> &vec2) {
-    for (const auto &vec1_item : vec1) {
-        if (vec2.find(vec1_item) != vec2.end()) {
-            return vec1_item;
-        }
-    }
-    return "";
-}
 // upstream's String, starting with "prefix" so make_index_page is seen appending.
 struct String {
     enum FormatFlag { FORMAT_APPEND = 1, FORMAT_GROW = 2 };
@@ -228,6 +220,12 @@ static int scripted_lstat(const char *path, struct stat *value) {
 #endif
     return 0;
 }
+static int scripted_index_stat(const char *path, struct stat *value) {
+    scripted_lstat(path, value);
+    const char *slash = strrchr(path, '/');
+    const char *name = slash ? slash + 1 : path;
+    return std::find(script.names.begin(), script.names.end(), name) == script.names.end() ? -1 : 0;
+}
 static char *scripted_realpath(const char *input, char *output) {
     trace.emplace_back(std::string("canonical:") + input);
     strcpy(output, script.canonical.empty() ? input : script.canonical.c_str());
@@ -295,7 +293,9 @@ struct Server {
     bool apply_rewrite_rules(StaticHandler *);
 };
 #include "http_static_context_class.inc"
+#define stat(path, result) upstream_static_context::scripted_index_stat(path, result)
 #include "http_static_context.inc"
+#undef stat
 }  // namespace upstream_static_context
 
 using namespace upstream_static_context;

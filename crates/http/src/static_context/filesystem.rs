@@ -11,16 +11,12 @@ use swoole_rs_corebase::CCast;
 /// `PATH_MAX`: the longest path upstream's handler copies before an effect.
 const PATH_MAX: usize = libc::PATH_MAX as usize;
 
-/// What a static handler asks of the world, in the pinned handler's order. The
-/// filesystem defaults to the process's own through `std::fs`.
-pub trait StaticEffects {
-    /// `lstat(path)`: the size, modification time and file kind of `path`, or None.
-    fn stat(&self, path: &[u8]) -> Option<HttpStaticObservation> {
-        let meta = fs::symlink_metadata(OsStr::from_bytes(path)).ok()?;
+impl From<fs::Metadata> for HttpStaticObservation {
+    fn from(meta: fs::Metadata) -> Self {
         let kind = meta.file_type();
         // The native `off_t` to `size_t` conversion, on narrow targets too.
         let filesize = meta.size().c_cast::<usize>();
-        Some(HttpStaticObservation {
+        Self {
             filesize,
             mtime: meta.mtime(),
             mtime_nsec: meta.mtime_nsec(),
@@ -34,7 +30,21 @@ pub trait StaticEffects {
                 StaticFileKind::Other
             },
             ..HttpStaticObservation::default()
-        })
+        }
+    }
+}
+
+/// What a static handler asks of the world, in the pinned handler's order. The
+/// filesystem defaults to the process's own through `std::fs`.
+pub trait StaticEffects {
+    /// `lstat(path)`: the size, modification time and file kind of `path`, or None.
+    fn stat(&self, path: &[u8]) -> Option<HttpStaticObservation> {
+        let meta = fs::symlink_metadata(OsStr::from_bytes(path)).ok()?;
+        Some(meta.into())
+    }
+    /// `stat(path)` for an index candidate, following symbolic links.
+    fn index_stat(&self, path: &[u8]) -> Option<HttpStaticObservation> {
+        fs::metadata(OsStr::from_bytes(path)).ok().map(Into::into)
     }
     /// `realpath(path)`, or None.
     fn canonical(&self, path: &[u8]) -> Option<Vec<u8>> {
@@ -184,6 +194,39 @@ mod tests {
     }
 
     #[test]
+    fn set_filename_rejects_path_too_long() {
+        let base = vec![b'a'; PATH_MAX - b"/index.html".len()];
+        let mut owner = HttpStaticContext::new(b"/", PATH_MAX).unwrap();
+        owner.publish(Filename, &base).unwrap();
+        owner.observed(&HttpStaticObservation {
+            kind: StaticFileKind::Directory,
+            ..Default::default()
+        });
+        assert!(!owner.try_serve_index_file(&[b"index.html"], false, &Native));
+        assert_eq!(owner.filename(), base);
+    }
+
+    #[test]
+    fn set_filename_accepts_path_with_room_for_null() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../target/tmp")
+            .join(format!("http-index-file-{}", std::process::id()));
+        fs::create_dir_all(&root).unwrap();
+        let file = root.join("index.html");
+        fs::write(&file, b"ok").unwrap();
+        let mut owner = HttpStaticContext::new(b"/", PATH_MAX).unwrap();
+        owner
+            .publish(Filename, root.as_os_str().as_bytes())
+            .unwrap();
+        assert_eq!(owner.stat(&Native), Ok(true));
+        assert!(owner.try_serve_index_file(&[b"index.html"], false, &Native));
+        assert_eq!(owner.filename(), file.as_os_str().as_bytes());
+        assert_eq!(owner.observe().filesize, 2);
+        fs::remove_file(file).unwrap();
+        fs::remove_dir(root).unwrap();
+    }
+
+    #[test]
     fn production_filesystem_keeps_lstat_symlinks_directory_cache_and_failed_stat_facts() {
         let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../../target/tmp")
@@ -220,6 +263,10 @@ mod tests {
             assert!(owner.directory.iter().any(|entry| entry == name));
         }
         assert_eq!(owner.directory.len(), 4);
+        assert!(owner.try_serve_index_file(&[b"absent".as_slice(), b"link"], false, &Native));
+        assert_eq!(owner.filename(), root.join("link").as_os_str().as_bytes());
+        assert_eq!(owner.facts.kind, StaticFileKind::File);
+        assert_eq!(owner.facts.filesize, 7);
         std::fs::remove_dir_all(&root).unwrap();
         // Existing nonempty cache avoids reopening even after removal.
         assert!(owner.get_dir_files(&Native));
