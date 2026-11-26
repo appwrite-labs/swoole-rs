@@ -77,6 +77,8 @@ const WEBSOCKET_HEADER: usize = swoole_rs_websocket::HEADER_LEN as usize;
 /// `SW_WEBSOCKET_EXTENSION_DEFLATE`.
 const DEFLATE_EXTENSION: &CStr =
     c"permessage-deflate; client_no_context_takeover; server_no_context_takeover";
+/// `SW_HTTP_COOKIE_MAX_SIZE`.
+const COOKIE_MAX_SIZE: usize = 4096;
 /// `SW_HTTP_RESPONSE_INIT_SIZE`.
 const BODY_SIZE: usize = swoole_rs_corebase::constants::SW_HTTP_RESPONSE_INIT_SIZE as usize;
 
@@ -152,7 +154,7 @@ struct Client {
     compression_error: Cell<bool>,
     package_max_length: Cell<Option<usize>>,
     decoder: Cell<Option<Decoder>>,
-    connection_close: Cell<bool>,
+    request_connection_close: Cell<bool>,
     event_stream: Cell<bool>,
     in_callback: Cell<bool>,
     /// The response parser; whoever takes it out owns the socket's receive.
@@ -437,7 +439,7 @@ impl Client {
             compression_error: Cell::new(false),
             package_max_length: Cell::new(None),
             decoder: Cell::default(),
-            connection_close: Cell::new(false),
+            request_connection_close: Cell::new(false),
             event_stream: Cell::new(false),
             in_callback: Cell::new(false),
             parser: Cell::new(Some(Parser::new(llhttp::Kind::Response))),
@@ -690,6 +692,7 @@ impl Client {
                 .set(property(props, c"downloadOffset").long());
         }
 
+        self.request_connection_close.set(false);
         let mut out = Vec::with_capacity(256);
         let method = method.as_deref().map(Value::string);
         let method_name: &[u8] = match &method {
@@ -752,8 +755,8 @@ impl Client {
                 request::header(&mut out, key, text.bytes());
                 if key.eq_ignore_ascii_case(b"Connection") {
                     has_connection = true;
-                    if text.bytes().eq_ignore_ascii_case(b"close") {
-                        self.keep_alive.set(false);
+                    if request::token_list_contains(text.bytes(), b"close") {
+                        self.request_connection_close.set(true);
                     }
                 }
             }
@@ -770,7 +773,7 @@ impl Client {
             let value: &[u8] = if self.keep_alive.get() {
                 b"keep-alive"
             } else {
-                b"closed"
+                b"close"
             };
             request::header(&mut out, b"Connection", value);
         }
@@ -790,6 +793,13 @@ impl Client {
                 if text.bytes().is_empty() {
                     continue;
                 }
+                if key.len() + text.bytes().len() + 1 > COOKIE_MAX_SIZE {
+                    EXCEPTION.throw(
+                        c"HTTP cookie header is too large",
+                        i64::from(INVALID_PARAMS),
+                    );
+                    return false;
+                }
                 out.extend_from_slice(key);
                 out.push(b'=');
                 out.extend_from_slice(ZString::url_encode(text.bytes()).bytes());
@@ -805,32 +815,35 @@ impl Client {
         if let Some(files) = files {
             return self.send_multipart(out, body, files);
         }
-        if let Some(body) = body {
-            if let Some(fields) = body.array() {
+        let payload = match body.and_then(Value::array) {
+            Some(fields) => {
                 request::header(
                     &mut out,
                     b"Content-Type",
                     b"application/x-www-form-urlencoded",
                 );
                 if fields.count() > 0 {
-                    let Some(query) = body.http_build_query() else {
+                    let Some(query) = body.and_then(Value::http_build_query) else {
                         warn(false, c"http_build_query failed");
                         return false;
                     };
-                    request::content_length(&mut out, query.bytes().len());
-                    out.extend_from_slice(query.bytes());
+                    Some(query)
                 } else {
-                    request::content_length(&mut out, 0);
+                    None
                 }
-            } else {
-                let data = body.string();
-                request::content_length(&mut out, data.bytes().len());
-                out.extend_from_slice(data.bytes());
             }
-        } else if has_length {
-            request::content_length(&mut out, 0);
+            None => body.map(Value::string),
+        };
+        if body.is_some() || has_length {
+            request::content_length(&mut out, payload.as_ref().map_or(0, |p| p.bytes().len()));
         } else {
             out.extend_from_slice(b"\r\n");
+        }
+        if self.header_too_large(&out) {
+            return false;
+        }
+        if let Some(payload) = payload {
+            out.extend_from_slice(payload.bytes());
         }
         if !self.send(&out) {
             return self.send_failed();
@@ -862,6 +875,9 @@ impl Client {
             length = length.wrapping_add(part);
         }
         request::content_length(&mut out, request::multipart_length(length));
+        if self.header_too_large(&out) {
+            return false;
+        }
         for (key, value) in field_entries() {
             let text = value.string();
             request::field_header(&mut out, &boundary, key);
@@ -897,6 +913,18 @@ impl Client {
             return self.send_failed();
         }
         self.wait_response.set(true);
+        true
+    }
+
+    fn header_too_large(&self, header: &[u8]) -> bool {
+        if header.len() <= swoole_rs_corebase::constants::SW_HTTP_HEADER_MAX_SIZE as usize {
+            return false;
+        }
+        EXCEPTION.throw(
+            c"HTTP/1 header block is too large",
+            i64::from(INVALID_PARAMS),
+        );
+        self.close(true);
         true
     }
 
@@ -1112,7 +1140,11 @@ impl Client {
             }
             socket.websocket_protocol();
         }
-        if !open && (!self.keep_alive.get() || self.connection_close.get()) {
+        if !open
+            && (!self.keep_alive.get()
+                || self.request_connection_close.get()
+                || parser.flags & llhttp::F_CONNECTION_CLOSE != 0)
+        {
             self.close(true);
         } else {
             self.reset();
@@ -1609,10 +1641,6 @@ fn on_header_value(hooks: &Hooks, name: &[u8], data: &[u8]) -> Flow {
         if let Some(method) = request::content_encoding(data, features()) {
             client.compress.set(method);
         }
-    } else if name == b"connection" {
-        client
-            .connection_close
-            .set(request::starts_with_ignore_case(data, b"close"));
     } else if name == b"content-type" {
         client
             .event_stream
