@@ -131,7 +131,8 @@ retry. The uncompressed body, whole and in the same chunks, decodes without a pa
 `http_decompress` does the same for the HTTP client's Brotli and zstd decoders
 (`swoole_rs_inflate::brotli` and `zstd`): the compressed body comes back in any chunks,
 and the body itself decodes in chunks of at most 16 bytes with output capped at the smaller
-of its input length and 16 MiB.
+of its input length and 16 MiB. For nonempty round trips, all three targets also
+require the decoder to report the configured limit when it is one byte short.
 
 libFuzzer writes new inputs to the first corpus directory, so keep `corpus/`
 (ignored) first and the committed `seeds/` second. A failure leaves its input in
