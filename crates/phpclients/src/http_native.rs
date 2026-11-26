@@ -122,13 +122,18 @@ impl Co {
         self.handle().check_bound(event);
     }
 
-    /// The write buffer becomes `data`, then `send_all` of it: whether all went.
-    pub(crate) fn send_buffered(self, data: &[u8]) -> bool {
+    /// Retain the request head and send it with an optional borrowed body.
+    pub(crate) fn send_buffered(self, data: &[u8], body: &[u8]) -> bool {
         self.with_write_buffer(|buffer| {
             buffer.clear();
             buffer.append(data);
         });
-        self.send_all(data)
+        if body.is_empty() {
+            return self.send_all(data);
+        }
+        let vectors = [std::io::IoSlice::new(data), std::io::IoSlice::new(body)];
+        let (sent, _, _) = co::vector(self.handle(), co::Vectors::Write(&vectors), true);
+        usize::try_from(sent) == Ok(data.len() + body.len())
     }
 
     /// `send_all(data)`: whether all went.

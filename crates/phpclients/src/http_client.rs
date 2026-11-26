@@ -133,6 +133,7 @@ struct Client {
     max_retries: Cell<u8>,
     defer: Cell<bool>,
     keep_alive: Cell<bool>,
+    collect_stats: Cell<bool>,
     http_compression: Cell<bool>,
     body_decompression: Cell<bool>,
     /// Where the client is in a WebSocket upgrade ([`Client::websocket`]).
@@ -435,6 +436,7 @@ impl Client {
             max_retries: Cell::new(0),
             defer: Cell::new(false),
             keep_alive: Cell::new(true),
+            collect_stats: Cell::new(false),
             http_compression: Cell::new(true),
             body_decompression: Cell::new(true),
             websocket: Cell::new(Upgrade::Http),
@@ -527,6 +529,9 @@ impl Client {
             }
             if let Some(found) = get(b"defer") {
                 self.defer.set(truthy(found));
+            }
+            if let Some(found) = get(b"collect_stats") {
+                self.collect_stats.set(truthy(found));
             }
             if let Some(found) = get(b"keep_alive") {
                 self.keep_alive.set(truthy(found));
@@ -846,21 +851,20 @@ impl Client {
             }
             None => body.map(Value::string),
         };
-        if body.is_some() || has_length {
-            request::content_length(&mut out, payload.as_ref().map_or(0, |p| p.bytes().len()));
+        let data = payload.as_ref().map_or(&[][..], ZString::bytes);
+        let length = (body.is_some() || has_length).then_some(data.len());
+        if let Some(length) = length {
+            self.content_length(&mut out, length);
         } else {
             out.extend_from_slice(b"\r\n");
         }
         if self.header_too_large(&out) {
             return false;
         }
-        if let Some(payload) = payload {
-            out.extend_from_slice(payload.bytes());
-        }
-        if !self.send(&out) {
+        if !socket.send_buffered(&out, data) {
             return self.send_failed();
         }
-        self.wait_response.set(true);
+        self.sent_request(out.len(), data.len());
         true
     }
 
@@ -886,7 +890,9 @@ impl Client {
             };
             length = length.wrapping_add(part);
         }
-        request::content_length(&mut out, request::multipart_length(length));
+        let length = request::multipart_length(length);
+        self.content_length(&mut out, length);
+        let header_size = out.len();
         if self.header_too_large(&out) {
             return false;
         }
@@ -909,7 +915,7 @@ impl Client {
                     let mut data = header;
                     data.extend_from_slice(content);
                     data.extend_from_slice(b"\r\n");
-                    self.send(&data)
+                    self.send_raw(&data)
                 }
                 Source::Disk(path, offset) => {
                     self.send_raw(&header)
@@ -924,8 +930,27 @@ impl Client {
         if !self.send_raw(&request::closing(&boundary)) {
             return self.send_failed();
         }
-        self.wait_response.set(true);
+        self.sent_request(header_size, length);
         true
+    }
+
+    fn content_length(&self, out: &mut Vec<u8>, length: usize) {
+        request::content_length(out, length);
+        if self.collect_stats.get() {
+            self.props().edit_array(c"stats", |stats| {
+                stats.insert_long(b"upload_content_length", length.c_cast());
+            });
+        }
+    }
+
+    fn sent_request(&self, header_size: usize, length: usize) {
+        if self.collect_stats.get() {
+            self.props().edit_array(c"stats", |stats| {
+                stats.insert_long(b"size_upload", length.c_cast());
+                stats.insert_long(b"request_size", (header_size + length).c_cast());
+            });
+        }
+        self.wait_response.set(true);
     }
 
     fn header_too_large(&self, header: &[u8]) -> bool {
@@ -941,7 +966,8 @@ impl Client {
     }
 
     fn send(&self, data: &[u8]) -> bool {
-        self.co().is_some_and(|socket| socket.send_buffered(data))
+        self.co()
+            .is_some_and(|socket| socket.send_buffered(data, &[]))
     }
 
     fn send_raw(&self, data: &[u8]) -> bool {
@@ -967,6 +993,9 @@ impl Client {
             self.resolve.with_taken(|resolve| {
                 crate::resolver::swoole_name_resolver_context_reset(resolve, self.use_default_port);
             });
+            if self.collect_stats.get() {
+                self.props().null(c"stats");
+            }
             let mut attempt = 0;
             while attempt < u32::from(self.max_retries.get()) + 1 {
                 if !self.send_request(path) {
@@ -1850,6 +1879,7 @@ pub fn http_client_minit(minit: &Minit) -> Result<(), Bailout> {
         c"requestBody",
         c"uploadFiles",
         c"downloadFile",
+        c"stats",
     ] {
         minit.property_null(&CLIENT, name, public);
     }
