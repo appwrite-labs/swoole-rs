@@ -185,7 +185,26 @@ impl Owner {
 
     /// `Timer::get_round()`.
     pub(crate) fn round(&self) -> u64 {
-        self.lend(|queue| queue.round)
+        self.reactor_round()
+            .unwrap_or_else(|| self.lend(|queue| queue.round))
+    }
+
+    fn reactor_round(&self) -> Option<u64> {
+        if self.reactor.get().is_null() {
+            return None;
+        }
+        event_api::field(|fields| fields.round)
+    }
+
+    /// Attached timers use the poll round for both node creation and dispatch.
+    fn in_round<R>(&self, f: impl FnOnce(&mut Queue) -> R) -> R {
+        let round = self.reactor_round();
+        self.lend(|queue| {
+            if let Some(round) = round {
+                queue.round = round;
+            }
+            f(queue)
+        })
     }
 
     /// `Timer::get_ids()`, in heap order.
@@ -293,7 +312,7 @@ impl Owner {
         let now = self.relative_msec();
         // The queue boxes the node only once it has room for it, so a refused node
         // drops here with the closure.
-        let added = self.lend(|queue| {
+        let added = self.in_round(|queue| {
             queue.add_marked(now, msec, persistent, php, || {
                 Box::into_raw(Box::new(node)).cast()
             })
@@ -394,7 +413,7 @@ impl Owner {
         }
         let now = self.relative_msec();
         // Most loop turns find no timer due.
-        let idle = self.lend(|queue| queue.select_idle(now));
+        let idle = self.in_round(|queue| queue.select_idle(now));
         if let Some(delay) = idle {
             self.next_msec.set(delay);
             self.set(delay);

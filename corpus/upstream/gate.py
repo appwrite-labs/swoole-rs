@@ -79,7 +79,6 @@ PENDING_PORTS = {
         'swoole_function/sendfile_object.phpt',
         'swoole_http_server/create_request.phpt',
     ],
-    5654: ['swoole_timer/defer_next_round.phpt'],
     5655: [
         'swoole_table/conditional_stats.phpt',
         'swoole_table/conditional_types.phpt',

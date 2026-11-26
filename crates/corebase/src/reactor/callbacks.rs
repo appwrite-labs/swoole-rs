@@ -181,6 +181,7 @@ pub(crate) fn execute_end(reactor: Running<'_>, timed_out: bool) {
             return;
         }
     }
+    reactor.with(|state| state.fields.round = state.fields.round.wrapping_add(1));
 }
 
 // Keep the Rc clone out of the end-callback walk so LLVM can unroll its eight slots.
