@@ -1285,7 +1285,7 @@ fn before_start(object: ServerObject<'_>, serv: view::Server<'_>) -> Result<(), 
                     String::from_utf8_lossy(&port.host),
                     port.port
                 );
-                crate::port_settings::invalid_setting(text.as_cstr());
+                crate::settings::invalid_setting(text.as_cstr());
                 return Err(Stop);
             }
         }

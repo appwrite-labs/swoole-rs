@@ -193,8 +193,13 @@ pub(crate) struct Settings<'a> {
     pub(crate) vht: Option<&'a Array>,
 }
 
-/// Stop: a bailout is pending (upstream never ran past it).
+/// Stop applying settings after an exception or a bailout.
 pub(crate) struct Stop;
+
+pub(crate) fn invalid_setting(message: &CStr) -> Stop {
+    swoole_rs_phpswoole::invalid_setting(message);
+    Stop
+}
 
 pub(crate) type Step = Result<(), Stop>;
 
@@ -283,14 +288,13 @@ impl<'a> Settings<'a> {
         Ok(())
     }
 
-    /// Each value of an array option, as a string; `E_ERROR` otherwise.
+    /// Each value of an array option, as a string, raising a setting exception for a non-array.
     fn list(&self, keys: &[&CStr], error: &CStr, each: impl Fn(&[u8])) -> Step {
         let Some(value) = self.get_any(keys) else {
             return Ok(());
         };
         let Some(array) = value.array() else {
-            fatal(E_ERROR, error);
-            return Err(Stop);
+            return Err(invalid_setting(error));
         };
         let items: Vec<&Value> = array.entries().map(|(_, item)| item).collect();
         for item in items {
@@ -537,9 +541,8 @@ fn workers(s: &Settings) -> Step {
     s.flag(c"open_cpu_affinity", f::OPEN_CPU_AFFINITY);
     if s.fact(f::HAVE_CPU_AFFINITY) != 0
         && let Some(value) = s.get(c"cpu_affinity_ignore")
-        && !cpu_affinity_ignore(s, value)?
     {
-        return Err(Stop);
+        cpu_affinity_ignore(s, value)?;
     }
     Ok(())
 }
@@ -568,39 +571,24 @@ fn affinity() -> Result<Vec<c_int>, c_int> {
 }
 
 /// `php_swoole_server_set_cpu_affinity_ignore`: the CPUs left to bind workers
-/// to once `value`'s are taken out of this process's affinity. False: rejected.
-fn cpu_affinity_ignore(s: &Settings, value: &Value) -> Result<bool, Stop> {
+/// to once `value`'s are taken out of this process's affinity.
+fn cpu_affinity_ignore(s: &Settings, value: &Value) -> Step {
     let Some(ignored) = value.array() else {
-        fatal(E_ERROR, c"cpu_affinity_ignore must be array");
-        return Err(Stop);
+        return Err(invalid_setting(c"cpu_affinity_ignore must be array"));
     };
-    let mut cpus = match affinity() {
-        Ok(cpus) => cpus,
-        Err(error) => {
-            // php_swoole_sys_error(E_WARNING, "sched_getaffinity() failed")
-            set_last_error(error);
-            if display_errors() {
-                let reason = swoole_rs_phpruntime::strerror(error);
-                let text = message!(
-                    "sched_getaffinity() failed, Error: {}[{error}]",
-                    reason.to_string_lossy()
-                );
-                bailout::defer(report(E_WARNING, text.as_cstr()));
-            }
-            return checked().map(|()| false);
-        }
-    };
+    let mut cpus = affinity().map_err(|_| invalid_setting(c"sched_getaffinity() failed"))?;
     let items: Vec<&Value> = ignored.entries().map(|(_, item)| item).collect();
     for item in items {
         let cpu = Settings::long(item)?;
         cpus.retain(|&available| i64::from(available) != cpu);
     }
     if cpus.is_empty() {
-        fatal(E_ERROR, c"cpu_affinity_ignore excludes all available CPUs");
-        return Err(Stop);
+        return Err(invalid_setting(
+            c"cpu_affinity_ignore excludes all available CPUs",
+        ));
     }
     s.server().config().cpu_affinity_available.set(cpus);
-    Ok(true)
+    Ok(())
 }
 
 /// The HTTP, buffer, queue and thread options, and the final checks.
@@ -623,7 +611,12 @@ fn http(s: &Settings, this: ServerObject<'_>) -> Result<bool, Stop> {
         }
         if let Some(value) = s.get_any(&[c"http_compression_min_length", c"compression_min_length"])
         {
-            s.set(f::COMPRESSION_MIN_LENGTH, Settings::size(value)?);
+            let size = swoole_rs_phpswoole::nonnegative_setting(
+                c"compression_min_length",
+                Settings::size(value)?,
+            )
+            .ok_or(Stop)?;
+            s.set(f::COMPRESSION_MIN_LENGTH, i64::from(size));
         }
     }
     if s.fact(f::HAVE_ZLIB) != 0 {
@@ -649,7 +642,9 @@ fn http(s: &Settings, this: ServerObject<'_>) -> Result<bool, Stop> {
         }
     }
     if let Some(value) = s.get(c"upload_max_filesize") {
-        s.set(f::UPLOAD_MAX_FILESIZE, Settings::size(value)?);
+        let size = Settings::size(value)?;
+        swoole_rs_phpswoole::nonnegative_setting(c"upload_max_filesize", size).ok_or(Stop)?;
+        s.set(f::UPLOAD_MAX_FILESIZE, size);
     }
     s.flag(c"enable_static_handler", f::ENABLE_STATIC_HANDLER);
     if let Some(value) = s.get(c"document_root") {
@@ -712,8 +707,7 @@ fn http(s: &Settings, this: ServerObject<'_>) -> Result<bool, Stop> {
         let v = Settings::long(value)?;
         // A positive SysV key must fit key_t's unsigned counterpart.
         if v > i64::from(u32::MAX) {
-            fatal(E_ERROR, c"message_queue_key is out of range");
-            return Err(Stop);
+            return Err(invalid_setting(c"message_queue_key is out of range"));
         }
         s.set(f::MESSAGE_QUEUE_KEY, v.max(0));
     }
@@ -723,15 +717,12 @@ fn http(s: &Settings, this: ServerObject<'_>) -> Result<bool, Stop> {
     let ipc = s.fact(f::TASK_IPC_MODE);
     let queue = ipc == 2 || ipc == 3;
     if s.fact(f::HAVE_MSGQUEUE) == 0 && queue {
-        fatal(E_ERROR, c"not support `sysvmsg`");
-        return Err(Stop);
+        return Err(invalid_setting(c"not support `sysvmsg`"));
     }
     if s.fact(f::TASK_ENABLE_COROUTINE) != 0 && queue {
-        fatal(
-            E_ERROR,
+        return Err(invalid_setting(
             c"cannot use msgqueue when `task_enable_coroutine` is enable",
-        );
-        return Err(Stop);
+        ));
     }
     Ok(true)
 }
@@ -742,14 +733,12 @@ fn rewrite_rules(s: &Settings) -> Step {
         return Ok(());
     };
     let Some(array) = value.array() else {
-        fatal(E_ERROR, c"The `url_rewrite_rules` must be array");
-        return Err(Stop);
+        return Err(invalid_setting(c"The `url_rewrite_rules` must be array"));
     };
     for (key, value) in array.entries() {
         let value = value.dereferenced();
         let Some(replacement) = value.bytes() else {
-            fatal(E_ERROR, c"The `replacement` must be string");
-            return Err(Stop);
+            return Err(invalid_setting(c"The `replacement` must be string"));
         };
         // An integer key has no pattern: an empty one.
         let pattern = key.unwrap_or_default();

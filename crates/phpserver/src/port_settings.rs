@@ -2,7 +2,7 @@
 //! conversion and bound, in the order upstream reads them, written into the
 //! port's Rust-owned settings (crates/server's `PortConfig`), TLS owner and SNI
 //! contexts (crates/ports).
-use crate::settings::{Settings, Step, Stop, checked};
+use crate::settings::{Settings, Step, Stop, checked, invalid_setting};
 use std::ffi::{CStr, c_char, c_int};
 use swoole_rs_clients::protocol::{GetPackageLength, Protocol};
 use swoole_rs_corebase::CCast;
@@ -371,16 +371,6 @@ pub(crate) fn tls(s: &impl Source, owner: &OwnedTlsContext, dgram: bool) -> Step
 pub(crate) struct Zend<'a> {
     pub(crate) settings: Settings<'a>,
     pub(crate) port: view::Port<'a>,
-}
-
-pub(crate) fn invalid_setting(message: &CStr) -> Stop {
-    if swoole_rs_zend::host::exception().is_null() {
-        swoole_rs_phpswoole::exception().throw(
-            message,
-            swoole_rs_error::ErrorCode::SW_ERROR_INVALID_PARAMS as i64,
-        );
-    }
-    Stop
 }
 
 impl Source for Zend<'_> {
