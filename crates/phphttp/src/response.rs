@@ -17,7 +17,7 @@ use swoole_rs_phpswoole::MinitArgs;
 use swoole_rs_zend::bailout::Bailout;
 use swoole_rs_zend::{
     Call, Custom, CustomClass, Invalid, Owned, Value, ZStr, ZString, bailout, handlers,
-    sys::{IS_NULL, IS_OBJECT, IS_STRING, ZEND_ACC_PUBLIC, zend_long},
+    sys::{IS_NULL, IS_STRING, ZEND_ACC_PUBLIC, zend_long},
 };
 use swoole_rs_zend::{method_table, sys as z};
 
@@ -326,14 +326,9 @@ fn set_cookie(call: &Call, encode: bool) {
     else {
         return call.set_bool(false);
     };
-    let kind = name.kind();
-    if kind != IS_STRING && kind != IS_OBJECT {
-        host::notice("The first argument must be a string or an cookie object");
-        return call.set_bool(false);
-    }
     // The Set-Cookie line (crates/httpbindings), or null after a warning. Upstream builds
     // it before it uses the context, so a bad name warns on any response.
-    let cookie = if kind == IS_STRING {
+    let cookie = if name.kind() == IS_STRING {
         // A string argument, so `Z_PARAM_STR` reads it as it is.
         let name = call.zstr(1).ok().flatten();
         header_line(
