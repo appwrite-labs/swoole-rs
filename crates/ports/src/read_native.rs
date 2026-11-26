@@ -328,7 +328,8 @@ impl Connection for Read<'_> {
     fn upgrade(&mut self) -> Upgrade {
         let c = self.conn;
         Upgrade {
-            websocket: matches!(c.websocket(), WebSocket::Open(_)),
+            // The state `on_read` read: only a WebSocket port's connection opens.
+            websocket: self.frames.is_some(),
             upgraded: c.http_upgrade(),
             http2_stream: c.http2_stream(),
         }

@@ -106,6 +106,9 @@ struct Receive<'a> {
     http: bool,
     /// The port speaks WebSocket and has `onMessage` (asked only when `http` is false).
     websocket: bool,
+    /// The port speaks WebSocket: only its connections upgrade, so only theirs have a
+    /// WebSocket state to read.
+    websocket_port: bool,
     http2: bool,
     /// The connection's fd, when the session's addresses may be cached.
     cache: Option<usize>,
@@ -283,18 +286,21 @@ fn receive<'a>(
     let isset = |kind| php_swoole_server_isset_callback(server, Some(port), kind);
     // Only whether either is set routes the data, so onMessage is asked only without onRequest.
     let http = config.open_http_protocol.get() && isset(PortCallback::Request);
-    let websocket = !http && config.open_websocket_protocol.get() && isset(PortCallback::Message);
+    let websocket_port = config.open_websocket_protocol.get();
+    let websocket = !http && websocket_port && isset(PortCallback::Message);
     let mut facts = Receive {
         last_recv_time: conn.last_recv_time(),
         local_port: i64::from(conn.local_port()),
         remote_port: 0,
         loopback: 0,
-        open: match conn.websocket() {
-            WebSocket::Open(open) => Some(open),
-            _ => None,
+        open: if websocket_port && let WebSocket::Open(open) = conn.websocket() {
+            Some(open)
+        } else {
+            None
         },
         http,
         websocket,
+        websocket_port,
         http2: conn.http2_stream(),
         cache: None,
         coroutine: false,
@@ -521,13 +527,15 @@ fn handle(
     if swoole_isset_hook(HookType::BEFORE_REQUEST) {
         ctx.call_hook(context::Hook::BeforeRequest);
     }
-    // Parsing an upgrade request sets the connection's state.
-    let requested = server
-        .by_session(session)
-        .and_then(|conn| match conn.websocket() {
-            WebSocket::Requested(requested) => Some(requested),
-            _ => None,
-        });
+    // Parsing an upgrade request on a WebSocket port sets the connection's state.
+    let requested = if facts.websocket_port
+        && let Some(conn) = server.by_session(session)
+        && let WebSocket::Requested(requested) = conn.websocket()
+    {
+        Some(requested)
+    } else {
+        None
+    };
     let handshake = requested.is_some();
     let kind = if handshake {
         PortCallback::Handshake
@@ -802,6 +810,7 @@ mod tests {
             open,
             http,
             websocket,
+            websocket_port: true,
             http2,
             cache: None,
             coroutine: false,
