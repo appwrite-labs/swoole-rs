@@ -9,10 +9,11 @@ use crate::socket_wait::wait_retry;
 use core::ffi::c_int;
 use core::marker::PhantomData;
 use std::io::{IoSlice, IoSliceMut};
-use swoole_rs_corebase::lent::{Spare, SpareVectors};
+use swoole_rs_corebase::lent::Spare;
 use swoole_rs_corebase::reactor::Events;
 use swoole_rs_corebase::reactor::{
-    Drain, Plain, ReactorIov, Socket, swr_v1_reactor_iov_view, swr_v1_socket_iov_owned,
+    Drain, Plain, ReactorIov, Socket, SpareVectors, swr_v1_reactor_iov_view,
+    swr_v1_socket_iov_owned,
 };
 use swoole_rs_corebase::tls::upstream::{ssl_recv_spare, ssl_send_drain};
 

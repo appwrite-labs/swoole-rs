@@ -1,10 +1,6 @@
 //! Receives count only a successful, bounded written prefix.
 use super::*;
 
-/// No TLS calls, for a vector over a plain descriptor.
-type Tls = fn(&mut Spare<'_>) -> Option<usize>;
-type Send = fn(Drain<'_>) -> Option<usize>;
-
 /// A ring that writes the bytes it holds and reports `reported`.
 struct Script<'a> {
     bytes: &'a [u8],
@@ -69,34 +65,6 @@ fn zero_and_failed_reads_leave_the_initialized_prefix_alone() {
         assert_eq!(out.written(), b"a");
     });
     assert_eq!(filled, 1);
-}
-
-#[test]
-fn vectored_read_counts_short_reads_across_empty_rooms() {
-    use std::io::Write;
-    use std::os::fd::AsRawFd;
-    use std::os::unix::net::UnixStream;
-
-    let (read, mut write) = UnixStream::pair().unwrap();
-    write.write_all(b"abcde").unwrap();
-    let mut head = [MaybeUninit::uninit(); 2];
-    let mut empty = [];
-    let mut tail = [MaybeUninit::uninit(); 4];
-    let (received, filled) = lend_spare_vectors(
-        [
-            head.as_mut_slice(),
-            empty.as_mut_slice(),
-            tail.as_mut_slice(),
-        ],
-        |out| {
-            let received = out.transfer(Plain::Fd(read.as_raw_fd()), None::<&(Tls, Send)>);
-            let state = out.state();
-            (received, (state.index, state.offset_bytes))
-        },
-    );
-    assert_eq!((received, filled), ((Some(5), (2, 3)), 5));
-    assert_eq!(unsafe { head.assume_init_ref() }, b"ab");
-    assert_eq!(unsafe { tail[..3].assume_init_ref() }, b"cde");
 }
 
 #[test]

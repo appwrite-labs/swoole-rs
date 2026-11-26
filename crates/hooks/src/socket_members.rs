@@ -20,11 +20,11 @@ use crate::uring_socket as ring;
 use crate::vector::{RecvMessage, SendMessage, Vectored, vector_all};
 use core::ffi::{CStr, c_int};
 use swoole_rs_corebase::constants::{SW_STACK_BUFFER_SIZE, SocketType};
-use swoole_rs_corebase::lent::{Spare, SpareVectors, lend_spare};
+use swoole_rs_corebase::lent::{Spare, lend_spare};
 use swoole_rs_corebase::log;
 use swoole_rs_corebase::reactor::Events;
 use swoole_rs_corebase::reactor::{
-    Drain, Event, Running, Socket, SocketAddress, SocketFields, SocketRecord,
+    Drain, Event, Running, Socket, SocketAddress, SocketFields, SocketRecord, SpareVectors,
 };
 use swoole_rs_corebase::sys::{self, ReadSlot, strerror};
 use swoole_rs_corebase::tls::upstream::{
