@@ -337,12 +337,12 @@ fn socket_closed(conn: &Conn, socket: Co) {
 pub fn parse_set_cookies(bytes: &[u8], cookies: &mut ArrayMut, set_cookie_headers: &mut ArrayMut) {
     let plan = swoole_rs_clients::cookie(bytes);
     let end = plan.value_offset + plan.value_length;
-    let mut text = bytes
-        .get(plan.value_offset..end)
-        .unwrap_or_default()
-        .to_vec();
-    let length = swoole_rs_http::url_decode(&mut text);
-    let cookie = Owned::from(ZString::new(text.get(..length).unwrap_or_default()));
+    let value = bytes.get(plan.value_offset..end).unwrap_or_default();
+    let cookie = Owned::from(if value.is_empty() {
+        ZString::empty()
+    } else {
+        ZString::url_decode(value)
+    });
     if plan.key_length == 0 {
         cookies.push(cookie);
     } else {
