@@ -39,6 +39,7 @@
   "crates/phpcoroutines/src/context.rs:zend_observer_fiber_init_notify": "context.rs fiber notifications use Zend native observer callbacks, not PHP callables; observers must return to the fiber-switch protocol.",
   "crates/phpcoroutines/src/context.rs:zend_observer_fiber_switch_notify": "context.rs fiber notifications use Zend native observer callbacks, not PHP callables; observers must return to the fiber-switch protocol.",
   "crates/phpcoroutines/src/context.rs:zend_throw_exception_internal": "context.rs throw: hands the built-in exception to the active user frame as pending state; PHP handles it on resumption.",
+  "crates/phpcoroutines/src/context.rs:zend_update_property": "Copies the reason over the null default of a fresh final CanceledException. Its private untyped property has no hook, coercion or previous object to release.",
   "crates/phpcoroutines/src/host.rs:swr_zend_coroutine_run": "shim_coroutine.c: zend_first_try encloses the coroutine call and defers; returns the caught status.",
   "crates/phpcoroutines/src/leased.rs:swr_zend_coroutine_called_by_destructor": "Executor/frame read only; no callback or PHP execution (shim_coroutine.c, shim_tracer.c).",
   "crates/phpcoroutines/src/leased.rs:swr_zend_coroutine_print_trace": "shim_coroutine.c: SWR_ZEND_TRY encloses backtrace formatting, output and destruction.",

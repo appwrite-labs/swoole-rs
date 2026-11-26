@@ -88,6 +88,14 @@ unsafe extern "C" {
     safe fn zend_objects_new(class: ExceptionClass) -> Exception;
     /// Populate a fresh object of this class with its declared property defaults.
     safe fn object_properties_init(object: Lent<'_>, class: ExceptionClass);
+    /// Set the fresh internal exception's declared, untyped property before exposure to PHP.
+    safe fn zend_update_property(
+        scope: ExceptionClass,
+        object: Lent<'_>,
+        name: &[u8; 6],
+        len: usize,
+        value: &Value,
+    );
     /// The exception's file and line, from the frame Zend runs.
     safe fn swr_zend_coroutine_locate(exception: Lent<'_>);
     /// Hands `exception` to Zend as the running frame's pending exception.
@@ -154,9 +162,13 @@ struct Lent<'a>(
 
 impl Exception {
     /// A new object of `class`, with no constructor run.
-    pub(crate) fn new(class: ExceptionClass) -> Self {
+    pub(crate) fn new(class: ExceptionClass, reason: Option<&Value>) -> Self {
         let exception = zend_objects_new(class);
         object_properties_init(exception.lend(), class);
+        if let Some(reason) = reason {
+            let name = b"reason";
+            zend_update_property(class, exception.lend(), name, name.len(), reason);
+        }
         exception
     }
 

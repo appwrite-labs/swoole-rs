@@ -134,6 +134,12 @@ method_table! {
     ];
 }
 
+method_table! {
+    static CANCELED_METHODS = [
+        c"getReason" => zim_swoole_canceled_exception_getReason, &coroutine::arginfo_class_Swoole_Coroutine_CanceledException_getReason, z::ZEND_ACC_PUBLIC;
+    ];
+}
+
 /// `php_swoole_coroutine_minit`, after `Swoole\Exception` and SPL's classes.
 /// # Errors
 /// A registration bailed out.
@@ -195,10 +201,11 @@ pub fn php_swoole_coroutine_minit(minit: &Minit) -> Result<(), Bailout> {
     minit.register_child(
         &CANCELED,
         canceled,
-        swoole_rs_zend::arginfo::Table::NONE,
+        CANCELED_METHODS.table(),
         minit.exception(),
         final_class,
     );
+    minit.property_null(&CANCELED, c"reason", ZEND_ACC_PRIVATE);
     let timeout = c"Swoole\\Coroutine\\TimeoutException";
     minit.register_child(
         &TIMEOUT,
@@ -296,6 +303,7 @@ impl Handler for Exit {
 }
 
 swoole_rs_zend::handlers! {
+    zim_swoole_canceled_exception_getReason => get_reason;
     zif_swoole_exit => exit;
     zim_swoole_exit_exception_getFlags => get_flags;
     zim_swoole_exit_exception_getStatus => get_status;
@@ -339,6 +347,10 @@ fn property(call: &Call, name: &CStr) {
         Some(Err(bailout)) => bailout.defer(),
         Some(Ok(None)) | None => {}
     }
+}
+
+fn get_reason(call: &Call) {
+    property(call, c"reason");
 }
 
 /// `ExitException::getFlags()`.
