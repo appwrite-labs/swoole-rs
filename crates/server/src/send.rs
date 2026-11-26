@@ -165,9 +165,7 @@ fn send_now<'a>(
     ))
 }
 
-/// `Server::send_to_connection(send)`: false for `SW_ERR`. Where a send fails after
-/// the connection was found upstream returns `false`, which its `int` makes 0, the
-/// same as `SW_OK`: true here too.
+/// `Server::send_to_connection(send)`: false for `SW_ERR`.
 ///
 /// A file's payload is its `SendfileTask` and name.
 #[expect(
@@ -310,7 +308,7 @@ fn to_connection(serv: Server<'_>, info: &DataHead, data: &[u8], first: Option<i
         }
     } else if file {
         if !send_file(*sock, data) {
-            return true;
+            return false;
         }
     } else {
         if conn.peer_closed() {
@@ -707,7 +705,10 @@ mod tests {
             a.sock().read(|s| s.events.intersects(Events::WRITE)),
             "waits to write"
         );
-        assert_eq!(a.send(ServerEvent::SendFile, 1, &task(b"no-such-file")), 0);
+        assert_eq!(
+            a.send(ServerEvent::SendFile, 1, &task(b"no-such-file")),
+            SW_ERR
+        );
     }
 
     #[test]
