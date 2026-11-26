@@ -1058,6 +1058,7 @@ impl Client {
         }
         match read {
             Payload::Headers(Some(error)) => {
+                self.close();
                 let text = format!("nghttp2_hd_inflate_hd failed with error: {error}");
                 self.update_error(Error::CODE, text.as_bytes());
                 return Frame::Fail;
