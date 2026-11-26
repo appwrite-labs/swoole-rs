@@ -1,7 +1,9 @@
-"""autobahn.py's verdict: a case fails only by doing worse than on the control engine."""
+"""autobahn.py's verdict: a case fails by doing worse than on the control engine or by leaving the baseline."""
+from pathlib import Path
+import tempfile
 import unittest
 
-from autobahn import regressions
+from autobahn import against_baseline, regressions
 
 
 def case(behavior, close='OK'):
@@ -17,6 +19,13 @@ class Verdict(unittest.TestCase):
         self.assertEqual(regressions(upstream, cargo), ['2.1', '4.1', '6.1', '7.1'],
                          'equal or failing on both passes; worse, or missing, fails')
         self.assertEqual(regressions(cargo, upstream), [], 'doing better than the control is fine')
+
+    def test_baseline(self):
+        with tempfile.TemporaryDirectory() as work:
+            path = Path(work) / 'autobahn.baseline'
+            path.write_text('# header\n1.1.1\n2.1  # note\n\n3.1\n')
+            self.assertEqual(against_baseline(path, ['1.1.1', '4.1'], ['1.1.1', '2.1', '4.1']), (['2.1'], ['4.1']),
+                             'a listed case that ran and failed is lost; one that did not run is not; new passes list')
 
 
 if __name__ == '__main__':

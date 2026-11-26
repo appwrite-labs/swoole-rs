@@ -93,6 +93,15 @@ jobs:
         env:
           PR_BODY: ${{ github.event.pull_request.body }}
         run: python3 tools/budget.py --base HEAD^1
+      # The conformance baselines (tests/modules/*/*.baseline) only grow: removing a case needs
+      # the needs:decision label (#5707). Re-run this job after adding the label.
+      - name: Check conformance baselines
+        if: ${{ !contains(github.event.pull_request.labels.*.name, 'needs:decision') }}
+        run: |
+          if git diff -U0 HEAD^1 -- 'tests/modules/*/*.baseline' | grep -E '^-[^-#]'; then
+            echo 'A conformance baseline lost the cases above; lowering it needs needs:decision.' >&2
+            exit 1
+          fi
       - name: Test tooling
         run: tests/dev/run.sh
 
