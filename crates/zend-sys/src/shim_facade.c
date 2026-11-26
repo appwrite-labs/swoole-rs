@@ -10,7 +10,9 @@ int swr_zend_try_facade_truth(zval *value, bool *result) {
 }
 int swr_zend_try_facade_callable(zval *value, zend_fcall_info_cache *cache, bool *result) {
     volatile int bailed = 0;
-    SWR_ZEND_TRY { *result = zend_is_callable_at_frame(value, NULL, NULL, 0, cache, NULL); }
+    SWR_ZEND_TRY {
+        *result = cache ? zend_is_callable_at_frame(value, NULL, NULL, 0, cache, NULL) : zend_is_callable(value, 0, NULL);
+    }
     SWR_ZEND_CATCH { bailed = 1; } SWR_ZEND_END_TRY();
     return bailed;
 }

@@ -17,10 +17,10 @@ use std::{
 unsafe extern "C" {
     /// `zend_is_true(value)` into `truth`.
     safe fn swr_zend_try_facade_truth(value: &Value, truth: &mut bool) -> c_int;
-    /// `zend_is_callable_at_frame(value, ...)` into `valid`, resolving `cache`.
+    /// Resolve into the supplied cache, or check callability in the active scope without keeping a cache.
     safe fn swr_zend_try_facade_callable(
         value: &Value,
-        cache: &mut zend_fcall_info_cache,
+        cache: Option<&mut zend_fcall_info_cache>,
         valid: &mut bool,
     ) -> c_int;
     /// `zend_get_callable_name_ex(value)` into `name`, in place of what it
@@ -34,6 +34,16 @@ unsafe extern "C" {
         cache: &mut zend_fcall_info_cache,
         valid: &mut bool,
     ) -> c_int;
+}
+
+/// Check callability in the active PHP scope.
+///
+/// # Errors
+/// Resolving the callable ran PHP code that bailed out.
+pub fn is_callable(value: &Value) -> Result<bool, bailout::Bailout> {
+    let mut valid = false;
+    bailout::trapped(swr_zend_try_facade_callable(value, None, &mut valid))?;
+    Ok(valid)
 }
 
 /// A callable resolved in the scope of a running call
@@ -280,7 +290,7 @@ fn create(value: &Value) -> Result<Box<Callable>, bailout::Bailout> {
         let mut valid = false;
         let failed = deferred(swr_zend_try_facade_callable(
             value,
-            state.cache.get_mut(),
+            Some(state.cache.get_mut()),
             &mut valid,
         ));
         if !failed {

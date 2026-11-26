@@ -340,15 +340,24 @@ fn set(call: &Call) {
     }
 }
 
-/// `php_swoole_coroutine_set_exit_condition`: keep `condition` if it is
-/// callable (warning otherwise) and install or clear the reactor's user exit
-/// condition to match.
+/// Validate the replacement before releasing the active reactor callback.
 fn set_exit_condition(condition: &Value) -> Result<(), Bailout> {
-    release_exit_condition()?;
-    let handle = kept::Callable::new(condition)?;
-    let installed = handle.is_some();
-    drop(EXIT_CONDITION.with(|c| c.replace(handle)));
-    host::set_exit_condition(installed);
+    let valid = kept::is_callable(condition)?;
+    if !swoole_rs_zend::host::exception().is_null() {
+        return Ok(());
+    }
+    if !valid {
+        swoole_rs_phpswoole::exception().throw(
+            c"configuration callback must be callable",
+            i64::from(host::SW_ERROR_INVALID_PARAMS),
+        );
+        return bailout::outcome(());
+    }
+    if let Some(handle) = kept::Callable::new(condition)? {
+        drop(EXIT_CONDITION.with(|slot| slot.replace(Some(handle))));
+        bailout::outcome(())?;
+        host::set_exit_condition(true);
+    }
     Ok(())
 }
 
