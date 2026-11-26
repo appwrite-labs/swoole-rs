@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Compatibility derived from Swoole v6.2.4 src/os/base.cc (Swoole contributors).
 //! Upstream `src/os/base.cc`, under its C++ symbols: the
-//! root check, daemonizing, user/group/chroot isolation, parent-death signal, CPU
+//! root check, user/group/chroot isolation, parent-death signal, CPU
 //! affinity, native thread id and thread names. Logs name the function as
 //! upstream's `__SW_FUNC__` did.
 use crate::log;
@@ -13,14 +13,6 @@ use std::ffi::CStr;
 // caller memory: the caller's ids and session are the kernel's to check.
 unsafe extern "C" {
     safe fn geteuid() -> libc::uid_t;
-    #[cfg(target_vendor = "apple")]
-    safe fn setsid() -> libc::pid_t;
-    /// Leaves the process at once, running no exit handler and no destructor.
-    #[cfg(target_vendor = "apple")]
-    safe fn _exit(status: c_int) -> !;
-    /// Forks and leaves the parent, as `daemon(3)`.
-    #[cfg(not(target_vendor = "apple"))]
-    safe fn daemon(nochdir: c_int, noclose: c_int) -> c_int;
     safe fn setgid(gid: libc::gid_t) -> c_int;
     safe fn setuid(uid: libc::uid_t) -> c_int;
     #[link_name = "pthread_self"]
@@ -58,93 +50,6 @@ unsafe extern "C" {
 #[must_use]
 pub fn swr_v1_os_is_root_user() -> bool {
     geteuid() == 0
-}
-
-/// `swoole_daemon`'s Darwin steps before the fork: `chdir("/")` unless `nochdir`,
-/// then stdin/stdout/stderr onto `/dev/null` unless `noclose`. Logs the failed step.
-#[cfg(target_vendor = "apple")]
-fn daemon_detach(nochdir: bool, noclose: bool) -> bool {
-    use crate::sys;
-    if !nochdir && sys::chdir(c"/").is_err() {
-        log::sys_warning(c"swoole_daemon", format_args!("chdir() failed"));
-        return false;
-    }
-    if noclose {
-        return true;
-    }
-    let Ok(fd) = sys::open(c"/dev/null", libc::O_RDWR, 0) else {
-        log::sys_warning(c"swoole_daemon", format_args!("open() failed"));
-        return false;
-    };
-    // dup2 onto the standard descriptors, as upstream.
-    let redirected = (0..3).all(|target| sys::dup2(fd, target).is_ok());
-    if !redirected {
-        log::sys_warning(c"swoole_daemon", format_args!("dup2() failed"));
-    }
-    _ = sys::close(fd);
-    redirected
-}
-
-/// `SW_FORK_DAEMON` and `SW_FORK_PRECHECK`.
-#[cfg(target_vendor = "apple")]
-const FORK_DAEMON: c_int = crate::constants::ForkType::SW_FORK_DAEMON as c_int;
-#[cfg(not(target_vendor = "apple"))]
-const FORK_PRECHECK: c_int = crate::constants::ForkType::SW_FORK_PRECHECK as c_int;
-
-/// The operation that prevented the process from becoming a daemon.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum DaemonError {
-    /// Detaching from the working directory or standard streams failed.
-    Detach,
-    /// The fork precheck or fork failed.
-    Fork,
-    /// The child could not create a new session.
-    #[cfg(target_vendor = "apple")]
-    Session,
-}
-
-/// `int swoole_daemon(int nochdir, int noclose)`. Darwin's `daemon(3)` is
-/// deprecated, so it detaches, forks and calls `setsid` itself.
-#[cfg(target_vendor = "apple")]
-/// # Errors
-/// Returns the step that prevented daemonization.
-pub fn swoole_daemon(nochdir: c_int, noclose: c_int) -> Result<(), DaemonError> {
-    if !daemon_detach(nochdir != 0, noclose != 0) {
-        return Err(DaemonError::Detach);
-    }
-    // Upstream's fork; it rejects a coroutine or async-thread caller itself.
-    let pid = crate::swoole_fork(FORK_DAEMON);
-    if pid < 0 {
-        log::sys_warning(c"swoole_daemon", format_args!("fork() failed"));
-        return Err(DaemonError::Fork);
-    }
-    if pid > 0 {
-        // The parent leaves without running exit handlers, as upstream.
-        _exit(0);
-    }
-    if setsid() < 0 {
-        log::sys_warning(c"swoole_daemon", format_args!("setsid() failed"));
-        return Err(DaemonError::Session);
-    }
-    Ok(())
-}
-
-/// `int swoole_daemon(int nochdir, int noclose)`: `daemon(3)`, then the
-/// after-fork hooks, since the pid changed (PHP 8.5 refreshes its memory
-/// manager after a fork, and `daemon(3)` forks behind its back).
-#[cfg(not(target_vendor = "apple"))]
-/// # Errors
-/// Returns the step that prevented daemonization.
-pub fn swoole_daemon(nochdir: c_int, noclose: c_int) -> Result<(), DaemonError> {
-    // Upstream's fork precheck; it forks nothing (-1 before `swoole_init`).
-    if crate::swoole_fork(FORK_PRECHECK) < 0 {
-        return Err(DaemonError::Fork);
-    }
-    if daemon(nochdir, noclose) != 0 {
-        return Err(DaemonError::Detach);
-    }
-    crate::hook::call(crate::hook::Hook::AfterFork);
-    Ok(())
 }
 
 /// A step of `swoole_set_isolation` that failed.
