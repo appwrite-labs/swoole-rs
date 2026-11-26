@@ -24,10 +24,10 @@ use swoole_rs_http2::{
     Http2WindowPlan, Media, PING_PAYLOAD, WINDOW_UPDATE_SIZE, decode_packet,
     hpack::{self, Decoder, Encoder, Error, MAX_DECODED_STRING},
     send_frame_size, sw_rs_http2_chunk, sw_rs_http2_default_settings, sw_rs_http2_header_plan,
-    sw_rs_http2_headers_flags, sw_rs_http2_inflate_step, sw_rs_http2_media_kind,
-    sw_rs_http2_pack_frame_header, sw_rs_http2_pack_settings, sw_rs_http2_response,
-    sw_rs_http2_send_complete, sw_rs_http2_setting_plan, sw_rs_http2_stream_flags,
-    sw_rs_http2_stream_update, sw_rs_http2_window_plan, sw_rs_http2_write_allowed,
+    sw_rs_http2_headers_flags, sw_rs_http2_media_kind, sw_rs_http2_pack_frame_header,
+    sw_rs_http2_pack_settings, sw_rs_http2_response, sw_rs_http2_send_complete,
+    sw_rs_http2_setting_plan, sw_rs_http2_stream_flags, sw_rs_http2_stream_update,
+    sw_rs_http2_window_plan, sw_rs_http2_write_allowed,
 };
 use swoole_rs_inflate::{DecodeError, Inflate};
 use swoole_rs_phphttp::http2::{IdMap, entries};
@@ -169,11 +169,18 @@ impl Response {
     }
 }
 
+#[derive(Clone, Copy)]
+struct HeaderBlock {
+    stream_id: u32,
+    end_stream: u32,
+    trailing: bool,
+}
+
 enum FrameReadError {
     InvalidMaxFrameSize(u32),
     Short,
     InvalidLength(&'static [u8]),
-    InvalidPadding(&'static [u8]),
+    Protocol(&'static [u8]),
 }
 
 /// What a frame's payload held, read while the read buffer was on loan.
@@ -224,6 +231,7 @@ struct Client {
     ssl: bool,
     stream_id: Cell<u32>,
     last_stream_id: Cell<u32>,
+    continuation: Cell<Option<HeaderBlock>>,
     local: Http2Settings,
     decoded_body_limit: Cell<usize>,
     remote: Cell<Http2Settings>,
@@ -366,6 +374,7 @@ impl Client {
             ssl,
             stream_id: Cell::new(0),
             last_stream_id: Cell::new(0),
+            continuation: Cell::default(),
             local,
             decoded_body_limit: Cell::new(swoole_rs_inflate::DEFAULT_BODY_LIMIT),
             remote: Cell::default(),
@@ -483,6 +492,7 @@ impl Client {
             return self.connect_failed(socket);
         }
         self.stream_id.set(1);
+        self.continuation.set(None);
         let remote = sw_rs_http2_default_settings();
         self.remote.set(remote);
         self.local_window
@@ -856,9 +866,18 @@ impl Client {
     /// payload is needed for done: the read buffer is on loan to the caller, so
     /// nothing here yields or runs PHP code.
     fn read_frame(&self, packet: &[u8]) -> Result<(Http2FrameFacts, Payload), FrameReadError> {
-        let (facts, payload) = decode_packet(packet, self.last_stream_id.get(), true)
+        let (mut facts, payload) = decode_packet(packet, self.last_stream_id.get(), true)
             .map_err(|_| FrameReadError::Short)?;
         let id = facts.stream_id;
+        let continuation = self.continuation.get();
+        let continued = facts.action == FrameAction::Continuation;
+        if continued != continuation.is_some()
+            || continuation.is_some_and(|block| block.stream_id != id)
+        {
+            return Err(FrameReadError::Protocol(
+                b"invalid CONTINUATION frame sequence",
+            ));
+        }
         let known = || self.streams.with_taken(|streams| streams.contains_key(&id));
         let read = match facts.action {
             FrameAction::Settings => {
@@ -908,18 +927,32 @@ impl Client {
                     debug: debug.to_vec(),
                 }
             }
-            FrameAction::Headers if known() => {
-                let payload = unpadded(payload, facts.flags).ok_or(
-                    FrameReadError::InvalidPadding(b"invalid HEADERS frame padding"),
-                )?;
-                let block = if facts.flags & FLAG_PRIORITY != 0 {
-                    payload.get(5..).ok_or(FrameReadError::InvalidLength(
-                        b"invalid HEADERS frame length",
-                    ))?
-                } else {
-                    payload
-                };
-                Payload::Headers(self.parse_header(id, block))
+            FrameAction::Headers | FrameAction::Continuation if known() => {
+                let mut block = continuation.unwrap_or_else(|| HeaderBlock {
+                    stream_id: id,
+                    end_stream: facts.flags & FLAG_END_STREAM,
+                    trailing: self.streams.with_taken(|streams| {
+                        streams
+                            .get(&id)
+                            .is_some_and(|stream| stream.received_headers)
+                    }),
+                });
+                let mut fragment = payload;
+                if !continued {
+                    fragment = unpadded(fragment, facts.flags)
+                        .ok_or(FrameReadError::Protocol(b"invalid HEADERS frame padding"))?;
+                    if facts.flags & FLAG_PRIORITY != 0 {
+                        fragment = fragment.get(5..).ok_or(FrameReadError::InvalidLength(
+                            b"invalid HEADERS frame length",
+                        ))?;
+                    }
+                }
+                let last = facts.flags & swoole_rs_http2::frame_flag::END_HEADERS != 0;
+                let error = self.parse_header(&mut block, fragment, last);
+                self.continuation.set((!last).then_some(block));
+                facts.action = FrameAction::Headers;
+                facts.flags = block.end_stream;
+                Payload::Headers(error)
             }
             FrameAction::Data if known() => Payload::Data(
                 payload.len(),
@@ -947,7 +980,7 @@ impl Client {
             Err(error) => {
                 match error {
                     FrameReadError::Short => return Frame::Fail,
-                    FrameReadError::InvalidPadding(message) => {
+                    FrameReadError::Protocol(message) => {
                         self.close();
                         self.update_error(error_code::PROTOCOL_ERROR.cast_signed(), message);
                     }
@@ -1027,7 +1060,9 @@ impl Client {
             Payload::Headers(Some(error)) => {
                 let text = format!("nghttp2_hd_inflate_hd failed with error: {error}");
                 self.update_error(Error::CODE, text.as_bytes());
+                return Frame::Fail;
             }
+            Payload::Headers(None) if self.continuation.get().is_some() => return Frame::Continue,
             Payload::Data(length, buffered) => {
                 if let Err(frame) = self.open_windows(id, length, buffered) {
                     return frame;
@@ -1142,9 +1177,8 @@ impl Client {
         if length > stream.local_window.min(self.local_window.get()) {
             return Ok(Buffered::ExceededWindow);
         }
-        let payload = unpadded(payload, flags).ok_or(FrameReadError::InvalidPadding(
-            b"invalid DATA frame padding",
-        ))?;
+        let payload = unpadded(payload, flags)
+            .ok_or(FrameReadError::Protocol(b"invalid DATA frame padding"))?;
         if length == 0 {
             return Ok(Buffered::Nothing);
         }
@@ -1220,10 +1254,11 @@ impl Client {
 
     /// `parse_header`: HPACK-decode a HEADERS block onto the stream's response.
     /// Its failure is the caller's to report.
-    fn parse_header(&self, id: u32, input: &[u8]) -> Option<Error> {
-        let (response, trailing) = self.streams.with_taken(|streams| {
-            let stream = streams.get(&id)?;
-            Some((stream.response.zval.copy(), stream.received_headers))
+    fn parse_header(&self, block: &mut HeaderBlock, input: &[u8], last: bool) -> Option<Error> {
+        let response = self.streams.with_taken(|streams| {
+            streams
+                .get(&block.stream_id)
+                .map(|stream| stream.response.zval.copy())
         })?;
         let props = response.props(Some(&RESPONSE))?;
         props
@@ -1234,9 +1269,9 @@ impl Client {
                             let (decoder, field, _) = hpack.as_mut()?;
                             self.decode_block(
                                 (decoder, field),
-                                id,
-                                input,
-                                (props, trailing),
+                                block,
+                                (input, last),
+                                props,
                                 (headers, cookies, set_cookie_headers),
                             )
                         })
@@ -1251,13 +1286,13 @@ impl Client {
     fn decode_block(
         &self,
         (decoder, field): (&Decoder, &mut hpack::Field),
-        id: u32,
-        mut input: &[u8],
-        (props, mut trailing): (Props<'_>, bool),
+        block: &mut HeaderBlock,
+        (mut input, last): (&[u8], bool),
+        props: Props<'_>,
         (headers, cookies, set_cookie_headers): (&mut ArrayMut, &mut ArrayMut, &mut ArrayMut),
     ) -> Option<Error> {
         loop {
-            let step = match decoder.decode(input, true, field) {
+            let step = match decoder.decode(input, last, field) {
                 Ok(step) => step,
                 Err(error) => break Some(error),
             };
@@ -1265,15 +1300,14 @@ impl Client {
                 break Some(Error);
             };
             input = rest;
-            let flags = step.flags();
             if let Some((name, text)) = step.header {
                 let kind = header_kind(HeaderRole::Response, name);
                 if name.first() == Some(&b':') {
                     if kind == HeaderKind::Status {
                         props.own().long(c"statusCode", atol(text));
-                        trailing = false;
+                        block.trailing = false;
                         self.streams.with_taken(|streams| {
-                            if let Some(stream) = streams.get_mut(&id) {
+                            if let Some(stream) = streams.get_mut(&block.stream_id) {
                                 stream.received_headers = true;
                             }
                         });
@@ -1281,7 +1315,7 @@ impl Client {
                 } else {
                     if kind == HeaderKind::ContentEncoding && media_kind(text) == Media::Gzip {
                         self.streams.with_taken(|streams| {
-                            if let Some(stream) = streams.get_mut(&id)
+                            if let Some(stream) = streams.get_mut(&block.stream_id)
                                 && let Some(buffer) = &stream.buffer
                             {
                                 stream
@@ -1293,19 +1327,18 @@ impl Client {
                         swoole_rs_phpclients::parse_set_cookies(text, cookies, set_cookie_headers);
                     }
                     headers.insert_bytes(name, Some(text));
-                    if trailing {
+                    if block.trailing {
                         props.edit_array(c"trailers", |trailers| {
                             trailers.insert_bytes(name, Some(text));
                         });
                     }
                 }
             }
-            let step = sw_rs_http2_inflate_step(flags, input.len(), true);
-            // The input is always the whole block, so a finished step ends it, even
-            // on a field before a final step (where upstream leaves nghttp2 in the
-            // block and refuses the next block's table size update).
-            if step.end_headers || step.finish {
+            if step.done {
                 decoder.end_headers();
+                break None;
+            }
+            if !last && input.is_empty() {
                 break None;
             }
         }
