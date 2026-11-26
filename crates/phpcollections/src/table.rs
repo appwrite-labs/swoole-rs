@@ -13,7 +13,7 @@ use std::{
 use swoole_rs_corebase::memory::{
     members::SharedTable,
     table::{
-        Column, ColumnType, Current, KEY_SIZE, Locked, TYPE_FLOAT, TYPE_INT, TYPE_STRING,
+        Column, ColumnType, Current, KEY_SIZE, Locked, TYPE_FLOAT, TYPE_INT, TYPE_STRING, Table,
         field_bytes, field_number,
     },
 };
@@ -80,6 +80,8 @@ method_table! {
         c"create" => zim_swoole_table_create, &table::arginfo_class_Swoole_Table_create, ZEND_ACC_PUBLIC;
         c"destroy" => zim_swoole_table_destroy, &table::arginfo_class_Swoole_Table_destroy, ZEND_ACC_PUBLIC;
         c"set" => zim_swoole_table_set, &table::arginfo_class_Swoole_Table_set, ZEND_ACC_PUBLIC;
+        c"add" => zim_swoole_table_add, &table::arginfo_class_Swoole_Table_add, ZEND_ACC_PUBLIC;
+        c"update" => zim_swoole_table_update, &table::arginfo_class_Swoole_Table_update, ZEND_ACC_PUBLIC;
         c"get" => zim_swoole_table_get, &table::arginfo_class_Swoole_Table_get, ZEND_ACC_PUBLIC;
         c"getdel" => zim_swoole_table_getdel, &table::arginfo_class_Swoole_Table_getdel, ZEND_ACC_PUBLIC;
         c"count" => zim_swoole_table_count, &table::arginfo_class_Swoole_Table_count, ZEND_ACC_PUBLIC;
@@ -143,10 +145,12 @@ fn valid_key(call: &Call, key: &[u8]) -> bool {
 /// `php_swoole_error(E_WARNING, "failed to set('%*s'), unable to allocate
 /// memory", (int) keylen, key)`: the key up to a NUL, right-aligned to its
 /// length; shown when `swoole.display_errors` is on.
-fn set_failed(key: &[u8]) {
+fn write_failed(key: &[u8], operation: &[u8]) {
     let text = key.split(|&b| b == 0).next().unwrap_or_default();
     let mut message = Message::new();
-    message.push(b"failed to set('");
+    message.push(b"failed to ");
+    message.push(operation);
+    message.push(b"('");
     for _ in text.len()..key.len() {
         message.push(b" ");
     }
@@ -323,7 +327,18 @@ fn convert<T>(call: &Call, read: impl FnOnce() -> Option<T>) -> Option<T> {
 
 /// `set(string $key, array $value): bool`.
 fn set(call: &Call) {
-    let Some(table) = created(call) else { return };
+    write(call, Table::lock_set, b"set");
+}
+
+fn add(call: &Call) {
+    write(call, Table::lock_add, b"add");
+}
+
+fn update(call: &Call) {
+    write(call, Table::lock_update, b"update");
+}
+
+fn write(call: &Call, lock: for<'a> fn(&'a Table, &[u8]) -> Option<Locked<'a>>, operation: &[u8]) {
     let parsed = call
         .arity(2, 2)
         .and_then(|()| Ok((call.string(1, b"")?, call.array_ref(2)?)));
@@ -331,11 +346,7 @@ fn set(call: &Call) {
         call.set_bool(false);
         return;
     };
-    if !table.ready() {
-        fatal(E_ERROR, c"the table object does not exist");
-        call.set_bool(false);
-        return;
-    }
+    let Some(table) = created(call) else { return };
     if !valid_key(call, key) {
         return;
     }
@@ -346,7 +357,7 @@ fn set(call: &Call) {
                 continue;
             };
             let converted = match column.kind {
-                ColumnType::String => ColumnValue::String(value.applied_string()?),
+                ColumnType::String => ColumnValue::String(write_string(value, key, column)?),
                 ColumnType::Float => ColumnValue::Number(value.applied_double()?.to_bits()),
                 ColumnType::Int => ColumnValue::Number(value.applied_long()?.c_cast::<u64>()),
             };
@@ -358,11 +369,15 @@ fn set(call: &Call) {
         Some(values)
     });
     let Some(values) = values else { return };
-    let Some(mut row) = table.lock_set(key).filter(Locked::found) else {
-        set_failed(key);
+    let Some(mut row) = lock(&table, key) else {
+        return call.set_bool(false);
+    };
+    if !row.found() {
+        drop(row);
+        write_failed(key, operation);
         call.set_bool(false);
         return;
-    };
+    }
     if row.is_new() {
         row.clear_row(table.columns());
     }
@@ -376,8 +391,29 @@ fn set(call: &Call) {
     call.set_bool(true);
 }
 
+/// Convert and cap string columns before acquiring the shared bucket lock.
+fn write_string(value: &Value, key: &[u8], column: &Column) -> Option<ZString> {
+    fn display(bytes: &[u8]) -> std::borrow::Cow<'_, str> {
+        String::from_utf8_lossy(bytes.split(|&b| b == 0).next().unwrap_or_default())
+    }
+    let string = value.applied_string()?;
+    let capacity = column.width as usize - size_of::<u32>();
+    if string.bytes().len() <= capacity {
+        return Some(string);
+    }
+    swoole_rs_corebase::log::warning(
+        c"table_marshal_values",
+        format_args!(
+            "[key={},field={}]string value is too long",
+            display(key),
+            display(column.name())
+        ),
+    );
+    Some(ZString::new(string.bytes().get(..capacity)?))
+}
+
 /// `incr()`/`decr()`: `(string $key, string $column, mixed $incrby = 1)`.
-fn update(call: &Call, subtract: bool) {
+fn increment(call: &Call, subtract: bool) {
     let Some(table) = created(call) else { return };
     let parsed = call
         .arity(2, 3)
@@ -456,11 +492,11 @@ fn set_double(call: &Call, value: f64) {
 }
 
 fn incr(call: &Call) {
-    update(call, false);
+    increment(call, false);
 }
 
 fn decr(call: &Call) {
-    update(call, true);
+    increment(call, true);
 }
 
 /// A column's value in a row.
@@ -506,11 +542,11 @@ fn getdel(call: &Call) {
 }
 
 fn fetch(call: &Call, delete: bool) {
-    let Some(table) = created(call) else { return };
     let Ok((key, field)) = table::parse_class_swoole_table_get(call) else {
         call.set_bool(false);
         return;
     };
+    let Some(table) = created(call) else { return };
     if !valid_key(call, key) {
         return;
     }
@@ -681,6 +717,8 @@ swoole_rs_zend::handlers! {
     zim_swoole_table_create => create;
     zim_swoole_table_destroy => destroy;
     zim_swoole_table_set => set;
+    zim_swoole_table_add => add;
+    zim_swoole_table_update => update;
     zim_swoole_table_get => get;
     zim_swoole_table_getdel => getdel;
     zim_swoole_table_count => count;

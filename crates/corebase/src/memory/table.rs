@@ -594,6 +594,16 @@ impl Table {
     /// the bucket's row, which stays locked even when no row could be made.
     /// `flags` gets `NEW_ROW` and `CONFLICT` unless that happens.
     pub fn set(&self, key: &[u8], lock: &mut *mut Row, flags: Option<&mut i32>) -> *mut Row {
+        self.prepare_write(key, lock, flags, false)
+    }
+
+    fn prepare_write(
+        &self,
+        key: &[u8],
+        lock: &mut *mut Row,
+        flags: Option<&mut i32>,
+        insert_only: bool,
+    ) -> *mut Row {
         let Some(root) = self.bucket(key) else {
             *lock = ptr::null_mut();
             return ptr::null_mut();
@@ -626,6 +636,11 @@ impl Table {
         } else {
             self.claim(root, key);
             found |= NEW_ROW;
+        }
+        if insert_only && found & NEW_ROW == 0 {
+            root.unlock();
+            *lock = ptr::null_mut();
+            return ptr::null_mut();
         }
         if let Some(flags) = flags {
             *flags = found;
@@ -803,9 +818,28 @@ impl Table {
     /// when no row could be made.
     #[must_use]
     pub fn lock_set(&self, key: &[u8]) -> Option<Locked<'_>> {
+        self.lock_write(key, false)
+    }
+
+    /// Insert a fresh row, or return None when the key already exists.
+    /// A guard without a row signals insufficient space.
+    #[must_use]
+    pub fn lock_add(&self, key: &[u8]) -> Option<Locked<'_>> {
+        self.lock_write(key, true)
+    }
+
+    fn lock_write(&self, key: &[u8], insert_only: bool) -> Option<Locked<'_>> {
         let (mut lock, mut flags) = (ptr::null_mut(), 0);
-        let row = self.set(key, &mut lock, Some(&mut flags));
+        let row = self.prepare_write(key, &mut lock, Some(&mut flags), insert_only);
         self.locked(Live::of(lock), Live::of(row), flags)
+    }
+
+    /// Lock an existing row for a counted update.
+    #[must_use]
+    pub fn lock_update(&self, key: &[u8]) -> Option<Locked<'_>> {
+        let row = self.lock_get(key).filter(Locked::found)?;
+        self.update_count.fetch_add(1, Ordering::Relaxed);
+        Some(row)
     }
 
     /// [`Table::get`] as a guard: None before `create`; a guard without a row
