@@ -204,6 +204,13 @@ fn change(call: &Call, change: impl FnOnce(&mut SharedTable) -> bool) -> bool {
 
 /// `__construct(int $table_size, float $conflict_proportion = 0.2)`.
 fn construct(call: &Call) {
+    let parsed = call
+        .arity(1, 2)
+        .and_then(|()| Ok((call.long(1, 0)?, call.double(2, CONFLICT_PROPORTION)?)));
+    let Ok((rows, conflict)) = parsed else {
+        call.set_bool(false);
+        return;
+    };
     let Some(held) = call.custom::<Held>() else {
         return;
     };
@@ -212,13 +219,6 @@ fn construct(call: &Call) {
         call.set_bool(false);
         return;
     }
-    let parsed = call
-        .arity(1, 2)
-        .and_then(|()| Ok((call.long(1, 0)?, call.double(2, CONFLICT_PROPORTION)?)));
-    let Ok((rows, conflict)) = parsed else {
-        call.set_bool(false);
-        return;
-    };
     let made = SharedTable::make(
         rows.c_cast::<u32>(),
         conflict.c_cast::<f32>(),
@@ -235,15 +235,14 @@ fn construct(call: &Call) {
 
 /// `column(string $name, int $type, int $size = 0): bool`.
 fn column(call: &Call) {
-    // No handle across the parse: a `__toString` it calls may create the table.
-    if constructed(call).is_none() {
-        return;
-    }
     let parsed = call
         .arity(2, 3)
         .and_then(|()| Ok((call.string(1, b"")?, call.long(2, 0)?, call.long(3, 0)?)));
     let Ok((name, kind, mut size)) = parsed else {
         call.set_bool(false);
+        return;
+    };
+    let Some(ready) = constructed(call).map(|table| table.ready()) else {
         return;
     };
     if kind == i64::from(TYPE_STRING) {
@@ -258,7 +257,7 @@ fn column(call: &Call) {
         // SW_MEM_ALIGNED_SIZE: to `sizeof(unsigned long)`.
         size = size.checked_add(7).map_or(i64::MAX, |n| n & !7);
     }
-    if table_of(call).is_some_and(|table| table.ready()) {
+    if ready {
         fatal(
             E_WARNING,
             c"unable to add column after table has been created",
@@ -509,7 +508,6 @@ fn missing_column(name: &[u8]) {
 
 /// `incr()`/`decr()`: `(string $key, string $column, mixed $incrby = 1)`.
 fn increment(call: &Call, subtract: bool) {
-    let Some(table) = created(call) else { return };
     let parsed = call
         .arity(2, 3)
         .and_then(|()| Ok((call.string(1, b"")?, call.string(2, b"")?)));
@@ -517,6 +515,7 @@ fn increment(call: &Call, subtract: bool) {
         call.set_bool(false);
         return;
     };
+    let Some(table) = created(call) else { return };
     if !valid_key(call, key) {
         return;
     }
@@ -676,37 +675,40 @@ fn fetch(call: &Call, delete: bool) {
     }
 }
 
-/// A key argument (`"s"` or `Z_PARAM_STRING`), or `RETURN_FALSE`.
-fn key<'c>(call: &'c Call<'_>) -> Option<&'c [u8]> {
-    let key = call.arity(1, 1).and_then(|()| call.string(1, b""));
-    if key.is_err() {
+/// Parse the key before reading the table: argument conversion can change its state.
+fn keyed<'c>(call: &'c Call<'_>) -> Option<(Rc<SharedTable>, &'c [u8])> {
+    let Ok(key) = call.arity(1, 1).and_then(|()| call.string(1, b"")) else {
         call.set_bool(false);
-    }
-    key.ok().filter(|key| valid_key(call, key))
+        return None;
+    };
+    let table = created(call)?;
+    valid_key(call, key).then_some((table, key))
 }
 
 /// `exists(string $key): bool`.
 fn exists(call: &Call) {
-    let Some(table) = created(call) else { return };
-    let Some(key) = key(call) else { return };
+    let Some((table, key)) = keyed(call) else {
+        return;
+    };
     call.set_bool(table.exists(key));
 }
 
 /// `del(string $key): bool`.
 fn del(call: &Call) {
-    let Some(table) = created(call) else { return };
-    let Some(key) = key(call) else { return };
+    let Some((table, key)) = keyed(call) else {
+        return;
+    };
     call.set_bool(table.del(key));
 }
 
 /// `count(int $mode = COUNT_NORMAL): int`.
 fn count(call: &Call) {
-    let Some(table) = table_of(call) else {
-        call.set_long(0);
-        return;
-    };
     let Ok(mode) = call.arity(0, 1).and_then(|()| call.long(1, 0)) else {
         call.set_bool(false);
+        return;
+    };
+    let Some(table) = table_of(call) else {
+        call.set_long(0);
         return;
     };
     let rows = table.count();
@@ -729,7 +731,7 @@ fn get_size(call: &Call) {
 
 /// `stats(): array|false`.
 fn stats(call: &Call) {
-    let Some(table) = table_of(call) else {
+    let Some(table) = table_of(call).filter(|table| table.ready()) else {
         call.set_bool(false);
         return;
     };
