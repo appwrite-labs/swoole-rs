@@ -463,7 +463,7 @@ impl SocketFields {
 }
 
 /// An idle timer taken off a socket ([`SocketFields::disarm_recv_timer`]), deleted
-/// once the socket's borrow has ended ([`crate::timer::del_disarmed`]).
+/// once the socket's borrow has ended (the timer layer's `del_disarmed`).
 #[must_use]
 #[derive(Clone, Copy)]
 pub struct DisarmedTimer(pub(crate) Option<crate::timer_key::Held>);
