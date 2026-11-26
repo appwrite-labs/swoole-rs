@@ -159,6 +159,10 @@ fn milliseconds(seconds: f64) -> i32 {
 
 /// `lock(int $operation = LOCK_EX, float $timeout = -1): bool` of `lock`, for
 /// a leaf handler: `lock` defers the fatal error of an unconstructed object.
+#[expect(
+    clippy::disallowed_methods,
+    reason = "PHP's $timeout: upstream's Lock has no other"
+)]
 pub(crate) fn lock_with(call: &Call, lock: impl for<'c> FnOnce(&'c Call<'_>) -> Option<&'c Lock>) {
     let (operation, deadline) = if call.num_args() == 0 {
         (LOCK_EX, Deadline::never())
@@ -202,6 +206,7 @@ swoole_rs_zend::handlers! {
 }
 
 #[cfg(test)]
+#[expect(clippy::disallowed_methods, reason = "tests wake their own waits")]
 mod tests {
     use super::*;
 

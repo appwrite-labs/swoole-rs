@@ -3,6 +3,7 @@
 //! zval copies.
 use swoole_rs_corebase::CCast;
 use swoole_rs_corebase::log::LogLevel::SW_LOG_WARNING;
+use swoole_rs_corebase::timer::Deadline;
 use swoole_rs_phpcoroutines::channel::{Channel, Queue, Stats};
 use swoole_rs_phpstubs::channel_coro;
 use swoole_rs_zend::{
@@ -145,28 +146,30 @@ fn construct(call: &Call) {
     call.update_property_long(Some(&CHANNEL), c"capacity", capacity);
 }
 
-fn timeout(call: &Call, required: u32) -> Result<f64, Invalid> {
+/// The `float $timeout = -1` after `required` arguments, as a deadline.
+#[expect(
+    clippy::disallowed_methods,
+    reason = "PHP's $timeout: -1 waits forever, as upstream's"
+)]
+fn deadline(call: &Call, required: u32) -> Result<Deadline, Invalid> {
     if call.num_args() == required {
-        return Ok(-1.0);
+        return Ok(Deadline::never());
     }
     let last = required + 1;
     call.arity(required, last)?;
-    call.double(last, -1.0)
+    call.double(last, -1.0).map(Deadline::from_timeout)
 }
 
 /// `push(mixed $data, float $timeout = -1): bool`: the channel holds a copy
 /// with its own reference (`sw_zval_dup`).
 fn push(call: &Call) {
     let Some(queue) = channel(call) else { return };
-    let Ok(timeout) = timeout(call, 1) else {
+    let Ok(deadline) = deadline(call, 1) else {
         call.set_bool(false);
         return;
     };
     let Some(data) = call.value(1) else { return };
-    match queue.push(
-        data.copy(),
-        swoole_rs_corebase::timer::Deadline::from_timeout(timeout),
-    ) {
+    match queue.push(data.copy(), deadline) {
         Ok(()) => {
             set_error(call, ERROR_OK);
             call.set_bool(true);
@@ -182,11 +185,11 @@ fn push(call: &Call) {
 /// `pop(float $timeout = -1): mixed`: the result takes over the copy's reference.
 fn pop(call: &Call) {
     let Some(queue) = channel(call) else { return };
-    let Ok(timeout) = timeout(call, 0) else {
+    let Ok(deadline) = deadline(call, 0) else {
         call.set_bool(false);
         return;
     };
-    match queue.pop(swoole_rs_corebase::timer::Deadline::from_timeout(timeout)) {
+    match queue.pop(deadline) {
         Ok(value) => {
             call.set_owned(value);
             set_error(call, ERROR_OK);

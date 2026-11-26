@@ -73,6 +73,11 @@ fn instance() -> Option<Rc<Uring>> {
 
 /// `co->yield(&cancel_fn)` of the running coroutine `co`, where cancelling cancels
 /// `event`'s request.
+#[expect(
+    clippy::disallowed_methods,
+    reason = "the request's linked timeout ends it, as upstream's: a socket's (60 s by default) \
+              or the caller's, never only for -1 set from PHP; a file request has none"
+)]
 fn suspend(co: *mut c_void, event: u64, arm: &mut dyn FnMut(swoole_rs_corebase::coroutine::Waker)) {
     // execute holds a Weak across this park, so a replacement engine cannot
     // reuse its address. The scheduler clears this canceler before close_request

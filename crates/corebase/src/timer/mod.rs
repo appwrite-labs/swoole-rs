@@ -510,6 +510,7 @@ impl<T: Default> Pair<T> for Result<T, Status> {
 mod kernel;
 
 #[cfg(test)]
+#[expect(clippy::disallowed_methods, reason = "tests wake their own waits")]
 mod tests {
     use super::*;
     use crate::test_allocator::FAIL_ONCE_AFTER as FAIL_AFTER;
@@ -1060,20 +1061,22 @@ mod tests {
         }
     }
 
-    /// A write's wait: its own positive timeout, else upstream 6.3's 60 seconds.
+    /// A write's or a read's wait: its own positive timeout, else upstream 6.3's 60 seconds.
     #[test]
     fn deadline_of_a_write() {
-        for (seconds, ms) in [
-            (0.5, 500),
-            (0.0, 60_000),
-            (-1.0, 60_000),
-            (f64::NAN, 60_000),
-        ] {
-            let left = Deadline::of_write(seconds).remaining().unwrap();
-            let ms = std::time::Duration::from_millis(ms);
-            assert!(left <= ms && left > ms / 2, "{seconds}: {left:?}");
+        for of in [Deadline::of_write, Deadline::of_read] {
+            for (seconds, ms) in [
+                (0.5, 500),
+                (0.0, 60_000),
+                (-1.0, 60_000),
+                (f64::NAN, 60_000),
+            ] {
+                let left = of(seconds).remaining().unwrap();
+                let ms = std::time::Duration::from_millis(ms);
+                assert!(left <= ms && left > ms / 2, "{seconds}: {left:?}");
+            }
+            assert_eq!(of(f64::INFINITY), Deadline::never());
         }
-        assert_eq!(Deadline::of_write(f64::INFINITY), Deadline::never());
     }
 
     /// `Lock::lock`'s `int` milliseconds, and `sw_atomic_futex_wait`'s seconds to the

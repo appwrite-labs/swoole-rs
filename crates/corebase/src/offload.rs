@@ -13,6 +13,11 @@ use core::sync::atomic::{AtomicI32, AtomicIsize, AtomicU8, Ordering::Relaxed};
 pub type WakerSlot = core::cell::Cell<Option<Waker>>;
 
 /// `co->yield()` of the current coroutine (fatal outside one), its waker in `waker`.
+#[expect(
+    clippy::disallowed_methods,
+    reason = "async_job's pool thread resumes it when the job ends; socket_poll arms its own \
+              timer for a positive timeout and, like upstream's poll, waits forever for -1"
+)]
 pub fn park(waker: &WakerSlot) {
     let co = crate::coroutine::current_safe().cast();
     _ = crate::coroutine::park(co, Deadline::never(), |park| waker.set(Some(park)));
@@ -299,6 +304,7 @@ pub fn sleep_timeout(seconds: f64, minimum: f64) -> f64 {
 mod ported;
 
 #[cfg(test)]
+#[expect(clippy::disallowed_methods, reason = "tests wake their own waits")]
 mod tests {
     use super::*;
     use std::cell::{Cell, RefCell};

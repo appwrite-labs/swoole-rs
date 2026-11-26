@@ -19,7 +19,10 @@ use swoole_rs_corebase::CCast;
 use swoole_rs_corebase::CellExt;
 use swoole_rs_corebase::timer::Deadline;
 use swoole_rs_phpcoroutines::{Coroutine, Waiter};
-use swoole_rs_server::{server_methods, swr_v1_server_add_command, swr_v1_server_command, view};
+use swoole_rs_server::{
+    server_methods, swr_v1_server_add_command, swr_v1_server_command, swr_v1_server_command_forget,
+    view,
+};
 use swoole_rs_zend::host::callable::Callable as Kept;
 use swoole_rs_zend::{
     ArrayMut, Call, Class, Custom, CustomClass, E_ERROR, E_WARNING, Message, Owned, Value, ZString,
@@ -1026,7 +1029,8 @@ fn command(call: &Call) {
         clippy::arc_with_non_send_sync,
         reason = "the server's callback table, like upstream's, holds this coroutine's wait"
     )]
-    let callback = std::sync::Arc::new(command_done(Rc::clone(&wait)));
+    let callback: swoole_rs_server::CommandCallback =
+        std::sync::Arc::new(command_done(Rc::clone(&wait)));
     // Upstream's `(uint16_t) process_id` and `(ProcessType) process_type`.
     let [low, high, ..] = process_id.to_le_bytes();
     let process_id = u32::from(u16::from_le_bytes([low, high]));
@@ -1035,14 +1039,19 @@ fn command(call: &Call) {
             .try_into()
             .unwrap_or_default(),
     );
-    let sent = swr_v1_server_command(serv, process_id, process_type, name, data, callback);
+    let sent = swr_v1_server_command(serv, process_id, process_type, name, data, callback.clone());
     drop(encoded);
     if !sent {
         return call.set_bool(false);
     }
-    if !wait.replied.get() {
-        // `command_done` resumes it.
-        wait.waiter.wait();
+    // `command_done` resumes it. Upstream waits forever; a reply that never comes
+    // ends it at the default read timeout (`socket_read_timeout`, else 60 s), and
+    // the call fails as `Server::command`'s refusals do: false, with the last error.
+    // The server forgets the callback, so abandoned requests don't pile up.
+    let deadline = Deadline::of_read(swoole_rs_corebase::reactor::SOCKET_DEFAULTS.read.get());
+    if !wait.replied.get() && !wait.waiter.wait(deadline) {
+        swr_v1_server_command_forget(serv, &callback);
+        return call.set_bool(false);
     }
     let Some(reply) = wait.reply.take() else {
         return;

@@ -1,10 +1,11 @@
-"""The HTTP/2 server against a client that writes raw frames."""
+"""The HTTP/2 server against a client that writes raw frames, and the server's waits on a peer."""
 from pathlib import Path
+import json
 import socket
 import struct
 import time
 
-from tools.harness import server
+from tools.harness import run_isolated, server
 from tests.modules.http2.test_client import PREFACE, frame, read
 
 # :method POST, :path /, :scheme http (RFC 7541 Appendix A), and :authority.
@@ -80,3 +81,31 @@ def test_a_peer_that_never_opens_the_window_loses_the_connection(engine):
     assert 0 not in kinds, kinds
     assert payload[4:] == struct.pack('!I', 0) + b'flow control or write timeout', payload.hex()
     assert 0.4 < waited < 5, waited
+
+
+def test_a_command_whose_reply_never_comes_fails_at_the_read_timeout(engine):
+    """Server::command() waits for the other process's reply until the default read
+    timeout (socket_read_timeout), then fails with SWOOLE_ERROR_CO_TIMEDOUT."""
+    code = r'''
+    Swoole\Coroutine::set(['socket_read_timeout' => 0.5]);
+    $server = new Swoole\Http\Server('127.0.0.1', 0, SWOOLE_PROCESS);
+    $server->set(['worker_num' => 1, 'log_file' => '/dev/null']);
+    $server->addCommand('stall', SWOOLE_SERVER_COMMAND_EVENT_WORKER, function () {
+        sleep(3);
+        return 'late';
+    });
+    $server->on('start', function ($server) {
+        $began = microtime(true);
+        $result = $server->command('stall', 0, SWOOLE_SERVER_COMMAND_EVENT_WORKER, null, false);
+        $timedout = swoole_last_error() === SWOOLE_ERROR_CO_TIMEDOUT;
+        echo json_encode([$result, $timedout, microtime(true) - $began]), "\n";
+        $server->shutdown();
+    });
+    $server->on('request', function () {});
+    $server->start();
+    '''
+    result = run_isolated(engine.command('-r', code), timeout=20)
+    assert result.returncode == 0, result.stderr
+    reply, timedout, waited = json.loads(result.stdout)
+    assert (reply, timedout) == (False, True), result.stdout
+    assert 0.4 < waited < 2.5, waited

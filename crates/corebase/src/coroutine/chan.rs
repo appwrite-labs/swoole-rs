@@ -257,4 +257,5 @@ pub fn close<T, F: Effects>(ch: &UnsafeCell<Channel<T, F::Waiter>>, fx: &mut F) 
 
 #[cfg(test)]
 #[path = "../../../../tests/modules/coroutine/channel.rs"]
+#[expect(clippy::disallowed_methods, reason = "tests wake their own waits")]
 mod tests;

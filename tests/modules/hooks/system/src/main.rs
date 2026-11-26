@@ -41,6 +41,7 @@
     clippy::mut_from_ref,
     reason = "the records' views lend what the native pointer they wrap owns, as the C++ cases' pointers do"
 )]
+#![expect(clippy::disallowed_methods, reason = "tests wake their own waits")]
 
 use libc::{
     AF_INET, AF_INET6, AF_UNIX, EAGAIN, EAI_NONAME, EBADF, EBUSY, EINVAL, ENOENT, ETIMEDOUT,

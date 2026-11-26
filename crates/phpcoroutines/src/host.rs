@@ -297,6 +297,11 @@ pub(crate) fn stack(co: Co) -> (*mut c_void, usize) {
 
 /// Switch out of `co`, the running coroutine. What the caller's frames own is
 /// leaked if nothing resumes it (a bailout abandons every suspended coroutine).
+#[expect(
+    clippy::disallowed_methods,
+    reason = "local wakes end it, as upstream's: the interrupt's deferred resume on the next \
+              tick, or the autoload this coroutine waits on finishing"
+)]
 pub(crate) fn yield_(co: Co) {
     _ = swoole_rs_corebase::coroutine::suspend(co.raw(), Deadline::never());
 }
@@ -381,11 +386,16 @@ pub fn suspend_for(deadline: Deadline) -> bool {
 pub struct Waiter(std::cell::Cell<Option<Coroutine>>);
 
 impl Waiter {
-    /// [`suspend`] until [`Waiter::wake`], or whatever else ends the wait.
-    pub fn wait(&self) {
-        self.0.set(Coroutine::current());
-        suspend();
+    /// `co->yield()` while published, until [`Waiter::wake`] or `deadline`; unlike
+    /// [`Waiter::wait_for`], `Coroutine::cancel` can't end it: false, with
+    /// `SW_ERROR_CO_TIMEDOUT`, when it timed out, or outside a coroutine.
+    #[must_use]
+    pub fn wait(&self, deadline: Deadline) -> bool {
+        let Some(co) = current() else { return false };
+        self.0.set(Some(Coroutine(cid(co))));
+        let code = swoole_rs_corebase::coroutine::suspend(co.raw(), deadline);
         self.0.set(None);
+        swoole_rs_corebase::coroutine::yield_resumed(code)
     }
 
     /// [`suspend_for`] `deadline` while published: false when it timed out or
