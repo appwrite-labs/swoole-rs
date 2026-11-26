@@ -96,6 +96,12 @@ impl HttpStaticContext {
                         .modified_range(if_range.unwrap_or_default(), self.facts.mtime),
                     ..Observation::default()
                 },
+                Err(OVERFLOW) => {
+                    self.tasks.clear();
+                    self.facts.content_length = 0;
+                    self.facts.status = crate::status::RANGE_NOT_SATISFIABLE;
+                    return;
+                }
                 _ => return,
             };
             _ = self.range_resume(&observed);
@@ -339,6 +345,22 @@ mod tests {
     fn complete(owner: &mut HttpStaticContext, text: &[u8], modified: bool) {
         owner.parse_range(Some(text), Some(b""), &Fixed { modified });
     }
+    #[test]
+    fn range_task_limit_rejects_the_whole_response() {
+        let mut owner = owner();
+        let parts = vec!["0-0"; crate::tasks::MAX_RANGE_TASKS];
+        let header = format!("bytes={}", parts.join(","));
+        complete(&mut owner, header.as_bytes(), false);
+        assert_eq!(owner.tasks.count(), parts.len());
+        assert_eq!(owner.facts.status, crate::status::PARTIAL_CONTENT);
+
+        // A second parse on this context retains its committed tasks.
+        complete(&mut owner, b"bytes=1-1", false);
+        assert_eq!(owner.tasks(), []);
+        assert_eq!(owner.facts.content_length, 0);
+        assert_eq!(owner.facts.status, crate::status::RANGE_NOT_SATISFIABLE);
+    }
+
     #[test]
     fn finalization_does_not_publish_success_before_task_push() {
         let mut owner = owner();
