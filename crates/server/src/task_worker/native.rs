@@ -48,9 +48,7 @@ const EVENT_DATA_SIZE: usize = swoole_rs_corebase::constants::SW_IPC_MAX_SIZE as
 struct EventData([u8; EVENT_DATA_SIZE]);
 
 thread_local! {
-    /// A copy of the head of the task this task worker last ran, which
-    /// `Server::finish` answers when it is given none. A copy, not a pointer: the
-    /// task's buffer is gone once its callback returns.
+    /// The current task callback's head, restored when nested dispatch returns.
     static LATEST_TASK: Cell<Option<DataHead>> = const { Cell::new(None) };
 }
 
@@ -95,8 +93,15 @@ fn on_task(pool: PoolRef<'_>, worker: Worker<'_>, task: Packed<'_>) -> CallbackR
 
 /// `TaskWorker_onTask`: one task, pipe message, shutdown or command.
 fn run_task(serv: view::Server<'_>, worker: Worker<'_>, task: Packed<'_>) -> CallbackResult {
+    struct RestoreTask(Option<DataHead>);
+    impl Drop for RestoreTask {
+        fn drop(&mut self) {
+            LATEST_TASK.set(self.0);
+        }
+    }
     let head = task.head();
-    LATEST_TASK.set(Some(head));
+    // Restore the enclosing task on every exit, including a PHP bailout.
+    let _restore = RestoreTask(LATEST_TASK.replace(Some(head)));
     worker.set_status(WorkerStatus::busy(true));
     let callbacks = &serv.state().callbacks;
     let ret = match head.event() {
@@ -258,7 +263,7 @@ fn on_pipe_receive(reactor: Running<'_>, event: &mut Event) -> bool {
 /// `Server::finish(data, data_len, flags, current_task)`: the task's result to the
 /// worker that sent it, through its pipe (nonblocking tasks) or the shared result
 /// slot and its notify pipe (blocking ones). With no `current_task`, the task this
-/// worker ran last; false when there is none.
+/// worker is handling; false outside its callback.
 #[must_use]
 pub fn finish(
     serv: view::Server<'_>,
