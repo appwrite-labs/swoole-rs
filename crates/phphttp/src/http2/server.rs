@@ -1347,16 +1347,13 @@ fn settings(session: &Session, payload: &[u8]) -> bool {
     )
 }
 
-/// The parser cannot drop a required acknowledgement when its output queue is full.
+/// The peer needs the ACK to continue, regardless of why sending failed.
 fn send_ack(ctx: Ctx, frame: &[u8]) -> bool {
-    if !send(ctx, frame)
-        && swoole_rs_corebase::log::last_error()
-            == swoole_rs_error::ErrorCode::SW_ERROR_OUTPUT_SEND_YIELD as c_int
-    {
+    let sent = send(ctx, frame);
+    if !sent {
         close(ctx);
-        return false;
     }
-    true
+    sent
 }
 
 fn reset_stream(session: &Session, stream: &Stream, code: u32) -> bool {

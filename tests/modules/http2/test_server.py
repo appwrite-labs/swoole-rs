@@ -12,6 +12,28 @@ from tests.modules.http2.test_client import PREFACE, frame, read
 REQUEST = b'\x83\x84\x86\x41\x09localhost'
 
 
+def test_process_worker_closes_when_ping_ack_exceeds_send_limit(engine, tmp_path):
+    script = tmp_path / 'server.php'
+    script.write_text("""<?php
+$server = new Swoole\\Http\\Server('127.0.0.1', (int) getenv('TEST_PORT'), SWOOLE_PROCESS);
+$server->set(['worker_num' => 1, 'open_http2_protocol' => true, 'output_buffer_size' => 16,
+    'log_file' => '/dev/null']);
+$server->on('request', static fn ($request, $response) => $response->end());
+$server->start();
+""")
+    with server(engine, script) as (port, _):
+        with socket.create_connection(('127.0.0.1', port), timeout=3) as conn:
+            conn.sendall(PREFACE + frame(4, 0, 0))
+            while True:
+                head = read(conn, 9)
+                read(conn, int.from_bytes(head[:3], 'big'))
+                if head[3:5] == bytes([4, 1]):
+                    break
+            # A SETTINGS ACK fits. A PING ACK needs 17 bytes.
+            conn.sendall(frame(6, 0, 0, b'12345678'))
+            assert conn.recv(1) == b''
+
+
 def test_body_over_the_limit_resets_its_stream(engine):
     """RFC 9113 6.4: a body over package_max_length gets a 4-byte RST_STREAM on
     its own stream, and the connection's framing stays intact."""
