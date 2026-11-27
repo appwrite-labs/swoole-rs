@@ -288,15 +288,12 @@ fn send_file(call: &Call) {
             if !swoole_rs_zend::host::exception().is_null() {
                 return Ok(false);
             }
-            // A nonempty asynchronous HTTP/1 send still needs its path on the reactor.
-            if options.delete && length != 0 && ctx.flags() & (CO_SOCKET | HTTP2) == 0 {
-                return Ok(false);
-            }
             if !options.acquire() {
                 return Ok(false);
             }
-            let result = send::send_file(ctx, file, offset, length);
-            if options.delete {
+            let mut delete_file = options.delete;
+            let result = send::send_file(ctx, file, offset, length, &mut delete_file);
+            if delete_file {
                 swoole_rs_hooks::stdio::swoole_coroutine_unlink(file.c_str().into());
             }
             result

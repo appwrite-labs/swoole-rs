@@ -284,12 +284,22 @@ fn sendfile(call: &Call) {
     if !swoole_rs_phpswoole::valid_sendfile_range(offset, length) {
         return call.set_bool(false);
     }
-    if options.delete {
-        // The asynchronous factory must take ownership before deletion is supported here.
+    if !options.acquire() {
         return call.set_bool(false);
     }
-    let size = length.c_cast::<usize>();
-    call.set_bool(server_methods::sendfile(serv, fd, filename, offset, size));
+    let mut delete_file = options.delete;
+    let sent = server_methods::sendfile_with_cleanup(
+        serv,
+        fd,
+        filename,
+        offset,
+        length.c_cast::<usize>(),
+        &mut delete_file,
+    );
+    if delete_file {
+        options.release();
+    }
+    call.set_bool(sent);
 }
 
 fn send_message(call: &Call) {

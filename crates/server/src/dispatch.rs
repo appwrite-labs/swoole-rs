@@ -257,6 +257,20 @@ pub fn sendfile(
     offset: libc::off_t,
     length: usize,
 ) -> bool {
+    sendfile_with_cleanup(serv, session_id, file, offset, length, &mut false)
+}
+
+/// Move cleanup into the event once native validation succeeds. A caller that still
+/// owns cleanup on return decides whether to unlink or leave the descriptor reusable.
+#[must_use]
+pub fn sendfile_with_cleanup(
+    serv: Server<'_>,
+    session_id: c_long,
+    file: &[u8],
+    offset: libc::off_t,
+    length: usize,
+    delete_file: &mut bool,
+) -> bool {
     use swoole_rs_error::ErrorCode as E;
     if session_id <= 0 {
         let m = format_args!("invalid fd[{session_id}]");
@@ -317,6 +331,11 @@ pub fn sendfile(
     let info = swoole_rs_corebase::DataHead {
         fd: session_id,
         kind: ServerEvent::SendFile.code(),
+        ext_flags: if std::mem::take(delete_file) {
+            crate::send::SENDFILE_DELETE
+        } else {
+            0
+        },
         ..Default::default()
     };
     // The task, the name and its NUL: within the buffer, as `max` keeps the name.
