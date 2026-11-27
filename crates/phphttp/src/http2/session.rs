@@ -95,8 +95,6 @@ pub(crate) struct StreamState {
     pub(crate) headers_received: Cell<bool>,
     /// The request is complete: no later frame adds to it.
     pub(crate) request_received: Cell<bool>,
-    /// A Content-Length of the request's header block was malformed or too large.
-    pub(crate) bad_length: Cell<bool>,
     /// Cookie fields in wire order until the initial header block is complete.
     pub(crate) cookie_header: Cell<Option<Vec<u8>>>,
     /// The block named a Content-Type or Accept-Encoding, which are read
@@ -196,7 +194,6 @@ impl SessionState {
             local_window_size: Cell::new(self.local[INIT_WINDOW_SIZE]),
             headers_received: Cell::new(false),
             request_received: Cell::new(false),
-            bad_length: Cell::new(false),
             cookie_header: Cell::default(),
             negotiates: Cell::new(false),
             request_cid: Cell::default(),

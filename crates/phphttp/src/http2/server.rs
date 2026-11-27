@@ -139,8 +139,8 @@ fn window_update(ctx: Ctx, stream_id: u32, size: u32) -> bool {
 }
 
 /// `Stream::reset`.
-pub(crate) fn reset(ctx: Ctx, stream_id: u32, code: u32) {
-    send_u32_frame(ctx, FrameType::RstStream, stream_id, code);
+pub(crate) fn reset(ctx: Ctx, stream_id: u32, code: u32) -> bool {
+    send_u32_frame(ctx, FrameType::RstStream, stream_id, code)
 }
 
 /// `swoole_http2_server_ping`.
@@ -1183,9 +1183,6 @@ fn header_block(
     if let Err(code) = session.remaining_headers.get() {
         return reset_stream(session, stream, code);
     }
-    if stream.bad_length.get() {
-        return reject_body(session, stream);
-    }
     if !stream.headers_received.get() && !headers_complete(stream, session.max_body_size) {
         return false;
     }
@@ -1356,7 +1353,13 @@ fn send_ack(ctx: Ctx, frame: &[u8]) -> bool {
 }
 
 fn reset_stream(session: &Session, stream: &Stream, code: u32) -> bool {
-    reset(stream.ctx(), stream.id, code);
+    if !reset(stream.ctx(), stream.id, code)
+        && swoole_rs_corebase::log::last_error()
+            == swoole_rs_error::ErrorCode::SW_ERROR_OUTPUT_SEND_YIELD as c_int
+    {
+        close(stream.ctx());
+        return false;
+    }
     session.remove(stream.id)
 }
 
@@ -1405,7 +1408,11 @@ fn data(session: &Session, stream_id: u32, flags: u32, payload: &[u8]) -> bool {
         return abort_session(session, PROTOCOL_ERROR, b"invalid DATA padding");
     };
     if !body.is_empty() && ctx.data_append(body, session.max_body_size).is_err() {
-        return reject_body(session, &stream);
+        if !send_413(session, &stream) {
+            close(ctx);
+            return false;
+        }
+        return reset_stream(session, &stream, swoole_rs_http2::error_code::NO_ERROR);
     }
     if !replenish(ctx, stream_id, &stream.local_window_size, initial) {
         return false;
@@ -1413,14 +1420,10 @@ fn data(session: &Session, stream_id: u32, flags: u32, payload: &[u8]) -> bool {
     flags & FLAG_END_STREAM == 0 || complete(session, &stream)
 }
 
-fn reject_body(session: &Session, stream: &Stream) -> bool {
+fn send_413(session: &Session, stream: &Stream) -> bool {
     let ctx = stream.ctx();
     set(ctx, Field::Status, REQUEST_ENTITY_TOO_LARGE.cast_unsigned());
-    if !send_header(ctx, session, stream, None, true) {
-        close(ctx);
-        return false;
-    }
-    reset_stream(session, stream, swoole_rs_http2::error_code::NO_ERROR)
+    send_header(ctx, session, stream, None, true)
 }
 
 /// Restore a receive window at half capacity, once the credit is sent.
@@ -1495,6 +1498,15 @@ fn parse_header(
                 || (trailers && !valid_trailer(name, value))
             {
                 Err(swoole_rs_http2::error_code::PROTOCOL_ERROR)
+            } else if !trailers
+                && name.eq_ignore_ascii_case(b"content-length")
+                && !valid_content_length(value, session.max_body_size)
+            {
+                // Reply as soon as HPACK emits the length, then decode through END_HEADERS.
+                if !send_413(session, stream) {
+                    break false;
+                }
+                Err(swoole_rs_http2::error_code::NO_ERROR)
             } else {
                 if trailers {
                     crate::parse::edit(
@@ -1505,7 +1517,7 @@ fn parse_header(
                         },
                     );
                 } else {
-                    request_header(session, stream, name, value);
+                    request_header(stream, name, value);
                 }
                 Ok(count - 1)
             };
@@ -1541,7 +1553,7 @@ fn valid_trailer(name: &[u8], value: &[u8]) -> bool {
 }
 
 /// Apply one field from the initial request header block.
-fn request_header(session: &Session, stream: &Stream, name: &[u8], value: &[u8]) {
+fn request_header(stream: &Stream, name: &[u8], value: &[u8]) {
     let ctx = stream.ctx();
     let kind = header_plan(HeaderRole::Request, name, false).kind;
     if name.first() == Some(&b':') {
@@ -1569,13 +1581,7 @@ fn request_header(session: &Session, stream: &Stream, name: &[u8], value: &[u8])
                 None => *cookie = Some(value.to_vec()),
             });
         }
-        HeaderKind::ContentLength => {
-            if !valid_content_length(value, session.max_body_size) {
-                stream.bad_length.set(true);
-            }
-            // The header keeps the last value.
-            add_string(ctx, Value::Header, b"content-length", value);
-        }
+        HeaderKind::ContentLength => add_string(ctx, Value::Header, b"content-length", value),
         _ => {
             if matches!(kind, HeaderKind::ContentType | HeaderKind::AcceptEncoding) {
                 stream.negotiates.set(true);
