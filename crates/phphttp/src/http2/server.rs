@@ -1508,9 +1508,16 @@ fn settings(session: &Session, payload: &[u8]) -> bool {
 /// A full worker output buffer would silently lose the ACK. A peer already gone
 /// still has receive events queued ahead of its close notification.
 fn send_ack(ctx: Ctx, frame: &[u8]) -> bool {
-    if !send(ctx, frame)
-        && swoole_rs_corebase::log::last_error()
-            == swoole_rs_error::ErrorCode::SW_ERROR_OUTPUT_SEND_YIELD as c_int
+    use swoole_rs_error::ErrorCode as E;
+    if send(ctx, frame) {
+        return true;
+    }
+    if [
+        E::SW_ERROR_DATA_LENGTH_TOO_LARGE as c_int,
+        E::SW_ERROR_OUTPUT_BUFFER_OVERFLOW as c_int,
+        E::SW_ERROR_OUTPUT_SEND_YIELD as c_int,
+    ]
+    .contains(&swoole_rs_corebase::log::last_error())
     {
         close(ctx);
         return false;
