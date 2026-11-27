@@ -284,17 +284,54 @@ fn on_connection(
     called == Called::Bailout && leak(args)
 }
 
-/// `php_swoole_server_onBufferFull`/`onBufferEmpty`'s call.
-fn on_buffer(server: view::Server<'_>, full: bool, fd: i64, server_fd: c_int) -> bool {
-    let (kind, event) = if full {
-        (PortCallback::BufferFull, "onBufferFull")
-    } else {
-        (PortCallback::BufferEmpty, "onBufferEmpty")
-    };
-    let Some(cb) = php_swoole_server_get_callback(server, server_fd, kind) else {
-        return false;
-    };
-    call(&cb, &[Owned::long(fd)], false, event) == Called::Bailout
+/// Events whose PHP callbacks run after the current reactor pass.
+enum DeferredEvent {
+    Close(DataHead),
+    Buffer {
+        fd: i64,
+        server_fd: u16,
+        kind: PortCallback,
+        name: &'static str,
+    },
+}
+
+impl swoole_rs_corebase::reactor::event_api::Deferred for DeferredEvent {
+    fn run(self) {
+        let Some(object) = ServerObject::running() else {
+            return;
+        };
+        let Some(server) = ServerObject::of(&object).and_then(ServerObject::server) else {
+            return;
+        };
+        match self {
+            Self::Close(info) => close(server, &info),
+            Self::Buffer {
+                fd,
+                server_fd,
+                kind,
+                name,
+            } => {
+                if let Some(cb) = port_callback(server, server_fd, kind) {
+                    relay(call(&cb, &[Owned::long(fd)], false, name) == Called::Bailout);
+                }
+            }
+        }
+    }
+
+    fn dispose(self) {}
+}
+
+fn defer_buffer(server: view::Server<'_>, info: &DataHead, kind: PortCallback, name: &'static str) {
+    if port_callback(server, info.server_fd, kind).is_some() {
+        _ = swoole_rs_corebase::reactor::event_api::swoole_event_defer_value(
+            DeferredEvent::Buffer {
+                fd: info.fd,
+                server_fd: info.server_fd,
+                kind,
+                name,
+            },
+        );
+    }
 }
 
 /// `php_swoole_server_onPacket`'s call, once the datagram is read.
@@ -735,7 +772,13 @@ fn send_wake(session_id: i64, cancel: bool) {
 
 /// `php_swoole_server_onClose` (crates/phphttp's fallback).
 pub fn php_swoole_server_on_close(server: view::Server<'_>, info: &DataHead) {
-    close(server, info);
+    if info.ext_flags & swoole_rs_server::callbacks::CLOSE_CALLBACK_ACTIVELY != 0 {
+        _ = swoole_rs_corebase::reactor::event_api::swoole_event_defer_value(DeferredEvent::Close(
+            *info,
+        ));
+    } else {
+        close(server, info);
+    }
 }
 
 /// `php_swoole_server_onClose`: wake the session's senders, then `onClose`
@@ -750,10 +793,7 @@ fn close(server: view::Server<'_>, info: &DataHead) {
         }
     }
     let mut cb = port_callback(server, info.server_fd, PortCallback::Close);
-    let Some(conn) = server.by_session(session_id) else {
-        return;
-    };
-    if !matches!(conn.websocket(), swoole_rs_server::WebSocket::Open(_)) {
+    if info.ext_flags & swoole_rs_server::callbacks::CLOSE_CALLBACK_WEBSOCKET == 0 {
         let port = server.port_by_server_fd(c_int::from(info.server_fd));
         let websocket = port.is_some_and(|port| port.config().open_websocket_protocol.get());
         if websocket
@@ -775,37 +815,22 @@ fn close(server: view::Server<'_>, info: &DataHead) {
     if bailout::pending() {
         return;
     }
-    // The callback may have changed it.
-    if conn.http2_stream()
+    if info.ext_flags & swoole_rs_server::callbacks::CLOSE_CALLBACK_HTTP2 != 0
         && let Some(families) = swoole_rs_phpswoole::families()
     {
-        (families.http.http2_on_close)(conn.session_id());
+        (families.http.http2_on_close)(session_id);
     }
-}
-
-fn on_close(server: view::Server<'_>, info: &DataHead) {
-    close(server, info);
 }
 
 fn on_buffer_full(server: view::Server<'_>, info: &DataHead) {
-    relay(on_buffer(
-        server,
-        true,
-        info.fd,
-        c_int::from(info.server_fd),
-    ));
+    defer_buffer(server, info, PortCallback::BufferFull, "onBufferFull");
 }
 
 fn on_buffer_empty(server: view::Server<'_>, info: &DataHead) {
+    defer_buffer(server, info, PortCallback::BufferEmpty, "onBufferEmpty");
     if server.config().send_yield.get() {
         send_wake(info.fd, false);
     }
-    relay(on_buffer(
-        server,
-        false,
-        info.fd,
-        c_int::from(info.server_fd),
-    ));
 }
 
 /// `php_swoole_server_onUserWorkerStart`: run the user process's callable in
@@ -857,7 +882,7 @@ pub(crate) fn port_hook(server: view::Server<'_>, port: PortCallback) {
     let callback = match port {
         PortCallback::Connect => Callback::Connect(on_connect),
         PortCallback::Packet => Callback::Packet(on_packet_slot),
-        PortCallback::Close => Callback::Close(on_close),
+        PortCallback::Close => Callback::Close(php_swoole_server_on_close),
         PortCallback::BufferFull => Callback::BufferFull(on_buffer_full),
         PortCallback::BufferEmpty => Callback::BufferEmpty(on_buffer_empty),
         PortCallback::Receive
@@ -892,7 +917,7 @@ pub(crate) fn install(server: view::Server<'_>, which: Install) {
         Install::Task => &[Callback::Task(on_task), Callback::Finish(on_finish)],
         Install::PipeMessage => &[Callback::PipeMessage(on_pipe_message_slot)],
         Install::BufferEmpty => &[Callback::BufferEmpty(on_buffer_empty)],
-        Install::Close => &[Callback::Close(on_close)],
+        Install::Close => &[Callback::Close(php_swoole_server_on_close)],
         Install::Receive => &[Callback::Receive(|server, request| {
             php_swoole_server_on_receive(server, request);
             Ok(())

@@ -149,9 +149,17 @@ pub(crate) fn allocated(state: &crate::ServerState) -> bool {
 
 /// onClose's event for session `fd`: `reactor_id` is -1 when the server closed it.
 fn close_event(c: crate::Connection<'_>, fd: c_long) -> DataHead {
+    use crate::callbacks::{
+        CLOSE_CALLBACK_ACTIVELY, CLOSE_CALLBACK_HTTP2, CLOSE_CALLBACK_WEBSOCKET,
+    };
+    let active = c.close_actively();
+    let websocket = matches!(c.websocket(), crate::WebSocket::Open(_));
     DataHead {
+        ext_flags: (u16::from(active) * CLOSE_CALLBACK_ACTIVELY)
+            | (u16::from(websocket) * CLOSE_CALLBACK_WEBSOCKET)
+            | (u16::from(c.http2_stream()) * CLOSE_CALLBACK_HTTP2),
         fd,
-        reactor_id: if c.close_actively() {
+        reactor_id: if active {
             -1
         } else {
             i16::from(c.reactor_id())

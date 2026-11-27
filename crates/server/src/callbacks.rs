@@ -11,6 +11,11 @@ use swoole_rs_corebase::process::methods::ExitStatus;
 use swoole_rs_corebase::process::task_file::Packed;
 use swoole_rs_corebase::process::worker_record::Worker;
 
+/// Close callback context captured before its connection slot is retired.
+pub const CLOSE_CALLBACK_WEBSOCKET: u16 = 1;
+pub const CLOSE_CALLBACK_HTTP2: u16 = 1 << 1;
+pub const CLOSE_CALLBACK_ACTIVELY: u16 = 1 << 2;
+
 /// A server's slots. The first seven are also `OP_CALLBACK`'s
 /// argument and the callback its logs name.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
