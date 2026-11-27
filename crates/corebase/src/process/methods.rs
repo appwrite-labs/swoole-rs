@@ -374,6 +374,10 @@ pub fn reload_warn(kind: KillWarning, pid: c_int, worker_id: u32) {
             c"ReloadTask::kill_all",
             format_args!("failed to kill({pid}, SIGTERM) worker#[{worker_id}]"),
         ),
+        KillWarning::TimeoutFailed => sys_warning(
+            c"ReloadTask::add_timeout_killer",
+            format_args!("failed to kill({pid}, SIGKILL) worker#[{worker_id}]"),
+        ),
         KillWarning::ForceKill => warning(
             c"ReloadTask::kill_all",
             format_args!("force kill worker process(pid={pid}, id={worker_id})"),

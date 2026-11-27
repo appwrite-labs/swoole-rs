@@ -379,14 +379,9 @@ impl<'a> PoolRef<'a> {
         self.record().reload_task.with_box(f)
     }
 
-    /// Arms the reload's timeout timer, then gives it to the task to cancel on
-    /// drop; nothing while no reload is in progress. The task is out of the pool
-    /// while `arm` runs. The timer keeps no pointer into the task: when it fires,
-    /// it reaches the task through the pool ([`Self::with_reload_task`]).
-    pub fn arm_reload_timer(self, arm: impl FnOnce() -> Option<ArmedTimer>) {
-        self.record()
-            .reload_task
-            .with_box(|task| task.set_timer(arm()));
+    /// Configure the timer factory once for this reload. The task arms it for each worker.
+    pub fn configure_reload_timeout(self, arm: impl Fn() -> Option<ArmedTimer> + 'static) {
+        self.with_reload_task(|task| task.configure_timeout(arm));
     }
 
     fn set_reload_task(self, task: Option<Box<ReloadTask>>) {

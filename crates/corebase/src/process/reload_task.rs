@@ -20,6 +20,8 @@ pub enum KillWarning {
     KillAllFailed,
     /// `kill_all` sent SIGKILL to a worker.
     ForceKill,
+    /// The timeout could not signal the current worker.
+    TimeoutFailed,
     /// `kill_one` could not signal a worker (a system warning).
     KillOneFailed,
 }
@@ -27,6 +29,8 @@ pub enum KillWarning {
 pub struct ReloadTask {
     workers: HashMap<c_int, u32>,
     kill_queue: VecDeque<c_int>,
+    current: Option<c_int>,
+    arm: Option<Box<dyn Fn() -> Option<ArmedTimer>>>,
     timer: Option<ArmedTimer>,
     kill: fn(c_int, c_int) -> Result<(), c_int>,
 }
@@ -36,6 +40,8 @@ impl Default for ReloadTask {
         Self {
             workers: HashMap::new(),
             kill_queue: VecDeque::new(),
+            current: None,
+            arm: None,
             timer: None,
             kill,
         }
@@ -55,12 +61,19 @@ fn kill(pid: c_int, signo: c_int) -> Result<(), c_int> {
 
 impl ReloadTask {
     pub(crate) fn add(&mut self, pid: c_int, worker_id: u32) {
+        if pid <= 0 {
+            return;
+        }
         self.workers.insert(pid, worker_id);
         self.kill_queue.push_back(pid);
     }
 
     /// Drop `pid` from the snapshot once it has exited. Returns whether it was there.
     pub(crate) fn remove(&mut self, pid: c_int) -> bool {
+        if self.current == Some(pid) {
+            self.current = None;
+            self.timer = None;
+        }
         self.workers.remove(&pid).is_some()
     }
 
@@ -76,9 +89,25 @@ impl ReloadTask {
         }
     }
 
-    /// Owns the timeout timer, which is deleted with the task.
-    pub fn set_timer(&mut self, timer: Option<ArmedTimer>) {
-        self.timer = timer;
+    /// Configure the timeout that starts when a worker is signalled.
+    pub(crate) fn configure_timeout(&mut self, arm: impl Fn() -> Option<ArmedTimer> + 'static) {
+        self.arm = Some(Box::new(arm));
+    }
+
+    /// The sequential reload expires only its current worker. An asynchronous
+    /// bulk reload signalled every worker still in the snapshot.
+    pub fn timeout(&mut self, warn: Warn) {
+        if let Some(pid) = self.current {
+            if let Some(&id) = self.workers.get(&pid) {
+                match (self.kill)(pid, libc::SIGKILL) {
+                    Ok(()) => warn(KillWarning::ForceKill, pid, id),
+                    Err(error) if already_gone(error) => {}
+                    Err(_) => warn(KillWarning::TimeoutFailed, pid, id),
+                }
+            }
+        } else {
+            self.kill_all(libc::SIGKILL, warn);
+        }
     }
 
     /// Signal every worker still in the snapshot, then drop the queue.
@@ -92,11 +121,17 @@ impl ReloadTask {
             }
         }
         self.kill_queue.clear();
+        if signo == libc::SIGTERM {
+            self.timer = self.arm.as_ref().and_then(|arm| arm());
+        }
     }
 
     /// Signal the next queued worker still in the snapshot; workers that are already
     /// gone leave the snapshot and the next one is tried.
     pub(crate) fn kill_one(&mut self, signo: c_int, warn: Warn) {
+        if self.current.is_some() {
+            return;
+        }
         while let Some(pid) = self.kill_queue.pop_front() {
             let Some(&id) = self.workers.get(&pid) else {
                 continue;
@@ -109,6 +144,8 @@ impl ReloadTask {
                 Err(_) => warn(KillWarning::KillOneFailed, pid, id),
                 Ok(()) => {}
             }
+            self.current = Some(pid);
+            self.timer = self.arm.as_ref().and_then(|arm| arm());
             break;
         }
     }
@@ -184,6 +221,21 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn timeout_only_kills_the_current_worker_until_it_is_reaped() {
+        let mut task = task();
+        task.add(LIVE, 0);
+        task.add(LIVE + 1, 1);
+        task.kill_one(libc::SIGTERM, record);
+        task.kill_one(libc::SIGTERM, record);
+        task.timeout(record);
+        assert_eq!(signalled(), [(LIVE, libc::SIGTERM), (LIVE, libc::SIGKILL)]);
+        assert_eq!(warned(), [(KillWarning::ForceKill, LIVE, 0)]);
+        assert!(task.remove(LIVE));
+        task.kill_one(libc::SIGTERM, record);
+        assert_eq!(signalled(), [(LIVE + 1, libc::SIGTERM)]);
+    }
+
+    #[test]
     fn kill_one_skips_removed_workers() {
         let mut task = task();
         task.add(LIVE, 1);
@@ -241,11 +293,11 @@ pub(crate) mod tests {
         assert!(!task.remove(100));
         assert!(task.remove(101));
         assert!(task.completed());
-        task.set_timer(Some(ArmedTimer::new(
+        task.timer = Some(ArmedTimer::new(
             1,
             9,
             crate::process::armed_timer::tests::record,
-        )));
+        ));
         drop(task);
         assert_eq!(crate::process::armed_timer::tests::cancelled(), [9]);
     }
