@@ -9,7 +9,7 @@
     reason = "test helpers outside #[test] fns; a panic fails the case"
 )]
 use std::hash::{BuildHasher, RandomState};
-use swoole_rs_http::multipart_parser::{Flow, MultipartError, MultipartParser, Parts};
+use swoole_rs_http::multipart_parser::{Flow, MultipartError, MultipartParser, ParseError, Parts};
 
 /// `MppResult`, filled by `_settings`' callbacks.
 #[derive(Default)]
@@ -17,6 +17,7 @@ struct MppResult {
     data: Vec<u8>,
     header_field: Vec<u8>,
     header_value: Vec<u8>,
+    header_value_complete_count: usize,
     header_complete: bool,
     body_end: bool,
 }
@@ -29,6 +30,11 @@ impl Parts<'_> for MppResult {
 
     fn on_header_value(&mut self, data: &[u8]) -> Flow {
         self.header_value.extend_from_slice(data);
+        Flow::Go
+    }
+
+    fn on_header_value_complete(&mut self) -> Flow {
+        self.header_value_complete_count += 1;
         Flow::Go
     }
 
@@ -53,10 +59,6 @@ const BOUNDARY: &[u8] = b"--WebKitFormBoundaryeGOz80A8JnaO6kuw";
 /// `create_parser()`.
 fn create_parser() -> MultipartParser {
     MultipartParser::new(BOUNDARY).unwrap()
-}
-
-fn len(data: &[u8]) -> isize {
-    data.len().try_into().unwrap()
 }
 
 /// `create_error`: the message for `reason` is non-empty and contains `error`.
@@ -123,15 +125,40 @@ fn header(complete: bool) -> Vec<u8> {
 }
 
 #[test]
+fn callback_error() {
+    enum Reject {
+        Field,
+        Begin,
+    }
+    impl Parts<'_> for Reject {
+        fn on_header_field(&mut self, _: &[u8]) -> Flow {
+            Flow::Fail
+        }
+        fn on_part_data_begin(&mut self, _: &[u8]) -> Flow {
+            match self {
+                Self::Begin => Flow::Fail,
+                Self::Field => Flow::Go,
+            }
+        }
+    }
+    for mut callback in [Reject::Field, Reject::Begin] {
+        let mut parser = create_parser();
+        assert_eq!(
+            parser.execute(&mut callback, &header(true)),
+            Err(ParseError::Callback)
+        );
+        assert_eq!(parser.error_message(), b"callback error");
+    }
+}
+
+#[test]
 fn header_field() {
     let mut parser = create_parser();
     let header = header(true);
     let mut result = MppResult::default();
     assert_eq!(
-        parser
-            .execute(&mut result, &header)
-            .map_or(-1, usize::cast_signed),
-        len(&header),
+        parser.execute(&mut result, &header),
+        Ok(header.len()),
         "header parsed"
     );
     assert_eq!(result.header_field, b"Content-Disposition", "field");
@@ -139,39 +166,74 @@ fn header_field() {
         result.header_value.windows(4).any(|w| w == b"test"),
         "value names test"
     );
+    assert_eq!(result.header_value_complete_count, 1);
     let boundary = parser.boundary().to_vec();
+    assert_eq!(parser.execute(&mut result, b"\r\n"), Ok(2), "CRLF");
     assert_eq!(
-        parser
-            .execute(&mut result, b"\r\n")
-            .map_or(-1, usize::cast_signed),
-        2,
-        "CRLF"
-    );
-    assert_eq!(
-        parser
-            .execute(&mut result, &boundary)
-            .map_or(-1, usize::cast_signed),
-        len(&boundary),
+        parser.execute(&mut result, &boundary),
+        Ok(boundary.len()),
         "boundary"
     );
     assert_eq!(
-        parser
-            .execute(&mut result, b"--\r\n\r\n")
-            .map_or(-1, usize::cast_signed),
-        6,
+        parser.execute(&mut result, b"--\r\n\r\n"),
+        Ok(6),
         "final hyphens"
     );
 }
 
 #[test]
 fn fragmented_header() {
+    let header = header(true);
+    let check = |chunks: &mut dyn Iterator<Item = &[u8]>| {
+        let mut parser = create_parser();
+        let mut result = MppResult::default();
+        for chunk in chunks {
+            assert_eq!(parser.execute(&mut result, chunk), Ok(chunk.len()));
+        }
+        assert_eq!(result.header_field, b"Content-Disposition");
+        assert_eq!(result.header_value, br#"form-data; name="test""#);
+        assert_eq!(result.header_value_complete_count, 1);
+    };
+    for split in 1..header.len() {
+        let (first, second) = header.split_at(split);
+        check(&mut [first, second].into_iter());
+    }
+    check(&mut header.chunks(1));
+}
+
+#[test]
+fn incomplete_header_value() {
     let mut parser = create_parser();
     let mut result = MppResult::default();
-    for byte in header(true).chunks(1) {
-        assert_eq!(parser.execute(&mut result, byte), Ok(1));
-    }
-    assert_eq!(result.header_field, b"Content-Disposition");
+    let header = header(false);
+    assert_eq!(parser.execute(&mut result, &header), Ok(header.len()));
+    assert!(!parser.is_complete());
     assert_eq!(result.header_value, br#"form-data; name="test""#);
+    assert_eq!(result.header_value_complete_count, 0);
+    assert_eq!(parser.execute(&mut result, b"\r\n\r\n"), Ok(4));
+    assert_eq!(result.header_value_complete_count, 1);
+}
+
+#[test]
+fn malformed_header() {
+    for (line, reason) in [
+        (
+            b"Content@Disposition: value\r\n\r\n".as_slice(),
+            MultipartError::InvalidHeaderFieldChar,
+        ),
+        (
+            b"Content-Disposition: value\rX",
+            MultipartError::InvalidHeaderValueChar,
+        ),
+    ] {
+        let mut parser = create_parser();
+        let input = [b"--", BOUNDARY, b"\r\n", line].concat();
+        assert_eq!(
+            parser.execute(&mut MppResult::default(), &input),
+            Err(ParseError::Parser(reason))
+        );
+        assert_eq!(parser.error_reason, Some(reason));
+    }
 }
 
 /// `swoole_rand(min, max)`: uniform over `min..=max`.
@@ -196,8 +258,8 @@ fn append_data(parser: &mut MultipartParser, result: &mut MppResult, data: &mut 
     append_random_bytes(data);
     let part = &data[offset..];
     assert_eq!(
-        parser.execute(result, part).map_or(-1, usize::cast_signed),
-        len(part),
+        parser.execute(result, part),
+        Ok(part.len()),
         "appended data"
     );
 }
@@ -208,10 +270,8 @@ fn data() {
     let header = header(true);
     let mut result = MppResult::default();
     assert_eq!(
-        parser
-            .execute(&mut result, &header)
-            .map_or(-1, usize::cast_signed),
-        len(&header),
+        parser.execute(&mut result, &header),
+        Ok(header.len()),
         "header parsed"
     );
     let boundary = parser.boundary().to_vec();
@@ -228,68 +288,43 @@ fn data() {
     data.extend_from_slice(&prefix(&boundary));
     append_random_bytes(&mut data);
     assert_eq!(
-        parser
-            .execute(&mut result, &data)
-            .map_or(-1, usize::cast_signed),
-        len(&data),
+        parser.execute(&mut result, &data),
+        Ok(data.len()),
         "first data"
     );
 
     append_data(&mut parser, &mut result, &mut data);
     data.push(b'\r');
-    assert_eq!(
-        parser
-            .execute(&mut result, b"\r")
-            .map_or(-1, usize::cast_signed),
-        1,
-        "CR"
-    );
+    assert_eq!(parser.execute(&mut result, b"\r"), Ok(1), "CR");
     append_data(&mut parser, &mut result, &mut data);
     data.extend_from_slice(b"\r\n");
-    assert_eq!(
-        parser
-            .execute(&mut result, b"\r\n")
-            .map_or(-1, usize::cast_signed),
-        2,
-        "CRLF"
-    );
+    assert_eq!(parser.execute(&mut result, b"\r\n"), Ok(2), "CRLF");
     append_data(&mut parser, &mut result, &mut data);
 
     let offset = data.len();
     data.extend_from_slice(&prefix(&boundary));
     assert_eq!(
-        parser
-            .execute(&mut result, &data[offset..])
-            .map_or(-1, usize::cast_signed),
-        len(&data[offset..]),
+        parser.execute(&mut result, &data[offset..]),
+        Ok(data[offset..].len()),
         "boundary prefix"
     );
 
+    assert_eq!(parser.execute(&mut result, b"\r\n"), Ok(2), "CRLF");
     assert_eq!(
-        parser
-            .execute(&mut result, b"\r\n")
-            .map_or(-1, usize::cast_signed),
-        2,
-        "CRLF"
-    );
-    assert_eq!(
-        parser
-            .execute(&mut result, &boundary)
-            .map_or(-1, usize::cast_signed),
-        len(&boundary),
+        parser.execute(&mut result, &boundary),
+        Ok(boundary.len()),
         "boundary"
     );
     assert_eq!(
-        parser
-            .execute(&mut result, b"--\r\n\r\n")
-            .map_or(-1, usize::cast_signed),
-        6,
+        parser.execute(&mut result, b"--\r\n\r\n"),
+        Ok(6),
         "final hyphens"
     );
 
     assert_eq!(data[..result.data.len()], result.data, "part data");
     assert!(result.header_complete, "headers complete");
     assert!(result.body_end, "body end");
+    assert!(parser.is_complete());
 }
 
 #[test]

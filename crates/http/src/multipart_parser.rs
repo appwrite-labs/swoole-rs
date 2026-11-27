@@ -60,6 +60,7 @@ pub enum Flow {
 pub enum MultipartError {
     Paused,
     Unknown,
+    Callback,
     BoundaryEndNoCrlf,
     BadStartBoundary,
     InvalidHeaderFieldChar,
@@ -69,8 +70,7 @@ pub enum MultipartError {
     HeaderValueIncomplete,
 }
 
-/// Why execution stopped with an error. Callback failures leave the parser's
-/// stored diagnostic unchanged, while syntax errors also update it.
+/// Why execution stopped with an error. The parser also records its diagnostic.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ParseError {
     Parser(MultipartError),
@@ -205,6 +205,7 @@ impl MultipartParser {
             return Vec::new();
         };
         let head: &[u8] = match reason {
+            E::Callback => return b"callback error".to_vec(),
             E::Paused => return b"parser paused".to_vec(),
             E::Unknown => return b"parser unknown".to_vec(),
             E::BoundaryEndNoCrlf => b"no CRLF at first boundary end: ",
@@ -261,8 +262,7 @@ impl MultipartParser {
 
     /// `multipart_parser_execute`: how many bytes were consumed, including a pause.
     /// # Errors
-    /// A syntax error or a failed callback. A callback failure preserves the
-    /// stored diagnostic, matching the original parser.
+    /// A syntax error or a failed callback.
     /// Header fields and values may span calls.
     pub fn execute<'i>(
         &mut self,
@@ -273,6 +273,9 @@ impl MultipartParser {
         let mut i = 0;
         while let Some(&c) = buf.get(i) {
             if let Step::Return(result) = self.step(parts, buf, i, c, &mut mark) {
+                if result == Err(ParseError::Callback) {
+                    self.error_reason = Some(MultipartError::Callback);
+                }
                 return result;
             }
             i += 1;
@@ -692,7 +695,7 @@ mod tests {
     }
 
     #[test]
-    fn callback_failure_keeps_the_stored_diagnostic() {
+    fn callback_failure_replaces_the_stored_reason() {
         struct Failing;
         impl Parts<'_> for Failing {
             fn on_part_data_begin(&mut self, _: &[u8]) -> Flow {
@@ -705,17 +708,16 @@ mod tests {
             parser.error_i = 7;
             parser.error_expected = b'x';
             parser.error_unexpected = b'y';
-            let message = parser.error_message();
             assert_eq!(
                 parser.execute(&mut Failing, BODY),
                 Err(ParseError::Callback)
             );
             assert_eq!(parser.state, State::HeaderFieldStart);
-            assert_eq!(parser.error_reason, prior);
+            assert_eq!(parser.error_reason, Some(MultipartError::Callback));
             assert_eq!(parser.error_i, 7);
             assert_eq!(parser.error_expected, b'x');
             assert_eq!(parser.error_unexpected, b'y');
-            assert_eq!(parser.error_message(), message);
+            assert_eq!(parser.error_message(), b"callback error");
             // The failed begin callback consumed the boundary, as before.
             let mut parts = Recorder::default();
             assert_eq!(parser.execute(&mut parts, &BODY[6..]), Ok(BODY.len() - 6));
