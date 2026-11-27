@@ -401,6 +401,20 @@ pub(crate) fn idle_timeout(serv: view::Server<'_>, reactor: Reactor, conn: Conne
         crate::conn_io::close_connection(serv, reactor, conn.socket());
         return;
     }
+    let Some(socket) = conn.socket() else {
+        return;
+    };
+    if !socket.read(SocketFields::has_left_reactor) && !reactor.del(*socket) {
+        return;
+    }
+    swoole_rs_corebase::timer::del_disarmed(socket.edit(SocketFields::disarm_recv_timer));
+    if conn.ssl() && !conn.ssl_ready() {
+        crate::conn_io::close_connection(serv, reactor, Some(socket));
+        return;
+    }
+    if !conn.close_reset() {
+        socket.read(|s| s.finish_stream(true));
+    }
     conn.set_close_force(true);
     let mut event = conn.event(0, 0);
     reactor.trigger_close(&mut event);

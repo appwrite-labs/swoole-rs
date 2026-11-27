@@ -200,8 +200,7 @@ fn on_close(reactor: Running<'_>, event: &mut Event) -> bool {
         .is_some_and(|serv| close(serv, reactor, event))
 }
 
-/// The peer closed (or errored) the connection of `event`: closed now when it already
-/// left the reactor or its close is queued, else the worker hears of it.
+/// Notify the worker once, including when reads were already paused.
 pub(crate) fn close(serv: view::Server<'_>, reactor: Reactor, event: &Event) -> bool {
     let Some(conn) = serv.at(event.fd()).filter(|conn| conn.is_active()) else {
         return false;
@@ -209,19 +208,19 @@ pub(crate) fn close(serv: view::Server<'_>, reactor: Reactor, event: &Event) -> 
     let Some(socket) = event.socket() else {
         return false;
     };
-    if socket.read(SocketFields::has_left_reactor) {
-        return crate::conn_io::close_connection(serv, reactor, Some(socket));
-    }
-    if !reactor.del(*socket) {
+    if !socket.read(SocketFields::has_left_reactor) && !reactor.del(*socket) {
         return false;
     }
     if conn.close_queued() {
         return crate::conn_io::close_connection(serv, reactor, Some(socket));
     }
+    if !socket.edit(SocketFields::claim_close_report) {
+        return true;
+    }
     // The client closed the connection: it is no longer usable.
     conn.set_peer_closed(true);
     if !conn.close_reset() {
-        socket.read(SocketFields::finish_peer_eof);
+        socket.read(|s| s.finish_stream(false));
     }
     crate::server_methods::notify(serv, conn, ServerEvent::Close)
 }
@@ -415,14 +414,20 @@ mod tests {
     }
 
     #[test]
-    fn close_closes_a_socket_already_out_of_the_reactor() {
+    fn close_notifies_once_when_reads_are_paused() {
         let (live, _clients) = accepted();
         let (serv, reactor) = (live.server(), live.reactor());
         let conn = session(&live, 1);
         assert!(reactor.del(*conn.socket().unwrap()));
         assert!(close(serv, reactor, &conn.event(0, 0)));
-        assert_eq!(calls(), [], "nobody is told");
-        assert!(closed(conn));
+        let listener = u16::try_from(live.listener_fd).unwrap();
+        assert_eq!(
+            calls(),
+            [Call::Notify(c_long::from(conn.fd()), 0, 4, listener)]
+        );
+        assert!(close(serv, reactor, &conn.event(0, 0)));
+        assert_eq!(calls(), []);
+        assert!(conn.is_active(), "the worker closes it");
     }
 
     #[test]

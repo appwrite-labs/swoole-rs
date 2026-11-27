@@ -688,9 +688,15 @@ impl SocketFields {
         self.recv_eof = self.is_stream();
     }
 
-    /// Finish the write side of a stream after an observed peer EOF.
-    pub fn finish_peer_eof(&self) {
+    /// Signal EOF before notifying the worker of a peer FIN or idle expiry.
+    pub fn finish_stream(&self, idle: bool) {
         if self.recv_eof {
+            _ = crate::sys::shutdown(self.fd, libc::SHUT_WR);
+        } else if idle
+            && crate::sys::shutdown(self.fd, libc::SHUT_RDWR)
+                .is_err_and(|err| err.raw_os_error() == Some(libc::ENOTCONN))
+        {
+            // Darwin can observe the peer FIN while application reads are paused.
             _ = crate::sys::shutdown(self.fd, libc::SHUT_WR);
         }
     }

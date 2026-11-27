@@ -395,7 +395,7 @@ pub(crate) fn peer_close(serv: view::Server<'_>, reactor: Reactor, event: &Event
     if state.config_ref().disable_notify.get() {
         return close_connection(serv, reactor, Some(sock));
     }
-    if !reactor.del(*sock) {
+    if !sock.read(SocketFields::has_left_reactor) && !reactor.del(*sock) {
         return false;
     }
     if conn.close_queued() {
@@ -413,7 +413,7 @@ pub(crate) fn peer_close(serv: view::Server<'_>, reactor: Reactor, event: &Event
     // The connection is no longer available.
     conn.set_peer_closed(fin_ends(BUILT_PREQUEUE, state, conn));
     if conn.peer_closed() && !conn.close_reset() {
-        sock.read(SocketFields::finish_peer_eof);
+        sock.read(|s| s.finish_stream(false));
     }
     crate::hybrid::hybrid().factory_notify(serv, &mut head)
 }
