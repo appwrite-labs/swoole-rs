@@ -204,6 +204,7 @@ fn missing_session(info: &DataHead) {
 fn to_connection(serv: Server<'_>, info: &DataHead, data: &[u8], first: Option<i64>) -> bool {
     let state = serv.state();
     let (kind, session) = (info.event(), info.fd);
+    let cleanup = file_cleanup(info, data);
     let close = kind == Some(ServerEvent::Close);
     let lookup = if close {
         Lookup::Verified
@@ -307,7 +308,7 @@ fn to_connection(serv: Server<'_>, info: &DataHead, data: &[u8], first: Option<i
             reactor.interest(sock, Interest::RemoveRead);
         }
     } else if file {
-        if !send_file(*sock, data) {
+        if !send_file(*sock, data, core::mem::DropGuard::dismiss(cleanup)) {
             return false;
         }
     } else {
@@ -394,18 +395,45 @@ fn advance(data: &mut &[u8], sent: i64) {
 /// `SendfileTask`'s head: its `off_t offset` and `size_t length`; the name follows.
 const TASK_HEAD: usize = 16;
 
+/// `SW_SERVER_SENDFILE_DELETE` on a `SEND_FILE` event.
+pub(crate) const SENDFILE_DELETE: u16 = 1;
+
+/// Unlink a rejected event's file unless its socket request takes ownership first.
+fn file_cleanup<'a>(
+    info: &DataHead,
+    data: &'a [u8],
+) -> core::mem::DropGuard<bool, impl FnOnce(bool) + 'a> {
+    let owned =
+        info.event() == Some(ServerEvent::SendFile) && info.ext_flags & SENDFILE_DELETE != 0;
+    core::mem::DropGuard::new(owned, move |owned| {
+        if owned && let Some(name) = task_name(data) {
+            _ = swoole_rs_corebase::sys::unlink(name);
+        }
+    })
+}
+
+fn task_name(task: &[u8]) -> Option<&CStr> {
+    CStr::from_bytes_until_nul(task.get(TASK_HEAD..)?).ok()
+}
+
 /// `sock->sendfile_async(task->filename, task->offset, task->length)`: false when it
 /// failed or the task lacks its head or name.
-fn send_file(sock: Socket<'_>, task: &[u8]) -> bool {
+fn send_file(sock: Socket<'_>, task: &[u8], delete_file: bool) -> bool {
     let word = |at: usize| <[u8; 8]>::try_from(task.get(at..at + 8)?).ok();
     let (Some(offset), Some(length)) = (word(0), word(8)) else {
         return false;
     };
-    let Some(Ok(name)) = task.get(TASK_HEAD..).map(CStr::from_bytes_until_nul) else {
+    let Some(name) = task_name(task) else {
         return false;
     };
     let (offset, length) = (i64::from_ne_bytes(offset), usize::from_ne_bytes(length));
-    swoole_rs_corebase::tls::upstream::socket_sendfile_async(sock, name, offset, length)
+    swoole_rs_corebase::tls::upstream::socket_sendfile_async(
+        sock,
+        name,
+        offset,
+        length,
+        delete_file,
+    )
 }
 
 /// `swoole_timer_add(sec2msec(port->max_idle_time), true, ...)` for the socket's
@@ -709,6 +737,43 @@ mod tests {
             a.send(ServerEvent::SendFile, 1, &task(b"no-such-file")),
             SW_ERR
         );
+    }
+
+    #[test]
+    fn owned_file_event_cleans_up_on_drain_close_and_refusal() {
+        let path =
+            std::env::temp_dir().join(format!("swoole-event-sendfile-{}", std::process::id()));
+        let mut task = 0i64.to_ne_bytes().to_vec();
+        task.extend(3usize.to_ne_bytes());
+        task.extend(path.as_os_str().as_encoded_bytes());
+        task.push(0);
+        for (session, disconnect) in [(1, false), (1, true), (9, false)] {
+            std::fs::write(&path, b"abc").unwrap();
+            let mut a = Accepted::new();
+            let info = DataHead {
+                fd: session,
+                kind: ServerEvent::SendFile.code(),
+                ext_flags: SENDFILE_DELETE,
+                ..DataHead::default()
+            };
+            assert_eq!(
+                send_event_to_connection(a.serv(), &info, &task),
+                session == 1
+            );
+            if session == 1 {
+                assert!(path.is_file(), "cleanup waits for the queued file");
+                if disconnect {
+                    a.conn().set_close_force(true);
+                    assert_eq!(a.send(ServerEvent::Close, 1, b""), SW_OK);
+                } else {
+                    assert!(swoole_rs_corebase::tls::upstream::socket_handle_sendfile(
+                        a.sock()
+                    ));
+                    assert_eq!(a.read(3), b"abc");
+                }
+            }
+            assert!(!path.exists());
+        }
     }
 
     #[test]

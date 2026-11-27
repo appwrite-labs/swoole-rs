@@ -777,8 +777,9 @@ fn file_request(
     filename: &CStr,
     offset: libc::off_t,
     length: usize,
+    delete_file: bool,
 ) -> Option<Box<SocketFileRequest>> {
-    let request = SocketFileRequest::open(filename, offset);
+    let request = SocketFileRequest::open(filename, offset, delete_file);
     assert!(request.is_some(), "out of memory for a sendfile request");
     let mut request = request?;
     let Err(error) = request.check(length) else {
@@ -818,7 +819,7 @@ pub fn sendfile_sync(
     offset: libc::off_t,
     length: usize,
 ) -> bool {
-    let Some(mut request) = file_request(filename, offset, length) else {
+    let Some(mut request) = file_request(filename, offset, length, false) else {
         return false;
     };
     let total = request.length();
@@ -949,8 +950,9 @@ pub fn socket_sendfile_async(
     filename: &CStr,
     offset: libc::off_t,
     length: usize,
+    delete_file: bool,
 ) -> bool {
-    let Some(request) = file_request(filename, offset, length) else {
+    let Some(request) = file_request(filename, offset, length, delete_file) else {
         return false;
     };
     socket.edit(|record| record.open_output_queue(65536));
@@ -1313,11 +1315,11 @@ mod tests {
         left.open_output_queue(65536);
         let (path, name) = temp_file("swoole-sendfile-async", b"abcdef");
         let handle = unsafe { Socket::from_ptr(&raw mut left) }.unwrap();
-        let request = file_request(&name, 1, 0).unwrap();
+        let request = file_request(&name, 1, 0, false).unwrap();
         let queued = handle.with_output_queue(|queue| queue.unwrap().push_file(request));
         assert_eq!(queued, Ok(()));
         assert!(
-            file_request(c"/nonexistent/x", 0, 0).is_none(),
+            file_request(c"/nonexistent/x", 0, 0, false).is_none(),
             "a file that won't open is refused"
         );
         assert!(socket_handle_sendfile(handle));
