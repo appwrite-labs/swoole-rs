@@ -249,17 +249,10 @@ fn send_file(call: &Call) {
             host::fatal("can't use sendfile when HTTP chunk is enabled");
             return None;
         }
-        let parsed = call
-            .arity(1, 3)
-            .and_then(|()| Ok((call.zstr(1)?, call.long(2, 0)?, call.long(3, 0)?)));
-        let (Some(file), offset, requested) = parsed.ok()? else {
-            return None;
-        };
+        let options = swoole_rs_phpswoole::SendFile::parse(call, 1)?;
+        let file = &options.filename;
+        let (offset, requested) = (options.offset, options.length);
         let name = file.bytes();
-        if name.contains(&0) {
-            call.argument_value_error(1, c"must not contain any null bytes");
-            return None;
-        }
         if name.is_empty() {
             host::notice("file name is empty");
             return None;
@@ -291,7 +284,23 @@ fn send_file(call: &Call) {
             }
         };
         let length = usize::try_from(length).unwrap_or_default();
-        Some(after(ctx).and_then(|()| send::send_file(ctx, file, offset, length)))
+        Some(after(ctx).and_then(|()| {
+            if !swoole_rs_zend::host::exception().is_null() {
+                return Ok(false);
+            }
+            // A nonempty asynchronous HTTP/1 send still needs its path on the reactor.
+            if options.delete && length != 0 && ctx.flags() & (CO_SOCKET | HTTP2) == 0 {
+                return Ok(false);
+            }
+            if !options.acquire() {
+                return Ok(false);
+            }
+            let result = send::send_file(ctx, file, offset, length);
+            if options.delete {
+                swoole_rs_hooks::stdio::swoole_coroutine_unlink(file.c_str().into());
+            }
+            result
+        }))
     };
     match run() {
         Some(result) => sent(call, &result),
