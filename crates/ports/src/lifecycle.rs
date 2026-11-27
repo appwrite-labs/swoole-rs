@@ -44,6 +44,26 @@ pub(crate) fn import(config: &mut PortConfig, fd: c_int) -> bool {
     let kind = socket_type(family, so_type);
     socket.listen_as(kind);
     let port = socket.port();
+    if so_type == libc::SOCK_DGRAM {
+        let bound = match family {
+            libc::AF_INET | libc::AF_INET6 => port != 0,
+            libc::AF_UNIX if cfg!(any(target_os = "linux", target_os = "android")) => {
+                socket.address_storage().1 as usize
+                    > core::mem::offset_of!(libc::sockaddr_un, sun_path)
+            }
+            libc::AF_UNIX => socket.with_host(|path| !path.is_empty()),
+            _ => false,
+        };
+        if !bound {
+            log::error_log(
+                LOG_WARNING,
+                libc::EINVAL,
+                origin,
+                format_args!("datagram socket[{fd}] is not bound"),
+            );
+            return false;
+        }
+    }
     let host_set = socket.with_host(|host| config.host.set(host.to_bytes()));
     config.set_listening_socket(OwnedSocket::new(Box::new(socket)));
     config.r#type = kind.raw();

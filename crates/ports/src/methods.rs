@@ -552,6 +552,17 @@ mod tests {
         sys::close(stream).unwrap();
     }
 
+    #[test]
+    fn unbound_datagrams_remain_with_the_caller() {
+        for family in [libc::AF_INET, libc::AF_INET6, libc::AF_UNIX] {
+            let config = &mut *PortConfig::boxed(1000);
+            let fd = sys::socket(family, libc::SOCK_DGRAM, 0).unwrap();
+            assert!(!crate::lifecycle::import(config, fd));
+            assert!(config.socket_ptr().is_null());
+            sys::close(fd).unwrap();
+        }
+    }
+
     /// A port whose settings own a fresh `kind` socket on 127.0.0.1, unbound
     /// unless `bind`.
     fn socket_port(kind: c_int, bind: bool) -> Box<PortConfig> {
