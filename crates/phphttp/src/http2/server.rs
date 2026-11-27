@@ -15,13 +15,12 @@ use swoole_rs_http2::frame_flag::{
 };
 use swoole_rs_http2::{
     FileCompletion, FrameAction, FrameType, GOAWAY_SIZE, HeaderKind, HeaderRole, Http2HeaderPlan,
-    Http2RespondFacts, Media, PING_PAYLOAD, Respond, WindowAction, decode_packet,
+    Http2RespondFacts, Media, PING_PAYLOAD, Respond, decode_packet,
     hpack::{Encoder, Error},
     send_frame_size, sw_rs_http2_chunk, sw_rs_http2_file_complete, sw_rs_http2_header_defaults,
     sw_rs_http2_header_plan, sw_rs_http2_headers_flags, sw_rs_http2_inflate_step,
     sw_rs_http2_media_kind, sw_rs_http2_pack_frame_header, sw_rs_http2_respond_next,
-    sw_rs_http2_response_status, sw_rs_http2_setting_plan, sw_rs_http2_window_action,
-    valid_content_length,
+    sw_rs_http2_response_status, sw_rs_http2_setting_plan, valid_content_length,
 };
 use swoole_rs_phpserver::RecvData;
 use swoole_rs_server::{Connection, view};
@@ -575,55 +574,51 @@ pub(crate) fn send_body(
         let max_frame_size = send_frame_size(session.remote[MAX_FRAME_SIZE].get());
         let chunk = sw_rs_http2_chunk(rest.len(), max_frame_size, flags);
         let (mut send_n, mut send_flags) = (chunk.length, chunk.flags);
-        let window = stream.remote_window_size.get();
-        if send_n > window as usize {
-            // The coroutine server receives frames serially and cannot be
-            // suspended, so it has no flow control.
-            let may_suspend =
-                get(ctx, Field::CoSocket) == 0 && swoole_rs_phpcoroutines::in_coroutine();
-            match sw_rs_http2_window_action(send_n, window, may_suspend) {
-                WindowAction::Warn => warn(
-                    c"Stream::send_body",
-                    "The data sent exceeded remote_window_size",
-                ),
-                WindowAction::Yield => {
-                    // In a coroutine: WINDOW_UPDATE, or the stream's removal, wakes it, by
-                    // the send's deadline (upstream 6.3's `http2_write_deadline`).
-                    if !current(session, stream) {
-                        return false;
-                    }
-                    let deadline = *deadline.get_or_insert_with(|| ctx.send_deadline());
-                    if !stream.wait(deadline) {
-                        if swoole_rs_corebase::log::last_error() == CO_TIMEDOUT {
-                            write_timed_out(session);
-                        }
-                        return false;
-                    }
-                    if !current(session, stream) {
-                        return false;
-                    }
-                    continue;
-                }
-                WindowAction::Send | WindowAction::Truncate => {
-                    send_n = window as usize;
-                    send_flags = 0;
-                }
-            }
-        }
-        let header = frame_header(FrameType::Data, send_n, send_flags, stream.id);
-        let (part, tail) = rest.split_at(send_n.min(rest.len()));
-        if send_n < page {
-            // One send of header and payload. Not a zeroed stack buffer: zeroing
-            // it costs more than the allocation (#331).
-            let frame = [header.as_slice(), part].concat();
-            if !send(ctx, &frame) {
+        let window = send_credit(session, stream);
+        if window == 0 {
+            if !swoole_rs_phpcoroutines::in_coroutine() {
+                swoole_rs_corebase::log::set_last_error(
+                    swoole_rs_error::ErrorCode::SW_ERROR_OUTPUT_SEND_YIELD as c_int,
+                );
                 return false;
             }
-        } else if !send(ctx, &header) || !send(ctx, part) {
+            let deadline = *deadline.get_or_insert_with(|| ctx.send_deadline());
+            if deadline.remaining().is_some_and(|time| time.is_zero()) {
+                write_timed_out(session);
+                return false;
+            }
+            if !stream.wait(deadline) {
+                if swoole_rs_corebase::log::last_error() == CO_TIMEDOUT {
+                    write_timed_out(session);
+                }
+                return false;
+            }
+            if !current(session, stream) {
+                return false;
+            }
+            continue;
+        }
+        if send_n > window {
+            send_n = window;
+            send_flags = 0;
+        }
+        let header = frame_header(FrameType::Data, send_n, send_flags, stream.id);
+        let (part, tail) = rest.split_at(send_n);
+        consume_window(session, stream, send_n);
+        let co_socket = get(ctx, Field::CoSocket) != 0;
+        let sent = if !co_socket || send_n < page {
+            // A yielding async send must enqueue the entire frame together.
+            send(ctx, &[header.as_slice(), part].concat())
+        } else {
+            send(ctx, &header) && send(ctx, part)
+        };
+        if !sent {
+            if !co_socket {
+                refund_window(session, stream, send_n);
+            }
             return false;
         }
         rest = tail;
-        consume_window(session, stream, send_n);
     }
     true
 }
@@ -637,15 +632,43 @@ fn write_timed_out(session: &Session) {
     swoole_rs_corebase::log::set_last_error(CO_TIMEDOUT);
 }
 
-/// The windows after `sent` bytes of DATA.
+fn send_credit(session: &Session, stream: &Stream) -> usize {
+    usize::try_from(
+        session
+            .remote_window_size
+            .get()
+            .min(stream.remote_window_size.get()),
+    )
+    .unwrap_or(0)
+}
+
 fn consume_window(session: &Session, stream: &Stream, sent: usize) {
-    let sent = sent.c_cast::<u32>();
+    let sent = sent.c_cast::<i64>();
     stream
         .remote_window_size
-        .set(stream.remote_window_size.get().wrapping_sub(sent));
+        .set(stream.remote_window_size.get() - sent);
     session
         .remote_window_size
-        .set(session.remote_window_size.get().wrapping_sub(sent));
+        .set(session.remote_window_size.get() - sent);
+}
+
+fn refund_window(session: &Session, stream: &Stream, length: usize) {
+    let amount = length.c_cast::<u32>();
+    if credit(&session.remote_window_size, amount).is_err()
+        || credit(&stream.remote_window_size, amount).is_err()
+    {
+        abort_session(
+            session,
+            swoole_rs_http2::error_code::FLOW_CONTROL_ERROR,
+            b"window overflow after canceled send",
+        );
+    } else {
+        wake_streams(session);
+    }
+}
+
+fn wake_streams(session: &Session) -> bool {
+    session.open_streams().iter().all(|stream| stream.wake())
 }
 
 /// Append `data` to `frame` as the one DATA frame `send_body` would send in
@@ -665,13 +688,14 @@ fn append_body(
     // An empty body sends nothing: the HEADERS end the stream.
     if data.is_empty()
         || data.len() > max_frame_size.min(page - 1)
-        || data.len() > stream.remote_window_size.get() as usize
+        || data.len() > send_credit(session, stream)
     {
         return 0;
     }
     let flags = if end_stream { FLAG_END_STREAM } else { 0 };
     frame.extend_from_slice(&frame_header(FrameType::Data, data.len(), flags, stream.id));
     frame.extend_from_slice(data);
+    consume_window(session, stream, data.len());
     data.len()
 }
 
@@ -745,8 +769,8 @@ pub(crate) fn respond_with_length(ctx: Ctx, data: &[u8], length: usize) -> bool 
                         appended = append_body(frame, &session, &stream, payload, end_stream);
                     },
                 );
-                if sent {
-                    consume_window(&session, &stream, appended);
+                if !sent && appended > 0 && get(ctx, Field::CoSocket) == 0 {
+                    refund_window(&session, &stream, appended);
                 }
                 body_sent = appended > 0;
                 action = next(action, sent, &facts);
@@ -885,7 +909,7 @@ pub(crate) fn on_receive(
     let session = SessionState::find(session_id).or_else(|| {
         let default_ctx = Ctx::server_context(view, session_id);
         let max_body_size = swoole_rs_server::server_methods::package_max_length(view, conn.fd());
-        super::session::session_own(
+        super::session::session_new(
             session_id,
             default_ctx,
             max_body_size,
@@ -993,6 +1017,7 @@ fn parse(session: &Session, frame: &[u8]) -> bool {
                 if let Err(code) = credit(&session.remote_window_size, value) {
                     return abort_session(session, code, b"invalid connection WINDOW_UPDATE");
                 }
+                return wake_streams(session);
             } else if stream_id & 1 == 0 || stream_id > last_stream_id {
                 return abort_session(
                     session,
@@ -1003,7 +1028,7 @@ fn parse(session: &Session, frame: &[u8]) -> bool {
                 if let Err(code) = credit(&stream.remote_window_size, value) {
                     return reset_stream(session, &stream, code);
                 }
-                if !session.is_coro() && !stream.wake() {
+                if !stream.wake() {
                     return false;
                 }
             }
@@ -1171,14 +1196,14 @@ fn header(ctx: Ctx, key: &[u8]) -> Option<ZString> {
     string_of(&entry)
 }
 
-fn credit(window: &std::cell::Cell<u32>, amount: u32) -> Result<(), u32> {
+fn credit(window: &std::cell::Cell<i64>, amount: u32) -> Result<(), u32> {
     if amount == 0 {
         return Err(swoole_rs_http2::error_code::PROTOCOL_ERROR);
     }
     let next = window
         .get()
-        .checked_add(amount)
-        .filter(|n| *n <= i32::MAX.cast_unsigned())
+        .checked_add(i64::from(amount))
+        .filter(|n| *n <= i64::from(i32::MAX))
         .ok_or(swoole_rs_http2::error_code::FLOW_CONTROL_ERROR)?;
     window.set(next);
     Ok(())
@@ -1215,6 +1240,30 @@ fn settings(session: &Session, payload: &[u8]) -> bool {
             close(session.default_ctx());
             return false;
         }
+        if id == setting_id::INIT_WINDOW_SIZE {
+            let delta = i64::from(value) - i64::from(session.remote[INIT_WINDOW_SIZE].get());
+            let streams = session.open_streams();
+            if streams
+                .iter()
+                .any(|s| s.remote_window_size.get() + delta > i64::from(i32::MAX))
+            {
+                return abort_session(
+                    session,
+                    swoole_rs_http2::error_code::FLOW_CONTROL_ERROR,
+                    b"stream window overflow",
+                );
+            }
+            session.remote[INIT_WINDOW_SIZE].set(value);
+            for stream in &streams {
+                stream
+                    .remote_window_size
+                    .set(stream.remote_window_size.get() + delta);
+            }
+            if delta > 0 && !streams.iter().all(|stream| stream.wake()) {
+                return false;
+            }
+            continue;
+        }
         session.with_deflater(|deflater| {
             let old = if id == setting_id::HEADER_TABLE_SIZE {
                 session.remote[0].get()
@@ -1228,9 +1277,6 @@ fn settings(session: &Session, payload: &[u8]) -> bool {
                 && let Some(setting) = session.remote.get(field)
             {
                 setting.set(value);
-            }
-            if plan.set_window {
-                session.remote_window_size.set(value);
             }
             if plan.change_deflater
                 && let Some(encoder) = deflater.as_mut()

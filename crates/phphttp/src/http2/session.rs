@@ -69,7 +69,7 @@ pub(crate) struct SessionState {
     local: [u32; 6],
     /// `remote_settings`, as the peer's SETTINGS frames set them.
     pub(crate) remote: [Cell<u32>; 6],
-    pub(crate) remote_window_size: Cell<u32>,
+    pub(crate) remote_window_size: Cell<i64>,
     pub(crate) local_window_size: Cell<u32>,
     pub(crate) max_body_size: u32,
     pub(crate) last_stream_id: Cell<u32>,
@@ -81,9 +81,6 @@ pub(crate) struct SessionState {
     pub(crate) shutting_down: Cell<bool>,
     /// The connection's context: frames that belong to no stream go out on it.
     default_ctx: Hold,
-    /// An async server's settings context, made for this session alone (a
-    /// coroutine server's is its connection's).
-    own: bool,
     handle: Handler,
 }
 
@@ -92,7 +89,7 @@ pub(crate) struct StreamState {
     /// The stream's hold on its context, let go with the stream.
     hold: StreamCtx,
     pub(crate) id: u32,
-    pub(crate) remote_window_size: Cell<u32>,
+    pub(crate) remote_window_size: Cell<i64>,
     pub(crate) local_window_size: Cell<u32>,
     /// The request's header block is complete; later blocks are trailers.
     pub(crate) headers_received: Cell<bool>,
@@ -135,7 +132,7 @@ fn defaults() -> [u32; 6] {
 const INIT_WINDOW_SIZE: usize = 3;
 
 impl SessionState {
-    fn new(fd: i64, default_ctx: Hold, own: bool, max_body_size: u32, handle: Handler) -> Self {
+    fn new(fd: i64, default_ctx: Hold, max_body_size: u32, handle: Handler) -> Self {
         // The peer need not send every setting: start from the defaults.
         let local = defaults();
         Self {
@@ -146,7 +143,7 @@ impl SessionState {
             deflater: Cell::default(),
             local,
             remote: local.map(Cell::new),
-            remote_window_size: Cell::new(local[INIT_WINDOW_SIZE]),
+            remote_window_size: Cell::new(i64::from(swoole_rs_http2::INITIAL_CONNECTION_WINDOW)),
             local_window_size: Cell::new(swoole_rs_http2::INITIAL_CONNECTION_WINDOW),
             max_body_size,
             last_stream_id: Cell::new(0),
@@ -155,7 +152,6 @@ impl SessionState {
             header_end_stream: Cell::new(false),
             shutting_down: Cell::new(false),
             default_ctx,
-            own,
             handle,
         }
     }
@@ -181,11 +177,6 @@ impl SessionState {
         Self::find(ctx.fd())
     }
 
-    /// A coroutine server's session.
-    pub(crate) fn is_coro(&self) -> bool {
-        !self.own
-    }
-
     pub(crate) fn local(&self, field: usize) -> u32 {
         self.local.get(field).copied().unwrap_or(0)
     }
@@ -199,7 +190,7 @@ impl SessionState {
         let stream = Rc::new(StreamState {
             hold,
             id,
-            remote_window_size: Cell::new(self.remote[INIT_WINDOW_SIZE].get()),
+            remote_window_size: Cell::new(i64::from(self.remote[INIT_WINDOW_SIZE].get())),
             local_window_size: Cell::new(self.local[INIT_WINDOW_SIZE]),
             headers_received: Cell::new(false),
             request_received: Cell::new(false),
@@ -220,6 +211,12 @@ impl SessionState {
     pub(crate) fn remove(&self, id: u32) -> bool {
         let removed = self.streams.with_taken(|streams| streams.remove(&id));
         removed.is_none_or(|stream| stream.wake())
+    }
+
+    /// Keep streams alive and release the registry before waking any coroutine.
+    pub(crate) fn open_streams(&self) -> Vec<Stream> {
+        self.streams
+            .with_taken(|streams| streams.values().cloned().collect())
     }
 
     pub(crate) fn stream_count(&self) -> usize {
@@ -254,32 +251,14 @@ impl StreamState {
     }
 }
 
-/// A coroutine server's session for connection `fd`
-/// (`swoole_http2_server_session_new`), unless it has one. `handle` gets each
-/// finished request; the session holds `default_ctx`.
+/// Create a connection's session once, retaining its context and request handler.
 pub(crate) fn session_new(fd: i64, default_ctx: Hold, max_body_size: u32, handle: Handler) {
-    insert(fd, default_ctx, false, max_body_size, handle);
-}
-
-/// An async server's session for connection `fd`, unless it has one: the
-/// settings context goes with the session.
-pub(crate) fn session_own(fd: i64, own: Hold, max_body_size: u32, handle: Handler) {
-    insert(fd, own, true, max_body_size, handle);
-}
-
-fn insert(fd: i64, default_ctx: Hold, own: bool, max_body_size: u32, handle: Handler) {
     if with_sessions(|sessions| sessions.contains_key(&fd)) {
         // The unused context is released here, outside the sessions.
         drop(default_ctx);
         return;
     }
-    let session = Rc::new(SessionState::new(
-        fd,
-        default_ctx,
-        own,
-        max_body_size,
-        handle,
-    ));
+    let session = Rc::new(SessionState::new(fd, default_ctx, max_body_size, handle));
     let replaced = with_sessions(|sessions| sessions.insert(fd, session));
     drop(replaced);
 }

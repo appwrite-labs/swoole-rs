@@ -257,14 +257,12 @@ impl Ctx<'_> {
         context::send(self, data)
     }
 
-    /// How long a send may wait on the peer (upstream 6.3's
-    /// `http2_server_send_timeout`): a server context's `send_timeout`, else upstream's
-    /// default write timeout. A coroutine socket's context never waits on its window.
+    /// The server or coroutine socket's write deadline for a flow-control wait.
     #[must_use]
     pub fn send_deadline(mut self) -> swoole_rs_corebase::timer::Deadline {
         let state = self.state();
-        let timeout = if context::co_socket(state) {
-            0.0
+        let timeout = if let Some(socket) = context::socket(state) {
+            socket.timeout(swoole_rs_corebase::reactor::TimeoutKind::WRITE)
         } else {
             context::server(state).config().send_timeout.get()
         };
