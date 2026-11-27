@@ -141,6 +141,14 @@ fn init_thread(ctx: &mut ReactorContext<'_>, state: &ServerState, id: u16) -> Op
             thread.notify_worker.set(u16::try_from(w).ok());
         }
     }
+    if config.mode_ == Mode::Thread
+        && !bus.rust().pipes().all(|pipe| {
+            pipe.read(SocketFields::output_drained)
+                || handle.interest(pipe, swoole_rs_corebase::reactor::Interest::AddWrite)
+        })
+    {
+        return Some(-1);
+    }
     Some(0)
 }
 

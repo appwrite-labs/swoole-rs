@@ -71,6 +71,57 @@ fn discard(state: &ServerState, message: &[u8]) -> bool {
     true
 }
 
+/// Release file handoffs after the workers and reactors have stopped, before their
+/// pipe descriptors are closed. At this point no receiver can consume a handoff.
+pub(crate) fn discard_shutdown_files(serv: view::Server<'_>) {
+    let state = serv.state();
+    let tables = state.tables_ref();
+    let config = serv.config();
+    let master = tables.message_bus.as_deref().map(crate::objects::Bus::over);
+    let threads = (0..config.reactor_num.get()).filter_map(|id| {
+        tables
+            .reactor_thread(usize::from(id))
+            .map(|thread| thread.message_bus())
+    });
+    for bus in master.into_iter().chain(threads) {
+        for pipe in bus.rust().pipes() {
+            pipe.with_output_queue(discard_queue);
+        }
+    }
+    let mut packet = vec![0; config.ipc_max_size() as usize];
+    for id in (0..config.worker_num.get()).map_while(|id| u16::try_from(id).ok()) {
+        if let Some(pipe) = serv.worker_pipe(id, true) {
+            discard_unread(pipe.fd(), &mut packet);
+        }
+    }
+}
+
+fn discard_queue(queue: Option<&mut swoole_rs_corebase::buffer::Buffer>) {
+    let Some(queue) = queue else { return };
+    while queue.stats().1 != 0 {
+        discard_packet(queue.front_data());
+        let Ok(entry) = queue.pop() else { break };
+        entry.dispose();
+    }
+}
+
+fn discard_unread(fd: c_int, packet: &mut [u8]) {
+    loop {
+        match swoole_rs_corebase::sys::recv(fd, packet, libc::MSG_DONTWAIT) {
+            Some(0) => break,
+            Some(n) => discard_packet(packet.get(..n).unwrap_or_default()),
+            None if swoole_rs_corebase::sys::errno() == libc::EINTR => {}
+            None => break,
+        }
+    }
+}
+
+fn discard_packet(packet: &[u8]) {
+    if let Some((header, payload)) = packet.split_first_chunk::<{ size_of::<DataHead>() }>() {
+        crate::send::discard_file(&DataHead::from_bytes(header), payload);
+    }
+}
+
 /// Whether reactor thread `id` of `reactors` owns `n`, a port's fd or a worker id.
 pub(crate) fn owns(n: i64, reactors: u16, id: u16) -> bool {
     reactors != 0 && n.rem_euclid(i64::from(reactors)) == i64::from(id)
@@ -253,6 +304,46 @@ mod tests {
             assert_eq!(p.received(), Vec::<Vec<u8>>::new());
             assert_eq!(path.exists(), !removed);
         }
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore = "Miri's socketpair is stream-only")]
+    fn shutdown_releases_files_in_buffered_and_unread_packets() {
+        let (sender, receiver) = UnixDatagram::pair().unwrap();
+        let mut queue = swoole_rs_corebase::buffer::Buffer::new(4096);
+        let dir = std::env::temp_dir();
+        let paths = ["buffered", "unread", "retained"]
+            .map(|kind| dir.join(format!("swoole-shutdown-{kind}-{}", std::process::id())));
+        for (i, path) in paths.iter().enumerate() {
+            std::fs::write(path, b"abc").unwrap();
+            let mut task = vec![0; 16];
+            task.extend(path.as_os_str().as_encoded_bytes());
+            task.push(0);
+            let header = DataHead {
+                kind: ServerEvent::SendFile.code(),
+                len: u32::try_from(task.len()).unwrap(),
+                ext_flags: if i < 2 {
+                    crate::send::SENDFILE_DELETE
+                } else {
+                    0
+                },
+                ..DataHead::default()
+            };
+            let packet = [header.to_bytes().as_slice(), &task].concat();
+            if i == 0 {
+                queue.append(&packet).unwrap();
+            } else {
+                sender.send(&packet).unwrap();
+            }
+        }
+        discard_queue(Some(&mut queue));
+        discard_unread(receiver.as_raw_fd(), &mut [0; 4096]);
+        assert_eq!(
+            paths.each_ref().map(|path| path.exists()),
+            [false, false, true]
+        );
+        assert_eq!(queue.stats(), (0, 0));
+        std::fs::remove_file(&paths[2]).unwrap();
     }
 
     #[test]

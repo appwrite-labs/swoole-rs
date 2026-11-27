@@ -889,8 +889,8 @@ impl Bus {
     }
 
     /// `MessageBus::init_pipe_socket` of each of `fds`: this bus's own nonblocking
-    /// records of the pipes, with no send-buffer limit. A thread that starts again
-    /// over its bus (a reload) starts each record over, as upstream's new one would.
+    /// records of the pipes, with no send-buffer limit. Replacement workers inherit
+    /// the records and the packets their predecessors queued.
     pub fn init_pipe_sockets(&self, fds: impl IntoIterator<Item = c_int>) {
         // `make_socket`: a new record, which the bus frees on drop.
         let make = |fd| {
@@ -903,11 +903,10 @@ impl Bus {
             .into_iter()
             .filter_map(|fd| Some((usize::try_from(fd).ok()?, fd)));
         if let Some(sockets) = self.pipe_sockets.get() {
-            for (index, fd) in fds {
-                let Some(socket) = sockets.get(index).and_then(Option::as_ref) else {
+            for (index, _) in fds {
+                if sockets.get(index).and_then(Option::as_ref).is_none() {
                     swoole_rs_corebase::fatal("a message bus's pipes changed");
-                };
-                socket.socket().edit(|fields| *fields = make(fd).fields);
+                }
             }
             return;
         }
@@ -921,6 +920,15 @@ impl Bus {
             }
         }
         _ = self.pipe_sockets.set(sockets.into_boxed_slice());
+    }
+
+    /// The pipe records owned by this bus, including task-worker and command pipes.
+    pub fn pipes(&self) -> impl Iterator<Item = Heap<'_>> {
+        self.pipe_sockets
+            .get()
+            .into_iter()
+            .flat_map(|pipes| pipes.iter().flatten())
+            .map(OwnedSocket::heap)
     }
 
     /// `MessageBus::get_pipe_socket`: the record `init_pipe_socket` made for `fd`.
@@ -974,20 +982,20 @@ mod tests {
 
     #[test]
     #[cfg_attr(miri, ignore = "Miri has no socket options on a socketpair")]
-    fn a_second_init_starts_the_same_pipe_records_over() {
+    fn a_second_init_preserves_the_pipe_and_its_queued_writes() {
         let pipe = Pipe::new(libc::SOCK_STREAM, 64, false);
         let fd = pipe.fds[1];
         pipe.bus.init_pipe_sockets([fd]);
         let record = pipe.bus.pipe_socket(fd);
-        pipe.bus.pipe(fd).unwrap().edit(|f| f.limit_output(1));
+        pipe.bus.pipe(fd).unwrap().edit(|f| {
+            f.open_output_queue(0);
+            f.queue_output(b"pending");
+        });
         pipe.bus.init_pipe_sockets([fd]);
         assert_eq!(pipe.bus.pipe_socket(fd), record, "the same record");
-        let size = pipe
-            .bus
-            .pipe(fd)
-            .unwrap()
-            .read(swoole_rs_corebase::reactor::SocketFields::output_limit);
-        assert_eq!(size, u32::MAX, "started over");
+        pipe.bus.pipe(fd).unwrap().with_output_queue(|queue| {
+            assert_eq!(queue.unwrap().front_data(), b"pending");
+        });
         assert!(pipe.bus.pipe(pipe.fds[0]).is_none());
     }
 
