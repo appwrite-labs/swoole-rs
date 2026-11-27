@@ -133,7 +133,8 @@ fn read_as(prequeue: bool, serv: view::Server<'_>, reactor: Reactor, event: &mut
     let config = state.config_ref();
     let max = config.max_queued_bytes.get();
     let process = config.mode_ == Mode::Process;
-    if process && max != 0 && conn.recv_queued_bytes().load(SeqCst) > max {
+    if process && max != 0 && conn.timer().is_none() && conn.recv_queued_bytes().load(SeqCst) > max
+    {
         conn.set_waiting_time(1);
         if resume_timer(conn) {
             reactor.interest(sock, swoole_rs_corebase::reactor::Interest::RemoveRead);
@@ -273,8 +274,8 @@ fn resume_data_receiving(serv: view::Server<'_>, fd: c_long) {
         }
     }
     // The firing timer's reactor: this thread's.
-    Reactor::thread().interest(socket, swoole_rs_corebase::reactor::Interest::AddRead);
     conn.set_timer(None);
+    crate::send::resume_read(Reactor::thread(), conn, socket);
 }
 
 /// Built with the `halfclose` feature.

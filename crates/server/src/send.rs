@@ -191,6 +191,29 @@ impl swoole_rs_corebase::reactor::event_api::Deferred for ResumeBuffered {
     fn dispose(self) {}
 }
 
+/// Restore read interest when neither an application pause nor queue throttling holds it.
+pub(crate) fn resume_read(
+    reactor: Reactor,
+    conn: Connection<'_>,
+    sock: swoole_rs_corebase::reactor::Heap<'_>,
+) -> bool {
+    if conn.recv_paused()
+        || conn.timer().is_some()
+        || conn.closed().load(core::sync::atomic::Ordering::Relaxed) != 0
+        || conn.peer_closed()
+        || conn.close_queued()
+        || sock.read(|s| s.registered_for(Events::READ) || s.close_reported())
+    {
+        return true;
+    }
+    reactor.interest(sock, Interest::AddRead)
+        && (!sock.read(|s| s.skip_recv)
+            || swoole_rs_corebase::reactor::event_api::swoole_event_defer_value(ResumeBuffered(
+                conn.session_id(),
+            ))
+            .is_ok())
+}
+
 /// [`send_to_connection`] of the event `info` with the bytes `data` it carries.
 pub fn send_event_to_connection(serv: Server<'_>, info: &DataHead, data: &[u8]) -> bool {
     to_connection(serv, info, data, None, send_file)
@@ -289,25 +312,17 @@ fn to_connection(
     }
     let halfclose = cfg!(feature = "halfclose");
     if matches!(kind, Some(ServerEvent::PauseRecv | ServerEvent::ResumeRecv)) {
-        let reading = sock.read(|s| s.registered_for(Events::READ));
         if kind == Some(ServerEvent::PauseRecv) {
-            return !reading || reactor.interest(sock, Interest::RemoveRead);
-        }
-        let closing = conn.closed().load(core::sync::atomic::Ordering::Relaxed) != 0;
-        if reading
-            || closing
-            || conn.peer_closed()
-            || conn.close_queued()
-            || sock.read(SocketFields::close_reported)
-        {
+            if sock.read(|s| s.registered_for(Events::READ))
+                && !reactor.interest(sock, Interest::RemoveRead)
+            {
+                return false;
+            }
+            conn.set_recv_paused(true);
             return true;
         }
-        return reactor.interest(sock, Interest::AddRead)
-            && (!sock.read(|s| s.skip_recv)
-                || swoole_rs_corebase::reactor::event_api::swoole_event_defer_value(
-                    ResumeBuffered(session),
-                )
-                .is_ok());
+        conn.set_recv_paused(false);
+        return resume_read(reactor, conn, sock);
     }
     let (mut data, file) = (data, kind == Some(ServerEvent::SendFile));
     let (out_empty, unbuffered, direct) = sock.read(|s| {

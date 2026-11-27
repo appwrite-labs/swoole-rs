@@ -60,6 +60,8 @@ pub struct ConnectionRecord {
     pub close_force: Cell<bool>,
     pub reactor_id: Cell<u8>,
     pub close_errno: Cell<u16>,
+    /// Explicit receive pause, independent of the queued-byte throttle timer.
+    recv_paused: Cell<bool>,
     pub recv_queued_bytes: AtomicU32,
     pub send_queued_bytes: Cell<u32>,
     pub waiting_time: Cell<u16>,
@@ -133,6 +135,7 @@ impl ConnectionRecord {
             &self.closing,
             &self.close_reset,
             &self.peer_closed,
+            &self.recv_paused,
             &self.protect,
             &self.close_notify,
             &self.close_force,
@@ -393,6 +396,7 @@ impl<'a> Connection<'a> {
     field!(closing, set_closing: bool);
     field!(close_reset, set_close_reset: bool);
     field!(peer_closed, set_peer_closed: bool);
+    field!(recv_paused, set_recv_paused: bool);
     field!(protect, set_protect: bool);
     field!(close_notify, set_close_notify: bool);
     field!(close_force, set_close_force: bool);
