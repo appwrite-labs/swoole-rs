@@ -621,6 +621,7 @@ mod tests {
 
             assert_eq!(check(named("IP:127.0.0.1"), "127.0.0.1", true), 1);
             assert_eq!(check(named("IP:::1"), "::1", true), 1);
+            assert_eq!(check(named("DNS:127.0.0.1"), "127.0.0.1", true), 2);
 
             let (ssl, _) = client();
             assert_eq!(
