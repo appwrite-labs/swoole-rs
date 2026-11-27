@@ -83,27 +83,21 @@ static DEFAULT_SETTINGS: [AtomicU32; SETTING_COUNT] = [
     AtomicU32::new(u32::MAX),
 ];
 
-/// The slot of a setting id. Upstream asserts on any other id, so this aborts.
-#[expect(
-    clippy::disallowed_methods,
-    reason = "upstream asserts on an unknown id; this crate has no dependencies, so no logger"
-)]
-fn default_slot(id: u32) -> &'static AtomicU32 {
-    usize::try_from(id)
-        .ok()
-        .and_then(|id| DEFAULT_SETTINGS.get(id.checked_sub(1)?))
-        .unwrap_or_else(|| std::process::abort())
+fn default_slot(id: u32) -> Option<&'static AtomicU32> {
+    DEFAULT_SETTINGS.get(usize::try_from(id.checked_sub(1)?).ok()?)
 }
 
 /// `swoole::http2::put_default_setting(swHttp2SettingId, uint32_t)`.
 pub fn put_default_setting(id: u32, value: u32) {
-    default_slot(id).store(value, Ordering::Relaxed);
+    if let Some(slot) = default_slot(id) {
+        slot.store(value, Ordering::Relaxed);
+    }
 }
 
 /// `swoole::http2::get_default_setting(swHttp2SettingId)`.
 #[must_use]
 pub fn get_default_setting(id: u32) -> u32 {
-    default_slot(id).load(Ordering::Relaxed)
+    default_slot(id).map_or(0, |slot| slot.load(Ordering::Relaxed))
 }
 
 // This local decode limit is independent of the settings advertised to peers.
@@ -804,67 +798,77 @@ mod tests {
     /// The process-wide defaults are shared by every test in this binary.
     static DEFAULTS: Mutex<()> = Mutex::new(());
 
-    /// `swoole_rand(1, 100000)`.
-    fn rand() -> u32 {
-        use std::hash::{BuildHasher, RandomState};
-        (RandomState::new().hash_one(0u8) % 100_000) as u32 + 1
+    struct SettingsFixture {
+        saved: [u32; SETTING_COUNT],
+        max_headers: u32,
+        _lock: std::sync::MutexGuard<'static, ()>,
     }
 
-    // Upstream core-tests/src/protocol/http2.cpp, one test per TEST. `http2.ssl` is not
-    // ported: it needs the nghttp2 client, so the native lane excluded it too.
+    impl SettingsFixture {
+        fn new() -> Self {
+            let lock = DEFAULTS
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            Self {
+                saved: std::array::from_fn(|i| get_default_setting(i as u32 + 1)),
+                max_headers: max_headers(),
+                _lock: lock,
+            }
+        }
+    }
 
-    /// `TEST(http2, default_settings)`.
+    impl Drop for SettingsFixture {
+        fn drop(&mut self) {
+            for (id, value) in (1..).zip(self.saved) {
+                put_default_setting(id, value);
+            }
+            set_max_headers(self.max_headers);
+        }
+    }
+
     #[test]
     fn http2_default_settings() {
-        let _defaults = DEFAULTS
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        assert_eq!(
-            get_default_setting(1),
-            4096,
-            "SW_HTTP2_DEFAULT_HEADER_TABLE_SIZE"
-        );
-        assert_eq!(get_default_setting(2), 0, "SW_HTTP2_DEFAULT_ENABLE_PUSH");
-        assert_eq!(
-            get_default_setting(3),
-            128,
-            "SW_HTTP2_DEFAULT_MAX_CONCURRENT_STREAMS"
-        );
-        assert_eq!(
-            get_default_setting(4),
-            65535,
-            "SW_HTTP2_DEFAULT_INIT_WINDOW_SIZE"
-        );
-        assert_eq!(
-            get_default_setting(5),
-            16384,
-            "SW_HTTP2_DEFAULT_MAX_FRAME_SIZE"
-        );
-        assert_eq!(
-            get_default_setting(6),
-            u32::MAX,
-            "SW_HTTP2_DEFAULT_MAX_HEADER_LIST_SIZE"
-        );
-
-        let original = sw_rs_http2_default_settings();
-        let settings = [rand(), rand(), rand(), rand(), rand(), rand()];
-        for (id, value) in (1..).zip(settings) {
+        let _fixture = SettingsFixture::new();
+        let defaults = [4096, 0, 128, 65535, 16384, u32::MAX];
+        let replacement = [1024, 0, 17, 65535, 32768, 4096];
+        for ((id, default), value) in (1..).zip(defaults).zip(replacement) {
+            assert_eq!(get_default_setting(id), default);
             put_default_setting(id, value);
-        }
-        for (id, value) in (1..).zip(settings) {
             assert_eq!(get_default_setting(id), value);
         }
-        // Each upstream case runs in its own process; these share one.
-        for (id, value) in (1..).zip([
-            original.header_table_size,
-            original.enable_push,
-            original.max_concurrent_streams,
-            original.init_window_size,
-            original.max_frame_size,
-            original.max_header_list_size,
-        ]) {
-            put_default_setting(id, value);
+        let settings = sw_rs_http2_default_settings();
+        assert_eq!(
+            [
+                settings.header_table_size,
+                settings.enable_push,
+                settings.max_concurrent_streams,
+                settings.init_window_size,
+                settings.max_frame_size,
+                settings.max_header_list_size,
+            ],
+            replacement
+        );
+    }
+
+    #[test]
+    fn unknown_setting_preserves_defaults() {
+        let fixture = SettingsFixture::new();
+        put_default_setting(7, u32::MAX);
+        assert_eq!(get_default_setting(7), 0);
+        for (id, value) in (1..).zip(fixture.saved) {
+            assert_eq!(get_default_setting(id), value);
         }
+    }
+
+    #[test]
+    fn max_headers_ignores_zero() {
+        let _fixture = SettingsFixture::new();
+        set_max_headers(17);
+        assert_eq!(max_headers(), 17);
+        set_max_headers(0);
+        assert_eq!(max_headers(), 17);
+        set_max_headers(u32::MAX);
+        assert_eq!(max_headers(), u32::MAX);
     }
 
     /// `TEST(http2, pack_setting_frame)`.
@@ -931,9 +935,7 @@ mod tests {
 
     #[test]
     fn default_settings_round_trip() {
-        let _defaults = DEFAULTS
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let _fixture = SettingsFixture::new();
         assert_eq!(
             sw_rs_http2_default_settings(),
             Http2Settings {
@@ -947,7 +949,6 @@ mod tests {
         );
         put_default_setting(2, 1);
         assert_eq!(get_default_setting(2), 1);
-        put_default_setting(2, 0);
     }
     #[test]
     fn send_complete_matches_the_wrapping_native_cast() {

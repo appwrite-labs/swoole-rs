@@ -10,7 +10,9 @@ expected values since the hybrid has no `swoole_http2.h` to build them against:
 
 | Upstream TEST | Rust test |
 | --- | --- |
-| `http2.default_settings` | `http2_default_settings` |
+| `Http2SettingsTest.default_settings` | `http2_default_settings` |
+| `Http2SettingsTest.unknown_setting_preserves_defaults` | `unknown_setting_preserves_defaults` |
+| `Http2SettingsTest.max_headers_ignores_zero` | `max_headers_ignores_zero` |
 | `http2.pack_setting_frame` | `http2_pack_setting_frame` |
 | `http2.frame_length_requires_complete_header` | `frame_length_requires_complete_header` |
 | `http2.frame_header_uses_network_byte_order` | `frame_header_uses_network_byte_order` |
