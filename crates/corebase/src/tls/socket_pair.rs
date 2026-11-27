@@ -68,7 +68,7 @@ pub fn pipe(blocking: bool) -> SocketPair {
 }
 
 /// `UnixSocket(blocking, protocol)` by value: both ends null when it failed.
-/// Sets both ends' kernel buffers to `Socket::default_buffer_size`.
+/// Sizes both kernel buffers to fit a full IPC datagram and its kernel overhead.
 #[must_use]
 pub fn unix_socket(blocking: bool, protocol: c_int) -> SocketPair {
     unix_socket_for(FD_PIPE, blocking, protocol)
@@ -80,7 +80,12 @@ pub fn unix_socket(blocking: bool, protocol: c_int) -> SocketPair {
 pub fn unix_socket_for(fd_type: c_int, blocking: bool, protocol: c_int) -> SocketPair {
     let (pair, opened) = open(blocking, Some(protocol), fd_type, c"UnixSocket");
     if opened {
-        let size = SOCKET_DEFAULTS.buffer_size();
+        let default = SOCKET_DEFAULTS.buffer_size();
+        let size = if protocol == libc::SOCK_DGRAM {
+            default.max(2 * crate::constants::SW_IPC_BUFFER_MAX_SIZE)
+        } else {
+            default
+        };
         #[expect(
             clippy::let_underscore_must_use,
             reason = "upstream's constructor ignores whether the buffers were set"
