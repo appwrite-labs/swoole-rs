@@ -403,13 +403,32 @@ fn file_cleanup<'a>(
     info: &DataHead,
     data: &'a [u8],
 ) -> core::mem::DropGuard<bool, impl FnOnce(bool) + 'a> {
-    let owned =
-        info.event() == Some(ServerEvent::SendFile) && info.ext_flags & SENDFILE_DELETE != 0;
+    let owned = owns_file(info);
     core::mem::DropGuard::new(owned, move |owned| {
-        if owned && let Some(name) = task_name(data) {
-            _ = swoole_rs_corebase::sys::unlink(name);
+        if owned {
+            unlink_task(data);
         }
     })
+}
+
+fn owns_file(info: &DataHead) -> bool {
+    info.event() == Some(ServerEvent::SendFile) && info.ext_flags & SENDFILE_DELETE != 0
+}
+
+/// A rejected handoff still owns its file. Only a chunk's first packet carries the name.
+pub(crate) fn discard_file(info: &DataHead, data: &[u8]) {
+    use swoole_rs_corebase::constants::EventDataFlag as Flag;
+    let chunk = Flag::SW_EVENT_DATA_CHUNK.bits();
+    let begin = Flag::SW_EVENT_DATA_BEGIN.bits();
+    if owns_file(info) && info.flags & (chunk | begin) != chunk {
+        unlink_task(data);
+    }
+}
+
+fn unlink_task(data: &[u8]) {
+    if let Some(name) = task_name(data) {
+        _ = swoole_rs_corebase::sys::unlink(name);
+    }
 }
 
 fn task_name(task: &[u8]) -> Option<&CStr> {

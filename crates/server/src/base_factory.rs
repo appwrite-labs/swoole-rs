@@ -395,6 +395,7 @@ fn forward(serv: view::Server<'_>, send: &SendData) -> bool {
     if hybrid().forward(serv, send) {
         return true;
     }
+    crate::send::discard_file(send.info(), send.payload());
     log::sys_warning(
         c"BaseFactory::forward_message",
         format_args!("failed to send {} bytes to pipe_master", send.info.len),

@@ -307,6 +307,26 @@ mod tests {
     }
 
     #[test]
+    fn rejected_process_handoff_releases_the_file() {
+        let (live, _clients) = accepted();
+        let serv = live.server();
+        let path =
+            std::env::temp_dir().join(format!("swoole-factory-sendfile-{}", std::process::id()));
+        std::fs::write(&path, b"abc").unwrap();
+        let mut task = vec![0; 16];
+        task.extend(path.as_os_str().as_encoded_bytes());
+        task.push(0);
+        let head = DataHead {
+            fd: 99,
+            kind: ServerEvent::SendFile.code(),
+            ext_flags: crate::send::SENDFILE_DELETE,
+            ..DataHead::default()
+        };
+        assert!(!crate::factory::finish(serv, &SendData::new(head, &task)));
+        assert!(!path.exists());
+    }
+
+    #[test]
     fn end_forwards_active_closes_owned_elsewhere() {
         let (live, _clients) = accepted();
         let serv = live.server();
