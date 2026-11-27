@@ -61,6 +61,7 @@ pub struct HttpForm {
     template: Vec<u8>,
     /// The part header's name, copied: it may arrive split across reads.
     header: MultipartHeader,
+    disposition_seen: bool,
     upload_size: usize,
     upload_max: usize,
 }
@@ -234,6 +235,7 @@ impl HttpRequest {
                 body: None,
                 template: Vec::new(),
                 header: MultipartHeader::new(0),
+                disposition_seen: false,
                 upload_size: 0,
                 upload_max: 0,
             }));
@@ -491,13 +493,19 @@ impl Parts<'_> for Rewrite<'_> {
         {
             return self.too_large();
         }
-        let is_upload =
-            case_equal(name, b"content-disposition") && crate::multipart_has_filename(data);
+        let disposition = crate::multipart_disposition(name);
+        if disposition && std::mem::replace(&mut form.disposition_seen, true) {
+            log::warning(
+                c"http_server::multipart_on_header_value",
+                format_args!("duplicate multipart Content-Disposition"),
+            );
+            return Flow::Fail;
+        }
+        let is_upload = disposition && crate::multipart_has_filename(data);
         form.header.clear();
         if !is_upload {
             return Flow::Go;
         }
-        let form = form_of(self.request);
         if form.uploads.len() >= MAX_UPLOAD_FILES {
             return self.too_large();
         }
@@ -505,8 +513,8 @@ impl Parts<'_> for Rewrite<'_> {
         form.upload_size = 0;
         // `swoole_tmpfile` fills in the template's `XXXXXX`.
         let Some(fd) = TempFile::create(&mut template) else {
-            self.request.excepted = true;
-            return Flow::Go;
+            (self.request.excepted, self.request.unavailable) = (true, true);
+            return Flow::Pause;
         };
         form.fp = Some(fd.map_file(BufWriter::new));
         Flow::Go
@@ -557,7 +565,9 @@ impl Parts<'_> for Rewrite<'_> {
 
     fn on_part_data_end(&mut self) -> Flow {
         self.request.multipart_header_parsed = false;
-        if let Some(upload) = form_of(self.request).fp.take() {
+        let form = form_of(self.request);
+        form.disposition_seen = false;
+        if let Some(upload) = form.fp.take() {
             let upload = upload.map_file(|file| crate::close_upload_file(file, None));
             if !*upload.file {
                 (self.request.excepted, self.request.unavailable) = (true, true);
@@ -570,7 +580,7 @@ impl Parts<'_> for Rewrite<'_> {
                     reason = "a file is opened only below MAX_UPLOAD_FILES and taken once at part end"
                 )
             )]
-            form_of(self.request).uploads.push(upload.map_file(drop));
+            form.uploads.push(upload.map_file(drop));
             return self.append_metadata(&[b"\r\nSwoole-Upload-File\r\n"]);
         }
         self.append_metadata(&[b"\r\n"])
@@ -1096,6 +1106,7 @@ mod tests {
             disposition(&mut parts, b"form-data; name=\"text\""),
             Flow::Go
         );
+        assert_eq!(parts.on_part_data_end(), Flow::Go);
         assert_eq!(disposition(&mut parts, file), Flow::Pause);
         assert!(f.request.excepted && f.request.too_large);
         assert!(form_of(&mut f.request).fp.is_none());
