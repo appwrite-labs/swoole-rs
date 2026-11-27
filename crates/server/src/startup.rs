@@ -246,11 +246,11 @@ fn create_task_workers(serv: view::Server<'_>) -> Option<Table<crate::records::R
         Some(TaskIpcMode::Stream) => IpcMode::Socket,
         _ => IpcMode::UnixSock,
     };
-    let master = crate::shared::server_counters(state).map_or(0, |gs| gs.master_pid.load(Relaxed));
-    let socket = format!("/tmp/swoole.task.{master}.sock");
-    let socket = std::ffi::CString::new(socket).unwrap_or_default();
-    let socket = matches!(ipc, IpcMode::Socket).then_some(socket.as_c_str());
-    if !hybrid().task_pool(serv, ipc, socket) {
+    let socket = matches!(ipc, IpcMode::Socket).then(|| {
+        std::ffi::CString::new(format!("/tmp/swoole.task.{}.sock", std::process::id()))
+            .unwrap_or_default()
+    });
+    if !hybrid().task_pool(serv, ipc, socket.as_deref()) {
         log::warning(
             c"Server::create_task_workers",
             format_args!("[Master] create task_workers failed"),

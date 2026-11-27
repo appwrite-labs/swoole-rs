@@ -14,6 +14,46 @@ use swoole_rs_corebase::DataHead;
 
 use crate::state::ServerState;
 
+/// Create the task endpoint before workers start. Its permissions apply from bind onward.
+fn listen_task_socket(serv: crate::view::Server<'_>, file: &core::ffi::CStr) -> bool {
+    use crate::state::ServerText;
+    use std::os::unix::ffi::OsStrExt;
+    use swoole_rs_corebase::sys;
+    // umask exchanges a mode value and accesses no caller memory.
+    unsafe extern "C" {
+        safe fn umask(mask: libc::mode_t) -> libc::mode_t;
+    }
+    struct Mask(libc::mode_t);
+    impl Drop for Mask {
+        fn drop(&mut self) {
+            umask(self.0);
+        }
+    }
+    let listening = {
+        // Restore the caller's mask when listen returns or unwinds.
+        let _restore = Mask(umask(0o177));
+        process::methods::listen_unix(serv.task_pool_ref(), file, 2048)
+    };
+    if !listening || !swoole_rs_corebase::ossupport::swr_v1_os_is_root_user() {
+        return listening;
+    }
+    let text = |kind| std::ffi::CString::new(&*serv.state().text(kind)).unwrap_or_default();
+    let uid = sys::user_id(&text(ServerText::User));
+    let gid = sys::group_id(&text(ServerText::Group));
+    if uid.is_none() && gid.is_none() {
+        return true;
+    }
+    let path = std::path::Path::new(std::ffi::OsStr::from_bytes(file.to_bytes()));
+    if let Err(error) = std::os::unix::fs::lchown(path, uid, gid) {
+        swoole_rs_corebase::log::warning(
+            c"Server::create_task_workers",
+            format_args!("chown({}) failed: {error}", path.display()),
+        );
+        return false;
+    }
+    true
+}
+
 /// Flags passed to the server factory's close operation (`Server::CloseFlag`).
 pub(crate) const CLOSE_RESET: c_int = 1 << 1;
 pub(crate) const CLOSE_ACTIVELY: c_int = 1 << 2;
@@ -355,7 +395,12 @@ impl crate::hybrid::Hybrid for Linked {
             config.worker_num.get().cast_signed(),
         );
         pool::set_type(crate::process_pool_native(), pool_ref, WorkerType::Task);
-        socket.is_none_or(|file| pool::listen_unix(pool_ref, file, 2048))
+        if socket.is_some_and(|file| !listen_task_socket(serv, file)) {
+            pool::destroy(crate::process_pool_native(), pool_ref);
+            pool_ref.reset();
+            return false;
+        }
+        true
     }
 
     fn task_workers(&self, serv: crate::view::Server<'_>) -> bool {
