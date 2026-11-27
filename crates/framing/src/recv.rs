@@ -366,6 +366,16 @@ impl<E: Effects> Recv<'_, E> {
     }
 
     fn eof_protocol(&mut self) -> Status {
+        if self.flag(FLAG_SKIP) {
+            self.op(Op::ClearSkip, 0);
+            if self.effects.protocol().split_by_eof && self.length() >= self.eof_len() {
+                return if self.split_by_eof() == Status::Close {
+                    Status::Err
+                } else {
+                    Status::Ok
+                };
+            }
+        }
         let mut again = false;
         loop {
             let size = self.size() - self.length();
@@ -388,6 +398,9 @@ impl<E: Effects> Recv<'_, E> {
                     return Status::Err;
                 }
                 if self.flag(FLAG_REMOVED) {
+                    if self.flag(FLAG_PAUSED) {
+                        self.clear();
+                    }
                     return Status::Ok;
                 }
                 self.clear();
@@ -429,7 +442,7 @@ impl<E: Effects> Recv<'_, E> {
             return Status::Continue;
         }
         let n = self.effects.split(&mut self.flags);
-        let Some(n) = n.filter(|_| !self.flag(FLAG_REMOVED)) else {
+        let Some(n) = n.filter(|_| !self.flag(FLAG_REMOVED) || self.flag(FLAG_PAUSED)) else {
             return Status::Close;
         };
         if n == 0 {
@@ -437,13 +450,17 @@ impl<E: Effects> Recv<'_, E> {
         }
         if n < self.length() {
             self.op(Op::Reduce, n);
+            if self.flag(FLAG_PAUSED) {
+                self.set_offset(0);
+                return Status::Ok;
+            }
             let offset = self.length().saturating_sub(self.eof_len());
             self.set_offset(offset.cast_signed() as i64);
         } else {
             self.clear();
         }
         // A TLS socket may hold decrypted bytes the kernel no longer reports.
-        if self.flag(FLAG_TLS) {
+        if self.flag(FLAG_TLS) && !self.flag(FLAG_REMOVED) {
             Status::Continue
         } else {
             Status::Ok

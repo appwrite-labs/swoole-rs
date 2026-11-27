@@ -167,6 +167,30 @@ pub fn send_to_connection(serv: Server<'_>, send: &SendData) -> bool {
     to_connection(serv, send.info(), send.payload(), None, send_file)
 }
 
+/// Resume an EOF parser that already holds bytes after its last delivered packet.
+struct ResumeBuffered(core::ffi::c_long);
+
+impl swoole_rs_corebase::reactor::event_api::Deferred for ResumeBuffered {
+    fn run(self) {
+        let reactor = Reactor::thread();
+        if let Some(serv) = reactor.server()
+            && let Some(conn) = serv.verified(self.0)
+            && conn.socket().is_some_and(|sock| {
+                sock.read(|s| s.skip_recv && s.registered_for(Events::READ) && !s.close_reported())
+            })
+        {
+            let kind = swoole_rs_corebase::constants::FdType::SW_FD_SESSION as c_int;
+            crate::conn_io::read(
+                serv,
+                reactor,
+                &mut conn.event(i16::from(conn.reactor_id()), kind),
+            );
+        }
+    }
+
+    fn dispose(self) {}
+}
+
 /// [`send_to_connection`] of the event `info` with the bytes `data` it carries.
 pub fn send_event_to_connection(serv: Server<'_>, info: &DataHead, data: &[u8]) -> bool {
     to_connection(serv, info, data, None, send_file)
@@ -270,12 +294,20 @@ fn to_connection(
             return !reading || reactor.interest(sock, Interest::RemoveRead);
         }
         let closing = conn.closed().load(core::sync::atomic::Ordering::Relaxed) != 0;
-        return reading
+        if reading
             || closing
             || conn.peer_closed()
             || conn.close_queued()
             || sock.read(SocketFields::close_reported)
-            || reactor.interest(sock, Interest::AddRead);
+        {
+            return true;
+        }
+        return reactor.interest(sock, Interest::AddRead)
+            && (!sock.read(|s| s.skip_recv)
+                || swoole_rs_corebase::reactor::event_api::swoole_event_defer_value(
+                    ResumeBuffered(session),
+                )
+                .is_ok());
     }
     let (mut data, file) = (data, kind == Some(ServerEvent::SendFile));
     let (out_empty, unbuffered, direct) = sock.read(|s| {
