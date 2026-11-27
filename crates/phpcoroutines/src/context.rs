@@ -729,11 +729,16 @@ fn release(value: Owned) -> Result<(), bailout::Bailout> {
     }
 }
 
-fn finish(ctx: Ctx) {
+fn stop_on_exit() {
     if swoole_rs_zend::host::unwind_exit_pending() {
         swoole_rs_corebase::coroutine::stop_resumes();
         swoole_rs_corebase::reactor::event_api::swoole_event_bail_out();
     }
+}
+
+fn finish(ctx: Ctx) {
+    // Cleanup itself can raise an exit before the origin is restored.
+    stop_on_exit();
     bailout::defer(bailout::trapped(swr_zend_coroutine_finish(
         ctx.running(),
         origin(ctx).switched_out(),
@@ -744,6 +749,8 @@ fn finish(ctx: Ctx) {
 /// `PHPCoroutine::on_close`'s join hook. Native destructors contain their jumps;
 /// a failed close returns to the owner, which restores the origin's executor.
 fn close(ctx: Ctx) -> Result<(), bailout::Bailout> {
+    // Hooks and destructors can yield to an already-ready sibling.
+    stop_on_exit();
     host::coro_hook(true, ctx)?;
     // Output handlers run PHP. Trap their escape before returning through the
     // context owner, which must restore the origin before leaving this stack.

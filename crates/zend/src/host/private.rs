@@ -77,7 +77,7 @@ pub fn exception() -> *mut zend_object {
     swr_zend_facade_exception()
 }
 
-/// Whether this PHP thread needs to return to the VM to complete exit().
+/// Whether this PHP thread needs to return to the VM to complete `exit()`.
 #[must_use]
 pub fn unwind_exit_pending() -> bool {
     swr_zend_unwind_exit_pending()
