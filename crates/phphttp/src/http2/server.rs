@@ -662,12 +662,17 @@ fn refund_window(session: &Session, stream: &Stream, length: usize) {
             b"window overflow after canceled send",
         );
     } else {
-        wake_streams(session);
+        wake_streams(&session.open_streams());
     }
 }
 
-fn wake_streams(session: &Session) -> bool {
-    session.open_streams().iter().all(|stream| stream.wake())
+fn wake_streams(streams: &[Stream]) -> bool {
+    let mut ok = true;
+    for stream in streams {
+        // A resumed sender can bail out while other senders still need the wakeup.
+        ok &= stream.wake();
+    }
+    ok
 }
 
 /// Append `data` to `frame` as the one DATA frame `send_body` would send in
@@ -1007,7 +1012,7 @@ fn parse(session: &Session, frame: &[u8]) -> bool {
                 if let Err(code) = credit(&session.remote_window_size, value) {
                     return abort_session(session, code, b"invalid connection WINDOW_UPDATE");
                 }
-                return wake_streams(session);
+                return wake_streams(&session.open_streams());
             } else if stream_id & 1 == 0
                 || (stream_id > last_stream_id && !session.shutting_down.get())
             {
@@ -1102,8 +1107,7 @@ fn header_block(
     flags: u32,
     payload: &[u8],
 ) -> bool {
-    let trailers = stream.is_some_and(|s| s.headers_received.get());
-    if !parse_header(session, stream, flags, payload, trailers) {
+    if !parse_header(session, stream_id, stream, flags, payload) {
         // HPACK state belongs to the connection and cannot resume after a decoding error.
         close(session.default_ctx());
         return false;
@@ -1123,7 +1127,7 @@ fn header_block(
     if stream.bad_length.get() {
         return reject_body(session, stream);
     }
-    if !trailers && !headers_complete(stream, session.max_body_size) {
+    if !stream.headers_received.get() && !headers_complete(stream, session.max_body_size) {
         return false;
     }
     stream.headers_received.set(true);
@@ -1251,7 +1255,7 @@ fn settings(session: &Session, payload: &[u8]) -> bool {
                     .remote_window_size
                     .set(stream.remote_window_size.get() + delta);
             }
-            if delta > 0 && !streams.iter().all(|stream| stream.wake()) {
+            if delta > 0 && !wake_streams(&streams) {
                 return false;
             }
             continue;
@@ -1370,11 +1374,12 @@ fn replenish(ctx: Ctx, id: u32, window: &std::cell::Cell<u32>, target: u32) -> b
 /// `$server`, `$header`, `$get` and `$cookie`.
 fn parse_header(
     session: &Session,
+    stream_id: u32,
     stream: Option<&Stream>,
     flags: u32,
     mut input: &[u8],
-    trailers: bool,
 ) -> bool {
+    let trailers = stream.is_some_and(|s| s.headers_received.get());
     if flags & FLAG_PRIORITY != 0 {
         // The stream dependency and weight are ignored.
         let Some(block) = input.get(5..) else {
@@ -1404,6 +1409,14 @@ fn parse_header(
         };
         input = rest;
         let inflate_flags = step.flags();
+        // After reset, trailers can still update HPACK. A pseudo-header starts a
+        // new request, which cannot reuse a closed stream identifier.
+        if stream.is_none()
+            && stream_id <= session.last_stream_id.get()
+            && step.header.is_some_and(|(name, _)| name.starts_with(b":"))
+        {
+            break false;
+        }
         if let Some(stream) = stream
             && let Some((name, value)) = step.header
             && let Ok(count) = session.remaining_headers.get()
