@@ -412,6 +412,9 @@ pub(crate) fn peer_close(serv: view::Server<'_>, reactor: Reactor, event: &Event
     };
     // The connection is no longer available.
     conn.set_peer_closed(fin_ends(BUILT_PREQUEUE, state, conn));
+    if conn.peer_closed() && !conn.close_reset() {
+        sock.read(SocketFields::finish_peer_eof);
+    }
     crate::hybrid::hybrid().factory_notify(serv, &mut head)
 }
 
@@ -649,10 +652,15 @@ pub(crate) mod tests {
 
     #[test]
     fn peer_close_notifies_once() {
-        let (live, _clients) = accepted();
+        let (live, mut clients) = accepted();
         let (serv, reactor) = (live.server(), live.reactor());
         let conn = session(&live, 1);
         let fd = conn.fd();
+        clients[0].shutdown(std::net::Shutdown::Write).unwrap();
+        assert_eq!(
+            tls::recv(*conn.socket().unwrap(), &mut [0u8; 1], 0),
+            Some(0)
+        );
         let event = conn.event(0, 0);
         assert!(peer_close(serv, reactor, &event));
         let close = Call::Notify(c_long::from(fd), 0, ServerEvent::Close.code(), 0);
@@ -660,6 +668,13 @@ pub(crate) mod tests {
         assert!(conn.peer_closed(), "upstream: the connection is gone");
         assert!(conn.socket().unwrap().read(|s| s.close_notified));
         assert!(conn.is_active(), "the worker closes it");
+        clients[0]
+            .set_read_timeout(Some(std::time::Duration::from_secs(2)))
+            .unwrap();
+        assert_eq!(
+            std::io::Read::read(&mut clients[0], &mut [0; 1]).unwrap(),
+            0
+        );
 
         let conn = session(&live, 2);
         conn.set_close_queued(true);

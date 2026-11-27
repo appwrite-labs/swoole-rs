@@ -104,6 +104,7 @@ pub struct SocketFields {
     pub skip_recv: bool,
     pub recv_wait: bool,
     pub event_hup: bool,
+    recv_eof: bool,
     pub dont_restart: bool,
     pub close_notified: bool,
     pub chunk_size: u32,
@@ -246,6 +247,7 @@ impl SocketRecord {
                 skip_recv: false,
                 recv_wait: false,
                 event_hup: false,
+                recv_eof: false,
                 dont_restart: false,
                 close_notified: false,
                 chunk_size: 0,
@@ -680,6 +682,17 @@ impl SocketFields {
     #[must_use]
     pub fn is_stream(&self) -> bool {
         self.kind().is_some_and(SocketType::is_stream)
+    }
+
+    pub(super) fn note_read_eof(&mut self) {
+        self.recv_eof = self.is_stream();
+    }
+
+    /// Finish the write side of a stream after an observed peer EOF.
+    pub fn finish_peer_eof(&self) {
+        if self.recv_eof {
+            _ = crate::sys::shutdown(self.fd, libc::SHUT_WR);
+        }
     }
 
     /// `Socket::is_dgram`: UDP, UDP6 or a Unix datagram socket.

@@ -666,6 +666,8 @@ pub fn record_recv(
     };
     if total != 0 {
         socket.edit(|record| record.count_received(total, now));
+    } else if buffer.room() != 0 {
+        socket.edit(SocketFields::note_read_eof);
     }
     Some(total)
 }

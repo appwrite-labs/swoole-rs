@@ -220,6 +220,9 @@ pub(crate) fn close(serv: view::Server<'_>, reactor: Reactor, event: &Event) -> 
     }
     // The client closed the connection: it is no longer usable.
     conn.set_peer_closed(true);
+    if !conn.close_reset() {
+        socket.read(SocketFields::finish_peer_eof);
+    }
     crate::server_methods::notify(serv, conn, ServerEvent::Close)
 }
 
