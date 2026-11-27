@@ -139,35 +139,34 @@ impl HttpServer {
 
     /// `set_handler`: `handle` replaces the pattern's handler, if any.
     fn set_handler(&self, pattern: &[u8], handle: Rc<Callable>) -> Result<(), bailout::Bailout> {
-        let old_default =
-            (pattern == b"/").then(|| self.default_handler.replace(Some(handle.clone())));
-        let old = self.handlers.with_taken(|handlers| {
-            if let Some(entry) = handlers.iter_mut().find(|(known, _)| known == pattern) {
-                Some(std::mem::replace(&mut entry.1, handle))
-            } else {
-                handlers.push((pattern.to_vec(), handle));
-                None
-            }
-        });
-        // The handler this one replaces, released once the handlers are back.
-        drop((old_default, old));
+        if pattern == b"/" {
+            drop(self.default_handler.replace(Some(handle)));
+        } else {
+            let old = self.handlers.with_taken(|handlers| {
+                if let Some(entry) = handlers.iter_mut().find(|(known, _)| known == pattern) {
+                    Some(std::mem::replace(&mut entry.1, handle))
+                } else {
+                    handlers.push((pattern.to_vec(), handle));
+                    None
+                }
+            });
+            // A replaced handler may run PHP as it drops. Restore the list first.
+            drop(old);
+        }
         bailout::outcome(())
     }
 
     /// `get_handler`: the callable for the request's path, if any.
     fn handler(&self, mut context: Ctx) -> Option<Rc<Callable>> {
         let path = crate::parse::request_path(&context.state().request);
-        let default = self.default_handler.with_taken(|handler| handler.clone());
-        let is_default =
-            |handle: &Rc<Callable>| default.as_ref().is_some_and(|d| Rc::ptr_eq(d, handle));
-        let found = self.handlers.with_taken(|handlers| {
-            handlers
-                .iter()
-                .filter(|(_, handle)| !is_default(handle))
-                .find(|(pattern, _)| swoole_rs_httpbindings::handler_matches(path, pattern))
-                .map(|(_, handle)| handle.clone())
-        });
-        found.or(default)
+        self.handlers
+            .with_taken(|handlers| {
+                handlers
+                    .iter()
+                    .find(|(pattern, _)| swoole_rs_httpbindings::handler_matches(path, pattern))
+                    .map(|(_, handle)| handle.clone())
+            })
+            .or_else(|| self.default_handler.with_taken(|handler| handler.clone()))
     }
 
     /// `create_context`: the settings, the socket and the parser.
