@@ -279,12 +279,25 @@ pub(crate) fn server_send_parts(
 }
 
 /// `ctx->sendfile`.
-pub(crate) fn sendfile(mut ctx: Ctx, file: &ZStr, offset: i64, length: usize) -> bool {
+pub(crate) fn sendfile(
+    mut ctx: Ctx,
+    file: &ZStr,
+    offset: i64,
+    length: usize,
+    delete_file: &mut bool,
+) -> bool {
     let state = ctx.state();
     if let Some(socket) = socket(state) {
         socket.sendfile(file.c_str(), offset, length)
     } else {
-        server_methods::sendfile(server(state), state.fd, file.bytes(), offset, length)
+        server_methods::sendfile_with_cleanup(
+            server(state),
+            state.fd,
+            file.bytes(),
+            offset,
+            length,
+            delete_file,
+        )
     }
 }
 

@@ -102,6 +102,12 @@ impl<'a> SendFile<'a> {
         }
         true
     }
+    /// Restore the descriptor when the server rejected a send before taking ownership.
+    pub fn release(&self) {
+        if let Some(object) = self.descriptor {
+            object.0.set(State::Ready);
+        }
+    }
 }
 
 static CLASS: CustomClass<Descriptor> = CustomClass::new();

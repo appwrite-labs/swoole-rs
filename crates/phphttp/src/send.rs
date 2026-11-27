@@ -213,6 +213,7 @@ pub(crate) fn send_file(
     file: &ZStr,
     offset: i64,
     length: usize,
+    delete_file: &mut bool,
 ) -> Result<bool, Bailout> {
     if ctx.flags() & HTTP2 != 0 {
         return http2(ctx, Http2::SendFile(file.bytes(), offset, length));
@@ -225,7 +226,7 @@ pub(crate) fn send_file(
             return Ok(false);
         }
     }
-    if length > 0 && !context::sendfile(ctx, file, offset, length) {
+    if length > 0 && !context::sendfile(ctx, file, offset, length, delete_file) {
         close(ctx);
         return Ok(false);
     }

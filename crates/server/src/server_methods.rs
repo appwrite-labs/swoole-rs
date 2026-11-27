@@ -267,7 +267,7 @@ pub fn has_kernel_nobufs_error(serv: view::Server<'_>, session_id: c_long) -> bo
         .is_some_and(|pipe| pipe.take_kernel_nobufs())
 }
 
-pub use crate::dispatch::sendfile;
+pub use crate::dispatch::{sendfile, sendfile_with_cleanup};
 
 /// `serv->reactor_thread_barrier.wait()`.
 pub(crate) fn reactor_barrier(serv: view::Server<'_>) {
