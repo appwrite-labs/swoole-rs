@@ -445,6 +445,9 @@ mod tests {
         reset(0, 0, true);
         sendfile_cork(&hooks, &mut corked, 0, 10, 65_536);
         assert_eq!(corked, -1);
+        set_errno(libc::EINTR);
+        let interrupted = sendfile_sent(&hooks, None, 10, &mut corked, 0, 10);
+        assert_eq!((interrupted, corked), (OutputResult::default(), -1));
         set_errno(libc::EAGAIN);
         let waited = sendfile_sent(&hooks, None, 10, &mut corked, 0, 10);
         assert_eq!(
