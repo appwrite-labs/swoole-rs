@@ -272,13 +272,18 @@ impl TaskBuffer {
             );
             return false;
         };
+        self.pack_event(data, ServerEvent::Task, id)
+    }
+
+    /// Pack an event with the ID that its receiver will match.
+    pub fn pack_event(&mut self, data: &[u8], event: ServerEvent, id: std::ffi::c_long) -> bool {
         let reactor_id = swoole_get_worker_id().c_cast::<i16>();
         self.head = DataHead {
             fd: id,
             msg_id: 0,
             len: 0,
             reactor_id,
-            kind: ServerEvent::Task.code(),
+            kind: event.code(),
             flags: 0,
             server_fd: 0,
             ext_flags: 0,
@@ -688,6 +693,10 @@ mod tests {
             assert_eq!(data.len(), 5);
             assert_eq!(data.as_ptr(), task.data.as_ptr().cast());
             assert!(string.as_ptr().is_null());
+            assert!(task.pack_event(b"done", ServerEvent::Finish, 41));
+            assert_eq!(task.head().fd, 41);
+            assert_eq!(task.head().event(), Some(ServerEvent::Finish));
+            assert_eq!(swr_v1_core_current_task_id(), 42);
         }
 
         #[test]

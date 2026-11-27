@@ -286,16 +286,16 @@ pub fn finish(
     };
     let flags = flags.c_cast::<u16>();
     let reply = |buf: &mut TaskBuffer, flags| {
+        let packed = buf.pack_event(data, ServerEvent::Finish, task.fd);
         buf.add_flags(flags);
-        buf.set_event(ServerEvent::Finish, task.fd);
+        packed
     };
     let mut buf = TaskBuffer::default();
     let sent = if TaskFlag::from_bits(task.ext_flags).contains(TaskFlag::SW_TASK_NONBLOCK) {
-        if !buf.pack(data) {
+        if !reply(&mut buf, super::nonblocking_flags(flags, task.ext_flags)) {
             log::warning(c"Server::finish", format_args!("large task pack failed()"));
             return false;
         }
-        reply(&mut buf, super::nonblocking_flags(flags, task.ext_flags));
         match stream_connection(worker) {
             Some(connection) => send_stream(connection.socket(), data),
             None => send_pipe_message(
@@ -323,10 +323,9 @@ pub fn finish(
             return false;
         }
         let stored = if TaskFlag::from_bits(task.ext_flags).contains(TaskFlag::SW_TASK_WAITALL) {
-            write_waitall(slot, &mut buf, data, |buf| reply(buf, flags));
+            write_waitall(slot, &mut buf, |buf| reply(buf, flags));
             true
-        } else if buf.pack(data) {
-            reply(&mut buf, flags);
+        } else if reply(&mut buf, flags) {
             // The source worker's lock, held, keeps this process alone writing its slot.
             slot.store(buf.bytes());
             true
@@ -376,8 +375,7 @@ pub fn finish(
 fn write_waitall(
     slot: ResultSlot<'_>,
     buf: &mut TaskBuffer,
-    data: &[u8],
-    reply: impl Fn(&mut TaskBuffer),
+    reply: impl FnOnce(&mut TaskBuffer) -> bool,
 ) {
     let path = slot.result_path();
     let Ok(file) =
@@ -386,10 +384,9 @@ fn write_waitall(
         return;
     };
     // A failed pack leaves the result empty.
-    if !buf.pack(data) {
+    if !reply(buf) {
         log::warning(c"Server::finish", format_args!("large task pack failed()"));
     }
-    reply(buf);
     let bytes = buf.bytes();
     if swoole_rs_corebase::ossupport::fd_write_all(file, true, bytes) != bytes.len() {
         let (path, len) = (path.to_string_lossy(), bytes.len());
