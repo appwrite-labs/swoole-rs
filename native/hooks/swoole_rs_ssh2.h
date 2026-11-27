@@ -101,6 +101,7 @@ typedef struct swr_v1_co_socket *swr_ssh2_socket;
 bool swr_v1_ssh2_close_socket(swr_ssh2_socket socket);
 void swr_v1_ssh2_cancel_waits(swr_v1_ssh2_session session);
 bool swr_v1_ssh2_is_bound(swr_v1_ssh2_session session);
+double swr_v1_ssh2_release_timeout(swr_v1_ssh2_session session, double timeout);
 bool swr_v1_ssh2_channel_wait(swr_v1_ssh2_session session, bool outbound, double timeout, bool *timed_out);
 #define ssh2_bound swr_v1_ssh2_bound
 #endif

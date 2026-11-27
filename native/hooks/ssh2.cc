@@ -29,8 +29,6 @@
 #include "swoole_rs_phphost.h"
 #ifdef SW_HAVE_SSH2LIB
 
-#include <chrono>
-
 #include "php_ssh2.h"
 #include "php_swoole_ssh2_hook.h"
 
@@ -469,20 +467,11 @@ extern "C" void swr_ssh2_accepted_stream(zval *zlistener, LIBSSH2_CHANNEL *chann
  *********************** */
 
 static void destroy_session(LIBSSH2_SESSION *session) {
-    using Clock = std::chrono::steady_clock;
-    const auto deadline = Clock::now() + std::chrono::seconds(1);
-    while (!swr_v1_ssh2_is_bound(session)) {
-        int rc = libssh2_session_disconnect_ex(session, SSH_DISCONNECT_BY_APPLICATION,
-                                              "swoole_ssh2 (https://github.com/swoole/swoole-src)", "");
-        if (rc != LIBSSH2_ERROR_EAGAIN || !swoole::Coroutine::get_current()) {
-            break;
-        }
-        double remaining = std::chrono::duration<double>(deadline - Clock::now()).count();
-        bool timed_out = false;
-        bool outbound = libssh2_session_block_directions(session) & LIBSSH2_SESSION_BLOCK_OUTBOUND;
-        if (remaining <= 0 || !swr_v1_ssh2_channel_wait(session, outbound, remaining, &timed_out)) {
-            break;
-        }
+    if (!swr_v1_ssh2_is_bound(session)) {
+        ssh2_release_call(session, 1.0, [&] {
+            return libssh2_session_disconnect_ex(session, SSH_DISCONNECT_BY_APPLICATION,
+                                                 "swoole_ssh2 (https://github.com/swoole/swoole-src)", "");
+        });
     }
     swr_ssh2_session_drop(session);
 }

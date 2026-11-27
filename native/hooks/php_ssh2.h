@@ -23,6 +23,8 @@
 
 #ifdef SW_HAVE_SSH2LIB
 
+#include <chrono>
+
 #include "ext/standard/url.h"
 #include "main/php_network.h"
 
@@ -201,6 +203,21 @@ static ssize_t session_io(zend_resource *resource, bool may_block, double timeou
     return -1;
 }
 
+// A destructor can yield during request shutdown. Every retry spends the same timeout.
+template <typename Operation>
+static void ssh2_release_call(LIBSSH2_SESSION *session, double timeout, Operation operation) {
+    const auto start = std::chrono::steady_clock::now();
+    while (operation() == LIBSSH2_ERROR_EAGAIN && swoole::Coroutine::get_current() && !swr_v1_ssh2_is_bound(session)) {
+        double remaining = timeout - std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
+        bool timed_out = false;
+        bool outbound = libssh2_session_block_directions(session) & LIBSSH2_SESSION_BLOCK_OUTBOUND;
+        if (remaining <= 0 || !swr_v1_ssh2_channel_wait(session, outbound, remaining, &timed_out) ||
+            swr_v1_ssh2_is_bound(session)) {
+            break;
+        }
+    }
+}
+
 // A destructor inside a coroutine can yield even during PHP request shutdown.
 template <typename Operation>
 static void release_ssh_resource(zend_resource *resource, double timeout, Operation operation) {
@@ -209,12 +226,9 @@ static void release_ssh_resource(zend_resource *resource, double timeout, Operat
         return;
     }
     swr_ssh2_forward_enter(session);
-    if (swoole::Coroutine::get_current() && !swr_v1_ssh2_is_bound(session)) {
-        bool timed_out = false;
-        session_io(resource, true, timeout, timed_out, operation);
-    } else {
-        operation();
-    }
+    ssh2_release_call(session, swr_v1_ssh2_release_timeout(session, timeout), [&] {
+        return resource->ptr == session ? operation() : 0;
+    });
     swr_ssh2_forward_leave(session);
 }
 

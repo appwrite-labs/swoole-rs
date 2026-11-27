@@ -111,6 +111,23 @@ pub extern "C" fn swr_v1_ssh2_is_bound(session: Session<'_>) -> bool {
     socket.has_bound(Events::READ) || socket.has_bound(Events::WRITE)
 }
 
+/// Bound teardown even when the session has disabled its ordinary I/O timeout.
+#[unsafe(no_mangle)]
+pub extern "C" fn swr_v1_ssh2_release_timeout(session: Session<'_>, timeout: f64) -> f64 {
+    let seconds = if timeout > 0.0 {
+        timeout
+    } else {
+        session
+            .socket()
+            .timeout(swoole_rs_corebase::reactor::TimeoutKind::READ)
+    };
+    if seconds.is_finite() && seconds > 0.0 {
+        seconds
+    } else {
+        f64::from(swoole_rs_corebase::constants::SW_SOCKET_DEFAULT_READ_TIMEOUT)
+    }
+}
+
 /// Wait for a channel operation with its stream-local timeout in seconds.
 #[unsafe(no_mangle)]
 pub extern "C" fn swr_v1_ssh2_channel_wait(
