@@ -45,12 +45,12 @@ def framing(engine, protocol, mode):
             rejected = [('overlong-length', b'\x30\x80\x80\x80\x80')]
         else:
             wires = [('get', b'*1\r\n$3\r\nGET\r\n'), ('empty', b'*1\r\n$0\r\n\r\n'),
-                     ('binary', b'*2\r\n$3\r\nSET\r\n$5\r\na\x00b\r\n\r\n'),
-                     ('signed-count', b'*+1\r\n$3\r\nGET\r\n')]
+                     ('binary', b'*2\r\n$3\r\nSET\r\n$5\r\na\x00b\r\n\r\n')]
             for size in [1048576, 2097152]:
                 payload = b'x' * size
                 wires += [('payload-' + str(size), b'*1\r\n$' + str(size).encode() + b'\r\n' + payload + b'\r\n')]
-            rejected = [('malformed-number', b'*oops\r\n'), ('over-limit', b'*1\r\n$5000000\r\n')]
+            rejected = [('malformed-number', b'*oops\r\n'), ('signed-count', b'*+1\r\n$3\r\nGET\r\n'),
+                        ('over-limit', b'*1\r\n$5000000\r\n')]
         for name, wire in wires:
             with socket.create_connection(('127.0.0.1', port), timeout=3) as client:
                 client.settimeout(3)
