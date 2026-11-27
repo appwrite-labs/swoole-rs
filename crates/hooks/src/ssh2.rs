@@ -86,6 +86,13 @@ pub extern "C" fn swr_v1_ssh2_bound(session: Session<'_>) -> *const Ops {
     &raw const OPS
 }
 
+/// Whether another coroutine owns either direction of the session socket.
+#[unsafe(no_mangle)]
+pub extern "C" fn swr_v1_ssh2_is_bound(session: Session<'_>) -> bool {
+    let socket = session.socket();
+    socket.has_bound(Events::READ) || socket.has_bound(Events::WRITE)
+}
+
 /// Wait for a channel operation with its stream-local timeout in seconds.
 #[unsafe(no_mangle)]
 pub extern "C" fn swr_v1_ssh2_channel_wait(

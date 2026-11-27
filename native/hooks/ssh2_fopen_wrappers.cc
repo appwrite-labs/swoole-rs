@@ -51,18 +51,19 @@ void *php_ssh2_zval_from_resource_handle(int handle) {
  ********************** */
 
 template <typename Operation>
-static ssize_t channel_io(php_ssh2_channel_data *data, Operation operation) {
+static ssize_t channel_io(php_ssh2_channel_data *data, bool may_block, Operation operation) {
     auto session = ssh2_get_session(data);
-    data->timed_out = false;
     if (!session) {
         return -1;
     }
-    if (data->is_blocking) {
-        ssh2_bound(session);
-    }
     while (data->session_rsrc->ptr == session) {
+        if (may_block) {
+            ssh2_bound(session);
+        } else if (swr_v1_ssh2_is_bound(session)) {
+            return LIBSSH2_ERROR_EAGAIN;
+        }
         ssize_t result = operation();
-        if (result != LIBSSH2_ERROR_EAGAIN || !data->is_blocking) {
+        if (result != LIBSSH2_ERROR_EAGAIN || !may_block) {
             return result;
         }
         bool outbound = libssh2_session_block_directions(session) & LIBSSH2_SESSION_BLOCK_OUTBOUND;
@@ -85,12 +86,13 @@ static ssize_t channel_completion(php_ssh2_channel_data *data, bool may_block) {
         return 0;
     }
     auto wait_closed = [&] { return libssh2_channel_wait_closed(data->channel); };
-    return may_block ? channel_io(data, wait_closed) : wait_closed();
+    return channel_io(data, may_block, wait_closed);
 }
 
 static ssize_t php_ssh2_channel_stream_write(php_stream *stream, const char *buf, size_t count) {
     auto *data = static_cast<php_ssh2_channel_data *>(stream->abstract);
-    ssize_t result = channel_io(data, [&] {
+    data->timed_out = false;
+    ssize_t result = channel_io(data, data->is_blocking, [&] {
         return (libssh2_channel_write_ex)(data->channel, data->streamid, buf, count);
     });
     return result == LIBSSH2_ERROR_EAGAIN ? 0 : result;
@@ -98,7 +100,8 @@ static ssize_t php_ssh2_channel_stream_write(php_stream *stream, const char *buf
 
 static ssize_t php_ssh2_channel_stream_read(php_stream *stream, char *buf, size_t count) {
     auto *data = static_cast<php_ssh2_channel_data *>(stream->abstract);
-    ssize_t result = channel_io(data, [&] {
+    data->timed_out = false;
+    ssize_t result = channel_io(data, data->is_blocking, [&] {
         return (libssh2_channel_read_ex)(data->channel, data->streamid, buf, count);
     });
     if (!data->session_rsrc->ptr) {

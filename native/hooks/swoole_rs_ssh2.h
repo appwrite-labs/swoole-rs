@@ -97,6 +97,7 @@ void php_swoole_ssh2_minfo(void);
 /* A live ext/ssh2 session, as crates/hooks takes it. */
 typedef LIBSSH2_SESSION *swr_v1_ssh2_session;
 const struct swr_v1_ssh2_ops *swr_v1_ssh2_bound(swr_v1_ssh2_session session);
+bool swr_v1_ssh2_is_bound(swr_v1_ssh2_session session);
 bool swr_v1_ssh2_channel_wait(swr_v1_ssh2_session session, bool outbound, double timeout, bool *timed_out);
 #define ssh2_bound swr_v1_ssh2_bound
 #endif

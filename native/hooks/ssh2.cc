@@ -498,7 +498,12 @@ static void php_ssh2_listener_dtor(zend_resource *rsrc) {
 
     if (data->session_rsrc->ptr) {
         swr_ssh2_forward_enter(session);
-        libssh2_channel_forward_cancel(listener);
+        if (swr_v1_ssh2_is_bound(session)) {
+            // A destructor cannot park on the socket while its owner is waiting.
+            (libssh2_channel_forward_cancel)(listener);
+        } else {
+            libssh2_channel_forward_cancel(listener);
+        }
         swr_ssh2_forward_leave(session);
     }
     zend_list_delete(data->session_rsrc);
