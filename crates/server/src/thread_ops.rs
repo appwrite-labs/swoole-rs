@@ -5,7 +5,7 @@
 //! crates/ports', reached under their upstream symbols.
 use crate::Mode;
 use crate::factory::CLOSE_ACTIVELY;
-use crate::reactor_thread::{HEARTBEAT, each_connection, send_event};
+use crate::reactor_thread::{each_connection, send_event};
 use crate::records::{Connection, Lookup};
 use core::ffi::{c_int, c_long};
 use swoole_rs_corebase::ServerEvent;
@@ -242,7 +242,7 @@ pub(crate) fn start_reactor_threads(serv: view::Server<'_>) -> bool {
             config.heartbeat_timer.store(timer);
         } else {
             let share = SharedServer::of(serv);
-            ServerState::start_thread(serv, HEARTBEAT, move || heartbeat_main(share.view()));
+            ServerState::start_heartbeat(serv, move || heartbeat_main(share.view()));
         }
     }
     methods::start_master_thread(serv, reactor)
@@ -303,16 +303,18 @@ pub(crate) fn main_loop(serv: view::Server<'_>, id: u16) {
 /// connections idle past their port's heartbeat time.
 fn heartbeat_thread(serv: view::Server<'_>) {
     let state = serv.state();
-    while state.running() {
+    while state.heartbeat_running() {
         let now = swoole_rs_corebase::microtime();
         each_connection(state, |conn| {
             let session = conn.session_id();
-            if session > 0 && !serv.healthy(now, conn) {
+            if session > 0 && state.heartbeat_running() && !serv.healthy(now, conn) {
                 send_close_force(serv, conn, session);
             }
         });
         let interval = state.config_ref().heartbeat_check_interval.get();
-        std::thread::sleep(core::time::Duration::from_secs(u64::from(interval)));
+        if state.heartbeat_running() {
+            std::thread::park_timeout(core::time::Duration::from_secs(u64::from(interval)));
+        }
     }
 }
 
