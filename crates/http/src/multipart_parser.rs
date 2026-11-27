@@ -176,6 +176,41 @@ impl MultipartParser {
         })
     }
 
+    /// Visit the generated upload paths in a complete reactor-preprocessed body.
+    /// Visit each marker as it is parsed so earlier files can be cleaned up even
+    /// if a later part is invalid. Callers must verify the reactor's dispatch flag.
+    pub fn visit_uploads(&self, body: &[u8], visit: impl FnMut(&[u8])) -> bool {
+        struct Collector<F> {
+            header: MultipartHeader,
+            visit: F,
+        }
+        impl<F: FnMut(&[u8])> Parts<'_> for Collector<F> {
+            fn on_header_field(&mut self, data: &[u8]) -> Flow {
+                self.header.append_name(data)
+            }
+            fn on_header_value(&mut self, data: &[u8]) -> Flow {
+                self.header.append_value(data)
+            }
+            fn on_header_value_complete(&mut self) -> Flow {
+                let (name, value) = self.header.parts();
+                if name.eq_ignore_ascii_case(b"swoole-upload-file") {
+                    (self.visit)(value);
+                }
+                self.header.clear();
+                Flow::Go
+            }
+        }
+
+        let Some(mut parser) = self.boundary().get(2..).and_then(Self::new) else {
+            return false;
+        };
+        let mut collector = Collector {
+            header: MultipartHeader::new(SW_HTTP_HEADER_MAX_SIZE as usize),
+            visit,
+        };
+        parser.execute(&mut collector, body) == Ok(body.len()) && parser.is_complete()
+    }
+
     /// Whether the parser has consumed the closing multipart boundary.
     #[must_use]
     pub fn is_complete(&self) -> bool {

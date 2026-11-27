@@ -337,3 +337,20 @@ fn boundary_length_includes_both_leading_dashes() {
     );
     assert!(MultipartParser::new(&[b'b'; 254]).is_none());
 }
+
+#[test]
+fn collect_upload_paths_without_metadata() {
+    let parser = MultipartParser::new(b"review").unwrap();
+    let body = b"--review\r\nContent-Disposition: form-data; filename=\"missing-name.txt\"\r\n\
+                 Swoole-Upload-File: /tmp/generated-first\r\n\r\nignored\r\n\
+                 --review\r\nContent-Disposition: form-data; name=\"text\"\r\n\r\n\
+                 Swoole-Upload-File: /tmp/client-value\r\n\
+                 --review\r\nContent-Disposition: form-data; name=\"last\"; filename=\"last.txt\"\r\n\
+                 Swoole-Upload-File: /tmp/generated-last\r\n\r\nignored\r\n--review--\r\n";
+    let mut paths = Vec::new();
+    assert!(parser.visit_uploads(body, |path| paths.push(path.to_vec())));
+    assert_eq!(
+        paths,
+        [b"/tmp/generated-first".as_slice(), b"/tmp/generated-last"]
+    );
+}

@@ -28,6 +28,7 @@ use swoole_rs_zend::{
 /// A request's multipart parser and the upload it is writing.
 pub(crate) struct Multipart {
     parser: MultipartParser,
+    uploads_collected: bool,
     header: MultipartHeader,
     content_type: Option<Vec<u8>>,
     field: BoundedBytes,
@@ -916,6 +917,7 @@ pub(crate) fn multipart_start(state: &mut State, content_type: &[u8], limit: usi
     };
     state.mt_parser = Some(Box::new(Multipart {
         parser,
+        uploads_collected: false,
         header: MultipartHeader::new(limit),
         content_type: None,
         field: BoundedBytes::new(limit, 0),
@@ -937,7 +939,17 @@ pub(crate) fn multipart_parse(state: &mut State, data: &[u8]) -> bool {
     let Some(mut multipart) = state.mt_parser.take() else {
         return false;
     };
+    if state.upload_preprocessed && !multipart.uploads_collected {
+        multipart.uploads_collected = true;
+        if !multipart.parser.visit_uploads(data, |path| {
+            add_upload(state, path);
+        }) {
+            state.mt_parser = Some(multipart);
+            return false;
+        }
+    }
     let Multipart {
+        uploads_collected: _,
         parser,
         fp,
         field,
@@ -1106,16 +1118,20 @@ fn part_header_value(
             *content_type = Some(value_.to_vec());
         }
     } else if name.eq_ignore_ascii_case(b"swoole-upload-file") && state.upload_preprocessed {
-        // When the "SW_HTTP_UPLOAD_FILE" header appears in the request, it indicates that the uploaded file has been
-        // saved in a temporary file. The binary content in the message body will be replaced with the temporary
-        // filename. However, the Content-Length still reflects the original message size, causing llhttp to believe
-        // there is still data to be received. As a result, llhttp fails to trigger the message callback. Therefore, we
-        // need to set `ctx->completed = 1` to indicate that the message processing is complete.
+        // The preliminary pass already adopted this file, even without metadata.
+        if state.parse.multipart_header.array().is_none() {
+            host::log(
+                swoole_rs_corebase::log::LogLevel::SW_LOG_WARNING,
+                0,
+                func,
+                "upload file marker has no matching multipart file metadata",
+            );
+            return true;
+        }
         state.completed = true;
         upload_bytes(state, b"tmp_name", value_);
         upload_long(state, b"error", UPLOAD_FILE_READY);
         upload_long(state, b"size", path_size(value_));
-        add_upload(state, value_);
     }
     true
 }
