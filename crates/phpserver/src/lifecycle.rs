@@ -235,8 +235,8 @@ const fn no_callbacks() -> Callbacks {
 
 /// What upstream's `ServerProperty` held, but for the callbacks.
 pub(crate) struct Property {
-    /// The Port objects, each held by a reference of its own.
-    ports: Vec<Owned>,
+    /// The identity of each Port object published in the PHP ports array.
+    ports: Vec<crate::port::PortRef>,
     /// `addCommand`'s callables.
     commands: Vec<Callable>,
     send_waiters: SendWaiters,
@@ -476,13 +476,18 @@ impl<'a> ServerObject<'a> {
     /// The Port object at `index` (`property->ports.at(index)`), with a
     /// reference of its own; undefined for none.
     pub(crate) fn port(self, index: usize) -> Owned {
-        self.property(|p| p.ports.get(index).map(|port| port.copy()))
+        self.property(|p| p.ports.get(index).and_then(crate::port::PortRef::get))
             .unwrap_or_default()
     }
 
     /// The Port objects, each with a reference of its own.
     fn ports(self) -> Vec<Owned> {
-        self.property(|p| p.ports.iter().map(|port| port.copy()).collect())
+        self.property(|p| {
+            p.ports
+                .iter()
+                .map(|port| port.get().unwrap_or_default())
+                .collect()
+        })
     }
 
     /// The user process at `index`, with a reference of its own.
@@ -532,7 +537,7 @@ impl ServerData {
         let processes = self.property(|p| std::mem::take(&mut p.user_processes));
         drop(processes);
         let ports = self.property(|p| std::mem::take(&mut p.ports));
-        for port in ports {
+        for port in ports.iter().filter_map(crate::port::PortRef::get) {
             crate::port::release(&port);
         }
         let commands = self.property(|p| std::mem::take(&mut p.commands));
@@ -709,8 +714,10 @@ pub(crate) fn add_port(object: ServerObject<'_>, port: view::Port<'_>) -> Owned 
         return Owned::default();
     }
     let zport = crate::port::new_object(serv.clone(), port);
-    let kept = zport.copy();
-    object.property(|p| p.ports.push(kept));
+    let Some(reference) = crate::port::PortRef::of(&zport) else {
+        return zport;
+    };
+    object.property(|p| p.ports.push(reference));
     let info = PortInfo::of(port);
     if let Some(props) = Props::of_value(&zport) {
         props.port_info(&info, Some(info.fd));

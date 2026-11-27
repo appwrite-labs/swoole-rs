@@ -116,6 +116,28 @@ pub struct PortData {
     bound: Cell<bool>,
 }
 
+/// The public ports array holds the PHP reference. The property identity guards
+/// against Zend reusing the handle for another Port after the array is edited.
+pub(crate) struct PortRef {
+    object: swoole_rs_zend::Weak<PortData>,
+    property: Weak<PortProperty>,
+}
+
+impl PortRef {
+    pub(crate) fn of(value: &Value) -> Option<Self> {
+        Some(Self {
+            object: swoole_rs_zend::Weak::of(value)?,
+            property: Rc::downgrade(&value.custom::<PortData>()?.property),
+        })
+    }
+
+    pub(crate) fn get(&self) -> Option<Owned> {
+        let value = self.object.get()?;
+        let data = value.custom::<PortData>()?;
+        std::ptr::eq(Rc::as_ptr(&data.property), self.property.as_ptr()).then_some(value)
+    }
+}
+
 impl Custom for PortData {
     fn class() -> &'static CustomClass<Self> {
         &PORT

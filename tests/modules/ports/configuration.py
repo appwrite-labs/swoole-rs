@@ -18,7 +18,7 @@ def attest(manifest,metadata):
 
 CASES={
     'convert_eof':None, 'convert_length_type':None, 'settings_release_reentry':None,
-    'callback_release_reentry':None, 'ignored_ssl':None,
+    'port_property_cycle':None, 'callback_release_reentry':None, 'ignored_ssl':None,
     'fatal_empty_eof':'package_eof cannot be an empty string',
     'fatal_long_eof':'package_eof max length is 8',
     'fatal_length_type':'unknown package_length_type',

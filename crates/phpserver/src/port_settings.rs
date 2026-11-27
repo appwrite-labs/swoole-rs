@@ -405,9 +405,7 @@ impl Source for Zend<'_> {
             return Ok(None);
         };
         let callable = swoole_rs_phpswoole::setting_callable(value).ok_or(Stop)?;
-        let owner: LengthOwner =
-            std::rc::Rc::new(swoole_rs_phpswoole::length::Named::new(callable));
-        Ok(Some(owner))
+        Ok(Some(callable))
     }
 
     fn release(&self, owner: LengthOwner) {

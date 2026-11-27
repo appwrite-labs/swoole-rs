@@ -21,7 +21,6 @@ use swoole_rs_corebase::net_types::SocketAddress;
 use swoole_rs_corebase::reactor::Socket as Net;
 use swoole_rs_hooks::{co_socket::Co as Handle, socket_extra};
 use swoole_rs_phpruntime::{Report, co, report};
-use swoole_rs_phpswoole::length::Named;
 use swoole_rs_phpswoole::{Switch, built_with};
 use swoole_rs_zend::{
     Owned, Value, ZString,
@@ -537,12 +536,11 @@ impl Co {
 /// one, which is freed once the socket no longer holds it. Nothing more is set
 /// once a bailout is pending.
 pub(crate) fn length_callable(socket: Co, callable: Rc<Callable>) {
-    let named = Named::new(callable);
     socket.0.edit_protocol(|protocol| {
         protocol.get_package_length = Some(swoole_rs_phpswoole::length::length::<Length>);
     });
     // The destructor may reach the socket, so it runs between the edits.
-    let old = socket_extra::replace_length_owner(socket.handle(), Some(Rc::new(named)));
+    let old = socket_extra::replace_length_owner(socket.handle(), Some(callable));
     if free_owner(old).is_err() {
         return;
     }

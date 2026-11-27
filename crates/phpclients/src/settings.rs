@@ -10,7 +10,6 @@ use swoole_rs_clients::framing_recv::default_length_func;
 use swoole_rs_corebase::CCast;
 use swoole_rs_corebase::constants::SW_IPC_BUFFER_SIZE;
 use swoole_rs_corebase::tls::{self as tls, Text, Value};
-use swoole_rs_phpswoole::length::Named;
 use swoole_rs_zend::host::callable::Callable;
 use swoole_rs_zend::{Array, E_ERROR, Owned, Value as Zval, ZString, bailout};
 
@@ -212,11 +211,9 @@ pub(crate) fn apply(cli: Cli<'_>, settings: &Array) -> Option<bool> {
         let Some(callable) = swoole_rs_phpswoole::setting_callable(function) else {
             return Some(false);
         };
-        let named = Named::new(callable);
         length_option(cli);
         bailed(native::free_owner(
-            cli.get()
-                .replace_length_owner(Some(std::rc::Rc::new(named))),
+            cli.get().replace_length_owner(Some(callable)),
         ))?;
     }
     let max_length = options
