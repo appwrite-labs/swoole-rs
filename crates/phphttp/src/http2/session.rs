@@ -76,8 +76,6 @@ pub(crate) struct SessionState {
     /// The stream whose header block awaits CONTINUATION frames (0: none),
     /// and whether that block's HEADERS frame ended the stream.
     pub(crate) header_stream_id: Cell<u32>,
-    // A bounded grace period for DATA already in flight when a stream was reset.
-    pub(crate) recently_reset: Cell<[u32; 16]>,
     pub(crate) remaining_headers: Cell<Result<u32, u32>>,
     pub(crate) header_end_stream: Cell<bool>,
     pub(crate) shutting_down: Cell<bool>,
@@ -153,7 +151,6 @@ impl SessionState {
             max_body_size,
             last_stream_id: Cell::new(0),
             header_stream_id: Cell::new(0),
-            recently_reset: Cell::new([0; 16]),
             remaining_headers: Cell::new(Ok(0)),
             header_end_stream: Cell::new(false),
             shutting_down: Cell::new(false),

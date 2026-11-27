@@ -15,13 +15,13 @@ use swoole_rs_http2::frame_flag::{
 };
 use swoole_rs_http2::{
     FileCompletion, FrameAction, FrameType, GOAWAY_SIZE, HeaderKind, HeaderRole, Http2HeaderPlan,
-    Http2RespondFacts, Http2WindowPlan, Media, PING_PAYLOAD, Respond, WindowAction, decode_packet,
+    Http2RespondFacts, Media, PING_PAYLOAD, Respond, WindowAction, decode_packet,
     hpack::{Encoder, Error},
     send_frame_size, sw_rs_http2_chunk, sw_rs_http2_file_complete, sw_rs_http2_header_defaults,
     sw_rs_http2_header_plan, sw_rs_http2_headers_flags, sw_rs_http2_inflate_step,
     sw_rs_http2_media_kind, sw_rs_http2_pack_frame_header, sw_rs_http2_respond_next,
     sw_rs_http2_response_status, sw_rs_http2_setting_plan, sw_rs_http2_window_action,
-    sw_rs_http2_window_plan, valid_content_length,
+    valid_content_length,
 };
 use swoole_rs_phpserver::RecvData;
 use swoole_rs_server::{Connection, view};
@@ -136,8 +136,8 @@ fn send_u32_frame(ctx: Ctx, kind: FrameType, stream_id: u32, value: u32) -> bool
     send(ctx, &frame)
 }
 
-fn window_update(ctx: Ctx, stream_id: u32, size: u32) {
-    send_u32_frame(ctx, FrameType::WindowUpdate, stream_id, size);
+fn window_update(ctx: Ctx, stream_id: u32, size: u32) -> bool {
+    send_u32_frame(ctx, FrameType::WindowUpdate, stream_id, size)
 }
 
 /// `Stream::reset`.
@@ -948,10 +948,14 @@ fn parse(session: &Session, frame: &[u8]) -> bool {
         FrameAction::Settings => return settings(session, payload),
         FrameAction::Headers => return headers(session, stream_id, flags, payload, new_stream),
         FrameAction::Continuation => {
-            let Some(stream) = session.stream(stream_id, false) else {
-                return false;
-            };
-            return header_block(session, &stream, flags & FLAG_END_HEADERS, payload);
+            let stream = session.stream(stream_id, false);
+            return header_block(
+                session,
+                stream_id,
+                stream.as_ref(),
+                flags & FLAG_END_HEADERS,
+                payload,
+            );
         }
         FrameAction::Data => return data(session, stream_id, flags, payload),
         FrameAction::PingReply | FrameAction::PingAck => {
@@ -1039,9 +1043,7 @@ fn headers(
         close(session.default_ctx());
         return false;
     }
-    let Some(stream) = session.stream(stream_id, new_stream) else {
-        return false;
-    };
+    let stream = session.stream(stream_id, new_stream);
     if new_stream {
         session.last_stream_id.set(stream_id);
     }
@@ -1054,7 +1056,13 @@ fn headers(
     if new_stream && session.stream_count() > session.local(MAX_CONCURRENT_STREAMS) as usize {
         // Decode refused streams through END_HEADERS to preserve the connection's HPACK table.
         remaining = Err(swoole_rs_http2::error_code::REFUSED_STREAM);
-    } else if stream.headers_received.get() {
+    } else if let Some(stream) = &stream
+        && stream.request_received.get()
+    {
+        remaining = Err(swoole_rs_http2::error_code::STREAM_CLOSED);
+    } else if let Some(stream) = &stream
+        && stream.headers_received.get()
+    {
         crate::parse::init_property(
             &mut stream.ctx().state().request,
             crate::parse::Property::Trailer,
@@ -1064,38 +1072,39 @@ fn headers(
         }
     }
     session.remaining_headers.set(remaining);
-    header_block(session, &stream, flags, block)
+    header_block(session, stream_id, stream.as_ref(), flags, block)
 }
 
 /// One HEADERS or CONTINUATION frame's part of a header block. At the block's
 /// end the request is configured from its headers and, with `END_STREAM`,
 /// dispatched.
-fn header_block(session: &Session, stream: &Stream, flags: u32, payload: &[u8]) -> bool {
-    if stream.request_received.get() {
-        return false;
-    }
-    let trailers = stream.headers_received.get();
+fn header_block(
+    session: &Session,
+    stream_id: u32,
+    stream: Option<&Stream>,
+    flags: u32,
+    payload: &[u8],
+) -> bool {
+    let trailers = stream.is_some_and(|s| s.headers_received.get());
     if !parse_header(session, stream, flags, payload, trailers) {
         // HPACK state belongs to the connection and cannot resume after a decoding error.
         close(session.default_ctx());
         return false;
     }
     if flags & FLAG_END_HEADERS == 0 {
-        session.header_stream_id.set(stream.id);
+        session.header_stream_id.set(stream_id);
         return true;
     }
     session.header_stream_id.set(0);
+    let Some(stream) = stream else {
+        // Even after reset, indexing in this block affects subsequent streams.
+        return true;
+    };
     if let Err(code) = session.remaining_headers.get() {
         return reset_stream(session, stream, code);
     }
     if stream.bad_length.get() {
-        let ctx = stream.ctx();
-        set(ctx, Field::Status, REQUEST_ENTITY_TOO_LARGE.cast_unsigned());
-        if !send_header(ctx, session, stream, None, true) {
-            close(ctx);
-            return false;
-        }
-        return reset_stream(session, stream, swoole_rs_http2::error_code::NO_ERROR);
+        return reject_body(session, stream);
     }
     if !trailers && !headers_complete(stream, session.max_body_size) {
         return false;
@@ -1160,10 +1169,6 @@ fn complete(session: &Session, stream: &Stream) -> bool {
 fn header(ctx: Ctx, key: &[u8]) -> Option<ZString> {
     let entry = ctx.entry(Value::Header, key)?;
     string_of(&entry)
-}
-
-fn window(current: u32, amount: usize, initial: u32, credit: bool) -> Http2WindowPlan {
-    sw_rs_http2_window_plan(current, amount, initial, credit)
 }
 
 fn credit(window: &std::cell::Cell<u32>, amount: u32) -> Result<(), u32> {
@@ -1243,10 +1248,6 @@ fn settings(session: &Session, payload: &[u8]) -> bool {
 }
 
 fn reset_stream(session: &Session, stream: &Stream, code: u32) -> bool {
-    let mut ids = session.recently_reset.get();
-    ids.rotate_right(1);
-    ids[0] = stream.id;
-    session.recently_reset.set(ids);
     reset(stream.ctx(), stream.id, code);
     session.remove(stream.id)
 }
@@ -1254,70 +1255,82 @@ fn reset_stream(session: &Session, stream: &Stream, code: u32) -> bool {
 /// A DATA frame: buffer the body, keep the windows open and dispatch the
 /// request at the end of the stream.
 fn data(session: &Session, stream_id: u32, flags: u32, payload: &[u8]) -> bool {
-    let Some(body) = unpadded(flags, payload) else {
-        close(session.default_ctx());
-        return false;
-    };
-    let Some(stream) = session.stream(stream_id, false) else {
-        if stream_id != 0 && session.recently_reset.get().contains(&stream_id) {
-            connection_flow(session, session.default_ctx(), payload.len());
-            return true;
-        }
+    use swoole_rs_http2::error_code::{FLOW_CONTROL_ERROR, PROTOCOL_ERROR, STREAM_CLOSED};
+    if stream_id & 1 == 0 || stream_id > session.last_stream_id.get() {
         log(
             LOG_WARNING,
             STREAM_NOT_FOUND,
             c"swoole_http2_server_parse",
             &format!("http2 stream#{stream_id} not found"),
         );
+        return abort_session(session, PROTOCOL_ERROR, b"DATA on idle stream");
+    }
+    let length = payload.len().c_cast::<u32>();
+    let initial = session.local(INIT_WINDOW_SIZE);
+    let Some(remaining) = session.local_window_size.get().checked_sub(length) else {
+        return abort_session(
+            session,
+            FLOW_CONTROL_ERROR,
+            b"connection receive window exceeded",
+        );
+    };
+    session.local_window_size.set(remaining);
+    let target = initial.max(swoole_rs_http2::INITIAL_CONNECTION_WINDOW);
+    if !replenish(session.default_ctx(), 0, &session.local_window_size, target) {
         return false;
+    }
+    let Some(stream) = session.stream(stream_id, false) else {
+        // DATA can be in flight when a previously opened stream is reset.
+        return true;
     };
     if !stream.headers_received.get() || stream.request_received.get() {
-        return false;
+        return reset_stream(session, &stream, STREAM_CLOSED);
     }
     let ctx = stream.ctx();
-    let length = payload.len();
-    if length > 0 {
-        if get(ctx, Field::End) != 0 || ctx.data_append(body, session.max_body_size).is_err() {
-            connection_flow(session, ctx, length);
-            return reset_stream(session, &stream, 0);
-        }
-        flow(session, &stream, ctx, stream_id, length);
+    let Some(remaining) = stream.local_window_size.get().checked_sub(length) else {
+        return reset_stream(session, &stream, FLOW_CONTROL_ERROR);
+    };
+    stream.local_window_size.set(remaining);
+    let Some(body) = unpadded(flags, payload) else {
+        return abort_session(session, PROTOCOL_ERROR, b"invalid DATA padding");
+    };
+    if !body.is_empty() && ctx.data_append(body, session.max_body_size).is_err() {
+        return reject_body(session, &stream);
     }
-    if flags & FLAG_END_STREAM != 0 {
-        return complete(session, &stream);
+    if !replenish(ctx, stream_id, &stream.local_window_size, initial) {
+        return false;
+    }
+    flags & FLAG_END_STREAM == 0 || complete(session, &stream)
+}
+
+fn reject_body(session: &Session, stream: &Stream) -> bool {
+    let ctx = stream.ctx();
+    set(ctx, Field::Status, REQUEST_ENTITY_TOO_LARGE.cast_unsigned());
+    if !send_header(ctx, session, stream, None, true) {
+        close(ctx);
+        return false;
+    }
+    reset_stream(session, stream, swoole_rs_http2::error_code::NO_ERROR)
+}
+
+/// Restore a receive window at half capacity, once the credit is sent.
+fn replenish(ctx: Ctx, id: u32, window: &std::cell::Cell<u32>, target: u32) -> bool {
+    let remaining = window.get();
+    if target > 0 && remaining <= target / 2 {
+        if !window_update(ctx, id, target - remaining) {
+            close(ctx);
+            return false;
+        }
+        window.set(target);
     }
     true
-}
-
-/// Flow control: debit both receive windows, and reopen each once a quarter
-/// remains.
-fn flow(session: &Session, stream: &Stream, ctx: Ctx, stream_id: u32, length: usize) {
-    connection_flow(session, ctx, length);
-    let initial = session.local(INIT_WINDOW_SIZE);
-    let debited = window(stream.local_window_size.get(), length, 0, false).value;
-    stream.local_window_size.set(debited);
-    let reopen = window(debited, 0, initial, false);
-    if reopen.increment != 0 {
-        window_update(ctx, stream_id, reopen.increment);
-        stream.local_window_size.set(initial);
-    }
-}
-
-fn connection_flow(session: &Session, ctx: Ctx, length: usize) {
-    let initial = session.local(INIT_WINDOW_SIZE);
-    let connection = window(session.local_window_size.get(), length, initial, false);
-    session.local_window_size.set(connection.value);
-    if connection.increment != 0 {
-        window_update(ctx, 0, connection.increment);
-        session.local_window_size.set(initial);
-    }
 }
 
 /// `http2_server_parse_header`: a HEADERS block into the request's
 /// `$server`, `$header`, `$get` and `$cookie`.
 fn parse_header(
     session: &Session,
-    stream: &Stream,
+    stream: Option<&Stream>,
     flags: u32,
     mut input: &[u8],
     trailers: bool,
@@ -1329,7 +1342,9 @@ fn parse_header(
         };
         input = block;
     }
-    stream.ctx().header_arrays();
+    if let Some(stream) = stream {
+        stream.ctx().header_arrays();
+    }
     let mut field = session.field.take().unwrap_or_default();
     let parsed = loop {
         let step = match session
@@ -1349,7 +1364,8 @@ fn parse_header(
         };
         input = rest;
         let inflate_flags = step.flags();
-        if let Some((name, value)) = step.header
+        if let Some(stream) = stream
+            && let Some((name, value)) = step.header
             && let Ok(count) = session.remaining_headers.get()
         {
             const ENHANCE_YOUR_CALM: u32 = 11;
