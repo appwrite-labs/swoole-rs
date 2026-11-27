@@ -369,6 +369,28 @@ Path(sys.argv[1]).write_text('PASSED ' + sys.argv[2] + '\n')
                     rows, _ = phpt.run_cases(engine, [{'path': 'one.phpt'}], sandbox, artifacts, 1, 1)
                 self.assertEqual(rows['one.phpt']['status'], 'failed')
 
+    def test_runner_environment_and_failure_artifacts(self):
+        with tempfile.TemporaryDirectory() as directory:
+            sandbox = Path(directory)
+            artifacts = sandbox / 'artifacts'
+            (artifacts / 'one').mkdir(parents=True)
+            (artifacts / 'one/one.sh').write_text('previous run')
+            def fail(command, *, env, **kwargs):
+                self.assertNotIn('UNRELATED_SETTING', env)
+                self.assertEqual(env['TEST_SSH2_HOSTNAME'], 'fixture')
+                self.assertNotIn('S', env['TEST_PHP_LOG_FORMAT'])
+                (sandbox / 'one.sh').write_text('rerun')
+                (sandbox / 'one.diff').write_text('mismatch')
+                (artifacts / 'status.txt').write_text(f'FAILED {sandbox}/one.phpt\n')
+                return subprocess.CompletedProcess(command, 1, '', '')
+            with patch.dict(os.environ, UNRELATED_SETTING='marker', TEST_SSH2_HOSTNAME='fixture'), \
+                 patch.object(phpt, 'run_isolated', fail):
+                rows, _ = phpt.run_cases(Engine('unused', sandbox / 'unused.so'), [{'path': 'one.phpt'}],
+                                         sandbox, artifacts, 1, 1)
+            self.assertEqual(rows['one.phpt']['status'], 'failed')
+            self.assertEqual((artifacts / 'one/one.diff').read_text(), 'mismatch')
+            self.assertFalse((artifacts / 'one/one.sh').exists())
+
     def test_only_audited_cases_batch(self):
         safe = {'path': next(iter(phpt.PARALLEL_SAFE))}
         network = {'path': 'tests/swoole_websocket_server/ping.phpt'}
