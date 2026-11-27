@@ -216,7 +216,6 @@ static void free_session_data(php_ssh2_session_data *data) {
     free_callback(data->debug_cb);
     free_callback(data->macerror_cb);
     free_callback(data->disconnect_cb);
-    delete data->socket;
     efree(data);
 }
 
@@ -344,7 +343,23 @@ extern "C" int swr_ssh2_session_fd(LIBSSH2_SESSION *session) {
 
 extern "C" void swr_ssh2_session_drop(LIBSSH2_SESSION *session) {
     php_ssh2_session_data *data = *(php_ssh2_session_data **) libssh2_session_abstract(session);
-    libssh2_session_free(session);
+    // Reserve the descriptor until libssh2 finishes reclaiming its channels.
+    shutdown(data->socket->get_fd(), SHUT_RDWR);
+    libssh2_session_set_timeout(session, 1000);
+    libssh2_session_set_blocking(session, 1);
+    int status = libssh2_session_free(session);
+    if (swr_v1_ssh2_close_socket(data->socket)) {
+        delete data->socket;
+        data->socket = nullptr;
+    }
+    if (status != 0) {
+        // The surviving session still references its abstract data.
+        char *message = nullptr;
+        libssh2_session_last_error(session, &message, nullptr, 0);
+        php_error_docref(nullptr, E_WARNING, "Unable to free SSH2 session(%d): %s; resources retained",
+                         status, message ? message : "Unknown error");
+        return;
+    }
     free_session_data(data);
 }
 
@@ -452,16 +467,8 @@ extern "C" void swr_ssh2_accepted_stream(zval *zlistener, LIBSSH2_CHANNEL *chann
  *********************** */
 
 static void destroy_session(LIBSSH2_SESSION *session) {
-    php_ssh2_session_data **data = (php_ssh2_session_data **) libssh2_session_abstract(session);
-
     libssh2_session_disconnect(session, "swoole_ssh2 (https://github.com/swoole/swoole-src)");
-
-    if (*data) {
-        free_session_data(*data);
-        *data = NULL;
-    }
-
-    libssh2_session_free(session);
+    swr_ssh2_session_drop(session);
 }
 
 static php_ssh2_session_data *session_data(LIBSSH2_SESSION *session) {
@@ -488,6 +495,11 @@ static void php_ssh2_session_dtor(zend_resource *rsrc) {
     auto data = session_data(session);
     if (data->forwarding.request_close(data->socket->get_fd())) {
         destroy_session(session);
+    } else {
+        // Cancellation resumes the waiter synchronously, including its leave().
+        swr_ssh2_forward_enter(session);
+        swr_v1_ssh2_cancel_waits(session);
+        swr_ssh2_forward_leave(session);
     }
 }
 

@@ -86,6 +86,24 @@ pub extern "C" fn swr_v1_ssh2_bound(session: Session<'_>) -> *const Ops {
     &raw const OPS
 }
 
+/// Close the SSH transport now. A suspended owner still needs the socket record.
+#[unsafe(no_mangle)]
+pub extern "C" fn swr_v1_ssh2_close_socket(socket: Co) -> bool {
+    if socket.close() {
+        return true;
+    }
+    socket.close_fd();
+    !socket.has_bound(Events::READ) && !socket.has_bound(Events::WRITE)
+}
+
+/// Wake the session's readers and writers while teardown holds the native session.
+#[unsafe(no_mangle)]
+pub extern "C" fn swr_v1_ssh2_cancel_waits(session: Session<'_>) {
+    let socket = session.socket();
+    socket.cancel(Events::WRITE);
+    socket.cancel(Events::READ);
+}
+
 /// Whether another coroutine owns either direction of the session socket.
 #[unsafe(no_mangle)]
 pub extern "C" fn swr_v1_ssh2_is_bound(session: Session<'_>) -> bool {
