@@ -42,7 +42,6 @@ const PHP_FATAL_ERROR: c_int = swoole_rs_error::ErrorCode::SW_ERROR_PHP_FATAL_ER
 const NO_PAYLOAD: c_int = swoole_rs_error::ErrorCode::SW_ERROR_NO_PAYLOAD as c_int;
 const STREAM_NOT_FOUND: c_int =
     swoole_rs_error::ErrorCode::SW_ERROR_HTTP2_STREAM_NOT_FOUND as c_int;
-const STREAM_IGNORE: c_int = swoole_rs_error::ErrorCode::SW_ERROR_HTTP2_STREAM_IGNORE as c_int;
 const CO_TIMEDOUT: c_int = swoole_rs_error::ErrorCode::SW_ERROR_CO_TIMEDOUT as c_int;
 
 use crate::decimal;
@@ -949,22 +948,13 @@ fn parse(session: &Session, frame: &[u8]) -> bool {
         return false;
     };
     let stream_id = facts.stream_id;
-    let new_stream = facts.publish_last_id;
+    let new_stream = facts.publish_last_id && !session.shutting_down.get();
     // A header block continues only in CONTINUATION frames of its own stream.
     let pending = session.header_stream_id.get();
     if (facts.action == FrameAction::Continuation) != (pending != 0)
         || (pending != 0 && stream_id != pending)
     {
         close(session.default_ctx());
-        return false;
-    }
-    if session.shutting_down.get() {
-        log(
-            LOG_WARNING,
-            STREAM_IGNORE,
-            c"swoole_http2_server_parse",
-            &format!("ignore http2 stream#{stream_id} after sending goaway"),
-        );
         return false;
     }
     let flags = facts.flags & 0xff;
@@ -1018,7 +1008,9 @@ fn parse(session: &Session, frame: &[u8]) -> bool {
                     return abort_session(session, code, b"invalid connection WINDOW_UPDATE");
                 }
                 return wake_streams(session);
-            } else if stream_id & 1 == 0 || stream_id > last_stream_id {
+            } else if stream_id & 1 == 0
+                || (stream_id > last_stream_id && !session.shutting_down.get())
+            {
                 return abort_session(
                     session,
                     swoole_rs_http2::error_code::PROTOCOL_ERROR,
@@ -1302,7 +1294,9 @@ fn reset_stream(session: &Session, stream: &Stream, code: u32) -> bool {
 /// request at the end of the stream.
 fn data(session: &Session, stream_id: u32, flags: u32, payload: &[u8]) -> bool {
     use swoole_rs_http2::error_code::{FLOW_CONTROL_ERROR, PROTOCOL_ERROR, STREAM_CLOSED};
-    if stream_id & 1 == 0 || stream_id > session.last_stream_id.get() {
+    if stream_id & 1 == 0
+        || (stream_id > session.last_stream_id.get() && !session.shutting_down.get())
+    {
         log(
             LOG_WARNING,
             STREAM_NOT_FOUND,
