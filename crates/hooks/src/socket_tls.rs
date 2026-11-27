@@ -98,7 +98,13 @@ impl Co {
         let (owner, http2) = (self.tls_context(), self.http2());
         let made = owner.and_then(|owner| {
             self.with_network(|socket| {
-                freeze_socket_context(&mut owner.borrow_configuration(), socket, http2, true)
+                freeze_socket_context(
+                    &mut owner.borrow_configuration(),
+                    socket,
+                    http2,
+                    true,
+                    self.ssl_is_server(),
+                )
             })
         });
         match made.unwrap_or(Err(SocketContextError::Create)) {
@@ -154,6 +160,22 @@ impl Co {
     /// `SSLContext` and a TLS session.
     #[must_use]
     pub fn ssl_verify(self, allow_self_signed: bool) -> bool {
+        if self.ssl_is_server()
+            && !self
+                .with_network(|s| {
+                    swoole_rs_corebase::tls::upstream::require_peer_certificate(
+                        s,
+                        c"Socket::ssl_verify",
+                    )
+                })
+                .unwrap_or(false)
+        {
+            set_err(
+                self,
+                swoole_rs_error::ErrorCode::SW_ERROR_SSL_EMPTY_PEER_CERTIFICATE as c_int,
+            );
+            return false;
+        }
         let verified = self
             .with_network(|network| socket_ssl_verify(network, allow_self_signed))
             .unwrap_or(false)

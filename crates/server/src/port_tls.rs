@@ -82,7 +82,7 @@ pub fn context_create(
     });
     // The snapshot owns independent fields, strings and OpenSSL configuration.
     let owner = context.borrow_configuration();
-    let settings = owner.freeze(callback);
+    let settings = owner.freeze_server(callback);
     if settings.is_none() {
         log::warning(
             c"ListenPort::ssl_context_create",

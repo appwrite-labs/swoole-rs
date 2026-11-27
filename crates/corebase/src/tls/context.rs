@@ -208,6 +208,10 @@ pub struct SslCtx {
     _not_send: PhantomData<(*mut u8, PhantomPinned)>,
 }
 
+pub(super) fn request_client_certificate(ctx: &SslCtx) {
+    SSL_CTX_set_verify(ctx, SSL_VERIFY_PEER, Some(verify_callback));
+}
+
 impl SslCtx {
     #[must_use]
     pub fn as_ptr(&self) -> *mut SSL_CTX {
@@ -511,7 +515,7 @@ impl Method<'_> {
 
     fn set_client_certificate(&self) -> bool {
         let file = self.config.client_cert_file;
-        SSL_CTX_set_verify(self.ctx, SSL_VERIFY_PEER, Some(verify_callback));
+        request_client_certificate(self.ctx);
         SSL_CTX_set_verify_depth(self.ctx, c_int::from(self.config.verify_depth));
         // `configure` calls this for a file that is set, and with no directory.
         if !self.load_verify_locations(file, TlsStr::NONE) {

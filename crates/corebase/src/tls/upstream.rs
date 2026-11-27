@@ -202,6 +202,21 @@ pub fn socket_ssl_session(socket: Socket<'_>) -> Option<Session> {
     })
 }
 
+/// A server verifying its peer requires the client to present a certificate.
+#[must_use]
+pub fn require_peer_certificate(socket: Socket<'_>, origin: &CStr) -> bool {
+    if ssl_get_peer_certificate(socket).is_some() {
+        return true;
+    }
+    log::error_log(
+        LOG_NOTICE,
+        ErrorCode::SW_ERROR_SSL_EMPTY_PEER_CERTIFICATE as c_int,
+        origin,
+        format_args!("peer certificate from fd#{} is required", socket.fd()),
+    );
+    false
+}
+
 /// `bool Socket::ssl_verify(bool allow_self_signed) const`: false without an SSL.
 #[must_use]
 pub fn socket_ssl_verify(socket: Socket<'_>, allow_self_signed: bool) -> bool {

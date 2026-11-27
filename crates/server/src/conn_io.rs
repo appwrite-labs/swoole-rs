@@ -162,35 +162,35 @@ fn verify_ssl(
     let Some(conn) = state.connection(c_long::from(sock.fd()), Lookup::ByFd) else {
         return Handshake::Error;
     };
-    conn.set_ssl_ready(true);
     let config = port.map(view::Port::config);
     let (verify_peer, allow_self_signed) = config
         .and_then(|config| config.tls.settings.get())
         .map_or_default(|settings| (settings.verify_peer(), settings.allow_self_signed()));
     let peer =
         || with_thread_buffer(|buffer| tls::socket_ssl_peer_certificate_string(sock, buffer));
-    let verified = || tls::socket_ssl_verify(sock, allow_self_signed);
+    let verified = || {
+        tls::require_peer_certificate(sock, c"ReactorThread_verify_ssl_state")
+            && tls::socket_ssl_verify(sock, allow_self_signed)
+    };
     let wanted = config.is_some_and(client_cert_file);
-    match certificate(wanted, verify_peer, peer, verified) {
-        Certificate::Rejected => return Handshake::Error,
-        Certificate::Dispatched => {
-            // The peer's certificate filled this thread's buffer: a copy, which the
-            // dispatch reads while the buffer is free to lend again.
-            let cert = with_thread_buffer(|buffer| buffer.view().to_vec());
-            let info = DataHead {
-                fd: sock.fd().into(),
-                kind: ServerEvent::Connect.code(),
-                reactor_id: reactor.handle().id().cast_signed(),
-                ..DataHead::default()
-            };
-            hybrid().factory_dispatch(serv, &mut SendData::new(info, &cert));
-        }
-        Certificate::None => {
-            let on_connect = state.callbacks.slot(CallbackKind::Connect);
-            if on_connect.is_set() {
-                crate::server_methods::notify(serv, conn, ServerEvent::Connect);
-            }
-        }
+    let fate = certificate(wanted, verify_peer, peer, verified);
+    if fate == Certificate::Rejected {
+        return Handshake::Error;
+    }
+    conn.set_ssl_ready(true);
+    if fate == Certificate::Dispatched {
+        // The peer's certificate filled this thread's buffer: a copy, which the
+        // dispatch reads while the buffer is free to lend again.
+        let cert = with_thread_buffer(|buffer| buffer.view().to_vec());
+        let info = DataHead {
+            fd: sock.fd().into(),
+            kind: ServerEvent::Connect.code(),
+            reactor_id: reactor.handle().id().cast_signed(),
+            ..DataHead::default()
+        };
+        hybrid().factory_dispatch(serv, &mut SendData::new(info, &cert));
+    } else if state.callbacks.slot(CallbackKind::Connect).is_set() {
+        crate::server_methods::notify(serv, conn, ServerEvent::Connect);
     }
     if state.config_ref().enable_delay_receive.get() && !reactor.del(sock) {
         return Handshake::Error;
@@ -216,14 +216,12 @@ fn certificate(
     peer: impl FnOnce() -> bool,
     verified: impl FnOnce() -> bool,
 ) -> Certificate {
-    if !wanted {
+    if verify_peer && !verified() {
+        Certificate::Rejected
+    } else if !wanted {
         Certificate::None
     } else if peer() {
-        if !verify_peer || verified() {
-            Certificate::Dispatched
-        } else {
-            Certificate::Rejected
-        }
+        Certificate::Dispatched
     } else if verify_peer {
         Certificate::Rejected
     } else {
@@ -926,8 +924,8 @@ pub(crate) mod tests {
         };
         assert_eq!(
             fate(false, true, false, false),
-            Certificate::None,
-            "none wanted"
+            Certificate::Rejected,
+            "verification also applies without a client certificate file"
         );
         assert_eq!(
             fate(true, true, false, false),

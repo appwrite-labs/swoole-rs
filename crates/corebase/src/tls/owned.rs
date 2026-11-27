@@ -1,7 +1,7 @@
 //! Thread-local TLS configuration builders and immutable runtime snapshots.
 //! [`TlsContext`] retains a builder; sessions use independent [`TlsSettings`].
 use crate::StringSlot;
-use crate::tls::context::create_context;
+use crate::tls::context::{create_context, request_client_certificate};
 use crate::tls::{TlsConfig, Warn};
 use crate::{CCast, CellExt};
 use openssl_sys::SSL_CTX;
@@ -347,6 +347,19 @@ impl Lent<'_> {
         }
         Some(TlsSettings { fields, strings })
     }
+
+    /// Build a listening context that asks verified clients for their certificate.
+    #[must_use]
+    pub fn freeze_server(
+        &self,
+        callback: Option<crate::tls::ServernameCallback>,
+    ) -> Option<TlsSettings> {
+        let settings = self.freeze(callback)?;
+        if settings.verify_peer() {
+            request_client_certificate(settings.fields.context.as_deref()?);
+        }
+        Some(settings)
+    }
 }
 /// Views of `strings`, and the scalar `fields` copied.
 fn configuration<'a>(
@@ -463,6 +476,7 @@ pub fn freeze_socket_context(
     socket: crate::reactor::Socket<'_>,
     http2: bool,
     dtls_supported: bool,
+    server: bool,
 ) -> Result<TlsSettings, SocketContextError> {
     let kind = socket.read(crate::reactor::SocketFields::kind);
     let dtls = kind.is_some_and(crate::constants::SocketType::is_dgram);
@@ -482,7 +496,12 @@ pub fn freeze_socket_context(
             record.send_in_dtls_records();
         });
     }
-    let settings = owner.freeze(None).ok_or(SocketContextError::Create)?;
+    let settings = if server {
+        owner.freeze_server(None)
+    } else {
+        owner.freeze(None)
+    }
+    .ok_or(SocketContextError::Create)?;
     socket.edit(crate::reactor::SocketFields::send_through_tls);
     Ok(settings)
 }
@@ -815,9 +834,14 @@ mod tests {
                 let socket =
                     crate::reactor::SocketRecord::with_fd(stream.as_raw_fd(), 6).into_raw();
                 let handle = crate::reactor::Socket::from_ptr(socket).unwrap();
-                let settings =
-                    freeze_socket_context(&mut prepared.borrow_configuration(), handle, true, true)
-                        .unwrap();
+                let settings = freeze_socket_context(
+                    &mut prepared.borrow_configuration(),
+                    handle,
+                    true,
+                    true,
+                    false,
+                )
+                .unwrap();
                 assert!((*socket).fields.sends_through_tls());
                 assert!(prepared.fields().http_v2);
                 // Session creation must use the snapshot even after the builder changes
