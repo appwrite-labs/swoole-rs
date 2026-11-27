@@ -54,7 +54,6 @@
 #define PHP_SSH2_LISTEN_MAX_QUEUED 128
 
 typedef struct _php_ssh2_sftp_data {
-    LIBSSH2_SESSION *session;
     LIBSSH2_SFTP *sftp;
 
     zend_resource *session_rsrc;
@@ -170,7 +169,7 @@ extern int le_ssh2_sftp;
 extern int le_ssh2_pkey_subsys;
 
 static inline LIBSSH2_SESSION *ssh2_get_session(php_ssh2_channel_data *abstract) {
-    return (LIBSSH2_SESSION *) zend_fetch_resource(abstract->session_rsrc, PHP_SSH2_SESSION_RES_NAME, le_ssh2_session);
+    return static_cast<LIBSSH2_SESSION *>(abstract->session_rsrc->ptr);
 }
 
 #endif /* PHP_SSH2_H */

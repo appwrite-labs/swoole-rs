@@ -185,12 +185,7 @@ unsafe extern "C" {
     safe fn libssh2_sftp_init(session: Session) -> Option<Started>;
     /// `ssh2_sftp`'s `SSH2 SFTP` resource over `sftp`, which holds a
     /// reference to the session resource, put in `out`.
-    safe fn swr_ssh2_sftp_open(
-        session_resource: &Value,
-        session: Session,
-        sftp: Started,
-        out: ReturnSlot<'_>,
-    );
+    safe fn swr_ssh2_sftp_open(session_resource: &Value, sftp: Started, out: ReturnSlot<'_>);
     /// `libssh2_sftp_stat_ex` of `stat_type` (`LIBSSH2_SFTP_STAT` or
     /// `_LSTAT`), retried through the hook, each attribute stored in its out
     /// parameter; 0, or libssh2's error with none stored.
@@ -320,9 +315,6 @@ unsafe extern "C" {
         width_px: c_int,
         height_px: c_int,
     ) -> c_int;
-    /// Whether the session of the `SSH2 SFTP` resource [`swr_ssh2_sftp`]
-    /// accepted has been closed (`ssh2_disconnect`).
-    safe fn swr_ssh2_sftp_session_closed(resource: &Value) -> bool;
     /// `libssh2_sftp_symlink_ex` reading a link or resolving a path: the path
     /// is read and the result written to `target`; its length, or a negative
     /// error.
@@ -1513,10 +1505,6 @@ fn sftp_realpath(call: &Call<'_>) {
     let Some((sftp, session)) = sftp(call, resource) else {
         return;
     };
-    if swr_ssh2_sftp_session_closed(resource) {
-        call.set_bool(false);
-        return;
-    }
     resolve(
         call,
         sftp,
@@ -1544,7 +1532,7 @@ fn sftp_init(call: &Call<'_>) {
         call.set_bool(false);
         return;
     };
-    swr_ssh2_sftp_open(resource, session, sftp, call.return_slot());
+    swr_ssh2_sftp_open(resource, sftp, call.return_slot());
 }
 
 /// `ssh2_sftp_chmod(resource $sftp, string $filename, int $mode): bool`:

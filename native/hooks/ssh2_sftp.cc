@@ -557,9 +557,8 @@ php_stream_wrapper php_ssh2_sftp_wrapper = {
 
 /* ssh2_sftp is Rust (crates/ssh2/src/php.rs). What it keeps C: the SFTP
  * resource's data, emalloc'd here and freed by its destructor (allocator). */
-extern "C" void swr_ssh2_sftp_open(zval *zsession, LIBSSH2_SESSION *session, LIBSSH2_SFTP *sftp, zval *return_value) {
+extern "C" void swr_ssh2_sftp_open(zval *zsession, LIBSSH2_SFTP *sftp, zval *return_value) {
     php_ssh2_sftp_data *data = (php_ssh2_sftp_data *) emalloc(sizeof(php_ssh2_sftp_data));
-    data->session = session;
     data->sftp = sftp;
     data->session_rsrc = Z_RES_P(zsession);
     Z_ADDREF_P(zsession);
@@ -575,15 +574,12 @@ extern "C" void swr_ssh2_sftp_open(zval *zsession, LIBSSH2_SESSION *session, LIB
 extern "C" LIBSSH2_SFTP *swr_ssh2_sftp(zval *zsftp) {
     php_ssh2_sftp_data *data =
         (php_ssh2_sftp_data *) zend_fetch_resource(Z_RES_P(zsftp), PHP_SSH2_SFTP_RES_NAME, le_ssh2_sftp);
-    return data ? data->sftp : NULL;
+    return data && data->session_rsrc->ptr ? data->sftp : nullptr;
 }
 
 extern "C" LIBSSH2_SESSION *swr_ssh2_sftp_session(zval *zsftp) {
-    return ((php_ssh2_sftp_data *) Z_RES_P(zsftp)->ptr)->session;
-}
-
-extern "C" bool swr_ssh2_sftp_session_closed(zval *zsftp) {
-    return ((php_ssh2_sftp_data *) Z_RES_P(zsftp)->ptr)->session_rsrc->ptr == NULL;
+    auto *data = static_cast<php_ssh2_sftp_data *>(Z_RES_P(zsftp)->ptr);
+    return static_cast<LIBSSH2_SESSION *>(data->session_rsrc->ptr);
 }
 
 
