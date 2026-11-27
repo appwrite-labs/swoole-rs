@@ -3,24 +3,24 @@
 //! `Response::sendfile`'s (`http2_server_send_file`), over crates/server's
 //! `StaticHandler`.
 use super::server::{
-    Value, begin_file, current, finish_file, of, respond, respond_with_length, send_body, set,
+    Value, begin_file, finish_file, of, respond, respond_with_length, send_body, set,
 };
 use crate::http2::{Ctx, Field};
-use std::ffi::CString;
+use std::os::fd::AsRawFd;
 use std::os::unix::ffi::OsStrExt;
+use std::os::unix::fs::OpenOptionsExt;
 use swoole_rs_corebase::CCast;
 use swoole_rs_corebase::offload::async_job;
 use swoole_rs_http::PreconditionStatus;
 use swoole_rs_http::status::{BAD_REQUEST, NOT_FOUND, PARTIAL_CONTENT, RANGE_NOT_SATISFIABLE};
-use swoole_rs_http2::sw_rs_http2_file_length;
 use swoole_rs_server::static_handler::{StaticHandler, page_404};
 use swoole_rs_server::static_select::Handler as _;
 use swoole_rs_server::view;
 use swoole_rs_zend::bailout;
 
 /// Read the entire advertised range before any of its bytes are sent.
-fn read_range(fd: libc::c_int, offset: i64, length: usize, pooled: bool) -> Option<Vec<u8>> {
-    let mut buf = vec![0; length];
+fn read_range(fd: libc::c_int, offset: i64, buf: &mut [u8], pooled: bool) -> bool {
+    let length = buf.len();
     let mut used = 0;
     let mut read = || {
         while used < length {
@@ -38,12 +38,12 @@ fn read_range(fd: libc::c_int, offset: i64, length: usize, pooled: bool) -> Opti
     };
     if pooled {
         if !async_job(&mut read) {
-            return None;
+            return false;
         }
     } else {
         read();
     }
-    (used == length).then_some(buf)
+    used == length
 }
 
 /// The text up to its first NUL, as a C string reads it.
@@ -200,10 +200,12 @@ fn send_ranges(ctx: Ctx, handler: &mut StaticHandler<'_>) -> bool {
         }
         if task.length > 0 {
             let pooled = !multipart && swoole_rs_phpcoroutines::in_coroutine();
-            let buf = handler
+            let mut buf = vec![0; task.length];
+            if !handler
                 .file()
-                .and_then(|file| read_range(file.descriptor(), task.offset, task.length, pooled));
-            if !buf.is_some_and(|buf| body(ctx, &buf, !multipart && end_stream)) {
+                .is_some_and(|f| read_range(f.descriptor(), task.offset, &mut buf, pooled))
+                || !body(ctx, &buf, !multipart && end_stream)
+            {
                 error = true;
                 break;
             }
@@ -222,44 +224,40 @@ pub(crate) fn send_file(ctx: Ctx, path: &[u8], offset: i64, length: usize) -> bo
     let Some((session, stream)) = of(ctx) else {
         return false;
     };
-    set(ctx, Field::AcceptCompression, 0);
-    let Some(content) = content(path) else {
+    let Ok(file) = std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NONBLOCK)
+        .open(std::ffi::OsStr::from_bytes(path))
+    else {
         return false;
     };
-    // Reading the file may suspend while the peer resets the stream or closes the connection.
-    if !current(&session, &stream) {
-        return false;
-    }
-    send_content(ctx, path, &content, offset, length)
-}
-
-/// The file's whole content (`System::read_file` in a coroutine), `None` if unreadable.
-fn content(path: &[u8]) -> Option<Vec<u8>> {
-    let path = CString::new(c_text(path)).ok()?;
-    if swoole_rs_phpcoroutines::in_coroutine() {
-        return swoole_rs_hooks::file_io::read_file(&path, false).ok();
-    }
-    std::fs::read(std::ffi::OsStr::from_bytes(path.as_bytes())).ok()
-}
-
-fn send_content(ctx: Ctx, path: &[u8], content: &[u8], offset: i64, length: usize) -> bool {
-    let available = sw_rs_http2_file_length(length, content.len());
-    let content_type = swoole_rs_framing::mime::get(path);
-    let Some(trailer) = begin_file(ctx, &content_type, available) else {
+    let Some(trailer) = begin_file(ctx, &swoole_rs_framing::mime::get(path), length) else {
         return false;
     };
-    let mut error = false;
-    if available > 0 {
-        let wanted = if length == 0 { available } else { length };
-        let start = usize::try_from(offset)
-            .unwrap_or_default()
-            .min(content.len());
-        let end = start.saturating_add(wanted).min(content.len());
-        if !body(ctx, content.get(start..end).unwrap_or_default(), !trailer) {
-            error = true;
+    let mut buf =
+        vec![0; length.min(swoole_rs_corebase::constants::SW_SENDFILE_CHUNK_SIZE as usize)];
+    let pooled = swoole_rs_phpcoroutines::in_coroutine();
+    let mut sent = 0;
+    while sent < length {
+        let n = buf.len().min(length - sent);
+        let chunk = buf.split_at_mut(n).0;
+        let Some(at) = offset.checked_add_unsigned(sent as u64) else {
+            break;
+        };
+        if !read_range(file.as_raw_fd(), at, chunk, pooled)
+            || !send_body(
+                ctx,
+                &session,
+                &stream,
+                chunk,
+                !trailer && n == length - sent,
+            )
+        {
+            break;
         }
+        sent += n;
     }
-    finish_file(ctx, trailer, error)
+    finish_file(ctx, trailer, sent != length)
 }
 
 #[cfg(test)]
