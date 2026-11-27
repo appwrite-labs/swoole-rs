@@ -200,7 +200,6 @@ CASES = {
 }
 BLOCKED = {
     'http-slowloris': '#5702: nothing ends a request head that never completes; no ticket yet',
-    'h2-stream-flood': '#5704: no per-connection budget caps the streams a peer keeps open',
 }
 
 
