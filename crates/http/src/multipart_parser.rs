@@ -176,6 +176,12 @@ impl MultipartParser {
         })
     }
 
+    /// Whether the parser has consumed the closing multipart boundary.
+    #[must_use]
+    pub fn is_complete(&self) -> bool {
+        self.state == State::End
+    }
+
     /// `--` and the boundary, as long as upstream's `boundary_length` says.
     #[must_use]
     pub fn boundary(&self) -> &[u8] {

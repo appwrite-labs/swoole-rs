@@ -730,9 +730,10 @@ fn header_value(state: &mut State, name: &[u8], mut value_: &[u8], limit: usize)
                 Some(false) => {}
             }
         }
-        RequestHeader::Form => state.request.post_form_urlencoded = true,
-        RequestHeader::Multipart => {
-            if !multipart_start(state, value_, limit) {
+        RequestHeader::Form | RequestHeader::Multipart | RequestHeader::OtherContentType => {
+            state.request.post_form_urlencoded = action == RequestHeader::Form;
+            state.mt_parser = None;
+            if action == RequestHeader::Multipart && !multipart_start(state, value_, limit) {
                 return Step::Fail;
             }
         }
@@ -844,10 +845,7 @@ fn on_message_complete(state: &mut State, input: &[u8]) -> Step {
     if state.mt_parser.is_some()
         && let Some(body) = state.parse.chunked_body.take()
     {
-        // The bundled multipart parser rejects calls that end inside a part header. llhttp body spans can end at
-        // receive boundaries, so parse the dechunked body in one pass here instead of parsing each span. The body
-        // is out of the state while the parser's callbacks take it, as `http2::Ctx::multipart`'s, then back for
-        // `getContent()`.
+        // Parse the dechunked body in one pass, then restore it for getContent().
         let bytes: &[u8] = (*body).as_ref();
         let prefix = body_prefix(bytes, true);
         let parsed = multipart_parse(state, bytes.get(prefix..).unwrap_or_default());
@@ -855,6 +853,19 @@ fn on_message_complete(state: &mut State, input: &[u8]) -> Step {
         if !parsed {
             return Step::Fail;
         }
+    }
+    let body_length = state
+        .parse
+        .chunked_body
+        .as_deref()
+        .map_or(state.request.body_length, |body| body.as_ref().len());
+    if body_length > 0
+        && state
+            .mt_parser
+            .as_ref()
+            .is_some_and(|parts| !parts.parser.is_complete())
+    {
+        return Step::Fail;
     }
     let source = form_source(
         u32::from(chunked)
