@@ -458,11 +458,8 @@ impl PortConfig {
             reason = "a port kept past this owns the callable to the exit"
         )]
         std::mem::forget(self.replace_length_owner(None));
-        // The records the port kept: those its closes retired, and one `destroy` never
-        // closed (a server never started), whose descriptor stays open to the exit, as
-        // upstream's.
         for socket in self.sockets.take_all() {
-            socket.free();
+            swoole_rs_corebase::tls::upstream::socket_free(Some(socket));
         }
     }
 }

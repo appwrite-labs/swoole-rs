@@ -549,7 +549,7 @@ impl Drop for ServerData {
             return;
         };
         let server = share.view();
-        if fact(server, Fact::Master) {
+        if fact(server, Fact::Master) || server.config().factory_.get().is_null() {
             crate::thread::free_setting(server);
             // Its shutdown callbacks run now, as they did before the delete. The
             // server is deleted with its last share: when Zend releases this
@@ -557,21 +557,15 @@ impl Drop for ServerData {
             // iterator or a task that names it.
             server_methods::destroy_running(server);
         } else if owns_shared() {
-            // Never started, or a base-mode start returned: upstream keeps it to the
-            // exit, so MSHUTDOWN deletes it. Any other is kept as upstream keeps it.
-            let orphan =
-                !fact(server, Fact::ThreadMode) && server.config().factory_.get().is_null();
-            kept().push((share, orphan));
+            kept().push(share);
         }
         // A worker thread's share in the master's server just goes.
     }
 }
 
-/// The shares a freed Server object leaves to [`php_swoole_server_mshutdown`], and those a failed
-/// `__construct` never bound: upstream keeps their servers, as `SwooleG.server` too.
-/// Each is true when MSHUTDOWN deletes its server.
-fn kept() -> std::sync::MutexGuard<'static, Vec<(SharedServer, bool)>> {
-    static KEPT: std::sync::Mutex<Vec<(SharedServer, bool)>> = std::sync::Mutex::new(Vec::new());
+/// Created servers still owned by another process when their PHP object is freed.
+fn kept() -> std::sync::MutexGuard<'static, Vec<SharedServer>> {
+    static KEPT: std::sync::Mutex<Vec<SharedServer>> = std::sync::Mutex::new(Vec::new());
     KEPT.lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
@@ -583,9 +577,8 @@ fn kept() -> std::sync::MutexGuard<'static, Vec<(SharedServer, bool)>> {
 pub extern "C" fn php_swoole_server_mshutdown() {
     // Taken out first, so the deletes below run without `kept`'s lock held.
     let shares = std::mem::take(&mut *kept());
-    for (share, orphan) in shares {
-        let delete = orphan || swoole_rs_server::reactor_process::release_abandoned(share.view());
-        if !delete {
+    for share in shares {
+        if !swoole_rs_server::reactor_process::release_abandoned(share.view()) {
             #[expect(
                 clippy::mem_forget,
                 reason = "a started server another process runs stays to the exit"
@@ -821,7 +814,6 @@ fn construct(call: &Call) {
     if port == 0 && address.eq_ignore_ascii_case(b"SYSTEMD") {
         if server_methods::add_systemd_socket(server) == 0 {
             call.throw_error(c"failed to add systemd socket");
-            kept().push((share, true));
             return call.set_bool(false);
         }
     } else if {
@@ -846,7 +838,6 @@ fn construct(call: &Call) {
         text.push(reason.to_bytes());
         text.push(format!("[{code}]").as_bytes());
         exception(call, text.as_cstr(), code.into());
-        kept().push((share, true));
         return call.set_bool(false);
     }
     bind(call, &share);

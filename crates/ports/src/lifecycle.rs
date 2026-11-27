@@ -28,15 +28,17 @@ pub(crate) fn import(config: &mut PortConfig, fd: c_int) -> bool {
         log::sys_warning(origin, format_args!("getsockname({fd}) failed"));
         return false;
     }
-    let Some(acceptconn) = get_option(fd, libc::SO_ACCEPTCONN) else {
-        let message = format_args!("getsockopt({fd}, SOL_SOCKET, SO_ACCEPTCONN) failed");
-        log::sys_warning(origin, message);
-        return false;
-    };
-    if acceptconn == 0 {
-        let message = format_args!("the socket[{fd}] is not a listening socket");
-        log::error_log(LOG_WARNING, libc::EINVAL, origin, message);
-        return false;
+    if so_type == libc::SOCK_STREAM {
+        let Some(acceptconn) = get_option(fd, libc::SO_ACCEPTCONN) else {
+            let message = format_args!("getsockopt({fd}, SOL_SOCKET, SO_ACCEPTCONN) failed");
+            log::sys_warning(origin, message);
+            return false;
+        };
+        if acceptconn == 0 {
+            let message = format_args!("the socket[{fd}] is not a listening socket");
+            log::error_log(LOG_WARNING, libc::EINVAL, origin, message);
+            return false;
+        }
     }
     let family = c_int::from(socket.address_family());
     let kind = socket_type(family, so_type);

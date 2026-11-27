@@ -519,10 +519,10 @@ mod tests {
         );
     }
 
-    // macOS answers SO_ACCEPTCONN with ENOPROTOOPT, so import refuses every socket there.
+    // macOS answers SO_ACCEPTCONN with ENOPROTOOPT, so this stream-listener check is Linux-only.
     #[cfg(target_os = "linux")]
     #[test]
-    fn import_adopts_a_listening_socket_and_refuses_others() {
+    fn import_requires_stream_sockets_to_be_listening() {
         let config = &mut *PortConfig::boxed(1000);
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let bound = listener.local_addr().unwrap().port();
