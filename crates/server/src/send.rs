@@ -1,9 +1,6 @@
 //! `Server::send` and `Server::send_to_connection`: the master's (or a base-mode
 //! worker's) delivery of a send, a close or a receive pause/resume to a connection it
 //! owns, over the connection, its socket and its output buffer.
-//!
-//! `--fix-halfclose` (M15) builds have the `halfclose` feature (upstream's
-//! `SW_HALFCLOSE_DRAIN`): a queued close stops reading.
 use crate::base_factory::{SendData, allocated};
 use crate::callbacks::CallbackKind::{BufferEmpty, BufferFull};
 use crate::reactor_handle::Reactor;
@@ -316,7 +313,6 @@ fn to_connection(
         crate::conn_io::close_connection(serv, reactor, Some(sock));
         return true;
     }
-    let halfclose = cfg!(feature = "halfclose");
     if matches!(kind, Some(ServerEvent::PauseRecv | ServerEvent::ResumeRecv)) {
         if kind == Some(ServerEvent::PauseRecv) {
             if sock.read(|s| s.registered_for(Events::READ))
@@ -352,10 +348,8 @@ fn to_connection(
     }
     let port = serv.port_by_server_fd(conn.server_fd());
     if close {
-        sock.read(SocketFields::queue_close);
-        conn.set_close_queued(true);
-        if halfclose {
-            reactor.interest(sock, Interest::RemoveRead);
+        if !queue_close(reactor, conn, sock) {
+            return false;
         }
     } else if file {
         if !queue_file(*sock, data, core::mem::DropGuard::dismiss(cleanup)) {
@@ -392,6 +386,24 @@ fn to_connection(
     }
     if !sock.read(|s| s.registered_for(Events::WRITE)) {
         reactor.interest(sock, Interest::AddWrite);
+    }
+    true
+}
+
+/// A graceful close stops receiving while its remaining output drains.
+pub(crate) fn queue_close(
+    reactor: Reactor,
+    conn: Connection<'_>,
+    sock: swoole_rs_corebase::reactor::Heap<'_>,
+) -> bool {
+    if sock.read(|s| s.registered_for(Events::READ))
+        && !reactor.interest(sock, Interest::RemoveRead)
+    {
+        return false;
+    }
+    if !conn.close_queued() {
+        sock.read(SocketFields::queue_close);
+        conn.set_close_queued(true);
     }
     true
 }
@@ -771,6 +783,8 @@ mod tests {
         assert_eq!(a.send(ServerEvent::SendData, 1, b"hello"), SW_OK);
         assert_eq!(a.send(ServerEvent::Close, 1, b""), SW_OK);
         assert!(a.conn().close_queued(), "behind the output");
+        assert!(!a.sock().read(|s| s.registered_for(Events::READ)));
+        assert!(a.sock().read(|s| s.registered_for(Events::WRITE)));
         assert!(!a.closed(fd), "not yet");
 
         let a = Accepted::new();

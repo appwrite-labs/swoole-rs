@@ -53,33 +53,34 @@ pub(crate) fn read(serv: view::Server<'_>, reactor: Reactor, event: &mut Event) 
 fn read_as(prequeue: bool, serv: view::Server<'_>, reactor: Reactor, event: &mut Event) -> bool {
     let state = serv.state();
     let fd = event.fd();
-    let conn = state.connection(c_long::from(fd), Lookup::ByFd);
-    // The server closed the connection (and the fd may be reused) before the event.
-    let Some(conn) = conn.filter(|conn| conn.server_fd() != 0) else {
-        return true;
-    };
-    if prequeue {
-        let Some((notified, want_read)) = event.socket().map(|s| {
-            s.read(|s| {
-                (
-                    s.close_reported(),
-                    !s.ssl().is_null() && s.tls_wants().contains(Events::READ),
-                )
-            })
-        }) else {
-            return true;
-        };
-        if notified {
-            return true;
-        }
-        // Once a close is queued, a read only drives a TLS shutdown that wants one.
-        if conn.close_queued() {
-            return !want_read || write(serv, reactor, event);
-        }
-    }
     let Some(sock) = event.socket() else {
         return true;
     };
+    let Some(conn) = state
+        .connection(c_long::from(fd), Lookup::ByFd)
+        .filter(|conn| {
+            conn.is_active()
+                && conn
+                    .socket()
+                    .is_some_and(|own| own.as_ptr() == sock.as_ptr())
+        })
+    else {
+        return true;
+    };
+    if conn.close_queued() {
+        // The optional TLS drain may still need a readable event to finish its write.
+        return !prequeue
+            || !sock.read(|s| !s.ssl().is_null() && s.tls_wants().contains(Events::READ))
+            || write(serv, reactor, event);
+    }
+    if conn.closed().load(SeqCst) != 0
+        || conn.peer_closed()
+        || conn.recv_paused()
+        || conn.timer().is_some()
+        || (prequeue && sock.read(SocketFields::close_reported))
+    {
+        return true;
+    }
     // The slot found above is `fd`'s, so its listener names the port.
     let port = serv.port_by_server_fd(conn.server_fd());
     // A plain stream goes straight to its port reader. Only a datagram handler
@@ -834,7 +835,7 @@ pub(crate) mod tests {
         assert_eq!(live.counters().total_recv_bytes.load(SeqCst), 5);
         assert_eq!(live.port_counters().total_recv_bytes.load(SeqCst), 5);
         assert_eq!(conn.waiting_time(), 0, "no queue limit");
-        conn.set_server_fd(0);
+        conn.active().store(false, SeqCst);
         assert!(read(serv, reactor, &mut conn.event(0, 0)));
         assert_eq!(reads(), [], "a stale event");
     }
@@ -899,11 +900,8 @@ pub(crate) mod tests {
         let (serv, reactor) = (live.server(), live.reactor());
         let conn = session(&live, 1);
         conn.set_close_queued(true);
-        assert!(
-            !read_as(false, serv, reactor, &mut conn.event(0, 0)),
-            "the port's result"
-        );
-        assert_eq!(reads(), [conn.fd()], "upstream reads");
+        assert!(read_as(false, serv, reactor, &mut conn.event(0, 0)));
+        assert_eq!(reads(), [], "v6.3 stops reading while queued output drains");
         assert!(read_as(true, serv, reactor, &mut conn.event(0, 0)));
         assert_eq!(reads(), [], "a queued plain close is not read");
         conn.set_close_queued(false);
