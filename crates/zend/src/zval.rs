@@ -970,7 +970,7 @@ impl Value {
         (!query.is_null()).then(|| ZString(query))
     }
 
-    /// `serialize($value)`: None when it produced nothing.
+    /// `serialize($value)`: None on a PHP exception or when it produced no bytes.
     /// # Errors
     /// The bailout a `__serialize` raised, trapped.
     pub fn serialize(&self) -> Result<Option<ZString>, bailout::Bailout> {

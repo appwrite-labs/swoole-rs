@@ -734,12 +734,13 @@ pub(crate) fn on_task(server: view::Server<'_>, task: Packed<'_>) -> Result<bool
     let [event, _, data] = args;
     drop(event);
     let outcome = outcome.and_then(|()| {
-        if !retval.is_null() {
+        if retval.kind() > swoole_rs_zend::sys::IS_NULL {
             finish_task(server, &retval, Some(&task.head()))?;
+            drop(retval);
+            swoole_rs_zend::host::uncaught_exception()?;
         }
         Ok(())
     });
-    drop(retval);
     drop(data);
     outcome.map(|()| true)
 }
