@@ -200,7 +200,7 @@ fn prepare_worker(server: view::Server<'_>) {
         && config.mode_ != Mode::Thread
     {
         // Worker startup continues after disabling hooks, as in php_swoole_server_onWorkerStart.
-        let _unhooked = swoole_rs_phpruntime::php_coroutine_enable_hook(0);
+        let _unhooked = swoole_rs_phpruntime::php_coroutine_disable_hook();
     }
     server.set_bus_allocator(true, swoole_rs_phpswoole::zend_string_allocator());
 }

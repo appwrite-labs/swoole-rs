@@ -274,20 +274,26 @@ pub extern "C" fn php_coroutine_enable_hook(flags: u32) -> bool {
     applied
 }
 
+/// Only the main request can replace process-wide handlers, while it is the sole PHP thread.
+#[must_use]
+pub fn can_update_hooks() -> bool {
+    let threads = swoole_rs_phpswoole::families()
+        .filter(|_| built_with(Switch::Thread))
+        .map_or(1, |families| (families.active_threads)());
+    main_thread() && threads <= 1
+}
+
 /// `PHPCoroutine::disable_hook()`.
 #[must_use]
 pub extern "C" fn php_coroutine_disable_hook() -> bool {
-    php_coroutine_enable_hook(0)
+    can_update_hooks() && php_coroutine_enable_hook(0)
 }
 
 /// `PHPCoroutine::enable_hook`.
 /// # Errors
 /// A hook's setup bailed out.
 pub fn enable_hook(mut requested: u32) -> Result<bool, Bailout> {
-    let threads = swoole_rs_phpswoole::families()
-        .filter(|_| built_with(Switch::Thread))
-        .map_or(1, |families| (families.active_threads)());
-    if !main_thread() || threads > 1 {
+    if !can_update_hooks() {
         log_warning(
             c"PHPCoroutine::enable_hook(): The runtime hook can only set on the main thread and no child threads have been created",
         );
@@ -515,7 +521,7 @@ pub extern "C" fn swr_v1_phpruntime_rinit() -> u8 {
 /// `php_swoole_runtime_rshutdown`, on the main thread: unhook everything,
 /// restore every function and class; a trapped bailout is raised last.
 pub extern "C" fn rshutdown() {
-    if !main_thread() {
+    if !can_update_hooks() {
         return;
     }
     let disabled = enable_hook(0);

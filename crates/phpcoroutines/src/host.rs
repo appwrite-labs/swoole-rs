@@ -597,7 +597,7 @@ pub(crate) fn deactivate() {
 
 /// The runtime hooks (when `flags`) and the unsafe functions disabled.
 pub(crate) fn hook(flags: u32) {
-    if flags != 0 {
+    if flags != 0 && swoole_rs_phpruntime::can_update_hooks() {
         // PHPCoroutine::activate proceeds to disable unsafe functions regardless of enable_hook’s result.
         let _hooked = swoole_rs_phpruntime::php_coroutine_enable_hook(flags);
     }
