@@ -92,6 +92,26 @@ impl HttpStaticContext {
     fn effect_path(&self) -> Option<&[u8]> {
         Some(self.filename()).filter(|path| path.len() < PATH_MAX)
     }
+    /// Open the selected regular file and refresh validators from its descriptor.
+    pub fn open_file(
+        &mut self,
+    ) -> Option<std::sync::Arc<swoole_rs_corebase::ossupport::FileRecord>> {
+        use std::os::unix::fs::OpenOptionsExt;
+        let path = self.effect_path()?;
+        let file = fs::OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_NONBLOCK)
+            .open(OsStr::from_bytes(path))
+            .ok()?;
+        let meta = file.metadata().ok()?;
+        if !meta.is_file() {
+            return None;
+        }
+        let file = swoole_rs_corebase::ossupport::FileRecord::from_readonly(file, path.to_vec());
+        self.observed(&meta.into());
+        Some(std::sync::Arc::new(file))
+    }
+
     /// `lstat` the filename, admitting the facts on success: whether it exists, or
     /// the error when the path is too long to ask about.
     ///
@@ -191,6 +211,44 @@ mod tests {
             false
         }
         fn overflow(&self) {}
+    }
+
+    #[test]
+    fn queued_ranges_keep_the_opened_file_after_rename() {
+        use swoole_rs_corebase::reactor::{Socket, SocketFileRequest, SocketRecord};
+        use swoole_rs_corebase::tls::upstream::socket_sendfile_opened;
+
+        let path =
+            std::env::temp_dir().join(format!("swoole-static-snapshot-{}", std::process::id()));
+        std::fs::write(&path, b"original").unwrap();
+        let mut handler = HttpStaticContext::new(b"/asset.txt", PATH_MAX).unwrap();
+        handler
+            .publish(Filename, path.as_os_str().as_bytes())
+            .unwrap();
+        let file = handler.open_file().unwrap();
+        assert_eq!(handler.observe().filesize, 8);
+        let moved = path.with_extension("old");
+        std::fs::rename(&path, &moved).unwrap();
+        std::fs::write(&path, b"replacement").unwrap();
+
+        let mut socket = SocketRecord::new();
+        let handle = Socket::new(&mut socket);
+        assert!(socket_sendfile_opened(handle, &file, 0, 2));
+        assert!(socket_sendfile_opened(handle, &file, 2, 6));
+        handle.with_output_queue(|queue| {
+            let first = queue.unwrap().front_file::<SocketFileRequest>().unwrap();
+            assert_eq!(first.descriptor(), file.descriptor());
+            drop(file);
+            let mut bytes = [0_u8; 8];
+            assert_eq!(
+                swoole_rs_corebase::sys::pread(first.descriptor(), &mut bytes, 0),
+                Some(8)
+            );
+            assert_eq!(&bytes, b"original");
+        });
+        drop(socket.take_output_queue());
+        std::fs::remove_file(path).unwrap();
+        std::fs::remove_file(moved).unwrap();
     }
 
     #[test]

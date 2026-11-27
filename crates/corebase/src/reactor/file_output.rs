@@ -6,6 +6,7 @@ use crate::reactor::{OutputEffects, OutputResult};
 use libc::{c_int, off_t};
 use std::ffi::CStr;
 use std::os::unix::ffi::OsStrExt;
+use std::sync::Arc;
 
 #[derive(Clone, Copy, Default)]
 pub struct SocketFileFields {
@@ -15,7 +16,7 @@ pub struct SocketFileFields {
 }
 
 pub struct SocketFileRequest {
-    file: FileRecord,
+    file: Arc<FileRecord>,
     open_error: c_int,
     delete_file: bool,
     fields: SocketFileFields,
@@ -26,26 +27,54 @@ impl SocketFileRequest {
     /// still a request, which [`Self::check`] refuses; `None` when out of memory.
     #[must_use]
     pub fn open(path: &CStr, offset: off_t, delete_file: bool) -> Option<Box<Self>> {
-        let mut request = crate::buffer::try_box(|| Self {
-            file: FileRecord::empty(),
-            open_error: 0,
+        let file = FileRecord::open_readonly(path)?;
+        let open_error = if file.ready() {
+            0
+        } else {
+            std::io::Error::last_os_error().raw_os_error().unwrap_or(0)
+        };
+        Self::new(Arc::new(file), offset, delete_file, open_error)
+    }
+
+    /// A static range holds the same open descriptor as the handler.
+    #[must_use]
+    pub(crate) fn from_opened(
+        file: &Arc<FileRecord>,
+        offset: off_t,
+        length: usize,
+    ) -> Option<Box<Self>> {
+        let end = i64::try_from(length)
+            .ok()
+            .and_then(|length| offset.checked_add(length));
+        let Some(end) = end.filter(|_| file.ready() && offset >= 0 && length != 0) else {
+            crate::sys::set_errno(libc::EINVAL);
+            return None;
+        };
+        let mut request = Self::new(Arc::clone(file), offset, false, 0)?;
+        request.fields.end = end;
+        Some(request)
+    }
+
+    fn new(
+        file: Arc<FileRecord>,
+        offset: off_t,
+        delete_file: bool,
+        open_error: c_int,
+    ) -> Option<Box<Self>> {
+        crate::buffer::try_box(|| Self {
+            file,
+            open_error,
             delete_file,
             fields: SocketFileFields {
                 begin: offset,
                 ..SocketFileFields::default()
             },
-        })?;
-        let file = FileRecord::open_readonly(path)?;
-        if file.descriptor() == -1 {
-            request.open_error = std::io::Error::last_os_error().raw_os_error().unwrap_or(0);
-        }
-        request.file = file;
-        Some(request)
+        })
     }
 
     /// The file's descriptor, -1 when it failed to open.
     #[must_use]
-    pub const fn descriptor(&self) -> c_int {
+    pub fn descriptor(&self) -> c_int {
         self.file.descriptor()
     }
 
@@ -115,7 +144,10 @@ impl SocketFileRequest {
 impl Drop for SocketFileRequest {
     fn drop(&mut self) {
         if self.delete_file {
-            self.file.close();
+            // Delete requests exclusively own the file they opened by path.
+            if let Some(file) = Arc::get_mut(&mut self.file) {
+                file.close();
+            }
             _ = std::fs::remove_file(std::ffi::OsStr::from_bytes(self.path()));
         }
     }

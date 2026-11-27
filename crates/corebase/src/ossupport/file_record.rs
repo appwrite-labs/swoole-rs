@@ -30,6 +30,17 @@ impl FileRecord {
         }
     }
 
+    /// Take ownership of an already opened read-only file and its display path.
+    #[must_use]
+    pub fn from_readonly(file: std::fs::File, path: Vec<u8>) -> Self {
+        use std::os::fd::IntoRawFd;
+        Self {
+            fd: file.into_raw_fd(),
+            flags: libc::O_RDONLY,
+            path,
+        }
+    }
+
     /// Open the request's file and own its exact path bytes.
     #[must_use]
     pub fn open_readonly(path: &CStr) -> Option<Self> {

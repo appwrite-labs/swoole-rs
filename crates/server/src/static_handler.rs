@@ -62,6 +62,7 @@ pub struct StaticHandler<'a, E: Effects = Native> {
     /// Owned: the methods that change it take the handler as `&mut`.
     context: HttpStaticContext,
     effects: E,
+    opened: Option<std::sync::Arc<swoole_rs_corebase::ossupport::FileRecord>>,
 }
 
 impl<'a> StaticHandler<'a> {
@@ -80,6 +81,7 @@ impl<'a, E: Effects> StaticHandler<'a, E> {
             context: HttpStaticContext::new(url, PATH_MAX)?,
             server,
             effects,
+            opened: None,
         })
     }
 
@@ -210,6 +212,20 @@ impl<'a, E: Effects> StaticHandler<'a, E> {
                     &self.effects,
                 )
             })
+    }
+
+    pub(crate) fn open_file(&mut self) -> bool {
+        if self.context.observe().kind == StaticFileKind::Directory {
+            return true;
+        }
+        self.opened = self.context.open_file();
+        self.opened.is_some()
+    }
+
+    pub(crate) fn file(
+        &self,
+    ) -> Option<&std::sync::Arc<swoole_rs_corebase::ossupport::FileRecord>> {
+        self.opened.as_ref()
     }
 
     /// The directory's listing page.

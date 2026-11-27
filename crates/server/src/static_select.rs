@@ -8,6 +8,9 @@ use swoole_rs_http::{HttpStaticHeaders, HttpStaticTask, PreconditionStatus};
 
 /// What [`select`] asks of a static handler, in upstream `select_static_handler`'s order.
 pub trait Handler {
+    type File;
+    fn open_file(&mut self) -> bool;
+    fn file(&self) -> Option<&Self::File>;
     fn try_serve(&mut self) -> bool;
     fn status(&self) -> i32;
     fn date(&self) -> Vec<u8>;
@@ -24,7 +27,6 @@ pub trait Handler {
     fn content_length(&self) -> usize;
     fn content_type(&mut self) -> Vec<u8>;
     fn filesize(&self) -> usize;
-    fn filename(&self) -> Vec<u8>;
     fn end_part(&self) -> Vec<u8>;
 }
 
@@ -77,8 +79,12 @@ impl<E: Effects> Handler for StaticHandler<'_, E> {
     fn filesize(&self) -> usize {
         Self::filesize(self)
     }
-    fn filename(&self) -> Vec<u8> {
-        Self::filename(self)
+    type File = std::sync::Arc<swoole_rs_corebase::ossupport::FileRecord>;
+    fn open_file(&mut self) -> bool {
+        Self::open_file(self)
+    }
+    fn file(&self) -> Option<&Self::File> {
+        Self::file(self)
     }
     fn end_part(&self) -> Vec<u8> {
         Self::end_part(self)
@@ -87,7 +93,8 @@ impl<E: Effects> Handler for StaticHandler<'_, E> {
 
 /// What [`select`] asks of the request and its connection. Each fact is read
 /// where upstream reads it, so a send that changes the request is seen.
-pub trait Exchange {
+pub trait Exchange<F> {
+    fn send_range(&self, file: &F, part: &HttpStaticTask) -> bool;
     /// `request->get_header(name)`, empty when absent.
     fn header(&self, name: &[u8]) -> Vec<u8>;
     fn keep_alive(&self) -> bool;
@@ -102,7 +109,7 @@ fn c_text(text: &[u8]) -> &[u8] {
 }
 
 /// Answer an HTTP/1 static request. A failed write stops further body sends.
-pub fn select(handler: &mut impl Handler, exchange: &impl Exchange) -> bool {
+pub fn select<H: Handler>(handler: &mut H, exchange: &impl Exchange<H::File>) -> bool {
     if !handler.try_serve() {
         return false;
     }
@@ -110,7 +117,7 @@ pub fn select(handler: &mut impl Handler, exchange: &impl Exchange) -> bool {
     let redirect = (status == 200)
         .then(|| handler.directory_redirect())
         .flatten();
-    if status == 200 && !handler.try_serve_index_file() {
+    if status == 200 && (!handler.try_serve_index_file() || !handler.open_file()) {
         return false;
     }
     let head = exchange.head();
@@ -121,15 +128,15 @@ pub fn select(handler: &mut impl Handler, exchange: &impl Exchange) -> bool {
     true
 }
 
-fn write_response(
-    handler: &mut impl Handler,
-    exchange: &impl Exchange,
+fn write_response<H: Handler>(
+    handler: &mut H,
+    exchange: &impl Exchange<H::File>,
     status: i32,
     redirect: Option<Vec<u8>>,
     head: bool,
 ) -> bool {
     let send = |data: &[u8]| data.is_empty() || exchange.send(ServerEvent::SendData, data, false);
-    let header = |handler: &dyn Handler, status, length, mime: &[u8], extra: &[u8]| {
+    let header = |handler: &H, status, length, mime: &[u8], extra: &[u8]| {
         let date = handler.date();
         let modified = if matches!(status, 400 | 404) {
             Vec::new()
@@ -216,7 +223,6 @@ fn write_response(
     if head || tasks.is_empty() {
         return true;
     }
-    let mut file = SendfileTask::new(c_text(&handler.filename()));
     for part in &tasks {
         if tasks.len() > 1 && !send(c_text(&part.part_header)) {
             return false;
@@ -224,37 +230,14 @@ fn write_response(
         if part.length == 0 {
             break;
         }
-        if !exchange.send(ServerEvent::SendFile, file.at(part), false) {
+        if !handler
+            .file()
+            .is_some_and(|file| exchange.send_range(file, part))
+        {
             return false;
         }
     }
     tasks.len() == 1 || send(&handler.end_part())
-}
-
-/// A `network::SendfileTask`: offset, length and the NUL-terminated name.
-struct SendfileTask(Vec<u8>);
-
-impl SendfileTask {
-    const HEAD: usize = 16;
-
-    fn new(filename: &[u8]) -> Self {
-        let mut bytes = Vec::with_capacity(Self::HEAD + filename.len() + 1);
-        bytes.extend_from_slice(&[0; Self::HEAD]);
-        bytes.extend_from_slice(filename);
-        bytes.push(0);
-        Self(bytes)
-    }
-
-    /// The task's bytes for one range.
-    fn at(&mut self, task: &HttpStaticTask) -> &[u8] {
-        if let Some((offset, rest)) = self.0.split_first_chunk_mut::<8>()
-            && let Some((length, _)) = rest.split_first_chunk_mut::<8>()
-        {
-            *offset = task.offset.to_ne_bytes();
-            *length = task.length.to_ne_bytes();
-        }
-        &self.0
-    }
 }
 
 /// The server, request, session and socket of an HTTP/1 static response.
@@ -265,7 +248,14 @@ struct Wire<'a> {
     session_id: core::ffi::c_long,
 }
 
-impl Exchange for Wire<'_> {
+impl Exchange<std::sync::Arc<swoole_rs_corebase::ossupport::FileRecord>> for Wire<'_> {
+    fn send_range(
+        &self,
+        file: &std::sync::Arc<swoole_rs_corebase::ossupport::FileRecord>,
+        part: &HttpStaticTask,
+    ) -> bool {
+        crate::send::send_static_range(self.server, self.session_id, file, part)
+    }
     fn header(&self, name: &[u8]) -> Vec<u8> {
         self.request
             .header_bytes(self.input, name)
@@ -482,15 +472,25 @@ mod tests {
         fn filesize(&self) -> usize {
             self.case.filesize
         }
-        fn filename(&self) -> Vec<u8> {
-            self.case.filename.clone()
+        type File = Vec<u8>;
+        fn open_file(&mut self) -> bool {
+            true
+        }
+        fn file(&self) -> Option<&Vec<u8>> {
+            Some(&self.case.filename)
         }
         fn end_part(&self) -> Vec<u8> {
             self.case.end_part.clone()
         }
     }
 
-    impl Exchange for Script<'_> {
+    impl Exchange<Vec<u8>> for Script<'_> {
+        fn send_range(&self, file: &Vec<u8>, part: &HttpStaticTask) -> bool {
+            let mut event = format!("{}:{}:", part.offset, part.length).into_bytes();
+            event.extend_from_slice(file);
+            event.extend_from_slice(b":16");
+            self.send(ServerEvent::SendFile, &event, false)
+        }
         fn header(&self, name: &[u8]) -> Vec<u8> {
             self.request_trace.borrow_mut().push(name.to_vec());
             if name == b"If-Modified-Since" {
@@ -518,14 +518,7 @@ mod tests {
                 self.head.set(!self.head.get());
             }
             let mut event = format!("E:73:{}:", kind.code()).into_bytes();
-            if kind == ServerEvent::SendFile {
-                let offset = i64::from_ne_bytes(data[..8].try_into().unwrap());
-                let length = usize::from_ne_bytes(data[8..16].try_into().unwrap());
-                let name = data[16..].split(|&b| b == 0).next().unwrap();
-                event.extend_from_slice(format!("{offset}:{length}:").as_bytes());
-                event.extend_from_slice(name);
-                event.extend_from_slice(format!(":{}", data.len() - name.len() - 1).as_bytes());
-            } else if kind != ServerEvent::Close {
+            if kind != ServerEvent::Close {
                 event.extend_from_slice(data);
             }
             if reset {
