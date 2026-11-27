@@ -186,6 +186,10 @@ struct Spans<'h, 'a, 'i> {
     field: &'i [u8],
 }
 
+fn informational(status: u16) -> bool {
+    matches!(status, 100 | 102..=199)
+}
+
 impl<'i> Callbacks<'i> for Spans<'_, '_, 'i> {
     fn parser(&mut self) -> &mut Parser {
         self.hooks.parser
@@ -203,9 +207,10 @@ impl<'i> Callbacks<'i> for Spans<'_, '_, 'i> {
     fn on_headers_complete(&mut self) -> Flow {
         let hooks = &self.hooks;
         let status = hooks.parser.status_code;
-        if !(100..200).contains(&status) || status == 101 {
-            hooks.props.long(c"statusCode", i64::from(status));
+        if informational(status) {
+            return Flow::Go;
         }
+        hooks.props.long(c"statusCode", i64::from(status));
         if hooks.client.head.get() || i32::from(hooks.parser.status_code) == NO_CONTENT {
             Flow::SkipBody
         } else {
@@ -1111,6 +1116,8 @@ impl Client {
         };
         let mut header_completed = false;
         let mut header_offset = 0_usize;
+        let mut header_size = 0;
+        let mut buffered = None;
         parser.reset();
         let mut hooks = Hooks {
             parser,
@@ -1129,7 +1136,7 @@ impl Client {
             if controller.timed_out(swoole_rs_corebase::reactor::TimeoutKind::READ) {
                 break false;
             }
-            let received = socket.recv_input(input);
+            let received = buffered.take().or_else(|| socket.recv_input(input));
             let (length, size) = (input.len(), input.size());
             let Some(mut count) = received.filter(|&n| n > 0) else {
                 if received == Some(0) {
@@ -1143,14 +1150,19 @@ impl Client {
             };
             if !header_completed {
                 let unparsed = input.view().get(header_offset..).unwrap_or_default();
-                let ended = swoole_rs_http::header_delimiter(unparsed).is_some();
-                if !ended {
+                let Some(end) = swoole_rs_http::header_delimiter(unparsed) else {
                     if length == size {
                         socket.set_err(INVALID_PROTOCOL);
                         break false;
                     }
                     header_offset = length.saturating_sub(4);
                     continue;
+                };
+                if self.collect_stats.get() {
+                    header_size += header_offset + end + 4;
+                    hooks.props.edit_array(c"stats", |stats| {
+                        stats.insert_long(b"header_size", header_size.c_cast());
+                    });
                 }
                 header_completed = true;
                 header_offset = 0;
@@ -1181,6 +1193,13 @@ impl Client {
             if hooks.parser.error != llhttp::HPE_OK {
                 socket.set_err(INVALID_PROTOCOL);
                 break false;
+            }
+            if informational(hooks.parser.status_code) && hooks.parser.message_complete() {
+                input.reduce(i64::try_from(parsed).unwrap_or(i64::MAX));
+                buffered = (!input.view().is_empty()).then_some(input.len());
+                header_completed = false;
+                hooks.parser.reset();
+                continue;
             }
             let complete = if self.event_stream.get() && hooks.parser.needs_eof() {
                 match hooks.spans().end_of_input() {
@@ -1706,6 +1725,9 @@ impl<'a> FilePart<'a> {
 }
 
 fn on_header_value(hooks: &Hooks, name: &[u8], data: &[u8]) -> Flow {
+    if informational(hooks.parser.status_code) {
+        return Flow::Go;
+    }
     let client = hooks.client;
     let lowered = name.to_ascii_lowercase();
     let name = lowered.as_slice();
@@ -1834,6 +1856,9 @@ fn write_download(client: &Client, body: &[u8]) -> bool {
 }
 
 fn on_message_complete(hooks: &mut Hooks) -> Flow {
+    if informational(hooks.parser.status_code) {
+        return Flow::Pause;
+    }
     let client = hooks.client;
     if hooks.parser.upgrade && !matches!(client.websocket(), WebSocket::Open(_)) {
         hooks.parser.upgrade = false;
