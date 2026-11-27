@@ -162,7 +162,7 @@ pub(crate) fn install(
 }
 
 /// `sigaction(2)`: the previous action, or none if it failed.
-fn sigaction(signo: c_int, action: &libc::sigaction) -> Option<libc::sigaction> {
+pub(super) fn sigaction(signo: c_int, action: &libc::sigaction) -> Option<libc::sigaction> {
     let mut previous: libc::sigaction = crate::sys::zeroed();
     // SAFETY: both actions are valid for the call.
     let installed = unsafe { libc::sigaction(signo, action, &raw mut previous) };
@@ -396,17 +396,18 @@ pub fn signal_reset() {
 /// `swoole_signal_clear` without signalfd or kqueue: restores `SIG_DFL` for every
 /// registered signal, then empties the table.
 pub fn signal_clear() {
+    clear_actions(|_| true);
+    signal_reset();
+}
+
+/// Restore the default disposition of active signals handled through sigaction.
+pub(super) fn clear_actions(native: impl Fn(c_int) -> bool) {
     for slot in &SIGNALS {
-        if slot.activated.load(Relaxed) {
-            set_action(
-                c_int::from(slot.signo.load(Relaxed)),
-                usize::MAX,
-                true,
-                false,
-            );
+        let signo = c_int::from(slot.signo.load(Relaxed));
+        if slot.activated.load(Relaxed) && native(signo) {
+            set_action(signo, usize::MAX, true, false);
         }
     }
-    signal_reset();
 }
 
 /// `void swoole_signal_unblock_all()`: [`crate::signal_unblock_all`].

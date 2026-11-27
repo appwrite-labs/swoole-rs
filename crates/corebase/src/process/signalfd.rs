@@ -162,6 +162,7 @@ pub fn signalfd_close() {
 #[must_use]
 pub fn signalfd_clear() -> bool {
     let mask = sigset();
+    crate::process::signal::clear_actions(|signo| sys::sigismember(&mask, signo) == 0);
     let result = sigprocmask(libc::SIG_UNBLOCK, &mask);
     signal_reset();
     clear_mask();
@@ -231,7 +232,17 @@ mod tests {
             }
         );
         assert!(matches!(signalfd_receive(fd), Received::ReadFailed(_)));
+        // A native registration made before the descriptor existed also needs clearing.
+        let native = libc::SIGWINCH;
+        let slot = slot(native).unwrap();
+        slot.activated.store(true, Relaxed);
+        slot.signo.store(u16::try_from(native).unwrap(), Relaxed);
+        let previous = crate::process::signal::install(native, libc::SIG_IGN, false, false);
         assert!(signalfd_clear());
+        let cleared = crate::process::signal::install(native, libc::SIG_DFL, false, false);
+        assert_eq!(cleared.unwrap().sa_sigaction, libc::SIG_DFL);
+        crate::process::signal::sigaction(native, &previous.unwrap());
+
         signalfd_close();
         assert_eq!(signalfd_fd(), -1);
     }
