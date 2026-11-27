@@ -813,19 +813,6 @@ fn start(call: &Call) {
         call.set_bool(false);
         return;
     }
-    // The reactor must be cleaned up before registering signals.
-    swoole_rs_corebase::reactor::swoole_event_free();
-    let signals = pool_signals();
-    let mut previous = [SignalHandler::NONE; 6];
-    for (signo, old) in signals.iter().zip(previous.iter_mut()) {
-        if *signo != 0 {
-            *old = host::signal_swap(*signo, SignalHandler::new(on_signal), false);
-        }
-    }
-    if !protocol(view, this.enable_message_bus.get()) {
-        call.set_bool(false);
-        return;
-    }
     if !this.on_worker_start.is_set() && !this.on_message.is_set() {
         if view.is_async() {
             fatal(E_ERROR, &message!("require 'onWorkerStart' callback"));
@@ -845,6 +832,20 @@ fn start(call: &Call) {
         );
         call.set_bool(false);
         return;
+    }
+    if !protocol(view, this.enable_message_bus.get()) {
+        call.set_bool(false);
+        return;
+    }
+    // The reactor must be cleaned up before registering signals.
+    swoole_rs_corebase::reactor::swoole_event_free();
+    let master_pid = getpid();
+    let signals = pool_signals();
+    let mut previous = [SignalHandler::NONE; 6];
+    for (signo, old) in signals.iter().zip(previous.iter_mut()) {
+        if *signo != 0 {
+            *old = host::signal_swap(*signo, SignalHandler::new(on_signal), false);
+        }
     }
     CURRENT.store(view.raw(), Ordering::Release);
     let with_message = this.on_message.is_set();
@@ -869,20 +870,25 @@ fn start(call: &Call) {
     if started {
         methods::wait(swoole_rs_server::process_pool_native(), view);
     }
-    if swoole_rs_zend::bailout::pending() {
-        return;
-    }
     OWNER.set(None);
-    if !started {
-        call.set_bool(false);
+    CURRENT.store(ptr::null_mut(), Ordering::Release);
+    if getpid() != master_pid {
         return;
     }
-    CURRENT.store(ptr::null_mut(), Ordering::Release);
+    if started
+        && !swoole_rs_zend::bailout::pending()
+        && swoole_rs_corebase::timer::thread_timer_detached()
+    {
+        swoole_rs_corebase::timer::swoole_timer_free();
+    }
     for (signo, old) in signals.iter().zip(previous) {
         if *signo != 0 {
             // Restores the handler `start()` replaced.
             _ = host::signal_swap(*signo, old, false);
         }
+    }
+    if !started && !swoole_rs_zend::bailout::pending() {
+        call.set_bool(false);
     }
 }
 
