@@ -82,3 +82,30 @@ _end:
     request_line_length_ = buffer_->offset = p - buffer_->str;
     return SW_OK;
 }
+
+bool Request::has_expect_header() const {
+    char *buf = buffer_->str;
+    size_t len = buffer_->length;
+
+    char *pe = buf + len;
+
+    for (char *p = buf; p < pe; p++) {
+        if (*p == '\r' && (size_t) (pe - p) > sizeof("\r\nExpect")) {
+            p += 2;
+            if (SW_STR_ISTARTS_WITH(p, pe - p, "Expect:")) {
+                p += sizeof("Expect:") - 1;
+                while (p < pe && (*p == ' ' || *p == '\t')) {
+                    p++;
+                }
+                if (SW_STR_ISTARTS_WITH(p, pe - p, "100-continue")) {
+                    return true;
+                } else {
+                    return false;
+                }
+            } else {
+                p++;
+            }
+        }
+    }
+    return false;
+}
