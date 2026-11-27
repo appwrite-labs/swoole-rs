@@ -925,6 +925,11 @@ fn serve(conn: &mut Connection, peer: &Peer) -> Result<(), bailout::Bailout> {
                 }
                 // llhttp pauses at the end of this request, before pipelined bytes.
                 total = usize::try_from(buffer.offset()).unwrap_or(0);
+            } else if error != HPE_PAUSED_H2_UPGRADE
+                && (!context.state().completed || usize::try_from(next).ok() != Some(total))
+            {
+                context.state().response.status = BAD_REQUEST;
+                break;
             }
         }
         add_peer(context, peer);
