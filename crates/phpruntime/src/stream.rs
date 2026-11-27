@@ -30,8 +30,9 @@ use swoole_rs_zend::{
     bailout::Bailout,
     contain_with, message, string,
     sys::{
-        PHP_STREAM_FLAG_AVOID_BLOCKING, php_stream, php_stream_xport_crypto_param,
-        php_stream_xport_param, sockaddr, timeval, zend_long, zend_result, zend_string,
+        PHP_STREAM_FLAG_AVOID_BLOCKING, PHP_STREAM_FLAG_SUPPRESS_ERRORS, php_stream,
+        php_stream_xport_crypto_param, php_stream_xport_param, sockaddr, timeval, zend_long,
+        zend_result, zend_string,
     },
     value::empty_string,
 };
@@ -379,10 +380,13 @@ fn write(stream: Stream<'_>, data: &[u8]) -> Result<isize, Bailout> {
             if socket.catch_error(code) == Some(Caught::Wait) {
                 written = 0;
             } else {
-                let reason = socket.message().unwrap_or_default();
-                let reason = reason.to_string_lossy();
-                let message = message!("Send of {count} bytes failed with errno={code} {reason}");
-                report(Report::Docref, E_NOTICE, message.as_cstr())?;
+                if stream.fields(|s| s.flags & PHP_STREAM_FLAG_SUPPRESS_ERRORS == 0) {
+                    let reason = socket.message().unwrap_or_default();
+                    let reason = reason.to_string_lossy();
+                    let message =
+                        message!("Send of {count} bytes failed with errno={code} {reason}");
+                    report(Report::Docref, E_NOTICE, message.as_cstr())?;
+                }
                 set_eof(stream);
             }
         }
