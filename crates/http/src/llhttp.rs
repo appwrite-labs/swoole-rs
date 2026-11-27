@@ -1716,7 +1716,7 @@ impl<'i, C: Callbacks<'i> + ?Sized> Run<'_, 'i, C> {
                     self.parser().header_state = 8;
                     Ok(S::ValueOtherwise)
                 }
-                b' ' => self.eat(S::TeChunkedLast),
+                b' ' | b'\t' => self.eat(S::TeChunkedLast),
                 b',' if self.parser().kind == Kind::Request => {
                     self.close_fail(true, 15, &"Invalid `Transfer-Encoding` header value")
                 }

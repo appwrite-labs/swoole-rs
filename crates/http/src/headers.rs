@@ -127,7 +127,7 @@ pub fn header_info(
                             while let [b' ' | b'\t', rest @ ..] = coding {
                                 coding = rest;
                             }
-                            while let [rest @ .., b' '] = coding {
+                            while let [rest @ .., b' ' | b'\t'] = coding {
                                 coding = rest;
                             }
                             if state.flags & 32 != 0 {

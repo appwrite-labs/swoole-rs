@@ -845,7 +845,7 @@ mod tests {
                 true,
             ),
             (b"Transfer-Encoding: chunkedchunked", false, true),
-            (b"Transfer-Encoding: chunked\t", false, true),
+            (b"Transfer-Encoding: chunked\t", true, false),
             (b"Transfer-Encoding:", false, true),
             (b"Content-Length: 3", false, false),
         ] {
