@@ -477,6 +477,9 @@ pub(crate) fn destroy(serv: view::Server<'_>) {
     let gs = crate::shared::server_counters(state);
     if gs.is_some_and(|gs| gs.start.load(Relaxed)) {
         hybrid().step(serv, Step::FactoryShutdown);
+        if mode != Mode::Base {
+            crate::reactor_io::discard_shutdown_files(serv);
+        }
     }
     for id in 0..config.worker_num.get() {
         if let Some(worker) = serv.worker_record(u16::try_from(id).unwrap_or(u16::MAX)) {
