@@ -97,6 +97,13 @@ fn new_lock(kind: Kind) -> PooledLock {
 
 /// `__construct(int $type = SWOOLE_MUTEX)`.
 fn construct(call: &Call) {
+    let Ok(code) = call
+        .arity(0, 1)
+        .and_then(|()| call.long(1, Kind::Mutex.code()))
+    else {
+        call.set_bool(false);
+        return;
+    };
     let Some(held) = call.custom::<Held>() else {
         return;
     };
@@ -105,13 +112,6 @@ fn construct(call: &Call) {
         call.set_bool(false);
         return;
     }
-    let Ok(code) = call
-        .arity(0, 1)
-        .and_then(|()| call.long(1, Kind::Mutex.code()))
-    else {
-        call.set_bool(false);
-        return;
-    };
     let Some(kind) = Kind::from_code(code) else {
         // Upstream passes the format unformatted, with the type as the code.
         swoole_rs_phpswoole::exception().throw(c"lock type[%d] is not support", code);

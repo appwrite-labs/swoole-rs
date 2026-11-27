@@ -354,6 +354,18 @@ fn start_child(worker: Worker<'_>, this: &Value) {
 }
 
 fn construct(call: &Call) {
+    let parsed = call.arity(1, 4).and_then(|()| {
+        call.func(1)?;
+        Ok((
+            call.bool(2, false)?,
+            call.long(3, PIPE_TYPE_DGRAM)?,
+            call.bool(4, false)?,
+        ))
+    });
+    let Ok((redirect, mut pipe_type, enable_coroutine)) = parsed else {
+        call.set_bool(false);
+        return;
+    };
     let Some((process, object)) = this(call).zip(call.this_value()) else {
         return;
     };
@@ -380,22 +392,9 @@ fn construct(call: &Call) {
         Ok(()) => {}
     }
     drop(name);
-    // Upstream makes the worker before parsing, so a failed parse leaves it set.
     // A new worker the object owns from here.
     process.worker.set(worker::new());
     let Some(worker) = process.worker.get() else {
-        return;
-    };
-    let parsed = call.arity(1, 4).and_then(|()| {
-        call.func(1)?;
-        Ok((
-            call.bool(2, false)?,
-            call.long(3, PIPE_TYPE_DGRAM)?,
-            call.bool(4, false)?,
-        ))
-    });
-    let Ok((redirect, mut pipe_type, enable_coroutine)) = parsed else {
-        call.set_bool(false);
         return;
     };
     if !worker::share(&process.worker, worker) {
