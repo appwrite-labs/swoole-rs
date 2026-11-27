@@ -450,24 +450,15 @@ php_url *php_ssh2_fopen_wraper_parse_path(const char *path,
         return NULL;
     }
 
-    /* Authenticate: swr_ssh2_wrapper_auth (Rust, crates/ssh2/src/php.rs) */
-    if (swr_ssh2_wrapper_auth(session, username, username_len, password, password_len, pubkey_file, privkey_file)) {
-        goto session_authed;
-    }
-
-    /* Auth failure */
-    php_url_free(resource);
-    if (Z_RES(zsession)) {
-        zend_list_delete(Z_RES(zsession));
-    }
-    return NULL;
-
-session_authed:
     ZVAL_RES(&zsession, zend_register_resource(session, le_ssh2_session));
+    if (!swr_ssh2_wrapper_auth(session, username, username_len, password, password_len, pubkey_file, privkey_file)) {
+        php_url_free(resource);
+        zend_list_delete(Z_RES(zsession));
+        return NULL;
+    }
 
     if (psftp) {
         LIBSSH2_SFTP *sftp;
-        zval zsftp{};
 
         sftp = libssh2_sftp_init(session);
         if (!sftp) {
@@ -481,9 +472,7 @@ session_authed:
         sftp_data->sftp = sftp;
         sftp_data->session_rsrc = Z_RES(zsession);
 
-        // TODO Sean-Der
-        // ZEND_REGISTER_RESOURCE(sftp_data, le_ssh2_sftp);
-        *psftp_rsrc = Z_RES(zsftp);
+        *psftp_rsrc = zend_register_resource(sftp_data, le_ssh2_sftp);
         *psftp = sftp;
     }
 
