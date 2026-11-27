@@ -1,5 +1,6 @@
 """The HTTP/2 server against a client that writes raw frames, and the server's waits on a peer."""
 from pathlib import Path
+import hashlib
 import json
 import socket
 import struct
@@ -69,18 +70,16 @@ def test_a_body_the_multipart_parser_rejects_is_never_handled(engine):
             conn.sendall(PREFACE + frame(4, 0, 0) + frame(1, 4, 1, block) + frame(0, 1, 1, body))
             # Then a PING, so the server's reply to it bounds the wait.
             conn.sendall(frame(6, 0, 0, b'afterbad'))
-            kinds = []
-            try:
-                while True:
-                    head = read(conn, 9)
-                    read(conn, int.from_bytes(head[:3], 'big'))
-                    kinds.append((head[3], int.from_bytes(head[5:], 'big') & 0x7fffffff))
-                    if head[3] == 6:
-                        break
-            except (EOFError, ConnectionResetError, socket.timeout):
-                # Expected: the server ends the connection; the frames read so far are asserted.
-                pass
-    assert (1, 1) not in kinds, kinds
+            statuses = []
+            while True:
+                head = read(conn, 9)
+                payload = read(conn, int.from_bytes(head[:3], 'big'))
+                if head[3] == 1 and int.from_bytes(head[5:], 'big') == 1:
+                    statuses.append((payload[0], head[4] & 1))
+                if head[3] == 6:
+                    assert payload == b'afterbad'
+                    break
+    assert statuses == [(0x8c, 1)]  # HPACK static index 12 is :status 400.
 
 
 def test_a_peer_that_never_opens_the_window_loses_the_connection(engine):
@@ -131,3 +130,42 @@ def test_a_command_whose_reply_never_comes_fails_at_the_read_timeout(engine):
     reply, timedout, waited = json.loads(result.stdout)
     assert (reply, timedout) == (False, True), result.stdout
     assert 0.4 < waited < 2.5, waited
+
+
+def test_sendfile_delivers_the_selected_range_with_and_without_trailers(engine, tmp_path):
+    # Span two complete 64 KiB reads and a partial read, starting inside the file.
+    data = bytes(range(251)) * 540
+    (tmp_path / 'data.bin').write_bytes(data)
+    script = tmp_path / 'sendfile.php'
+    script.write_text(r"""<?php
+$server = new Swoole\Http\Server('127.0.0.1', (int) getenv('TEST_PORT'), SWOOLE_BASE);
+$server->set(['worker_num' => 1, 'open_http2_protocol' => true, 'log_file' => '/dev/null']);
+$server->on('request', static function ($request, $response) {
+    if ($request->server['request_uri'] === '/trailers') {
+        $response->trailer('x-file-end', 'done');
+    }
+    $response->sendfile(__DIR__ . '/data.bin', 17, 131073);
+});
+$server->start();
+""")
+    client = r"""
+    Co\run(static function () use ($argv) {
+        $client = new Swoole\Coroutine\Http2\Client('127.0.0.1', (int) $argv[1]);
+        $client->connect();
+        foreach (['/plain', '/trailers'] as $path) {
+            $request = new Swoole\Http2\Request();
+            $request->path = $path;
+            $client->send($request);
+            $response = $client->recv(5);
+            echo json_encode([$response->statusCode, $response->headers['content-length'],
+                hash('sha256', $response->data), $response->headers['x-file-end'] ?? null]), "\n";
+        }
+        $client->close();
+    });
+    """
+    with server(engine, script) as (port, _):
+        result = run_isolated(engine.command('-r', client, '--', str(port)))
+    assert result.returncode == 0, result.stderr
+    digest = hashlib.sha256(data[17:17 + 131073]).hexdigest()
+    assert [json.loads(line) for line in result.stdout.splitlines()] == [
+        [200, '131073', digest, None], [200, '131073', digest, 'done']]

@@ -8,7 +8,7 @@ use super::session::{Session, SessionState, Stream};
 use libc::c_int;
 use std::ffi::{CStr, CString};
 use swoole_rs_corebase::{CCast, CellExt};
-use swoole_rs_http::status::REQUEST_ENTITY_TOO_LARGE;
+use swoole_rs_http::status::{BAD_REQUEST, REQUEST_ENTITY_TOO_LARGE};
 use swoole_rs_http2::frame_flag::{
     ACK as FLAG_ACK, END_HEADERS as FLAG_END_HEADERS, END_STREAM as FLAG_END_STREAM,
     PADDED as FLAG_PADDED, PRIORITY as FLAG_PRIORITY,
@@ -1234,11 +1234,10 @@ fn complete(session: &Session, stream: &Stream) -> bool {
     if ctx.has_body() {
         if get(ctx, Field::ParseBody) != 0 && get(ctx, Field::Form) != 0 {
             ctx.treat_post();
-        } else if get(ctx, Field::Multipart) != 0
-            // SAFETY: a live context with a multipart parser.
-            && !ctx.multipart()
-        {
-            return false;
+        } else if get(ctx, Field::Multipart) != 0 && !ctx.multipart() {
+            set(ctx, Field::Status, BAD_REQUEST.cast_unsigned());
+            let sent = send_header(ctx, session, stream, None, true);
+            return session.remove(stream.id) && sent;
         }
     }
     session.handle(stream);

@@ -860,12 +860,7 @@ fn on_message_complete(state: &mut State, input: &[u8]) -> Step {
         .chunked_body
         .as_deref()
         .map_or(state.request.body_length, |body| body.as_ref().len());
-    if body_length > 0
-        && state
-            .mt_parser
-            .as_ref()
-            .is_some_and(|parts| !parts.parser.is_complete())
-    {
+    if body_length > 0 && !multipart_complete(state) {
         return Step::Fail;
     }
     let source = form_source(
@@ -927,6 +922,13 @@ pub(crate) fn multipart_start(state: &mut State, content_type: &[u8], limit: usi
         fp: None,
     }));
     true
+}
+
+pub(crate) fn multipart_complete(state: &State) -> bool {
+    state
+        .mt_parser
+        .as_ref()
+        .is_none_or(|parts| parts.parser.is_complete())
 }
 
 /// `Context::parse_multipart_data`.

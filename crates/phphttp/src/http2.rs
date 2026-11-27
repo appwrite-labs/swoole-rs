@@ -210,8 +210,8 @@ impl Ctx<'_> {
         let state = self.state();
         let data = state.request.h2_data.take();
         let parsed = parse::multipart_parse(state, data.as_deref().map_or(&[], AsRef::as_ref));
-        self.state().request.h2_data = data;
-        parsed
+        state.request.h2_data = data;
+        parsed && parse::multipart_complete(state)
     }
 
     /// The context's `field` (0 for a compression field without compression).
