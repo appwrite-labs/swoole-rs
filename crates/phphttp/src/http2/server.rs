@@ -959,8 +959,11 @@ fn parse(session: &Session, frame: &[u8]) -> bool {
     if (facts.action == FrameAction::Continuation) != (pending != 0)
         || (pending != 0 && stream_id != pending)
     {
-        close(session.default_ctx());
-        return false;
+        return abort_session(
+            session,
+            swoole_rs_http2::error_code::PROTOCOL_ERROR,
+            b"invalid header block continuation",
+        );
     }
     let flags = facts.flags & 0xff;
     match facts.action {
