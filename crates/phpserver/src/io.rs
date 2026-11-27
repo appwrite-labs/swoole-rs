@@ -273,14 +273,18 @@ fn sendfile(call: &Call) {
     let Ok((fd, filename, offset, length)) = parsed else {
         return call.set_bool(false);
     };
+    if filename.contains(&0) {
+        return call.argument_value_error(2, c"must not contain any null bytes");
+    }
     if crate::server::worker_type() == Some(crate::server::WorkerType::Master) {
-        // `%s`: the name up to its first NUL.
-        let shown = filename.split(|&b| b == 0).next().unwrap_or_default();
         let text = message!(
             "can't sendfile[{}] to the connections in master process",
-            String::from_utf8_lossy(shown)
+            String::from_utf8_lossy(filename)
         );
         fatal(E_WARNING, text.as_cstr());
+        return call.set_bool(false);
+    }
+    if !swoole_rs_phpswoole::valid_sendfile_range(offset, length) {
         return call.set_bool(false);
     }
     let size = length.c_cast::<usize>();

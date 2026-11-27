@@ -304,9 +304,14 @@ pub fn sendfile(
         sendfile_error(SW_LOG_WARNING, E::SW_ERROR_SERVER_IS_NOT_REGULAR_FILE, m);
         return false;
     }
-    if st.st_size <= offset {
+    if offset < 0 || st.st_size <= offset {
         let m = format_args!("file[offset={offset}] is empty");
         sendfile_error(SW_LOG_WARNING, E::SW_ERROR_SYSTEM_CALL_FAIL, m);
+        return false;
+    }
+    if length > (st.st_size - offset).c_cast::<usize>() {
+        let m = format_args!("sendfile length[{length}] exceeds the file size");
+        sendfile_error(SW_LOG_WARNING, E::SW_ERROR_INVALID_PARAMS, m);
         return false;
     }
     let info = swoole_rs_corebase::DataHead {
@@ -665,6 +670,15 @@ mod tests {
         assert!(
             !sendfile(serv, 1, b"Cargo.toml", 1 << 40, 1),
             "offset past the end"
+        );
+        assert!(!sendfile(serv, 1, b"Cargo.toml", -1, 1), "negative offset");
+        let size = std::fs::metadata("Cargo.toml")
+            .unwrap()
+            .len()
+            .c_cast::<i64>();
+        assert!(
+            !sendfile(serv, 1, b"Cargo.toml", size - 1, 2),
+            "length extends past EOF"
         );
         assert_eq!(calls(), [], "none reached the factory");
         let given = b"Cargo.toml\0junk";
