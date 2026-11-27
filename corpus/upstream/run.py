@@ -467,6 +467,18 @@ def group_leftovers(group, members):
     return {'processes': processes, 'descriptors': descriptors}
 
 
+# Host settings used by PHP, the official runner and upstream's fixture services.
+RUNNER_ENV = frozenset("""
+    PATH LANG LANGUAGE TZ SystemRoot SHELL CC LD_LIBRARY_PATH DYLD_LIBRARY_PATH
+    SSL_CERT_FILE SSL_CERT_DIR CURL_CA_BUNDLE OPENSSL_CONF ODBCSYSINI ODBCINI TNS_ADMIN
+    ASAN_OPTIONS LSAN_OPTIONS UBSAN_OPTIONS TSAN_OPTIONS USE_ZEND_ALLOC
+    CI GITHUB_ACTIONS CI_NO_IPV6 MACOS_DEV HAS_NETSTAT SKIP_ASAN SKIP_ONLINE_TESTS SKIP_SLOW_TESTS
+    FTP_HOST FTP_PORT FTP_USER FTP_PASS HTTPBIN_SERVER_HOST HTTPBIN_SERVER_PORT
+    SWOOLE_CI_IN_MACOS SWOOLE_DEBUG SWOOLE_DIR SWOOLE_TRACE_FLAGS
+    PGSQL_CONNECTION_STRING PDOTEST_USER PHP_AUTOCONF
+""".split())
+
+
 def run_cases(engine, cases, sandbox, artifacts, timeout, jobs, *, offline=True, runner_ini=(), match_child_php=False, php=None, measure_leftovers=False):
     sandbox = sandbox.resolve()
     if php:
@@ -501,9 +513,12 @@ def run_cases(engine, cases, sandbox, artifacts, timeout, jobs, *, offline=True,
     for setting in runner_ini:
         command += ['-d', setting]
     command += ['-d', 'zend.assertions=1', *[str(sandbox / case['path']) for case in cases]]
-    env = {**os.environ, 'PHPT': '1', 'NO_INTERACTION': '1', 'REPORT_EXIT_STATUS': '1',
-           'TEST_PHP_EXECUTABLE': shutil.which(engine.php) or engine.php,
-           'TEST_PHP_JUNIT': str(junit), 'HOME': str(sandbox / 'home'), 'TMPDIR': str(sandbox / 'tmp')}
+    env = {key: value for key, value in os.environ.items()
+           if key in RUNNER_ENV or key.startswith(('LC_', 'MYSQL_SERVER_', 'REDIS_SERVER_', 'TEST_SSH2_',
+                                                   'PHP_CURL_FTP_REMOTE_', 'SWOOLE_TEST_', 'SWOOLE_SSH2_'))}
+    env.update({'TEST_PHP_LOG_FORMAT': 'LEOD', 'PHPT': '1', 'NO_INTERACTION': '1', 'REPORT_EXIT_STATUS': '1',
+                'TEST_PHP_EXECUTABLE': shutil.which(engine.php) or engine.php,
+                'TEST_PHP_JUNIT': str(junit), 'HOME': str(sandbox / 'home'), 'TMPDIR': str(sandbox / 'tmp')})
     # Children a test starts as TEST_PHP_EXECUTABLE without -n (start_server, ulimit) read the
     # system ini, which upstream's CI installs the extension into; ours doesn't. A blank entry
     # keeps PHP's compiled scan directory. Runs under -n, the cases themselves, ignore it.
@@ -583,7 +598,8 @@ def run_cases(engine, cases, sandbox, artifacts, timeout, jobs, *, offline=True,
             status = 'failed'
         artifact = artifacts / Path(path).with_suffix('')
         artifact.mkdir(parents=True, exist_ok=True)
-        for suffix in ['out', 'exp', 'diff', 'log', 'php', 'sh']:
+        (artifact / Path(path).with_suffix('.sh').name).unlink(missing_ok=True)
+        for suffix in ['out', 'exp', 'diff', 'log', 'php']:
             generated = (sandbox / path).with_suffix('.' + suffix)
             if generated.is_file():
                 shutil.copy2(generated, artifact / generated.name)
