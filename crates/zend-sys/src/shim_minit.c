@@ -41,13 +41,16 @@ bool swr_zend_minit_class_constant_string(zend_class_entry *ce, const char *name
     return true;
 }
 
-bool swr_zend_minit_property(zend_class_entry *ce, const char *name, const zval *value, int access) {
+bool swr_zend_minit_property(zend_class_entry *ce, const char *name, const zval *value, int access, uint32_t mask) {
     if (Z_REFCOUNTED_P(value)) {
         return false;
     }
     zval copy;
     ZVAL_COPY_VALUE(&copy, value);
-    zend_declare_property(ce, name, strlen(name), &copy, access);
+    zend_string *key = zend_string_init(name, strlen(name), true);
+    zend_type type = ZEND_TYPE_INIT_MASK(mask);
+    zend_declare_typed_property(ce, key, &copy, access, NULL, type);
+    zend_string_release(key);
     return true;
 }
 

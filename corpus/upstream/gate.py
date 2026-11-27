@@ -76,7 +76,6 @@ LOST_SHARD = 'PHPT shard lost'
 # failing on them, and lists those cargo already passes so their entries go.
 PENDING_PORTS = {
     5650: [
-        'swoole_function/sendfile_object.phpt',
         'swoole_http_server/create_request.phpt',
     ],
 }

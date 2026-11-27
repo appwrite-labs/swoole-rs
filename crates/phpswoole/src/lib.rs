@@ -34,6 +34,7 @@ mod module;
 mod optional;
 mod options;
 pub mod reactor;
+mod sendfile;
 mod serialize;
 mod table;
 mod vm;
@@ -150,6 +151,7 @@ fn minit_body(minit: &swoole_rs_zend::Minit, kind: c_int) {
     }
     FLAGS.store(flags, Ordering::Relaxed);
     constants::register(minit, flags);
+    sendfile::register(minit);
     minit.register_child(
         &EXCEPTION,
         c"Swoole\\Exception",
