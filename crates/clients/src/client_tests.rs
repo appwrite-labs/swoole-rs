@@ -144,21 +144,8 @@ pub(super) mod net {
     use swoole_rs_corebase::lent::Spare;
     use swoole_rs_corebase::reactor::Socket;
 
-    pub(in super::super) fn recv_append(
-        _: Socket<'_>,
-        buffer: &mut swoole_rs_corebase::buffer::string::StringBuffer,
-    ) -> Option<usize> {
-        if let Some(reply) = mock(|m| m.replies.pop()) {
-            log(format!("recv {}", buffer.spare().len()));
-            buffer.append(&reply);
-            return Some(reply.len());
-        }
-        let n = count(io("recv", buffer.spare().len()));
-        // Zeros, as many as the read reports.
-        buffer.fill_within(n.unwrap_or(0), |spare| {
-            _ = spare.put(&vec![0; spare.room()]);
-        });
-        n
+    pub(in super::super) fn recv(_: Socket<'_>, spare: &mut Spare<'_>, _: c_int) -> Option<usize> {
+        receive("recv", spare)
     }
     pub(in super::super) fn recv_sync(
         _: Socket<'_>,
@@ -295,7 +282,7 @@ fn new_client(kind: c_int, is_async: bool) -> *mut Client {
     const OPS: SocketOps = SocketOps {
         dispatch_dns: async_dispatch,
         with_buffer: with_thread_buffer,
-        recv_append: net::recv_append,
+        recv: net::recv,
         recv_sync: net::recv_sync,
         recvfrom_sync: net::recvfrom_sync,
         send_sync: net::send_sync,
@@ -667,12 +654,14 @@ fn stream_read_hands_the_socks5_handshake_the_bytes_received() {
     assert!(writable(client));
     Handle::raw(client).input_init();
     taken();
-    mock(|m| m.replies = vec![vec![5, 0], vec![5, 0]]);
+    mock(|m| m.replies = vec![vec![0; 6], vec![0, 1], vec![5, 0], vec![5, 0]]);
     assert!(on_read(Handle::raw(client)));
-    assert_eq!(taken(), ["recv 65536", "write 19"]);
+    assert_eq!(taken(), ["recv 2", "write 19"]);
     assert_eq!(Handle::raw(client).proxy_state(Proxy::Socks5), Some(3));
     assert!(on_read(Handle::raw(client)));
-    assert_eq!(taken(), ["recv 65534", "call Connect 0"]);
+    assert!(on_read(Handle::raw(client)));
+    assert!(on_read(Handle::raw(client)));
+    assert_eq!(taken(), ["recv 2", "recv 2", "recv 6", "call Connect 0"]);
     assert_eq!(
         mock(|m| m.sent.clone()),
         [

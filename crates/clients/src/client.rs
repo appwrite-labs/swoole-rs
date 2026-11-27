@@ -1306,7 +1306,10 @@ fn socks5_receive_sync(this: Handle<'_>, timeout: f64) -> bool {
                 return false;
             }
             this.socket().edit(|socket| {
-                socket.set_timeout(remaining, swoole_rs_corebase::reactor::TimeoutKind::READ);
+                socket.set_timeout(
+                    remaining.max(0.001),
+                    swoole_rs_corebase::reactor::TimeoutKind::READ,
+                );
             });
         }
         let Some(room) = spare.get_mut(..end.saturating_sub(used)) else {
@@ -1318,7 +1321,12 @@ fn socks5_receive_sync(this: Handle<'_>, timeout: f64) -> bool {
                 return false;
             }
             Some(n) => used += n,
-            None => return false,
+            None => {
+                if timeout > 0.0 && log::last_error() == libc::ETIMEDOUT {
+                    log::set_last_error(ERROR_SOCKET_POLL_TIMEOUT);
+                }
+                return false;
+            }
         }
     }
     false
@@ -1549,7 +1557,7 @@ struct SocketOps {
     dispatch_dns: fn(Lookup, &crate::resolver::Request) -> bool,
     /// Lends the scratch buffer to the callback exactly once, synchronously.
     with_buffer: BufferLoan,
-    recv_append: fn(Socket<'_>, &mut StringBuffer) -> Option<usize>,
+    recv: fn(Socket<'_>, &mut Spare<'_>, c_int) -> Option<usize>,
     recv_sync: fn(Socket<'_>, &mut Spare<'_>, c_int) -> Option<usize>,
     recvfrom_sync: fn(Socket<'_>, &mut Spare<'_>, c_int, &mut SocketAddress) -> Option<usize>,
     send_sync: fn(Socket<'_>, &[u8], c_int) -> Option<usize>,
@@ -1580,7 +1588,7 @@ impl SocketOps {
     const NATIVE: Self = Self {
         dispatch_dns,
         with_buffer: |f| swoole_rs_corebase::buffer::string::with_thread_buffer(f),
-        recv_append: swoole_rs_corebase::tls::upstream::recv_append,
+        recv: swoole_rs_corebase::tls::upstream::recv_spare,
         recv_sync: swoole_rs_corebase::tls::upstream::recv_sync_spare,
         recvfrom_sync: swoole_rs_corebase::tls::upstream::recvfrom_sync_spare,
         send_sync: swoole_rs_corebase::tls::upstream::send_sync,
@@ -1829,7 +1837,8 @@ fn on_read(this: Handle<'_>) -> bool {
     let http = this.proxy_state(Proxy::Http);
     if http.is_some_and(|state| state != HTTP_PROXY_READY) {
         let accepted = this.edit_input(|input, socket, ops| {
-            (ops.recv_append)(socket, input) > Some(0) && swoole_rs_http::proxy_accept(input.view())
+            input.fill(|room| (ops.recv)(socket, room, 0)) > Some(0)
+                && swoole_rs_http::proxy_accept(input.view())
         });
         if !accepted {
             log::set_last_error(ERROR_HTTP_PROXY_HANDSHAKE_ERROR);
@@ -1842,26 +1851,35 @@ fn on_read(this: Handle<'_>) -> bool {
             return true;
         }
     }
-    let socks5 = this.proxy_state(Proxy::Socks5);
-    if socks5.is_some_and(|state| state != SOCKS5_READY) {
-        // What this read appended, copied: the handshake's send may reach the client.
+    if let Some(state) = this
+        .proxy_state(Proxy::Socks5)
+        .filter(|&s| s != SOCKS5_READY)
+    {
         let reply = this.edit_input(|input, socket, ops| {
-            let start = input.len();
-            (ops.recv_append)(socket, input)?;
-            Some(input.view().get(start..).unwrap_or_default().to_vec())
+            let end = swoole_rs_protocols::socks_reply_length(state, input.view())?;
+            let room = end.checked_sub(input.len())?;
+            input
+                .fill_within(room, |spare| (ops.recv)(socket, spare, 0))
+                .filter(|&n| n > 0)?;
+            let end = swoole_rs_protocols::socks_reply_length(state, input.view())?;
+            // Release the buffer before sending a request or calling onConnect.
+            Some((input.len() == end).then(|| {
+                let frame = input.view().to_vec();
+                input.clear();
+                frame
+            }))
         });
-        let Some(reply) = reply.filter(|reply| !reply.is_empty()) else {
-            log::set_last_error(ERROR_SOCKS5_HANDSHAKE_FAILED);
-            return connect_failed(this);
-        };
-        if !this.socks5_handshake(&reply) {
-            log::set_last_error(ERROR_SOCKS5_HANDSHAKE_FAILED);
-            return connect_failed(this);
+        match reply {
+            Some(None) => return true,
+            Some(Some(frame)) if this.socks5_handshake(&frame) => {}
+            _ => {
+                log::set_last_error(ERROR_SOCKS5_HANDSHAKE_FAILED);
+                return connect_failed(this);
+            }
         }
         if this.proxy_state(Proxy::Socks5) != Some(SOCKS5_READY) {
             return true;
         }
-        this.input_clear();
         if !do_ssl_handshake {
             this.on_connect();
             return true;
@@ -1896,7 +1914,7 @@ fn on_read(this: Handle<'_>) -> bool {
     let listener = this.listener(ClientEvent::Receive);
     let read = this.edit_input(|input, socket, ops| {
         let start = input.len();
-        let n = (ops.recv_append)(socket, input)?;
+        let n = input.fill(|room| (ops.recv)(socket, room, 0))?;
         let payload = listener
             .as_ref()
             .filter(|_| n != 0)
