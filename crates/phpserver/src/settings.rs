@@ -9,7 +9,9 @@ use std::{
 };
 use swoole_rs_corebase::CCast;
 use swoole_rs_server::{ServerText, server_methods, view};
-use swoole_rs_zend::{Array, Call, E_ERROR, E_WARNING, Value, bailout, message, report};
+use swoole_rs_zend::{
+    Array, Call, E_ERROR, E_WARNING, Owned, Value, ZString, bailout, message, report,
+};
 
 /// `SW_ERROR_PHP_RUNTIME_NOTICE`, `SW_ERROR_SERVER_UNRELATED_THREAD`.
 const SW_ERROR_PHP_RUNTIME_NOTICE: c_int =
@@ -335,8 +337,8 @@ fn set(call: &Call) {
     // Every early exit after an `E_ERROR` or a deferred bailout leaves the
     // handler, whose last step raises it.
     let this = ServerObject::this(call);
-    if matches!(options(&s, this), Ok(true)) {
-        match finish(this, vht) {
+    if let Ok(bootstrap) = options(&s) {
+        match finish(this, vht, bootstrap) {
             Ok(result) => call.set_bool(result),
             Err(bailed) => bailed.defer(),
         }
@@ -347,7 +349,11 @@ fn set(call: &Call) {
 
 /// `$this->ports[0]->set($settings)` (Port's own method), then the merge into
 /// `$this->setting`.
-fn finish(this: ServerObject<'_>, settings: &Value) -> Result<bool, bailout::Bailout> {
+fn finish(
+    this: ServerObject<'_>,
+    settings: &Value,
+    bootstrap: Option<ZString>,
+) -> Result<bool, bailout::Bailout> {
     let result = this
         .port(0)
         .call_method(Some(&crate::PORT), b"set", &[settings])?;
@@ -355,16 +361,29 @@ fn finish(this: ServerObject<'_>, settings: &Value) -> Result<bool, bailout::Bai
         return Ok(false);
     }
     crate::lifecycle::Props::server(this).merge(c"setting", settings);
+    if swoole_rs_phpswoole::setting_ok() && crate::server::THREAD.load(Ordering::Relaxed) {
+        let merged = this.value().property(c"setting");
+        if let Some(arguments) = merged
+            .as_deref()
+            .and_then(Value::array)
+            .and_then(|a| a.get(b"init_arguments"))
+        {
+            this.set_init_arguments(arguments);
+        }
+        if let Some(bootstrap) = bootstrap.filter(|_| swoole_rs_phpswoole::setting_ok()) {
+            crate::lifecycle::Props::own(this).set(c"bootstrap", &Owned::string(bootstrap));
+        }
+    }
     bailout::outcome(true)
 }
 
-/// The options, in upstream's order. `Ok(false)`: return false.
-fn options(s: &Settings, this: ServerObject<'_>) -> Result<bool, Stop> {
+/// Parse options in upstream order, holding the bootstrap until the port accepts its settings.
+fn options(s: &Settings) -> Result<Option<ZString>, Stop> {
     use field as f;
     // php_swoole_set_global_option, _coroutine_option and _aio_option; the
     // first defers its fatal error for a size that does not parse.
     let Some(vht) = s.vht else {
-        return Ok(true);
+        return Ok(None);
     };
     if !swoole_rs_phpswoole::set_global(vht) {
         return Err(Stop);
@@ -448,21 +467,23 @@ fn options(s: &Settings, this: ServerObject<'_>) -> Result<bool, Stop> {
         })?;
     }
     workers(s)?;
-    http(s, this)
+    http(s)
 }
 
-/// `bootstrap` into `$this->bootstrap`, and `init_arguments` kept on the object.
-fn thread_options(s: &Settings, this: ServerObject<'_>) -> Step {
-    if let Some(value) = s.get(c"bootstrap") {
-        crate::lifecycle::Props::own(this).set(c"bootstrap", value);
-        if bailout::pending() {
-            return Err(Stop);
+fn thread_options(s: &Settings) -> Result<Option<ZString>, Stop> {
+    let bootstrap = s.get(c"bootstrap").map(Value::string);
+    checked()?;
+    if let Some(value) = s.get(c"init_arguments") {
+        let valid = swoole_rs_zend::host::callable::is_callable(value).map_err(|bailed| {
+            bailed.defer();
+            Stop
+        })?;
+        checked()?;
+        if !valid {
+            return Err(invalid_setting(c"init_arguments must be callable or null"));
         }
     }
-    if let Some(value) = s.get(c"init_arguments") {
-        this.set_init_arguments(value);
-    }
-    Ok(())
+    Ok(bootstrap)
 }
 
 /// The task, worker and connection options.
@@ -593,7 +614,7 @@ fn cpu_affinity_ignore(s: &Settings, value: &Value) -> Step {
 }
 
 /// The HTTP, buffer, queue and thread options, and the final checks.
-fn http(s: &Settings, this: ServerObject<'_>) -> Result<bool, Stop> {
+fn http(s: &Settings) -> Result<Option<ZString>, Stop> {
     use field as f;
     s.flag(c"http_parse_cookie", f::HTTP_PARSE_COOKIE);
     s.flag(c"http_parse_post", f::HTTP_PARSE_POST);
@@ -711,9 +732,11 @@ fn http(s: &Settings, this: ServerObject<'_>) -> Result<bool, Stop> {
         }
         s.set(f::MESSAGE_QUEUE_KEY, v.max(0));
     }
-    if s.fact(f::THREAD) != 0 {
-        thread_options(s, this)?;
-    }
+    let bootstrap = if s.fact(f::THREAD) != 0 {
+        thread_options(s)?
+    } else {
+        None
+    };
     let ipc = s.fact(f::TASK_IPC_MODE);
     let queue = ipc == 2 || ipc == 3;
     if s.fact(f::HAVE_MSGQUEUE) == 0 && queue {
@@ -724,7 +747,7 @@ fn http(s: &Settings, this: ServerObject<'_>) -> Result<bool, Stop> {
             c"cannot use msgqueue when `task_enable_coroutine` is enable",
         ));
     }
-    Ok(true)
+    Ok(bootstrap)
 }
 
 /// `url_rewrite_rules`: string keys to string replacements.

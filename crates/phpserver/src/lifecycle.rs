@@ -1368,9 +1368,12 @@ fn start(call: &Call) {
         fatal(E_WARNING, text.as_cstr());
         return call.set_bool(false);
     }
-    if let Err(bailout) = crate::thread::prepare(object, serv) {
-        return bailout.defer();
-    }
+    bailout::defer(crate::thread::with_start(object, serv, || {
+        start_prepared(call, object, serv);
+    }));
+}
+
+fn start_prepared(call: &Call, object: ServerObject<'_>, serv: view::Server<'_>) {
     register_callback(object, serv);
     if before_start(object, serv).is_err() {
         return;
@@ -1388,7 +1391,6 @@ fn start(call: &Call) {
         }
         _ => {}
     }
-    crate::thread::release();
     call.set_bool(true);
 }
 

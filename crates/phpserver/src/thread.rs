@@ -24,7 +24,7 @@ struct Start {
     argv: Option<Arguments>,
 }
 
-/// The running thread-mode server's [`Start`], from `prepare` until `release`.
+/// The running thread-mode server's [`Start`], while `with_start` runs.
 static START: Mutex<Option<Arc<Start>>> = Mutex::new(None);
 
 /// The settings `copy_setting` serialized for the worker threads, until `free_setting`.
@@ -133,8 +133,13 @@ fn run_worker(object: ServerObject<'_>) -> Result<(), Bailout> {
 /// `start()` in thread mode, before the server starts: the bootstrap script,
 /// the `init_arguments` result, and the thread starter; the runtime hooks are
 /// enabled before any thread is created.
-pub(crate) fn prepare(object: ServerObject<'_>, serv: view::Server<'_>) -> Result<(), Bailout> {
+pub(crate) fn with_start(
+    object: ServerObject<'_>,
+    serv: view::Server<'_>,
+    start: impl FnOnce(),
+) -> Result<(), Bailout> {
     if !thread_mode(serv) {
+        start();
         return Ok(());
     }
     let this = object.value();
@@ -152,12 +157,18 @@ pub(crate) fn prepare(object: ServerObject<'_>, serv: view::Server<'_>) -> Resul
     }
     let bootstrap = bootstrap();
     let argv = init_arguments(object)?;
-    set_start(Some(Start { bootstrap, argv }));
-    set_worker_thread_start(Some(start_thread));
+    if !swoole_rs_phpswoole::setting_ok() {
+        return Ok(());
+    }
     let flags = swoole_rs_phpcoroutines::hook_flags();
     if flags > 0 {
         swoole_rs_phpruntime::enable_hook(flags)?;
     }
+    set_start(Some(Start { bootstrap, argv }));
+    set_worker_thread_start(Some(start_thread));
+    start();
+    set_worker_thread_start(None);
+    set_start(None);
     Ok(())
 }
 
@@ -192,12 +203,6 @@ fn start_thread(fresh: swoole_rs_corebase::Fresh, thread: &Thread, run: Rc<dyn F
         |status| thread.exit(status),
     );
     MAIN.set(None);
-}
-
-/// After `start()`: the bootstrap script and arguments go.
-pub(crate) fn release() {
-    set_worker_thread_start(None);
-    set_start(None);
 }
 
 /// `copy_setting`: the serializable settings, serialized for the worker
