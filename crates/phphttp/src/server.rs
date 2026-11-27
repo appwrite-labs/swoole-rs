@@ -7,6 +7,7 @@
 use crate::{
     context::{self, Ctx, Hold},
     host,
+    http2::IdMap,
     parse::{self, Key, add_field, add_server, key, parse_request},
     state::State,
     websocket,
@@ -15,6 +16,7 @@ use std::{
     cell::Cell,
     collections::VecDeque,
     ffi::c_int,
+    hash::BuildHasherDefault,
     mem::ManuallyDrop,
     sync::atomic::{AtomicU32, Ordering::SeqCst},
 };
@@ -22,7 +24,6 @@ use swoole_rs_corebase::CellExt;
 use swoole_rs_corebase::constants::{
     SW_HTTP_BAD_REQUEST_PACKET, SW_HTTP_SERVICE_UNAVAILABLE_PACKET,
 };
-use swoole_rs_corebase::memory::flat::Table;
 use swoole_rs_corebase::process::worker_globals::with_current;
 use swoole_rs_corebase::process::worker_record::WorkerType;
 use swoole_rs_corebase::{CCast, HookType, swoole_isset_hook};
@@ -110,8 +111,6 @@ struct Receive<'a> {
     /// WebSocket state to read.
     websocket_port: bool,
     http2: bool,
-    /// The connection's fd, when the session's addresses may be cached.
-    cache: Option<usize>,
     /// The server's `enable_coroutine`: handlers run in a new coroutine.
     coroutine: bool,
 }
@@ -119,17 +118,15 @@ struct Receive<'a> {
 // The connection's addresses and its peer's port and loopback check.
 use swoole_rs_clients::address::{address_port, is_loopback, with_host};
 
-/// A keep-alive session's server and remote address, until it closes, by its
-/// connection's fd. The session check drops a reused fd's entry. RSHUTDOWN
-/// releases them; a thread's exit, after the request heap is gone, must not.
-type Addresses = ManuallyDrop<Table<(i64, [ZString; 2])>>;
+/// A keep-alive session's addresses live until close or RSHUTDOWN, never past the PHP heap.
+type Addresses = ManuallyDrop<IdMap<i64, [ZString; 2]>>;
 /// Requests waiting for the worker's concurrency to drop, oldest first.
 type Queue = VecDeque<Hold>;
 
 php_local! {
     /// Taken out and put back around each lookup, which runs no PHP code; an
     /// entry it replaces or removes is released once the table is back.
-    static ADDRESSES: Cell<Addresses> = Cell::new(ManuallyDrop::new(Table::new()));
+    static ADDRESSES: Cell<Addresses> = Cell::new(ManuallyDrop::new(IdMap::with_hasher(BuildHasherDefault::new())));
     /// Taken out and put back around each push and pop.
     static QUEUED: Cell<Queue> = Cell::new(Queue::new());
 }
@@ -154,7 +151,7 @@ fn address(server: view::Server<'_>, conn: Connection<'_>, local: bool) -> ZStri
 
 /// `swoole_http_server_populate_ip_and_port`: `$request->server`'s ports and
 /// addresses, then optionally `master_time`. `loopback` is 4 or 6 for a loopback peer, otherwise 0. With
-/// `cache`, the connection's fd, a session's addresses are made once and kept
+/// keep-alive in a cacheable dispatch mode, a session's addresses are made once and kept
 /// until the session closes. `server` and `conn` are the live server and the
 /// request's connection; `state` the request's context.
 #[expect(clippy::too_many_arguments, reason = "upstream's request facts")]
@@ -166,7 +163,6 @@ fn addresses(
     local_port: i64,
     remote_port: i64,
     loopback: c_int,
-    cache: Option<usize>,
     rest: impl FnOnce(&mut Insertions<'_>),
 ) {
     let names = if loopback != 0 {
@@ -176,12 +172,21 @@ fn addresses(
             Key::LoopbackV4
         };
         key(name).map(|name| [name.to_owned(), name.to_owned()])
+    } else if state.keepalive && can_cache_session_addr(server) {
+        Some(ADDRESSES.with(|cell| {
+            cell.with_taken(|cached| {
+                if let Some(pair) = cached.get(&session) {
+                    return pair.each_ref().map(|addr| ZStr::to_owned(addr));
+                }
+                let pair = [address(server, conn, true), address(server, conn, false)];
+                if cached.try_reserve(1).is_ok() {
+                    cached.insert(session, pair.each_ref().map(|addr| ZStr::to_owned(addr)));
+                }
+                pair
+            })
+        }))
     } else {
-        Some(
-            cache
-                .and_then(|fd| cached(server, conn, fd, session))
-                .unwrap_or_else(|| [address(server, conn, true), address(server, conn, false)]),
-        )
+        Some([address(server, conn, true), address(server, conn, false)])
     };
     parse::edit_server(state, |server| {
         add_field(server, Key::ServerPort, Owned::long(local_port));
@@ -192,32 +197,6 @@ fn addresses(
         }
         rest(server);
     });
-}
-
-/// The session's cached addresses, each referenced once more for the caller;
-/// `None` when the cache can't grow.
-fn cached(
-    server: view::Server<'_>,
-    conn: Connection<'_>,
-    fd: usize,
-    session: i64,
-) -> Option<[ZString; 2]> {
-    let mut inserted = Ok(None);
-    let copies = ADDRESSES.with(|cell| {
-        cell.with_taken(|cached| {
-            if let Some((owner, addresses)) = cached.get(fd)
-                && *owner == session
-            {
-                return addresses.each_ref().map(|address| ZStr::to_owned(address));
-            }
-            let addresses = [address(server, conn, true), address(server, conn, false)];
-            let copies = addresses.each_ref().map(|address| ZStr::to_owned(address));
-            inserted = cached.insert(fd, (session, addresses));
-            copies
-        })
-    });
-    // A reused fd's old entry, or the entry the table couldn't hold, goes now.
-    inserted.ok().map(|_| copies)
 }
 
 /// Install HTTP event handlers in the server's own callback slots. Its effective
@@ -302,7 +281,6 @@ fn receive<'a>(
         websocket,
         websocket_port,
         http2: conn.http2_stream(),
-        cache: None,
         coroutine: false,
     };
     let route = route(&facts);
@@ -318,9 +296,6 @@ fn receive<'a>(
                 4
             };
     }
-    facts.cache = can_cache_session_addr(server)
-        .then(|| usize::try_from(conn.fd()).ok())
-        .flatten();
     facts.coroutine = enable_coroutine(server);
     let hold = context::context_new(session);
     let mut ctx = hold.ctx();
@@ -532,7 +507,6 @@ fn handle(
         return Ok(Route::Done);
     }
     let state = ctx.state();
-    let cache = facts.cache.filter(|_| state.keepalive);
     let master_time = facts.last_recv_time.c_cast::<zend_long>();
     if let Some(conn) = server.by_session(session) {
         addresses(
@@ -543,7 +517,6 @@ fn handle(
             facts.local_port,
             facts.remote_port,
             facts.loopback,
-            cache,
             |server| add_field(server, Key::MasterTime, Owned::long(master_time)),
         );
     } else {
@@ -593,7 +566,6 @@ struct Http2Connection {
     remote_port: i64,
     loopback: c_int,
     server_fd: c_int,
-    cache: Option<usize>,
     static_handler: bool,
     unavailable: bool,
     coroutine: bool,
@@ -623,9 +595,6 @@ fn http2_connection(
         remote_port,
         loopback,
         server_fd: conn.server_fd(),
-        cache: can_cache_session_addr(server)
-            .then(|| usize::try_from(conn.fd()).ok())
-            .flatten(),
         static_handler: server.config().enable_static_handler.get(),
         unavailable: counters.concurrency.load(SeqCst) >= counters.max_concurrency.load(SeqCst),
         coroutine: enable_coroutine(server),
@@ -648,7 +617,6 @@ pub fn http2_request(mut ctx: Ctx) -> Result<(), bailout::Bailout> {
         return context::release_objects(ctx);
     }
     let state = ctx.state();
-    let cache = facts.cache.filter(|_| state.keepalive);
     let now = swoole_rs_corebase::time_now();
     let float = swoole_rs_corebase::microtime();
     let master_time = facts.last_recv_time.c_cast::<zend_long>();
@@ -661,7 +629,6 @@ pub fn http2_request(mut ctx: Ctx) -> Result<(), bailout::Bailout> {
         facts.local_port,
         facts.remote_port,
         facts.loopback,
-        cache,
         |server| {
             add_field(server, Key::RequestTime, Owned::long(now));
             add_field(server, Key::RequestTimeFloat, Owned::double(float));
@@ -705,20 +672,7 @@ pub fn http2_request(mut ctx: Ctx) -> Result<(), bailout::Bailout> {
 /// `php_swoole_http_server_onClose`: forget the session's addresses, then
 /// the server's `onClose`.
 pub fn http_server_on_close(server: view::Server<'_>, info: &DataHead) {
-    let session = info.fd;
-    if let Some(conn) = server.by_session(session)
-        && let Ok(fd) = usize::try_from(conn.fd())
-    {
-        let removed = ADDRESSES.with(|cell| {
-            cell.with_taken(|cached| {
-                cached
-                    .get(fd)
-                    .is_some_and(|(owner, _)| *owner == session)
-                    .then(|| cached.remove(fd))
-            })
-        });
-        drop(removed);
-    }
+    drop(ADDRESSES.with(|cell| cell.with_taken(|cache| cache.remove(&info.fd))));
     php_swoole_server_on_close(server, info);
 }
 
@@ -827,7 +781,6 @@ mod tests {
             websocket,
             websocket_port: true,
             http2,
-            cache: None,
             coroutine: false,
         }
     }
