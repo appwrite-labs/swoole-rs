@@ -152,6 +152,11 @@ pub(super) fn setup(ops: &Ops) -> bool {
             }
         }
     }
+    // A temporary native handler may have outlived the reactor. Keep the
+    // restored descriptor ready for the next reactor to attach.
+    if !(ops.available)() {
+        return true;
+    }
     if !(descriptor.installed)() {
         (descriptor.install)();
     }

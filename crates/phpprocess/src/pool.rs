@@ -861,13 +861,11 @@ fn start(call: &Call) {
     // The reactor must be cleaned up before registering signals.
     swoole_rs_corebase::reactor::swoole_event_free();
     let master_pid = getpid();
-    let signals = pool_signals();
-    let mut previous = [SignalHandler::NONE; 6];
-    for (signo, old) in signals.iter().zip(previous.iter_mut()) {
-        if *signo != 0 {
-            *old = host::signal_swap(*signo, SignalHandler::new(on_signal), false);
-        }
-    }
+    // Keep the caller’s dispositions saved until the pool and its timers finish.
+    let _signals = swoole_rs_corebase::process::signal::SignalGuard::install(
+        pool_signals(),
+        SignalHandler::new(on_signal),
+    );
     CURRENT.store(view.raw(), Ordering::Release);
     let with_message = this.on_message.is_set();
     if !with_message {
@@ -901,12 +899,6 @@ fn start(call: &Call) {
         && swoole_rs_corebase::timer::thread_timer_detached()
     {
         swoole_rs_corebase::timer::swoole_timer_free();
-    }
-    for (signo, old) in signals.iter().zip(previous) {
-        if *signo != 0 {
-            // Restores the handler `start()` replaced.
-            _ = host::signal_swap(*signo, old, false);
-        }
     }
     if !started && !swoole_rs_zend::bailout::pending() {
         call.set_bool(false);

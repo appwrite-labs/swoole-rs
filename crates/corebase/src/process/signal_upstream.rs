@@ -40,7 +40,7 @@ fn available() -> bool {
     !crate::reactor::event_api::swr_v1_event_reactor().is_null()
 }
 
-fn has_reactor() -> bool {
+pub(super) fn has_reactor() -> bool {
     current().is_some()
 }
 
@@ -215,6 +215,11 @@ mod descriptor {
         installed,
         install,
     };
+}
+
+#[cfg(target_os = "linux")]
+pub(super) fn restore_descriptor() {
+    signal_loop::setup(&OPS);
 }
 
 /// Reattach listeners to the newly published main-thread reactor.
