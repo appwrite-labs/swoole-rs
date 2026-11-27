@@ -4,6 +4,23 @@ const SOCKS5_AUTH: u8 = 2;
 const SOCKS5_CONNECT: u8 = 3;
 pub const SOCKS5_READY: u8 = 4;
 
+/// Next reply boundary, or `None` for an invalid CONNECT address type.
+/// Stop at each length field so application data stays in the socket.
+#[must_use]
+pub fn socks_reply_length(state: u8, prefix: &[u8]) -> Option<usize> {
+    Some(match (state, prefix) {
+        (_, [] | [_]) => 2,
+        (SOCKS5_CONNECT, [5, 0] | [5, 0, _]) => 4,
+        (SOCKS5_CONNECT, [5, 0, _, 1, ..]) => 10,
+        (SOCKS5_CONNECT, [5, 0, _, 4, ..]) => 22,
+        (SOCKS5_CONNECT, [5, 0, _, 3]) => 5,
+        (SOCKS5_CONNECT, [5, 0, _, 3, len, ..]) => 7 + usize::from(*len),
+        (SOCKS5_CONNECT, [5, 0, _, _, ..]) => return None,
+        // Let the handshake report the proxy's version, method or result error.
+        _ => prefix.len(),
+    })
+}
+
 /// The request a handshake step sends next.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SocksSend {

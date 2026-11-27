@@ -581,7 +581,7 @@ fn sync_connect_through_socks5_routes_and_handshakes() {
         Handle::raw(client).proxy_state(Proxy::Socks5),
         Some(SOCKS5_WAIT)
     );
-    mock(|m| m.replies = vec![vec![5, 0], vec![5, 0]]);
+    mock(|m| m.replies = vec![vec![0; 6], vec![0, 1], vec![5, 0], vec![5, 0]]);
     assert_eq!(connect(client, c"example.test", 3.0, 0), OK);
     assert_eq!(
         taken(),
@@ -590,9 +590,11 @@ fn sync_connect_through_socks5_routes_and_handshakes() {
             "assign proxy.test:1080 true",
             "connect Sync",
             "send_sync 3",
-            "recv_sync 64",
+            "recv_sync 2",
             "send_sync 19",
-            "recv_sync 64",
+            "recv_sync 2",
+            "recv_sync 2",
+            "recv_sync 6",
         ]
     );
     assert_eq!(

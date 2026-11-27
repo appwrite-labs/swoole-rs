@@ -1275,6 +1275,55 @@ pub fn connect(this: Handle<'_>, host: &CStr, port: c_int, timeout: f64, flags: 
     }
 }
 
+/// Receive one complete SOCKS5 reply per handshake step, leaving tunnel data queued.
+fn socks5_receive_sync(this: Handle<'_>, timeout: f64) -> bool {
+    let started = std::time::Instant::now();
+    // The longest reply is a CONNECT with a 255-byte domain and a port.
+    let mut reply = [0; 262];
+    let mut used = 0;
+    while let Some(state) = this.proxy_state(Proxy::Socks5) {
+        if state == SOCKS5_READY {
+            return true;
+        }
+        let Some((prefix, spare)) = reply.split_at_mut_checked(used) else {
+            return false;
+        };
+        let Some(end) = swoole_rs_protocols::socks_reply_length(state, prefix) else {
+            log::set_last_error(ERROR_SOCKS5_HANDSHAKE_FAILED);
+            return false;
+        };
+        if end == used {
+            if !this.socks5_handshake(prefix) {
+                return false;
+            }
+            used = 0;
+            continue;
+        }
+        if timeout > 0.0 {
+            let remaining = timeout - started.elapsed().as_secs_f64();
+            if remaining <= 0.0 {
+                log::set_last_error(ERROR_SOCKET_POLL_TIMEOUT);
+                return false;
+            }
+            this.socket().edit(|socket| {
+                socket.set_timeout(remaining, swoole_rs_corebase::reactor::TimeoutKind::READ);
+            });
+        }
+        let Some(room) = spare.get_mut(..end.saturating_sub(used)) else {
+            return false;
+        };
+        match recv(this, room, 0) {
+            Some(0) => {
+                log::set_last_error(ERROR_SOCKS5_HANDSHAKE_FAILED);
+                return false;
+            }
+            Some(n) => used += n,
+            None => return false,
+        }
+    }
+    false
+}
+
 /// `Client_tcp_connect_sync`: connect, then the proxy handshake and TLS.
 fn tcp_connect_sync(
     this: Handle<'_>,
@@ -1315,18 +1364,10 @@ fn tcp_connect_sync(
             return false;
         }
         this.set_proxy_state(Proxy::Socks5, SOCKS5_HANDSHAKE);
-        // Each answer lands at the start of the emptied buffer.
-        let ready = this.with_buffer(|shared| {
-            loop {
-                // Zeroed first, so the reply is the bytes read.
-                shared.read_zeroed(shared.size(), |bytes| recv(this, bytes, 0).unwrap_or(0));
-                if shared.is_empty() || !this.socks5_handshake(shared.view()) {
-                    return false;
-                }
-                if this.proxy_state(Proxy::Socks5) == Some(SOCKS5_READY) {
-                    return true;
-                }
-            }
+        let timeout = this.socket().read(|socket| socket.io_timeout(false));
+        let ready = socks5_receive_sync(this, timeout);
+        this.socket().edit(|socket| {
+            socket.set_timeout(timeout, swoole_rs_corebase::reactor::TimeoutKind::READ);
         });
         if !ready {
             return false;
