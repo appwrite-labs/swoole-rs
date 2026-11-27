@@ -11,10 +11,7 @@ use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::FileExt;
 
 use crate::constants::TaskFlag;
-use crate::{
-    DataHead, datahead_dump, log, microtime, swr_v1_core_current_task_id,
-    swr_v1_core_set_current_task_id, task_tmpfile,
-};
+use crate::{DataHead, datahead_dump, log, microtime, task_tmpfile};
 
 use crate::buffer::string::StringBuffer;
 use crate::ossupport::fd_write_all;
@@ -262,8 +259,19 @@ impl TaskBuffer {
     /// `Server::task_pack`: a task header from this worker, with `data` inline or
     /// in a temporary file.
     pub fn pack(&mut self, data: &[u8]) -> bool {
-        let id = swr_v1_core_current_task_id();
-        swr_v1_core_set_current_task_id(id.wrapping_add(1));
+        let Some(id) = crate::global::next_task_id() else {
+            self.head = DataHead {
+                fd: -1,
+                ..DataHead::default()
+            };
+            log::error_log(
+                log::LogLevel::SW_LOG_WARNING,
+                libc::EOVERFLOW,
+                c"Server::task_pack",
+                format_args!("task ID range exhausted"),
+            );
+            return false;
+        };
         let reactor_id = swoole_get_worker_id().c_cast::<i16>();
         self.head = DataHead {
             fd: id,
@@ -657,6 +665,7 @@ mod tests {
 
     mod methods {
         use super::super::*;
+        use crate::{swr_v1_core_current_task_id, swr_v1_core_set_current_task_id};
 
         /// `task_pack` draws from the process-wide task id, so its tests take turns.
         pub(super) static TASK_ID: std::sync::Mutex<()> = std::sync::Mutex::new(());

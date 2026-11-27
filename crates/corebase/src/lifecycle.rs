@@ -123,6 +123,7 @@ pub fn swr_v1_core_swoole_init(fatal_error: Option<crate::FatalError>) {
         crate::swr_v1_core_set_trace_flags(0x7fff_ffff);
     }
     pool::init();
+    pool::init_task_id();
     if !built_with(Switch::Futex) {
         pool::wait_registry_init();
     }

@@ -68,7 +68,6 @@ record! {
     wait_signal: AtomicBool, bool = false, swr_v1_core_wait_signal, swr_v1_core_set_wait_signal;
     dns_lookup_random: AtomicBool, bool = false,
         swr_v1_core_dns_lookup_random, swr_v1_core_set_dns_lookup_random;
-    current_task_id: AtomicI64, c_long = 0, swr_v1_core_current_task_id, swr_v1_core_set_current_task_id;
     signal_fd: AtomicI32, c_int = 0, swr_v1_core_signal_fd, swr_v1_core_set_signal_fd;
     signal_alarm: AtomicBool, bool = false,
         swr_v1_core_signal_alarm, swr_v1_core_set_signal_alarm;
@@ -253,9 +252,39 @@ pub fn bug_report_append(text: &[u8]) {
     message.push(0);
 }
 
+// Low-level callers can pack tasks before the extension initializes its shared pool.
+static LOCAL_TASK_ID: AtomicI64 = AtomicI64::new(0);
+
+#[must_use]
+pub extern "C" fn swr_v1_core_current_task_id() -> c_long {
+    crate::memory::members::pool::with_task_id(&LOCAL_TASK_ID, |id| id.load(Ordering::Relaxed))
+}
+
+pub extern "C" fn swr_v1_core_set_current_task_id(value: c_long) {
+    crate::memory::members::pool::with_task_id(&LOCAL_TASK_ID, |id| {
+        id.store(value, Ordering::Relaxed);
+    });
+}
+
+pub(crate) fn next_task_id() -> Option<c_long> {
+    crate::memory::members::pool::with_task_id(&LOCAL_TASK_ID, claim_task_id)
+}
+
+fn claim_task_id(id: &AtomicI64) -> Option<c_long> {
+    id.try_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
+        if current < 0 {
+            None
+        } else {
+            current.checked_add(1)
+        }
+    })
+    .ok()
+}
+
 /// Zero every field, as upstream's `SwooleG = {}` does.
 pub fn swr_v1_core_reset() {
     reset_record();
+    LOCAL_TASK_ID.store(0, Ordering::Relaxed);
     set_fatal_error(None);
     swr_v1_core_set_print_backtrace(None);
     swr_v1_core_set_stdout(None);
@@ -408,6 +437,17 @@ pub fn time_now() -> crate::sys::UnixSeconds {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn task_ids_stop_before_wrapping() {
+        let id = AtomicI64::new(c_long::MAX - 1);
+        assert_eq!(claim_task_id(&id), Some(c_long::MAX - 1));
+        assert_eq!(claim_task_id(&id), None);
+        assert_eq!(id.load(Ordering::Relaxed), c_long::MAX);
+        id.store(-1, Ordering::Relaxed);
+        assert_eq!(claim_task_id(&id), None);
+        assert_eq!(id.load(Ordering::Relaxed), -1);
+    }
 
     /// Upstream's `time.get_seconds`: the wall clock's seconds against the C library's.
     /// glibc's `time(NULL)` reads `CLOCK_REALTIME_COARSE`, which trails the precise clock
