@@ -1259,6 +1259,8 @@ impl Client {
             let read = match body.source.read_stream(&mut buffer) {
                 Ok(chunk) => chunk,
                 Err(bailout) => {
+                    // Close before deferring: deferred bailouts suppress Zend property updates.
+                    self.close(true);
                     bailout.defer();
                     return false;
                 }
