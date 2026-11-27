@@ -138,19 +138,17 @@ pub(crate) fn proxy_response_length(input: &[u8]) -> Result<Option<usize>, crate
     let Some(end) = swoole_rs_corebase::buffer::string::find_bytes(rest, b"\r\n") else {
         return Ok(None);
     };
+    // C isspace also recognizes vertical tab.
+    let space = |b: &u8| b.is_ascii_whitespace() || *b == 0x0b;
     let line = rest.get(..end).unwrap_or_default();
-    let at = line
-        .iter()
-        .position(|b| !b.is_ascii_whitespace() && *b != 0x0b)
-        .unwrap_or(line.len());
-    let line = tail(line, at);
+    let line = tail(
+        line,
+        line.iter().position(|b| !space(b)).unwrap_or(line.len()),
+    );
     let Some(reason) = line.strip_prefix(b"200") else {
         return Err(crate::MalformedHead);
     };
-    if reason
-        .first()
-        .is_some_and(|b| !b.is_ascii_whitespace() && *b != 0x0b)
-    {
+    if reason.first().is_some_and(|b| !space(b)) {
         return Err(crate::MalformedHead);
     }
     Ok(crate::header_delimiter(input).map(|position| position + 4))
@@ -197,6 +195,29 @@ pub fn proxy_handshake(input: &[u8]) -> Handshake {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn parse_response() {
+        let parse = proxy_response_length;
+        assert_eq!(parse(b"HTTP/1."), Ok(None));
+        assert_eq!(parse(b"not-http"), Err(crate::MalformedHead));
+        assert_eq!(parse(b"HTTP/1.1 200 Connection established\r\n"), Ok(None));
+        for response in [
+            b"HTTP/1.1 407 Proxy Authentication Required\r\n".as_slice(),
+            b"HTTP/1.1 2000 OK\r\n\r\n",
+            b"HTTP/2 200 OK\r\n\r\n",
+        ] {
+            assert_eq!(parse(response), Err(crate::MalformedHead));
+        }
+        for response in [b"HTTP/1.0 200\r\n\r\n", b"HTTP/1.1 200\r\n\r\n"] {
+            assert_eq!(parse(response), Ok(Some(response.len())));
+        }
+        let head = b"HTTP/1.1 200 OK\r\nProxy-Agent: test\r\n\r\n";
+        assert_eq!(
+            parse(&[head.as_slice(), b"TUNNEL DATA"].concat()),
+            Ok(Some(head.len()))
+        );
+    }
+
     #[test]
     fn credentials_preserve_fixed_prefix_and_native_nul_rules() {
         for size in [0, 1, 253, 254, 255, 256, 1024] {
