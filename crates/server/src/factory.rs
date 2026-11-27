@@ -249,7 +249,11 @@ pub(crate) fn dispatch(serv: crate::view::Server<'_>, task: &mut SendData) -> bo
 /// `factory_->finish(data)`.
 pub(crate) fn finish(serv: crate::view::Server<'_>, send: &SendData) -> bool {
     if serv.config().mode_ == Mode::Process {
-        crate::process_factory::finish(serv, send)
+        let accepted = crate::process_factory::finish(serv, send);
+        if !accepted {
+            crate::send::discard_file(send.info(), send.payload());
+        }
+        accepted
     } else {
         crate::base_factory::finish(serv, send)
     }

@@ -1,7 +1,5 @@
 //! Reactor threads' worker-pipe write path (`src/server/reactor_thread.cc`).
-use core::ffi::{c_int, c_long};
-use core::mem::offset_of;
-use core::sync::atomic::Ordering::SeqCst;
+use core::ffi::c_int;
 
 use swoole_rs_corebase::reactor::Event;
 use swoole_rs_corebase::{DataHead, ServerEvent, log, microtime};
@@ -10,10 +8,10 @@ use swoole_rs_error::ErrorCode as E;
 use crate::reactor_handle::Reactor;
 use crate::records::Lookup;
 use crate::{ServerState, view};
-use swoole_rs_corebase::log::LogLevel::{SW_LOG_NOTICE, SW_LOG_WARNING};
+use swoole_rs_corebase::log::LogLevel::SW_LOG_WARNING;
 
 /// `ReactorThread_onPipeWrite`: flush the queued messages to a worker, dropping
-/// those for connections the server already closed; false when the pipe failed.
+/// those for expired sessions when configured; false when the pipe failed.
 pub(crate) fn pipe_write(serv: view::Server<'_>, reactor: Reactor, event: &Event) -> bool {
     let Some(sock) = event.socket() else {
         return false;
@@ -46,40 +44,31 @@ pub(crate) fn pipe_write(serv: view::Server<'_>, reactor: Reactor, event: &Event
     true
 }
 
-/// `N` bytes of `message` at `at`, zero past its end.
-fn field<const N: usize>(message: &[u8], at: usize) -> [u8; N] {
-    let bytes = message.get(at..).and_then(|rest| rest.get(..N));
-    bytes.and_then(|b| b.try_into().ok()).unwrap_or([0; N])
-}
-
-/// Whether the worker's `message` is for a session the server already closed, or
-/// one that's gone while the server discards timed-out data. A live session's last
-/// send time moves on.
+/// Discard packets for missing sessions when configured. Workers apply close ordering
+/// to packets already queued for sessions still present in the connection table.
 fn discard(state: &ServerState, message: &[u8]) -> bool {
-    let [kind] = field(message, offset_of!(DataHead, kind));
-    if !ServerEvent::from_code(kind).is_some_and(ServerEvent::is_stream) {
+    let Some((header, payload)) = message.split_first_chunk::<{ size_of::<DataHead>() }>() else {
+        return false;
+    };
+    let head = DataHead::from_bytes(header);
+    if !head.event().is_some_and(ServerEvent::is_stream) {
         return false;
     }
-    let fd = c_long::from_ne_bytes(field(message, offset_of!(DataHead, fd)));
-    let origin = c"ReactorThread_onPipeWrite";
-    if let Some(conn) = state.connection(fd, Lookup::VerifiedTls) {
+    if let Some(conn) = state.connection(head.fd, Lookup::VerifiedTls) {
         conn.set_last_send_time(microtime());
-        let closed = conn.closed().load(SeqCst) != 0;
-        if closed {
-            let m = format_args!("Session#{fd} is closed by server");
-            let code = E::SW_ERROR_SESSION_CLOSED_BY_SERVER as c_int;
-            log::error_log(SW_LOG_NOTICE, code, origin, m);
-        }
-        closed
-    } else if state.config_ref().discard_timeout_request.get() {
-        let len = u32::from_ne_bytes(field(message, offset_of!(DataHead, len)));
-        let m = format_args!("[1] ignore data[{len} bytes] received from session#{fd}");
-        let code = E::SW_ERROR_SESSION_DISCARD_TIMEOUT_DATA as c_int;
-        log::error_log(SW_LOG_WARNING, code, origin, m);
-        true
-    } else {
-        false
+        return false;
     }
+    if !state.config_ref().discard_timeout_request.get() {
+        return false;
+    }
+    let m = format_args!(
+        "[1] ignore data[{} bytes] received from session#{}",
+        head.len, head.fd
+    );
+    let code = E::SW_ERROR_SESSION_DISCARD_TIMEOUT_DATA as c_int;
+    log::error_log(SW_LOG_WARNING, code, c"ReactorThread_onPipeWrite", m);
+    crate::send::discard_file(&head, payload);
+    true
 }
 
 /// Whether reactor thread `id` of `reactors` owns `n`, a port's fd or a worker id.
@@ -91,6 +80,8 @@ pub(crate) fn owns(n: i64, reactors: u16, id: u16) -> bool {
 mod tests {
     use super::*;
     use crate::fixture::LiveServer;
+    use core::ffi::c_long;
+    use core::sync::atomic::Ordering::SeqCst;
 
     const SW_OK: c_int = swoole_rs_corebase::constants::ResultCode::SW_OK as c_int;
     const SW_ERR: c_int = swoole_rs_corebase::constants::ResultCode::SW_ERR as c_int;
@@ -119,11 +110,7 @@ mod tests {
             len: u32::try_from(payload.len()).unwrap(),
             ..DataHead::default()
         };
-        // SAFETY: the head's bytes; it has no padding.
-        let head = unsafe {
-            core::slice::from_raw_parts((&raw const head).cast::<u8>(), size_of::<DataHead>())
-        };
-        [head, payload].concat()
+        [head.to_bytes().as_slice(), payload].concat()
     }
 
     /// The live server with session 1 accepted, and a worker pipe: the reactor's end,
@@ -207,7 +194,7 @@ mod tests {
 
     #[test]
     #[cfg_attr(miri, ignore = "Miri's socketpair is stream-only")]
-    fn pipe_write_drops_closed_and_timed_out_sessions() {
+    fn pipe_write_keeps_close_order_and_drops_missing_sessions() {
         let messages = [
             message(SendData, 1, b"closed"),
             message(SendData, 9, b"gone"),
@@ -221,8 +208,51 @@ mod tests {
             .discard_timeout_request
             .set(true);
         assert_eq!(p.write(), SW_OK);
-        assert_eq!(p.received(), messages.get(2..).unwrap());
+        assert_eq!(p.received(), [messages[0].clone(), messages[2].clone()]);
         assert_eq!(p.queued(), 0);
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore = "Miri's socketpair is stream-only")]
+    fn timed_out_pipe_packets_release_only_owned_file_names() {
+        use swoole_rs_corebase::constants::EventDataFlag as Flag;
+        let path =
+            std::env::temp_dir().join(format!("swoole-pipe-sendfile-{}", std::process::id()));
+        let mut payload = vec![0; 16];
+        payload.extend(path.as_os_str().as_encoded_bytes());
+        payload.push(0);
+        let chunk = Flag::SW_EVENT_DATA_CHUNK.bits();
+        let begin = Flag::SW_EVENT_DATA_BEGIN.bits();
+        for (flags, owned, removed) in [
+            (0, false, false),
+            (chunk, true, false),
+            (chunk | begin, true, true),
+            (0, true, true),
+        ] {
+            std::fs::write(&path, b"abc").unwrap();
+            let header = DataHead {
+                fd: 9,
+                kind: ServerEvent::SendFile.code(),
+                flags,
+                ext_flags: if owned {
+                    crate::send::SENDFILE_DELETE
+                } else {
+                    0
+                },
+                len: u32::try_from(payload.len()).unwrap(),
+                ..DataHead::default()
+            };
+            let packet = [header.to_bytes().as_slice(), &payload].concat();
+            let p = Pipe::new(&[packet]);
+            p.live
+                .state()
+                .config_ref()
+                .discard_timeout_request
+                .set(true);
+            assert_eq!(p.write(), SW_OK);
+            assert_eq!(p.received(), Vec::<Vec<u8>>::new());
+            assert_eq!(path.exists(), !removed);
+        }
     }
 
     #[test]
