@@ -826,8 +826,13 @@ extern "C" void swoole_curl_read_stream(php_curl *ch, zval *value) {
     }
 }
 
-extern "C" void swoole_curl_buffer_append(php_curl *ch, const char *data, size_t length) {
-    smart_str_appendl(&ch->handlers.write->buf, data, (int) length);
+extern "C" bool swoole_curl_buffer_append(php_curl *ch, const char *data, size_t length) {
+#ifdef ZEND_HAS_OOM
+    return smart_str_fappendl_ex(&ch->handlers.write->buf, data, length, false, true);
+#else
+    smart_str_appendl(&ch->handlers.write->buf, data, length);
+    return true;
+#endif
 }
 
 /* curl_exec's result: the collected response, which the handle keeps until its next transfer. */
