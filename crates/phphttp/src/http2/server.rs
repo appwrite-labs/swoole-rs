@@ -978,23 +978,27 @@ fn parse(session: &Session, frame: &[u8]) -> bool {
             // RFC 9113 6.9: the increment's four bytes; any other length is a
             // FRAME_SIZE_ERROR.
             let Ok(value) = swoole_rs_http2::window_increment(payload) else {
-                let ctx = session.default_ctx();
-                goaway(
-                    ctx,
-                    i64::from(swoole_rs_http2::error_code::FRAME_SIZE_ERROR),
+                return abort_session(
+                    session,
+                    swoole_rs_http2::error_code::FRAME_SIZE_ERROR,
                     b"invalid WINDOW_UPDATE length",
                 );
-                close(ctx);
-                return false;
             };
+            let value = value & i32::MAX.cast_unsigned();
             if stream_id == 0 {
-                session
-                    .remote_window_size
-                    .set(credit(session.remote_window_size.get(), value));
+                if let Err(code) = credit(&session.remote_window_size, value) {
+                    return abort_session(session, code, b"invalid connection WINDOW_UPDATE");
+                }
+            } else if stream_id & 1 == 0 || stream_id > last_stream_id {
+                return abort_session(
+                    session,
+                    swoole_rs_http2::error_code::PROTOCOL_ERROR,
+                    b"WINDOW_UPDATE on idle stream",
+                );
             } else if let Some(stream) = session.stream(stream_id, false) {
-                stream
-                    .remote_window_size
-                    .set(credit(stream.remote_window_size.get(), value));
+                if let Err(code) = credit(&stream.remote_window_size, value) {
+                    return reset_stream(session, &stream, code);
+                }
                 if !session.is_coro() && !stream.wake() {
                     return false;
                 }
@@ -1162,8 +1166,24 @@ fn window(current: u32, amount: usize, initial: u32, credit: bool) -> Http2Windo
     sw_rs_http2_window_plan(current, amount, initial, credit)
 }
 
-fn credit(current: u32, amount: u32) -> u32 {
-    window(current, amount as usize, 0, true).value
+fn credit(window: &std::cell::Cell<u32>, amount: u32) -> Result<(), u32> {
+    if amount == 0 {
+        return Err(swoole_rs_http2::error_code::PROTOCOL_ERROR);
+    }
+    let next = window
+        .get()
+        .checked_add(amount)
+        .filter(|n| *n <= i32::MAX.cast_unsigned())
+        .ok_or(swoole_rs_http2::error_code::FLOW_CONTROL_ERROR)?;
+    window.set(next);
+    Ok(())
+}
+
+fn abort_session(session: &Session, code: u32, message: &[u8]) -> bool {
+    let ctx = session.default_ctx();
+    goaway(ctx, i64::from(code), message);
+    close(ctx);
+    false
 }
 
 /// A SETTINGS frame: apply each, then acknowledge.
@@ -1176,14 +1196,11 @@ fn settings(session: &Session, payload: &[u8]) -> bool {
     for entry in entries {
         let (id, value) = swoole_rs_http2::sw_rs_http2_unpack_setting(entry);
         if id == setting_id::INIT_WINDOW_SIZE && value > i32::MAX.cast_unsigned() {
-            let ctx = session.default_ctx();
-            goaway(
-                ctx,
-                i64::from(swoole_rs_http2::error_code::FLOW_CONTROL_ERROR),
+            return abort_session(
+                session,
+                swoole_rs_http2::error_code::FLOW_CONTROL_ERROR,
                 b"invalid initial window",
             );
-            close(ctx);
-            return false;
         }
         if id == setting_id::MAX_FRAME_SIZE && send_frame_size(value) != value {
             warn(
