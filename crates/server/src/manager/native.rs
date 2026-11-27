@@ -179,6 +179,9 @@ fn wait(serv: view::Server<'_>) {
     let (state, config) = (serv.state(), serv.config());
     let manager = &config.manager;
     init(serv, manager);
+    if swoole_rs_corebase::timer::swoole_timer_is_available() {
+        swoole_rs_corebase::timer::swoole_timer_free();
+    }
     swoole_rs_corebase::reactor::swoole_event_free();
     set_signal(libc::SIGHUP, SignalHandler::None);
     for signo in [
