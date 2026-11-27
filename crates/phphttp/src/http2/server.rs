@@ -1034,7 +1034,7 @@ fn parse(session: &Session, frame: &[u8]) -> bool {
                 stream_id,
             ));
             ack[FRAME_HEADER..].copy_from_slice(&echo);
-            send(session.default_ctx(), &ack);
+            return send_ack(session.default_ctx(), &ack);
         }
         FrameAction::WindowUpdate => {
             // RFC 9113 6.9: the increment's four bytes; any other length is a
@@ -1341,10 +1341,21 @@ fn settings(session: &Session, payload: &[u8]) -> bool {
         });
     }
     // The client assumes the server has not applied its settings until it acknowledges them.
-    send(
+    send_ack(
         session.default_ctx(),
         &frame_header(FrameType::Settings, 0, FLAG_ACK, 0),
-    );
+    )
+}
+
+/// The parser cannot drop a required acknowledgement when its output queue is full.
+fn send_ack(ctx: Ctx, frame: &[u8]) -> bool {
+    if !send(ctx, frame)
+        && swoole_rs_corebase::log::last_error()
+            == swoole_rs_error::ErrorCode::SW_ERROR_OUTPUT_SEND_YIELD as c_int
+    {
+        close(ctx);
+        return false;
+    }
     true
 }
 

@@ -254,7 +254,10 @@ const OUTPUT_SEND_YIELD: c_int = swoole_rs_error::ErrorCode::SW_ERROR_OUTPUT_SEN
 /// is full. A bailout while waiting is left for the handler to raise.
 pub(crate) fn server_send(server: view::Server<'_>, fd: i64, data: &[u8]) -> bool {
     let sent = server_methods::send(server, fd, data);
-    if sent || swoole_rs_corebase::log::last_error() != OUTPUT_SEND_YIELD {
+    if sent
+        || swoole_rs_corebase::log::last_error() != OUTPUT_SEND_YIELD
+        || !swoole_rs_phpcoroutines::in_coroutine()
+    {
         return sent;
     }
     swoole_rs_phpserver::php_swoole_server_send_yield(server, fd, data).unwrap_or_else(|bailed| {
