@@ -162,7 +162,9 @@ pub fn signalfd_close() {
 #[must_use]
 pub fn signalfd_clear() -> bool {
     let mask = sigset();
-    crate::process::signal::clear_actions(|signo| sys::sigismember(&mask, signo) == 0);
+    crate::process::signal::clear_actions(|signo| {
+        sys::sigismember(&mask, signo) == 0 || crate::process::signal::has_native_handler(signo)
+    });
     let result = sigprocmask(libc::SIG_UNBLOCK, &mask);
     signal_reset();
     clear_mask();
@@ -241,7 +243,7 @@ mod tests {
         assert!(signalfd_clear());
         let cleared = crate::process::signal::install(native, libc::SIG_DFL, false, false);
         assert_eq!(cleared.unwrap().sa_sigaction, libc::SIG_DFL);
-        crate::process::signal::sigaction(native, &previous.unwrap());
+        crate::process::signal::sigaction(native, previous.as_ref());
 
         signalfd_close();
         assert_eq!(signalfd_fd(), -1);

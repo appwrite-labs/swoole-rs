@@ -60,7 +60,7 @@ pub(crate) fn restore_origin(signo: c_int) {
     origin(signo, |action| {
         if let Some(action) = action.take() {
             // An action sigaction returned.
-            sigaction(signo, &action);
+            sigaction(signo, Some(&action));
         } else {
             install(signo, SIG_DFL, false, false);
         }
@@ -158,13 +158,14 @@ pub(crate) fn install(
     }
     action.sa_flags = if restart { libc::SA_RESTART } else { 0 };
     // `func` is a handler or SIG_IGN/SIG_DFL.
-    sigaction(signo, &action)
+    sigaction(signo, Some(&action))
 }
 
 /// `sigaction(2)`: the previous action, or none if it failed.
-pub(super) fn sigaction(signo: c_int, action: &libc::sigaction) -> Option<libc::sigaction> {
+pub(super) fn sigaction(signo: c_int, action: Option<&libc::sigaction>) -> Option<libc::sigaction> {
     let mut previous: libc::sigaction = crate::sys::zeroed();
-    // SAFETY: both actions are valid for the call.
+    let action = action.map_or(std::ptr::null(), std::ptr::from_ref);
+    // SAFETY: the optional action is valid or null and previous receives the old action.
     let installed = unsafe { libc::sigaction(signo, action, &raw mut previous) };
     (installed == 0).then_some(previous)
 }
@@ -400,6 +401,14 @@ pub fn signal_clear() {
     signal_reset();
 }
 
+/// Whether a signal now routed to signalfd still has one of our native handlers.
+#[cfg(target_os = "linux")]
+pub(super) fn has_native_handler(signo: c_int) -> bool {
+    sigaction(signo, None).is_some_and(|action| {
+        [address(immediate), address(deferred)].contains(&action.sa_sigaction)
+    })
+}
+
 /// Restore the default disposition of active signals handled through sigaction.
 pub(super) fn clear_actions(native: impl Fn(c_int) -> bool) {
     for slot in &SIGNALS {
@@ -541,6 +550,17 @@ mod tests {
         );
         assert!(!swoole_signal_isset(libc::SIGUSR2));
         assert_eq!(set_action(libc::SIGUSR2, usize::MAX, false, false), SIG_IGN);
+
+        #[cfg(target_os = "linux")]
+        {
+            use crate::process::signalfd::{signalfd_clear, signalfd_set};
+            // SIGUSR1 already uses the immediate handler. Routing it through the
+            // descriptor must retire that disposition before the mask is unblocked.
+            signalfd_set(libc::SIGUSR1, Handler(handler));
+            assert!(has_native_handler(libc::SIGUSR1));
+            assert!(signalfd_clear());
+            assert_eq!(set_action(libc::SIGUSR1, usize::MAX, false, false), SIG_DFL);
+        }
 
         signal_clear();
         assert!(!swoole_signal_isset(libc::SIGUSR1));
