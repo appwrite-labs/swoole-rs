@@ -79,6 +79,7 @@ pub(crate) struct SessionState {
     pub(crate) remaining_headers: Cell<Result<u32, u32>>,
     pub(crate) header_end_stream: Cell<bool>,
     pub(crate) shutting_down: Cell<bool>,
+    pub(crate) terminating: Cell<bool>,
     /// The connection's context: frames that belong to no stream go out on it.
     default_ctx: Hold,
     handle: Handler,
@@ -151,6 +152,7 @@ impl SessionState {
             remaining_headers: Cell::new(Ok(0)),
             header_end_stream: Cell::new(false),
             shutting_down: Cell::new(false),
+            terminating: Cell::new(false),
             default_ctx,
             handle,
         }
@@ -271,7 +273,7 @@ pub(crate) fn session_new(fd: i64, default_ctx: Hold, max_body_size: u32, handle
 /// `swoole_http2_server_session_free`: forget connection `fd`'s session,
 /// removing its streams; each is released once nothing holds it.
 pub(crate) fn session_free(fd: i64) {
-    let Some(session) = SessionState::find(fd) else {
+    let Some(session) = with_sessions(|sessions| sessions.remove(&fd)) else {
         return;
     };
     loop {
@@ -283,8 +285,6 @@ pub(crate) fn session_free(fd: i64) {
             return;
         }
     }
-    let removed = with_sessions(|sessions| sessions.remove(&fd));
-    drop(removed);
 }
 
 #[cfg(test)]

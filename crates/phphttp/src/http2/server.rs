@@ -24,7 +24,7 @@ use swoole_rs_http2::{
     sw_rs_http2_response_status, sw_rs_http2_setting_plan, valid_content_length,
 };
 use swoole_rs_phpserver::RecvData;
-use swoole_rs_server::{Connection, view};
+use swoole_rs_server::{Connection, server_methods, view};
 use swoole_rs_zend::{Array, HeldArray, Owned, OwnedArray, Value as Zval, ZString, bailout};
 
 /// Frame sizes, types and flags (`swoole_http2.h`).
@@ -165,6 +165,14 @@ pub(crate) fn goaway(ctx: Ctx, code: i64, data: &[u8]) -> bool {
         ));
         return false;
     }
+    let sent = send(ctx, &goaway_frame(last_stream_id, code.c_cast(), data));
+    if sent {
+        session.shutting_down.set(true);
+    }
+    sent
+}
+
+fn goaway_frame(last_stream_id: u32, code: u32, data: &[u8]) -> Vec<u8> {
     let mut frame = Vec::with_capacity(FRAME_HEADER + GOAWAY_SIZE + data.len());
     frame.extend_from_slice(&frame_header(
         FrameType::Goaway,
@@ -173,13 +181,9 @@ pub(crate) fn goaway(ctx: Ctx, code: i64, data: &[u8]) -> bool {
         0,
     ));
     frame.extend_from_slice(&last_stream_id.to_be_bytes());
-    frame.extend_from_slice(&code.c_cast::<u32>().to_be_bytes());
+    frame.extend_from_slice(&code.to_be_bytes());
     frame.extend_from_slice(data);
-    let sent = send(ctx, &frame);
-    if sent {
-        session.shutting_down.set(true);
-    }
-    sent
+    frame
 }
 
 // --- the response header block ---
@@ -642,7 +646,7 @@ fn send_header_then(
 }
 
 // An encoded block must retain its queue position if its request is reset.
-fn send_header_frame(ctx: Ctx, session: &Session, stream: &Stream, frame: &[u8]) -> bool {
+fn send_header_frame(mut ctx: Ctx, session: &Session, stream: &Stream, frame: &[u8]) -> bool {
     let previous = if stream.request_cid.get() != 0 {
         stream
             .header_sender
@@ -652,8 +656,21 @@ fn send_header_frame(ctx: Ctx, session: &Session, stream: &Stream, frame: &[u8])
     };
     let sent = send(ctx, frame);
     stream.header_sender.set(previous);
-    if !sent && swoole_rs_corebase::log::last_error() == CO_TIMEDOUT {
-        write_timed_out(session);
+    if !sent {
+        // The peer cannot decode subsequent blocks after missing an HPACK update.
+        set(ctx, Field::End, 1);
+        if get(ctx, Field::CoSocket) != 0 {
+            close(ctx);
+        } else if !session.terminating.get()
+            && SessionState::of(ctx).is_some_and(|live| std::rc::Rc::ptr_eq(&live, session))
+        {
+            if swoole_rs_corebase::log::last_error() == CO_TIMEDOUT {
+                write_timed_out(session);
+            } else {
+                let state = ctx.state();
+                server_methods::close(crate::context::server(state), state.fd, true);
+            }
+        }
     }
     sent
 }
@@ -745,9 +762,7 @@ pub(crate) fn send_body(
 /// `http2_server_write_timed_out` (upstream 6.3): a peer that never opened the
 /// window by the send's deadline loses its connection, after a GOAWAY that says why.
 fn write_timed_out(session: &Session) {
-    let ctx = session.default_ctx();
-    goaway(ctx, 0, b"flow control or write timeout");
-    close(ctx);
+    abort_session(session, 0, b"flow control or write timeout");
     swoole_rs_corebase::log::set_last_error(CO_TIMEDOUT);
 }
 
@@ -1361,9 +1376,34 @@ fn credit(window: &std::cell::Cell<i64>, amount: u32) -> Result<(), u32> {
 }
 
 fn abort_session(session: &Session, code: u32, message: &[u8]) -> bool {
-    let ctx = session.default_ctx();
-    goaway(ctx, i64::from(code), message);
-    close(ctx);
+    if session.terminating.replace(true) {
+        return false;
+    }
+    let mut ctx = session.default_ctx();
+    if get(ctx, Field::CoSocket) != 0 {
+        goaway(ctx, i64::from(code), message);
+        close(ctx);
+    } else {
+        // A timed-out writer must not re-enter the output-buffer wait to send GOAWAY.
+        let fd = ctx.fd();
+        let server = crate::context::server(ctx.state());
+        let frame = goaway_frame(session.last_stream_id.get(), code, message);
+        if server_methods::send(server, fd, &frame)
+            && server_methods::close(server, fd, false)
+            && let Some(owner) = swoole_rs_server::SharedServer::current()
+            && owner.view().raw() == server.raw()
+            && swoole_rs_corebase::timer::add_fn(100, false, move || {
+                let server = owner.view();
+                if server.verified(fd).is_some() {
+                    server_methods::close(server, fd, true);
+                }
+            })
+            .is_some()
+        {
+            return false;
+        }
+        server_methods::close(server, fd, true);
+    }
     false
 }
 
