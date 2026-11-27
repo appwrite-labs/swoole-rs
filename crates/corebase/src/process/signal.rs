@@ -683,6 +683,50 @@ mod tests {
         set_action(libc::SIGUSR1, usize::MAX, false, false);
     }
 
+    #[cfg(target_os = "linux")]
+    #[test]
+    #[cfg_attr(miri, ignore = "Miri has no signalfd")]
+    fn pool_guard_restores_a_descriptor_signal() {
+        use crate::process::signalfd;
+        use crate::signal_mask::tests::{current, same};
+
+        let _state = crate::process::signal_state_lock();
+        let signo = libc::SIGURG;
+        let original_mask = current();
+        let old = sigaction(signo, None).unwrap();
+        let handler = Handler::new(record);
+        signal_set(signo, handler, true, record, no_reactor);
+        let action = sigaction(signo, None).unwrap();
+        signalfd::signalfd_set(signo, handler);
+        signalfd::signalfd_create().unwrap();
+        let blocked = current();
+
+        let guard = SignalGuard::install([signo], Handler::new(deferred));
+        assert_eq!(
+            signal_lookup(signo),
+            Lookup::Handler(Handler::new(deferred))
+        );
+        assert_ne!(
+            sigaction(signo, None).unwrap().sa_sigaction,
+            action.sa_sigaction
+        );
+        assert_eq!(crate::sys::sigismember(&current(), signo), 0);
+        assert!(!signalfd::route(signo, false));
+        drop(guard);
+        assert_eq!(signal_lookup(signo), Lookup::Handler(handler));
+        assert_eq!(
+            sigaction(signo, None).unwrap().sa_sigaction,
+            action.sa_sigaction
+        );
+        assert!(same(current(), blocked));
+        assert!(signalfd::route(signo, true));
+
+        assert!(signalfd::signalfd_clear());
+        signalfd::signalfd_close();
+        sigaction(signo, Some(&old));
+        crate::sys::pthread_sigmask(libc::SIG_SETMASK, Some(&original_mask), None);
+    }
+
     #[test]
     #[cfg_attr(miri, ignore = "Miri has no strsignal")]
     fn signal_text_appends_the_number_without_a_colon() {
