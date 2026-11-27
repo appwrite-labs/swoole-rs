@@ -6,15 +6,19 @@ use crate::reactor::handlers::Handler;
 use crate::reactor::socket_upstream::swr_v1_reactor_log;
 use std::ffi::c_int;
 
-/// `int Reactor::trigger_close_event(Event *)`: the default error handler, whether
+/// `int Reactor::trigger_close_event(Event *)`: the socket type's error handler, whether
 /// it succeeded; false when none is set.
 pub fn trigger_close_event(
     reactor: crate::reactor::Running<'_>,
     event: &mut crate::reactor::Event,
 ) -> bool {
+    let Some(socket) = event.socket() else {
+        return false;
+    };
+    let fd_type = socket.read(|record| record.fd_type);
     // The lookup's borrow ends before the handler runs.
     reactor
-        .handlers(|handlers| handlers.fallback(1))
+        .handlers(|handlers| handlers.of_event(fd_type, crate::reactor::Events::ERROR))
         .is_some_and(|handler| handler(reactor, event))
 }
 

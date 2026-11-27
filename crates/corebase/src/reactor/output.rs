@@ -27,7 +27,7 @@ fn classify(hooks: &impl OutputEffects) -> Caught {
 
 /// What the caller applies after `handle_send`/`handle_sendfile`: pop the front
 /// chunk, store `offset` into it, set `close_wait`/`send_wait`, and warn that the
-/// send failed (the sendfile of `requested` bytes, for `handle_sendfile`). `failed` is
+/// send failed. `failed` is
 /// upstream's `SW_ERR`.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct OutputResult {
@@ -38,7 +38,6 @@ pub struct OutputResult {
     pub close_wait: bool,
     pub send_wait: bool,
     pub warn: bool,
-    pub requested: usize,
 }
 
 impl OutputResult {
@@ -111,34 +110,28 @@ pub fn sendfile_sent(
     end: libc::off_t,
 ) -> OutputResult {
     let result = OutputResult::default();
-    if sent <= Some(0) {
-        match classify(hooks) {
-            Caught::Error => {
-                return OutputResult {
-                    warn: true,
-                    requested,
-                    pop: true,
-                    ..result
-                };
-            }
-            Caught::Close => {
-                return OutputResult {
-                    failed: true,
-                    close_wait: true,
-                    ..result
-                };
-            }
-            Caught::Wait => {
-                return OutputResult {
-                    failed: true,
-                    send_wait: true,
-                    ..result
-                };
-            }
-            Caught::Invalid | Caught::ReduceSize => {}
+    match sent {
+        None if crate::sys::errno() == libc::EINTR => return result,
+        None => {
+            let error = classify(hooks);
+            return OutputResult {
+                failed: true,
+                close_wait: error != Caught::Wait,
+                send_wait: error == Caught::Wait,
+                warn: !matches!(error, Caught::Close | Caught::Wait),
+                ..result
+            };
         }
-    } else {
-        hooks.sent();
+        Some(0) if requested > 0 => {
+            return OutputResult {
+                failed: true,
+                close_wait: true,
+                warn: true,
+                ..result
+            };
+        }
+        Some(0) => {}
+        Some(_) => hooks.sent(),
     }
     if begin != end {
         return result;
@@ -447,7 +440,7 @@ mod tests {
             assert_eq!((fake.corks, fake.uncorks, fake.sent), (1, 1, 2));
         });
 
-        // A small file never corks; EAGAIN waits; an error warns and pops.
+        // A small file never corks; EAGAIN waits; a permanent error warns and closes.
         let mut corked: i8 = 0;
         reset(0, 0, true);
         sendfile_cork(&hooks, &mut corked, 0, 10, 65_536);
@@ -467,9 +460,9 @@ mod tests {
         assert_eq!(
             failed,
             OutputResult {
-                pop: true,
+                failed: true,
+                close_wait: true,
                 warn: true,
-                requested: 10,
                 ..Default::default()
             }
         );

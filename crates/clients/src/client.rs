@@ -2007,8 +2007,13 @@ fn on_write(this: Handle<'_>, reactor: Running<'_>, event: &mut Event) -> bool {
             }
             return true;
         }
+        let socket = this.socket();
         if !(this.get().socket_ops.writable)(reactor, event) {
             return false;
+        }
+        // onClose may have released the client during the flush.
+        if !socket.read(SocketFields::has_object) || this.flag(Flag::Closed) {
+            return true;
         }
         if this.has(ClientEvent::BufferEmpty)
             && this.flag(Flag::HighWatermark)

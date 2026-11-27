@@ -108,12 +108,18 @@ pub fn ssl_sendfile(
 ) -> SslSendfileResult {
     let mut buffer = vec![0_u8; size.min(crate::constants::SW_BUFFER_SIZE_BIG as usize)];
     let at = *offset;
-    let Some(n @ 1..) = crate::sys::pread(file_fd, &mut buffer, at) else {
+    let Some(n) = crate::sys::pread(file_fd, &mut buffer, at) else {
         return SslSendfileResult {
             value: None,
             warn: Some(SslSendfileWarning::Pread),
         };
     };
+    if n == 0 {
+        return SslSendfileResult {
+            value: Some(0),
+            warn: None,
+        };
+    }
     // pread(2) fills at most the buffer; a longer answer sends the buffer.
     let Some(sent) = send(buffer.get(..n).unwrap_or(&buffer)) else {
         let error = Error::last_os_error().raw_os_error().unwrap_or(0);
@@ -370,8 +376,8 @@ mod tests {
         assert_eq!(
             result,
             SslSendfileResult {
-                value: None,
-                warn: Some(SslSendfileWarning::Pread)
+                value: Some(0),
+                warn: None
             }
         );
         std::fs::remove_file(&path).unwrap();

@@ -765,7 +765,12 @@ fn send_chunk(socket: Socket<'_>, request: &mut SocketFileRequest) -> (Option<us
     let fd = request.descriptor();
     let fields = request.fields();
     let chunk = sendfile_chunk(fields.begin, fields.end);
-    (sendfile(socket, fd, &mut fields.begin, chunk), chunk)
+    let sent = if chunk == 0 {
+        Some(0)
+    } else {
+        sendfile(socket, fd, &mut fields.begin, chunk)
+    };
+    (sent, chunk)
 }
 
 /// `check_sendfile_parameters`'s origin.
@@ -889,9 +894,7 @@ pub fn socket_handle_send(record: Socket<'_>) -> bool {
     !output.result.failed
 }
 
-/// `--fix-halfclose` (M15, the `halfclose` feature): `ssl_shutdown` writes the
-/// `close_notify` alert, and `handle_sendfile` retries a sendfile interrupted before any
-/// progress instead of dropping the file.
+/// `--fix-halfclose` enables the TLS shutdown repair.
 const HALFCLOSE_REPAIRS: bool = cfg!(feature = "halfclose");
 
 /// `int Socket::handle_sendfile()`: sends a chunk of the queue's front file, aborting
@@ -912,18 +915,28 @@ pub fn socket_handle_sendfile(socket: Socket<'_>) -> bool {
         };
         request.cork(&hooks);
         let (rv, requested) = send_chunk(socket, request);
-        if rv.is_none() && errno() == libc::EINTR && HALFCLOSE_REPAIRS {
-            return (false, None);
-        }
+        let error = errno();
         let result = request.sent(&hooks, rv, requested);
         socket.edit(|record| result.publish(record));
         if result.warn {
             let at = request.fields().begin;
             let name = String::from_utf8_lossy(request.path());
-            log::sys_warning(
-                c"Socket::handle_sendfile",
-                format_args!("sendfile({name}, {at}, {}) failed", result.requested),
-            );
+            if rv == Some(0) {
+                log::error_log(
+                    LOG_WARNING,
+                    swoole_rs_error::ErrorCode::SW_ERROR_SYSTEM_CALL_FAIL as c_int,
+                    c"Socket::handle_sendfile",
+                    format_args!("sendfile({name}, {at}, {requested}) reached the end of the file"),
+                );
+                set_errno(libc::EIO);
+            } else {
+                set_errno(error);
+                log::sys_warning(
+                    c"Socket::handle_sendfile",
+                    format_args!("sendfile({name}, {at}, {requested}) failed"),
+                );
+                set_errno(error);
+            }
         }
         let detached = if result.pop {
             match queue.pop() {

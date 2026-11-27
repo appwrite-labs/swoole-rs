@@ -1,8 +1,7 @@
 # Queued TLS shutdown
 
 `Socket::ssl_shutdown` and `Socket::handle_sendfile` run in `crates/corebase/src/tls/upstream.rs`.
-corebase's `halfclose` feature (on with `--fix-halfclose`) selects the repaired
-shutdown and passes EINTR from `handle_sendfile` back to the reactor.
+corebase's `halfclose` feature (on with `--fix-halfclose`) selects the repaired TLS shutdown. Both builds retry an interrupted sendfile with the same offset.
 No public layout, signature, Rust ABI or second queue.
 
 ## Socket::ssl_shutdown
