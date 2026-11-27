@@ -1215,8 +1215,14 @@ impl Client {
                 let unparsed = input.view().get(header_offset..).unwrap_or_default();
                 let Some(end) = swoole_rs_http::header_delimiter(unparsed) else {
                     if length == size {
-                        socket.set_err(INVALID_PROTOCOL);
-                        break false;
+                        // The pinned client parses headers in the socket's read buffer.
+                        // Packet reads on the exported socket may already have enlarged it.
+                        let capacity = socket.with_input(|buffer| buffer.size());
+                        if capacity <= size {
+                            socket.set_err(INVALID_PROTOCOL);
+                            break false;
+                        }
+                        input.reserve_exact(capacity);
                     }
                     header_offset = length.saturating_sub(4);
                     continue;
