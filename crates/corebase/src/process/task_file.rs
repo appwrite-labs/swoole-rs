@@ -244,18 +244,6 @@ impl TaskBuffer {
         Packed { bytes }
     }
 
-    /// The buffer, for an operation that reads `EventData::size()` bytes of it.
-    #[must_use]
-    pub fn as_mut_ptr(&mut self) -> *mut c_void {
-        std::ptr::from_mut(self).cast()
-    }
-
-    /// `EventData::size()` bytes: the head, then the payload it counts.
-    #[must_use]
-    pub fn bytes(&self) -> &[u8] {
-        self.packed().bytes()
-    }
-
     /// `Server::task_pack`: a task header from this worker, with `data` inline or
     /// in a temporary file.
     pub fn pack(&mut self, data: &[u8]) -> bool {
@@ -535,13 +523,13 @@ mod tests {
         let _turn = methods::TASK_ID.lock();
         let mut buf = TaskBuffer::default();
         assert_eq!(
-            buf.bytes().len(),
+            buf.packed().bytes().len(),
             size_of::<DataHead>(),
             "an empty buffer is its head"
         );
         assert!(buf.pack(b"abc"));
         buf.add_flags(1 << 2);
-        let bytes = buf.bytes();
+        let bytes = buf.packed().bytes();
         assert_eq!(bytes.len(), size_of::<DataHead>() + 3);
         assert_eq!(&bytes[size_of::<DataHead>()..], b"abc");
         assert_eq!(

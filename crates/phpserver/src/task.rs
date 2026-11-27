@@ -652,7 +652,7 @@ fn pack_method(call: &Call) {
     }
     flag(&mut buf, NONBLOCK | NOREPLY);
     // RETURN_STRINGL of `EventData::size()` bytes, copied.
-    call.set_owned(Owned::string(ZString::new(buf.bytes())));
+    call.set_owned(Owned::string(ZString::new(buf.packed().bytes())));
 }
 
 fn unpack_method(call: &Call) {

@@ -301,7 +301,7 @@ pub fn finish(
             None => send_pipe_message(
                 crate::process_pool_native(),
                 worker,
-                buf.bytes(),
+                buf.packed().bytes(),
                 PIPE_MASTER,
             ),
         }
@@ -327,7 +327,7 @@ pub fn finish(
             true
         } else if reply(&mut buf, flags) {
             // The source worker's lock, held, keeps this process alone writing its slot.
-            slot.store(buf.bytes());
+            slot.store(buf.packed().bytes());
             true
         } else {
             false
@@ -387,7 +387,7 @@ fn write_waitall(
     if !reply(buf) {
         log::warning(c"Server::finish", format_args!("large task pack failed()"));
     }
-    let bytes = buf.bytes();
+    let bytes = buf.packed().bytes();
     if swoole_rs_corebase::ossupport::fd_write_all(file, true, bytes) != bytes.len() {
         let (path, len) = (path.to_string_lossy(), bytes.len());
         log::sys_warning(

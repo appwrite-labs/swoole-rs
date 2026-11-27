@@ -468,7 +468,7 @@ impl crate::hybrid::Hybrid for Linked {
         let sent = process::methods::send_pipe_message(
             crate::process_pool_native(),
             worker,
-            message.bytes(),
+            message.packed().bytes(),
             PIPE_MASTER | PIPE_NONBLOCK,
         );
         sent.is_some_and(|sent| sent > 0)

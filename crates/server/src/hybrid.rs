@@ -314,7 +314,7 @@ pub(crate) mod tests {
         }
 
         fn pipe_to_worker(&self, _: Server<'_>, worker_id: u32, message: &TaskBuffer) -> bool {
-            let sent = message.bytes().len();
+            let sent = message.packed().bytes().len();
             hear(Call::Pipe(worker_id, message.head().kind, sent))
         }
 

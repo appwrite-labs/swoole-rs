@@ -30,10 +30,6 @@ fn error(level: swoole_rs_corebase::log::LogLevel, code: E, message: core::fmt::
 /// port's and worker's counts. A base or thread mode worker that owns the session
 /// sends it here, as `BaseFactory::finish` would. The length narrows to `uint32_t`,
 /// as the C++ callers' `ZSTR_LEN` did.
-#[expect(
-    clippy::must_use_candidate,
-    reason = "callers ignore the result where upstream's do"
-)]
 pub fn send(serv: Server<'_>, session_id: core::ffi::c_long, data: &[u8]) -> bool {
     let len = data.len().c_cast::<u32>();
     let info = || DataHead {
@@ -55,7 +51,7 @@ pub fn send(serv: Server<'_>, session_id: core::ffi::c_long, data: &[u8]) -> boo
             crate::shared::count_sent(state, port.and_then(|port| port.config().counters()), len);
             return true;
         }
-        to_connection(serv, &info(), data, first.map(|(sent, _)| sent))
+        to_connection(serv, &info(), data, first.map(|(sent, _)| sent), send_file)
     } else {
         let mut send = SendData::new(info(), data);
         crate::hybrid::hybrid().factory_finish(serv, &mut send)
@@ -113,7 +109,7 @@ pub fn send_parts(
                     len: left.len().c_cast::<u32>(),
                     ..DataHead::default()
                 };
-                to_connection(serv, &info, left, Some(0))
+                to_connection(serv, &info, left, Some(0), send_file)
             })
     };
     if done {
@@ -167,21 +163,13 @@ fn send_now<'a>(
 /// `Server::send_to_connection(send)`: false for `SW_ERR`.
 ///
 /// A file's payload is its `SendfileTask` and name.
-#[expect(
-    clippy::must_use_candidate,
-    reason = "callers ignore the result where upstream's do"
-)]
 pub fn send_to_connection(serv: Server<'_>, send: &SendData) -> bool {
-    to_connection(serv, send.info(), send.payload(), None)
+    to_connection(serv, send.info(), send.payload(), None, send_file)
 }
 
 /// [`send_to_connection`] of the event `info` with the bytes `data` it carries.
-#[expect(
-    clippy::must_use_candidate,
-    reason = "callers ignore the result where upstream's do"
-)]
 pub fn send_event_to_connection(serv: Server<'_>, info: &DataHead, data: &[u8]) -> bool {
-    to_connection(serv, info, data, None)
+    to_connection(serv, info, data, None, send_file)
 }
 
 fn missing_session(info: &DataHead) {
@@ -198,14 +186,6 @@ fn missing_session(info: &DataHead) {
     }
 }
 
-/// [`send_to_connection`] of the event `info` with its `data`, where `first` is what
-/// [`send_now`] already sent, short of all of it.
-fn to_connection(serv: Server<'_>, info: &DataHead, data: &[u8], first: Option<i64>) -> bool {
-    send_with_file(serv, info, data, first, |sock, delete| {
-        send_file(sock, data, delete)
-    })
-}
-
 /// Static ranges already have an open file on this reactor.
 pub(crate) fn send_static_range(
     serv: Server<'_>,
@@ -218,7 +198,7 @@ pub(crate) fn send_static_range(
         kind: ServerEvent::SendFile.code(),
         ..Default::default()
     };
-    send_with_file(serv, &info, &[], None, |sock, _| {
+    to_connection(serv, &info, &[], None, |sock, _, _| {
         swoole_rs_corebase::tls::upstream::socket_sendfile_opened(
             sock,
             file,
@@ -228,12 +208,14 @@ pub(crate) fn send_static_range(
     })
 }
 
-fn send_with_file(
+/// [`send_to_connection`] of the event `info` with its `data`, where `first` is what
+/// [`send_now`] already sent, short of all of it.
+fn to_connection(
     serv: Server<'_>,
     info: &DataHead,
     data: &[u8],
     first: Option<i64>,
-    queue_file: impl FnOnce(Socket<'_>, bool) -> bool,
+    queue_file: impl FnOnce(Socket<'_>, &[u8], bool) -> bool,
 ) -> bool {
     let state = serv.state();
     let (kind, session) = (info.event(), info.fd);
@@ -320,7 +302,7 @@ fn send_with_file(
             reactor.interest(sock, Interest::RemoveRead);
         }
     } else if file {
-        if !queue_file(*sock, core::mem::DropGuard::dismiss(cleanup)) {
+        if !queue_file(*sock, data, core::mem::DropGuard::dismiss(cleanup)) {
             return false;
         }
     } else {
@@ -675,10 +657,10 @@ mod tests {
         );
         assert_eq!(a.read(10), data);
         // As if only four had gone.
-        assert!(to_connection(a.serv(), &info, data, Some(4)));
+        assert!(to_connection(a.serv(), &info, data, Some(4), send_file));
         assert_eq!(a.queued(), 6, "the rest is buffered");
         let a = Accepted::new();
-        assert!(to_connection(a.serv(), &info, data, Some(-1)));
+        assert!(to_connection(a.serv(), &info, data, Some(-1), send_file));
         assert_eq!(a.queued(), 10, "would block: all of it is buffered");
         assert!(a.client.set_nonblocking(true).is_ok());
         assert!((&a.client).read(&mut [0; 1]).is_err(), "nothing sent");
