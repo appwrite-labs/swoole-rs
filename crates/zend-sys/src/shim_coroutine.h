@@ -14,6 +14,8 @@
  * runs. */
 typedef struct swr_zend_coroutine_vm {
     JMP_BUF *bailout;
+    zend_fiber_context *current_fiber_context;
+    zend_fiber *active_fiber;
     zval *vm_stack_top;
     zval *vm_stack_end;
     zend_vm_stack vm_stack;
@@ -42,6 +44,8 @@ typedef struct swr_zend_coroutine_vm {
     int error_reporting;
 } swr_zend_coroutine_vm;
 
+void swr_zend_coroutine_restore_fiber(swr_zend_coroutine_vm *vm);
+
 /* save_context: the executor, output and serializer globals into `vm`. */
 void swr_zend_coroutine_save(swr_zend_coroutine_vm *vm);
 /* restore_context. */
@@ -51,7 +55,7 @@ void swr_zend_coroutine_restore(swr_zend_coroutine_vm *vm);
  * function, cleared exception state, the C stack bounds of `stack` (null:
  * none), then save_vm_stack into `vm`. */
 void swr_zend_coroutine_start(swr_zend_coroutine_vm *from, swr_zend_coroutine_vm *vm, void *stack,
-                              size_t stack_size);
+                              size_t stack_size, zend_fiber_context *fiber);
 /* destroy_context's output reset: end and restart output buffering without
  * sending headers, when output is active; nonzero for a contained bailout. */
 int swr_zend_coroutine_output_reset(void);

@@ -28,6 +28,7 @@
   "crates/phpcoroutines/src/context.rs:swr_zend_coroutine_output_reset": "shim_coroutine.c: SWR_ZEND_TRY encloses output handlers and restores the SAPI header flag before returning a bailout.",
   "crates/phpcoroutines/src/context.rs:swr_zend_coroutine_redirect": "shim_coroutine.c: changes executor/frame/fiber fields without executing PHP.",
   "crates/phpcoroutines/src/context.rs:swr_zend_coroutine_restore": "shim_coroutine.c: saves/restores VM and output globals and allocates/frees stack storage; does not execute the saved PHP frames or flush output. Allocator contract: docs/zend.md#memory_limit.",
+  "crates/phpcoroutines/src/context.rs:swr_zend_coroutine_restore_fiber": "shim_coroutine.c: restores two executor pointers without invoking observers.",
   "crates/phpcoroutines/src/context.rs:swr_zend_coroutine_save": "shim_coroutine.c: saves/restores VM and output globals and allocates/frees stack storage; does not execute the saved PHP frames or flush output. Allocator contract: docs/zend.md#memory_limit.",
   "crates/phpcoroutines/src/context.rs:swr_zend_coroutine_set_frame": "shim_coroutine.c: changes executor/frame/fiber fields without executing PHP.",
   "crates/phpcoroutines/src/context.rs:swr_zend_coroutine_show": "shim_coroutine.c: changes executor/frame/fiber fields without executing PHP.",
