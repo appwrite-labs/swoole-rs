@@ -388,11 +388,6 @@ impl Connection for Read<'_> {
             .extend(usize::try_from(size).unwrap_or(usize::MAX));
     }
 
-    fn header_end(&mut self) -> bool {
-        let bytes = self.buffer().view();
-        bytes.windows(4).any(|w| w == b"\r\n\r\n")
-    }
-
     #[inline]
     fn init_request(&mut self) {
         if self.request.is_none() {
