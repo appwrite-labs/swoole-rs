@@ -24,6 +24,8 @@ def pinned_tree(source, tree):
                 path = tree / member.name
                 path.parent.mkdir(parents=True, exist_ok=True)
                 path.write_bytes(bundle.extractfile(member).read())
+    (tree / 'test_core.h').write_bytes(subprocess.check_output(
+        ['git', '-C', str(source), 'show', COMMIT + ':core-tests/include/test_core.h']))
     tests = tree / 'string.cpp'
     tests.write_bytes(subprocess.check_output(['git', '-C', str(source), 'show', COMMIT + ':core-tests/src/core/string.cpp']))
     return tests
@@ -37,9 +39,9 @@ def build(tree, consumer, binary, *, sanitize=False, extra=()):
     """Compile consumer (a file under this directory) with the pinned tree's String sources.
     Returns the compiler result."""
     command = ['c++', '-std=c++17', '-O1', '-g', '-ffunction-sections', '-fdata-sections',
-               '-I' + str(HERE), '-I' + str(tree / 'include'), *map(str, extra), str(HERE / consumer),
+               '-I' + str(tree / 'include'), *map(str, extra), str(HERE / consumer),
                *[str(tree / name) for name in SOURCES]]
-    command += shlex.split(subprocess.check_output(['pkg-config', '--cflags', '--libs', 'openssl'], text=True))
+    command += shlex.split(subprocess.check_output(['pkg-config', '--cflags', '--libs', 'openssl', 'gtest'], text=True))
     command += ['-Wl,-dead_strip' if sys.platform == 'darwin' else '-Wl,--gc-sections', '-lm']
     if sys.platform.startswith('linux'):
         command += ['-ldl', '-lpthread', '-lrt', '-lutil']

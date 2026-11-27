@@ -34,9 +34,9 @@ The project-written fixtures are ported there too, with the same inputs and chec
 
 | Command (dev.py phase) | Checks |
 | --- | --- |
-| `string/test_gate.py --sanitize` (`string-originals`) | `core-tests/src/core/string.cpp` compiled unchanged under GoogleTest: all 23 TESTs, on the pin only. Seven (`ltrim`, `rtrim`, `strnpos`, `strnstr`, `substr_len`, `starts_with`, `ends_with`) test inline helpers that left the hybrid's headers (#2089); `format_1` and `format_2` test the `format` templates, which left `swoole_string.h` once no compiled C++ instantiated them (#4310) |
+| `string/test_gate.py --sanitize` (`string-originals`) | `core-tests/src/core/string.cpp` compiled unchanged under GoogleTest: all 42 TESTs, on the pin only. Seven (`ltrim`, `rtrim`, `strnpos`, `strnstr`, `substr_len`, `starts_with`, `ends_with`) test inline helpers that left the hybrid's headers (#2089); `format_1` and `format_2` test the `format` templates, which left `swoole_string.h` once no compiled C++ instantiated them (#4310) |
 
-`swoole::String`'s methods are Rust. The other fourteen TESTs are ported to
+`swoole::String`'s methods are Rust. Fourteen of the original TESTs are ported to
 `string/originals.rs` (`cargo test -p swoole-rs-corebase`), one Rust test per `TEST`, each C++
 call replaced by the Rust method that is its body:
 
