@@ -175,7 +175,9 @@ fn kind(object: ServerObject<'_>) -> Kind {
 /// may bail out.
 fn start_server(serv: view::Server<'_>) -> Result<bool, bailout::Bailout> {
     let mut started = false;
-    swoole_rs_zend::contain_with(|| started = server_methods::start(serv))?;
+    swoole_rs_phpprocess::with_php_server_loop(|| {
+        swoole_rs_zend::contain_with(|| started = server_methods::start(serv))
+    })?;
     Ok(started)
 }
 
@@ -1389,6 +1391,7 @@ fn start(call: &Call) {
     }
     match start_server(serv) {
         Err(bailout) => return bailout.defer(),
+        Ok(false) if swoole_rs_zend::host::unwind_exit_pending() => return,
         Ok(false) => {
             let reason = server_methods::get_startup_error_message();
             let mut text = Message::new();

@@ -54,6 +54,7 @@ thread_local! {
     /// every pool hook runs beneath it on its thread, a worker's in the child it
     /// forked. Undefined otherwise.
     static OWNER: Cell<Option<swoole_rs_zend::Weak<PoolObject>>> = const { Cell::new(None) };
+    static IN_PHP_SERVER_LOOP: Cell<bool> = const { Cell::new(false) };
 }
 
 /// The pool a Pool object owns, reached in place: the pool's workers keep the
@@ -242,9 +243,18 @@ method_table! {
 /// inside the trap and return deferred escapes to their owners.
 struct Bailouts;
 
-// Only a live PHP Pool::start frame on this thread may inspect EG(exception).
+/// Keep the server's PHP dispatch thread identifiable while the native loop runs.
+pub fn with_php_server_loop<R>(body: impl FnOnce() -> R) -> R {
+    let previous = IN_PHP_SERVER_LOOP.replace(true);
+    let result = body();
+    IN_PHP_SERVER_LOOP.set(previous);
+    result
+}
+
+// Native reactor threads do not have a PHP executor.
 fn pool_unwind_exit() -> bool {
-    OWNER.get().is_some() && swoole_rs_zend::host::unwind_exit_pending()
+    (OWNER.get().is_some() || IN_PHP_SERVER_LOOP.get())
+        && swoole_rs_zend::host::unwind_exit_pending()
 }
 
 impl process::pool::Bailouts for Bailouts {
