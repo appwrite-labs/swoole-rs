@@ -180,11 +180,14 @@ impl swoole_rs_corebase::reactor::event_api::Deferred for ResumeBuffered {
             })
         {
             let kind = swoole_rs_corebase::constants::FdType::SW_FD_SESSION as c_int;
-            crate::conn_io::read(
-                serv,
-                reactor,
-                &mut conn.event(i16::from(conn.reactor_id()), kind),
-            );
+            let running = reactor.handle();
+            if let Some(read) = swoole_rs_corebase::reactor::reactor_upstream::reactor_get_handler(
+                running,
+                kind,
+                Events::READ,
+            ) {
+                read(running, &mut conn.event(i16::from(conn.reactor_id()), kind));
+            }
         }
     }
 
