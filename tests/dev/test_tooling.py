@@ -226,6 +226,9 @@ if (!is_win()) {
             def run(command, **kwargs):
                 self.assertEqual(command[len(phpt.ipc_namespace() or [])], str(executable))
                 self.assertEqual(os.environ.get('PATH'), original_path)
+                selected = subprocess.check_output(['php'], env=kwargs['env'], text=True)
+                self.assertEqual(json.loads(selected), ['-d', 'user_agent=fixture child'])
+                kwargs['env'].pop('TEST_PHP_EXTRA_ARGS')
                 result = subprocess.run(['php', '-r', "echo 'literal $value';"], env=kwargs['env'],
                                         capture_output=True, text=True)
                 self.assertEqual(result.returncode, 0, result.stderr)
@@ -234,7 +237,8 @@ if (!is_win()) {
                                                         '-d', 'zend.assertions=1', '-r', "echo 'literal $value';"])
                 (artifacts / 'status.txt').write_text('PASSED ' + str(root / 'original.phpt') + '\n')
                 return subprocess.CompletedProcess(command, 0, '', '')
-            with patch.object(phpt, 'run_isolated', run):
+            with patch.dict(os.environ, TEST_PHP_EXTRA_ARGS="-d 'user_agent=fixture child'"), \
+                 patch.object(phpt, 'run_isolated', run):
                 rows, receipt = phpt.run_cases(engine, [{'path': 'original.phpt'}], root, artifacts, 1, 1,
                                                runner_ini=settings, match_child_php=True)
             self.assertEqual(rows['original.phpt']['status'], 'passed')
@@ -386,7 +390,8 @@ if (!is_win()) {
             sandbox = Path(directory)
             artifacts = sandbox / 'artifacts'
             (artifacts / 'one').mkdir(parents=True)
-            (artifacts / 'one/one.sh').write_text('previous run')
+            for suffix in ('sh', 'out', 'exp', 'diff', 'log', 'php'):
+                (artifacts / f'one/one.{suffix}').write_text('previous run')
             def fail(command, *, env, **kwargs):
                 self.assertNotIn('UNRELATED_SETTING', env)
                 self.assertEqual(env['TEST_SSH2_HOSTNAME'], 'fixture')
@@ -401,7 +406,7 @@ if (!is_win()) {
                                          sandbox, artifacts, 1, 1)
             self.assertEqual(rows['one.phpt']['status'], 'failed')
             self.assertEqual((artifacts / 'one/one.diff').read_text(), 'mismatch')
-            self.assertFalse((artifacts / 'one/one.sh').exists())
+            self.assertEqual([p.name for p in (artifacts / 'one').iterdir()], ['one.diff'])
 
     def test_only_audited_cases_batch(self):
         safe = {'path': next(iter(phpt.PARALLEL_SAFE))}

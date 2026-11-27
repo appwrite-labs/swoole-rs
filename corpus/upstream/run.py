@@ -529,6 +529,8 @@ def run_cases(engine, cases, sandbox, artifacts, timeout, jobs, *, offline=True,
         env['SKIP_ONLINE_TESTS'] = '0'
     child_selector = None
     if match_child_php:
+        if 'TEST_PHP_EXTRA_ARGS' in os.environ:
+            env['TEST_PHP_EXTRA_ARGS'] = os.environ['TEST_PHP_EXTRA_ARGS']
         php = shutil.which(engine.php)
         if not php:
             raise ValueError('Cannot resolve child PHP executable: ' + engine.php)
@@ -603,6 +605,8 @@ def run_cases(engine, cases, sandbox, artifacts, timeout, jobs, *, offline=True,
             generated = (sandbox / path).with_suffix('.' + suffix)
             if generated.is_file():
                 shutil.copy2(generated, artifact / generated.name)
+            else:
+                (artifact / generated.name).unlink(missing_ok=True)
         row = {'status': status, 'upstream_status': upstream_status, 'exit_code': exit_code,
                'artifacts': str(artifact), 'runner_log': str(artifacts / 'runner.log'),
                'seconds': round(time.monotonic() - started, 4) if len(cases) == 1 else times.get(path),
