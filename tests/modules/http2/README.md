@@ -12,6 +12,8 @@ expected values since the hybrid has no `swoole_http2.h` to build them against:
 | --- | --- |
 | `http2.default_settings` | `http2_default_settings` |
 | `http2.pack_setting_frame` | `http2_pack_setting_frame` |
+| `http2.frame_length_requires_complete_header` | `frame_length_requires_complete_header` |
+| `http2.frame_header_uses_network_byte_order` | `frame_header_uses_network_byte_order` |
 | `http2.get_type` | `http2_get_type` |
 | `http2.get_type_color` | `http2_get_type_color` |
 | `http2.ssl` | not ported: needs the nghttp2 client |

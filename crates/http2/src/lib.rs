@@ -1001,6 +1001,30 @@ mod tests {
         }
     }
     #[test]
+    fn frame_length_requires_complete_header() {
+        let frame = sw_rs_http2_pack_frame_header(FrameType::Data, 0xff_ffff, 0, 1);
+        for size in 0..frame.len() {
+            assert_eq!(frame_length(&frame[..size]), None);
+        }
+        assert_eq!(frame_length(&frame), Some(0xff_ffff + 9));
+        let empty = sw_rs_http2_pack_frame_header(FrameType::Data, 0, 0, 1);
+        assert_eq!(frame_length(&empty), Some(9));
+    }
+
+    #[test]
+    fn frame_header_uses_network_byte_order() {
+        let frame = sw_rs_http2_pack_frame_header(
+            FrameType::Data,
+            0x12_3456,
+            frame_flag::PADDED,
+            0x0102_0304,
+        );
+        assert_eq!(frame, [0x12, 0x34, 0x56, 0, 8, 1, 2, 3, 4]);
+        let decoded = sw_rs_http2_decode_frame(&frame, 0, false).unwrap();
+        assert_eq!(decoded.length, 0x12_3456);
+    }
+
+    #[test]
     fn framing_and_short_prefix() {
         let bytes = header(255, 0x00ff_ffff, 0x80, 0xffff_ffff);
         assert_eq!(frame_length(&bytes[..8]).map_or(0, usize::cast_signed), 0);
