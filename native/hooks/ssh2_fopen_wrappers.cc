@@ -76,6 +76,18 @@ static ssize_t channel_io(php_ssh2_channel_data *data, Operation operation) {
     return -1;
 }
 
+// Zero means the channel is complete. EAGAIN leaves the stream readable.
+static ssize_t channel_completion(php_ssh2_channel_data *data, bool may_block) {
+    if (!(libssh2_channel_eof)(data->channel)) {
+        return LIBSSH2_ERROR_EAGAIN;
+    }
+    if (!data->wait_for_remote_close) {
+        return 0;
+    }
+    auto wait_closed = [&] { return libssh2_channel_wait_closed(data->channel); };
+    return may_block ? channel_io(data, wait_closed) : wait_closed();
+}
+
 static ssize_t php_ssh2_channel_stream_write(php_stream *stream, const char *buf, size_t count) {
     auto *data = static_cast<php_ssh2_channel_data *>(stream->abstract);
     ssize_t result = channel_io(data, [&] {
@@ -89,7 +101,17 @@ static ssize_t php_ssh2_channel_stream_read(php_stream *stream, char *buf, size_
     ssize_t result = channel_io(data, [&] {
         return (libssh2_channel_read_ex)(data->channel, data->streamid, buf, count);
     });
-    stream->eof = !data->session_rsrc->ptr || (result == 0 && (libssh2_channel_eof)(data->channel));
+    if (!data->session_rsrc->ptr) {
+        stream->eof = 1;
+        return -1;
+    }
+    if (result == 0) {
+        ssize_t completion = channel_completion(data, data->is_blocking);
+        stream->eof = completion == 0;
+        if (completion < 0 && completion != LIBSSH2_ERROR_EAGAIN) {
+            return -1;
+        }
+    }
     return result == LIBSSH2_ERROR_EAGAIN ? 0 : result;
 }
 
@@ -160,6 +182,14 @@ static int php_ssh2_channel_stream_set_option(php_stream *stream, int option, in
         add_assoc_bool(metadata, "timed_out", abstract->timed_out);
         if (session) {
             add_assoc_long(metadata, "exit_status", libssh2_channel_get_exit_status(abstract->channel));
+            char *signal = nullptr;
+            size_t length = 0;
+            if (libssh2_channel_get_exit_signal(abstract->channel, &signal, &length, nullptr, nullptr, nullptr, nullptr) == 0 && signal) {
+                add_assoc_stringl(metadata, "exit_signal", signal, length);
+                libssh2_free(session, signal);
+            } else {
+                add_assoc_null(metadata, "exit_signal");
+            }
         }
         return PHP_STREAM_OPTION_RETURN_OK;
     }
@@ -175,12 +205,12 @@ static int php_ssh2_channel_stream_set_option(php_stream *stream, int option, in
 #endif
     }
     case PHP_STREAM_OPTION_CHECK_LIVENESS: {
-        stream->eof = !session || (libssh2_channel_eof)(abstract->channel);
+        stream->eof = !session || channel_completion(abstract, false) != LIBSSH2_ERROR_EAGAIN;
         return stream->eof ? PHP_STREAM_OPTION_RETURN_ERR : PHP_STREAM_OPTION_RETURN_OK;
     }
     }
 
-    return -1;
+    return PHP_STREAM_OPTION_RETURN_NOTIMPL;
 }
 
 php_stream_ops php_ssh2_channel_stream_ops = {
@@ -473,7 +503,7 @@ php_url *php_ssh2_fopen_wraper_parse_path(const char *path,
  * Shell Wrapper *
  ***************** */
 
-static php_stream *php_ssh2_channel_stream(zend_resource *rsrc, LIBSSH2_CHANNEL *channel);
+static php_stream *php_ssh2_channel_stream(zend_resource *rsrc, LIBSSH2_CHANNEL *channel, bool wait_for_remote_close);
 
 /* {{{ php_ssh2_shell_open
  * The ssh2.shell:// wrapper's stream: its channel from swr_ssh2_shell_channel (Rust)
@@ -492,7 +522,7 @@ static php_stream *php_ssh2_shell_open(LIBSSH2_SESSION *session,
     }
 
     /* Turn it into a stream */
-    return php_ssh2_channel_stream(resource, channel);
+    return php_ssh2_channel_stream(resource, channel, true);
 }
 /* }}} */
 
@@ -657,7 +687,7 @@ static php_stream *php_ssh2_exec_command(LIBSSH2_SESSION *session,
     }
 
     /* Turn it into a stream */
-    return php_ssh2_channel_stream(rsrc, channel);
+    return php_ssh2_channel_stream(rsrc, channel, true);
 }
 /* }}} */
 
@@ -771,14 +801,7 @@ static php_stream *php_ssh2_scp_xfer(LIBSSH2_SESSION *session, zend_resource *rs
     }
 
     /* Turn it into a stream */
-    channel_data = (php_ssh2_channel_data *) emalloc(sizeof(php_ssh2_channel_data));
-    channel_data->channel = channel;
-    channel_data->streamid = 0;
-    channel_data->is_blocking = 1;
-    channel_data->timed_out = false;
-    channel_data->timeout = 0;
-    channel_data->session_rsrc = rsrc;
-    channel_data->refcount = NULL;
+    channel_data = channel_data_create(channel, rsrc, false);
 
     stream = php_stream_alloc(&php_ssh2_channel_stream_ops, channel_data, 0, "r");
 
@@ -853,17 +876,10 @@ extern "C" LIBSSH2_CHANNEL *swr_ssh2_scp_recv(LIBSSH2_SESSION *session, const ch
 /* {{{ php_ssh2_channel_stream
  * The stream over a channel just opened, its data holding (not referencing) rsrc
  */
-static php_stream *php_ssh2_channel_stream(zend_resource *rsrc, LIBSSH2_CHANNEL *channel) {
+static php_stream *php_ssh2_channel_stream(zend_resource *rsrc, LIBSSH2_CHANNEL *channel, bool wait_for_remote_close) {
     php_ssh2_channel_data *channel_data;
 
-    channel_data = (php_ssh2_channel_data *) emalloc(sizeof(php_ssh2_channel_data));
-    channel_data->channel = channel;
-    channel_data->streamid = 0;
-    channel_data->is_blocking = 1;
-    channel_data->timed_out = false;
-    channel_data->timeout = 0;
-    channel_data->session_rsrc = rsrc;
-    channel_data->refcount = NULL;
+    channel_data = channel_data_create(channel, rsrc, wait_for_remote_close);
 
     return php_stream_alloc(&php_ssh2_channel_stream_ops, channel_data, 0, "r+");
 }
@@ -882,7 +898,7 @@ static php_stream *php_ssh2_direct_tcpip(LIBSSH2_SESSION *session, zend_resource
     }
 
     /* Turn it into a stream */
-    return php_ssh2_channel_stream(rsrc, channel);
+    return php_ssh2_channel_stream(rsrc, channel, false);
 }
 /* }}} */
 
@@ -958,8 +974,8 @@ php_stream_wrapper php_ssh2_stream_wrapper_tunnel = {&php_ssh2_tunnel_stream_wop
 
 /* ssh2_tunnel, ssh2_shell and ssh2_exec are Rust (crates/ssh2/src/php.rs). What
  * they keep C: the channel stream, built on this file's stream ops. */
-extern "C" void swr_ssh2_session_stream(zval *zsession, LIBSSH2_CHANNEL *channel, zval *return_value) {
-    php_stream *stream = php_ssh2_channel_stream(Z_RES_P(zsession), channel);
+extern "C" void swr_ssh2_session_stream(zval *zsession, LIBSSH2_CHANNEL *channel, bool wait_for_remote_close, zval *return_value) {
+    php_stream *stream = php_ssh2_channel_stream(Z_RES_P(zsession), channel, wait_for_remote_close);
 
     zval_ptr_dtor(return_value);
     if (!stream) {

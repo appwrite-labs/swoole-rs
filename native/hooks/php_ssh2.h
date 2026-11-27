@@ -101,6 +101,7 @@ typedef struct _php_ssh2_channel_data {
     unsigned int streamid;
     char is_blocking;
     bool timed_out;
+    bool wait_for_remote_close;
     double timeout;
 
     /* Resource */
@@ -110,6 +111,16 @@ typedef struct _php_ssh2_channel_data {
     unsigned char *refcount;
 
 } php_ssh2_channel_data;
+
+static inline php_ssh2_channel_data *channel_data_create(
+    LIBSSH2_CHANNEL *channel, zend_resource *session, bool wait_for_remote_close) {
+    auto *data = static_cast<php_ssh2_channel_data *>(ecalloc(1, sizeof(php_ssh2_channel_data)));
+    data->channel = channel;
+    data->session_rsrc = session;
+    data->is_blocking = 1;
+    data->wait_for_remote_close = wait_for_remote_close;
+    return data;
+}
 
 /* Rust (crates/ssh2/src/php.rs): ssh2_connect's session, for the wrappers too. */
 extern "C" void swr_ssh2_forward_enter(LIBSSH2_SESSION *session);

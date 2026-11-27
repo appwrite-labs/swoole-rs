@@ -246,7 +246,12 @@ unsafe extern "C" {
     safe fn swr_ssh2_forward_closed(session: Session) -> bool;
     /// The channel stream over `channel`, which holds a reference to the
     /// session resource, put in `out`; false when no stream can be allocated.
-    safe fn swr_ssh2_session_stream(session_resource: &Value, channel: Opened, out: ReturnSlot<'_>);
+    safe fn swr_ssh2_session_stream(
+        session_resource: &Value,
+        channel: Opened,
+        wait_for_remote_close: bool,
+        out: ReturnSlot<'_>,
+    );
     /// libssh2's own declarations for a shell channel: an environment
     /// variable, the pty, the shell itself, and freeing a channel no stream
     /// was made over.
@@ -1736,7 +1741,7 @@ fn tunnel(call: &Call<'_>) {
         call.set_bool(false);
         return;
     };
-    swr_ssh2_session_stream(resource, channel, call.return_slot());
+    swr_ssh2_session_stream(resource, channel, false, call.return_slot());
 }
 
 /// `PHP_SSH2_DEFAULT_TERMINAL`, `_TERM_WIDTH`, `_TERM_HEIGHT` and
@@ -1806,7 +1811,7 @@ fn shell(call: &Call<'_>) {
         call.set_bool(false);
         return;
     };
-    swr_ssh2_session_stream(resource, channel, call.return_slot());
+    swr_ssh2_session_stream(resource, channel, true, call.return_slot());
 }
 
 swoole_rs_zend::exports! {
@@ -2011,7 +2016,7 @@ fn exec(call: &Call<'_>) {
         call.set_bool(false);
         return;
     };
-    swr_ssh2_session_stream(resource, channel, call.return_slot());
+    swr_ssh2_session_stream(resource, channel, true, call.return_slot());
 }
 
 swoole_rs_zend::exports! {
