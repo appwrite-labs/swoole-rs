@@ -245,7 +245,10 @@ fn to_connection(
         && config.mode_ != Mode::Process
         && matches!(kind, Some(ServerEvent::SendFile | ServerEvent::SendData))
     {
-        if send_yield {
+        if conn.peer_closed() || conn.close_reset() || conn.close_force() {
+            let m = format_args!("socket#{} is closed by client", conn.fd());
+            error(LOG_NOTICE, E::SW_ERROR_SESSION_CLOSED_BY_CLIENT, m);
+        } else if send_yield {
             yield_error();
         } else {
             let m = format_args!("socket#{} output buffer overflow", conn.fd());
