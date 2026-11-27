@@ -568,3 +568,50 @@ fn decode_respects_the_input_boundary() {
     assert_eq!(terminated(&output), "A B");
     assert_eq!(&output[5..], b"?!");
 }
+
+#[test]
+fn expect_scan_matches_the_native_loop() {
+    // Every string over the bytes the loop branches on, up to six long.
+    let alphabet = b"\r\nEx";
+    let mut inputs = vec![Vec::new()];
+    for _ in 0..6 {
+        let longer: Vec<Vec<u8>> = inputs
+            .iter()
+            .flat_map(|s| alphabet.iter().map(move |&b| [s.as_slice(), &[b]].concat()))
+            .collect();
+        inputs.extend(longer);
+    }
+    for prefix in ["", "x", "\r", "\r\n", "GET / HTTP/1.1"] {
+        for header in [
+            "\r\nExpect: 100-continue",
+            "\r\nexpect: 100-CONTINUE",
+            "\r\nExpect:100-continue",
+            "\r\nExpect: \t 100-continue",
+            "\r\nExpect: nope",
+            "\r\nExpect: 100",
+            "\r\nX: 1\r\nExpect: 100-continue",
+        ] {
+            for suffix in ["", "\r\n", "\r\n\r\nbody\r"] {
+                inputs.push([prefix, header, suffix].concat().into_bytes());
+            }
+        }
+    }
+    for mut input in inputs {
+        let length = input.len();
+        let actual = swoole_rs_http::has_expect_header(&input);
+        input.push(0);
+        // SAFETY: the request buffer holds length bytes followed by a NUL throughout the call.
+        let expected = unsafe {
+            (swoole_rs_oracle::http_frame::UPSTREAM.expect)(input.as_mut_ptr().cast(), length)
+        };
+        assert_eq!(
+            actual,
+            expected,
+            "{:?}",
+            String::from_utf8_lossy(&input[..length])
+        );
+    }
+    assert!(swoole_rs_http::has_expect_header(
+        b"GET / HTTP/1.1\r\nExpect: 100-continue\r\n\r\n"
+    ));
+}

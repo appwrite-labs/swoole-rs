@@ -208,25 +208,6 @@ pub fn header_value(input: &[u8], start: usize, end: usize, name: &[u8]) -> Opti
 #[cfg(test)]
 mod tests {
     use super::*;
-    /// The native byte-at-a-time loop the memchr scan must match.
-    fn expect_reference(input: &[u8]) -> i32 {
-        let (length, mut at) = (input.len(), 0);
-        while at < length {
-            if input[at] == b'\r' && length - at > 9 {
-                at += 2;
-                if starts(&input[at..], b"Expect:") {
-                    at += 7;
-                    while matches!(input.get(at), Some(b' ' | b'\t')) {
-                        at += 1;
-                    }
-                    return i32::from(starts(&input[at..], b"100-continue"));
-                }
-                at += 1;
-            }
-            at += 1;
-        }
-        0
-    }
     #[test]
     fn version_ids_match_the_pinned_http_enum() {
         assert_eq!(
@@ -236,43 +217,6 @@ mod tests {
         );
     }
 
-    #[test]
-    fn expect_scan_matches_the_native_loop() {
-        // Every string over the bytes the loop branches on, up to six long.
-        let alphabet = b"\r\nEx";
-        let mut inputs = vec![Vec::new()];
-        for _ in 0..6 {
-            let longer: Vec<Vec<u8>> = inputs
-                .iter()
-                .flat_map(|s| alphabet.iter().map(move |&b| [s.as_slice(), &[b]].concat()))
-                .collect();
-            inputs.extend(longer);
-        }
-        for prefix in ["", "x", "\r", "\r\n", "GET / HTTP/1.1"] {
-            for header in [
-                "\r\nExpect: 100-continue",
-                "\r\nexpect: 100-CONTINUE",
-                "\r\nExpect:100-continue",
-                "\r\nExpect: \t 100-continue",
-                "\r\nExpect: nope",
-                "\r\nExpect: 100",
-                "\r\nX: 1\r\nExpect: 100-continue",
-            ] {
-                for suffix in ["", "\r\n", "\r\n\r\nbody\r"] {
-                    inputs.push([prefix, header, suffix].concat().into_bytes());
-                }
-            }
-        }
-        for input in &inputs {
-            assert_eq!(
-                i32::from(expect(input)),
-                expect_reference(input),
-                "{:?}",
-                String::from_utf8_lossy(input)
-            );
-        }
-        assert!(expect(b"GET / HTTP/1.1\r\nExpect: 100-continue\r\n\r\n"));
-    }
     /// The native loop, comparing the name at every byte of a line.
     fn header_value_reference(input: &[u8], start: usize, end: usize, name: &[u8]) -> HttpSpan {
         let input = &input[..end];
