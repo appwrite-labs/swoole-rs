@@ -114,6 +114,22 @@ impl Stream {
     /// bailed out (deferred).
     #[must_use]
     pub fn stat(&self) -> Option<Stat> {
+        Lent(self.0, PhantomData).stat()
+    }
+}
+
+impl<'a> Lent<'a> {
+    fn resource(value: &'a crate::Value) -> Option<Self> {
+        Some(Self(NonNull::new(value.stream())?, PhantomData))
+    }
+
+    // Read fields without calling PHP. A wrapper can close the stream when PHP runs again.
+    fn fields<R>(self, read: impl FnOnce(&php_stream) -> R) -> R {
+        // SAFETY: the owner holds the stream and these field reads make no calls into PHP.
+        read(unsafe { self.0.as_ref() })
+    }
+
+    fn stat(self) -> Option<Stat> {
         let mut failed = true;
         let mut stat = Stat {
             size: 0,
@@ -122,7 +138,7 @@ impl Stream {
             mtime: 0,
         };
         bailout::defer(bailout::trapped(swr_zend_try_stream_stat(
-            Lent(self.0, PhantomData),
+            self,
             &mut failed,
             &mut stat.size,
             &mut stat.mode,
@@ -130,6 +146,37 @@ impl Stream {
             &mut stat.mtime,
         )));
         (!failed).then_some(stat)
+    }
+}
+
+impl crate::Value {
+    /// Whether a stream resource is open for reading file contents.
+    #[must_use]
+    pub fn stream_readable(&self) -> Option<bool> {
+        Lent::resource(self)?.fields(|stream| {
+            let mode = stream.mode.map(|c| c.to_ne_bytes()[0]);
+            let mode = mode.split(|&c| c == 0).next()?;
+            Some(
+                stream.flags & crate::sys::PHP_STREAM_FLAG_IS_DIR == 0
+                    && (mode.starts_with(b"r") || mode.contains(&b'+')),
+            )
+        })
+    }
+
+    /// Offset and stat of an unfiltered, seekable resource. The wrapper may run PHP during stat.
+    #[must_use]
+    pub fn stream_extent(&self) -> Option<(i64, Stat)> {
+        let stream = Lent::resource(self)?;
+        let offset = stream.fields(|stream| {
+            // SAFETY: a live stream has a valid operations table for its wrapper.
+            let ops = unsafe { stream.ops.as_ref() }?;
+            (ops.seek.is_some()
+                && stream.flags & crate::sys::PHP_STREAM_FLAG_NO_SEEK == 0
+                && stream.readfilters.head.is_null()
+                && stream.position >= 0)
+                .then_some(stream.position)
+        })?;
+        Some((offset, stream.stat()?))
     }
 }
 

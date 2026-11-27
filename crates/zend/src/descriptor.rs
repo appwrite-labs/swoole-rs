@@ -200,19 +200,6 @@ impl Value {
         )
     }
 
-    /// Whether a stream resource is open for reading file contents.
-    #[must_use]
-    pub fn stream_readable(&self) -> Option<bool> {
-        // SAFETY: the resource keeps the stream alive and no PHP code runs during the borrow.
-        let stream = unsafe { self.stream().as_ref() }?;
-        let mode = stream.mode.map(|c| c.to_ne_bytes()[0]);
-        let mode = mode.split(|&c| c == 0).next()?;
-        Some(
-            stream.flags & crate::sys::PHP_STREAM_FLAG_IS_DIR == 0
-                && (mode.starts_with(b"r") || mode.contains(&b'+')),
-        )
-    }
-
     /// `php_stream_read` of the stream a resource this holds names, on the request's
     /// thread: the bytes now at the front of `page`, empty at the end of the stream.
     /// Returns `None` if the value is not a stream or the read failed.

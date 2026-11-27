@@ -162,6 +162,7 @@ struct Client {
     /// The response parser; whoever takes it out owns the socket's receive.
     parser: Cell<Option<Parser>>,
     has_upload_files: Cell<bool>,
+    stream_length: Cell<Option<(i64, i64)>>,
     download_name: Cell<Option<ZString>>,
     download_offset: Cell<i64>,
     /// The open download's descriptor.
@@ -345,7 +346,8 @@ fn readable_body(data: &Value) -> bool {
     }
 }
 
-fn set_request_body(props: Props<'_>, data: &Value) -> bool {
+fn set_request_body(client: &Client, data: &Value, length: Option<i64>) -> bool {
+    let props = client.props();
     let data = data.dereferenced();
     if !readable_body(&data) {
         return false;
@@ -358,6 +360,13 @@ fn set_request_body(props: Props<'_>, data: &Value) -> bool {
     {
         return allows_multipart(&data);
     }
+    if length.is_some() && data.kind() != z::IS_RESOURCE {
+        swoole_rs_zend::argument_value_error(2, c"can only be specified for a stream resource");
+        return false;
+    }
+    client
+        .stream_length
+        .set(length.map(|n| (data.resource_handle(), n)));
     props.value(c"requestBody", &data);
     true
 }
@@ -558,6 +567,7 @@ impl Client {
             in_callback: Cell::new(false),
             parser: Cell::new(Some(Parser::new(llhttp::Kind::Response))),
             has_upload_files: Cell::new(false),
+            stream_length: Cell::new(None),
             download_name: Cell::default(),
             download_offset: Cell::new(0),
             download_file: Cell::new(None),
@@ -1115,6 +1125,31 @@ impl Client {
         false
     }
 
+    fn valid_stream_length(&self, body: &Value) -> bool {
+        let body = body.referred();
+        if body.kind() != z::IS_RESOURCE {
+            return true;
+        }
+        let length = self
+            .stream_length
+            .get()
+            .filter(|(id, _)| *id == body.resource_handle());
+        let available = body.stream_extent().and_then(|(offset, stat)| {
+            (stat.size >= 0
+                && u64::from(stat.mode) & u64::from(libc::S_IFMT) == u64::from(libc::S_IFREG))
+            .then(|| (stat.size - offset).max(0))
+        });
+        if bailout::pending() || !swoole_rs_zend::host::exception().is_null() {
+            return false;
+        }
+        match (length, available) {
+            (None, None) => swoole_rs_zend::value_error(c"Cannot determine the remaining request body stream length; specify $length in setData()"),
+            (Some((_, n)), Some(available)) if n > available => swoole_rs_zend::value_error(c"Request body stream length exceeds the remaining stream size"),
+            _ => return true,
+        }
+        false
+    }
+
     /// `exec`: send, and unless deferred receive, retrying 502 and 503.
     fn exec(&self, path: &[u8]) -> bool {
         self.receiving(|parser| {
@@ -1125,12 +1160,17 @@ impl Client {
                 self.stats_begin.set(microtime());
                 self.props().null(c"stats");
             }
-            if !readable_body(&property(self.props(), c"requestBody")) {
+            let value = property(self.props(), c"requestBody");
+            let body = value.dereferenced();
+            if !readable_body(&body) {
                 return false;
             }
             let Ok(mut multipart) = MultipartBody::capture(self.props()) else {
                 return false;
             };
+            if !self.valid_stream_length(&body) {
+                return false;
+            }
             let mut attempt = 0;
             while attempt < u32::from(self.max_retries.get()) + 1 {
                 if !self.send_request(path, &mut multipart) {
@@ -2248,8 +2288,11 @@ fn set_basic_auth(call: &Call) {
 
 /// Set the request body after checking its PHP type.
 fn set_data(call: &Call) {
-    let Some(data) = call.arity(1, 1).ok().and(call.value(1)) else {
+    let Some(data) = call.arity(1, 2).ok().and(call.value(1)) else {
         return call.set_bool(false);
+    };
+    let Ok(length) = call.long_or_null(2) else {
+        return;
     };
     let data = data.referred();
     if !matches!(data.kind(), z::IS_ARRAY | z::IS_STRING | z::IS_RESOURCE) {
@@ -2259,7 +2302,10 @@ fn set_data(call: &Call) {
         );
         return call.argument_type_error(1, &CString::new(message).unwrap_or_default());
     }
-    call.set_bool(props::this(call).is_some_and(|props| set_request_body(props, data)));
+    if length.is_some_and(|n| n < 0) {
+        return call.argument_value_error(2, c"must be greater than or equal to 0");
+    }
+    call.set_bool(client(call).is_some_and(|client| set_request_body(client, data, length)));
 }
 
 /// The upload entry `addFile` and `addData` append.
@@ -2465,7 +2511,7 @@ fn post(call: &Call) {
     };
     client.props().bytes(c"requestMethod", b"POST");
     if let Some(data) = call.value(2)
-        && !set_request_body(client.props(), data)
+        && !set_request_body(client, data, None)
     {
         return;
     }
