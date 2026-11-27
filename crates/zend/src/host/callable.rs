@@ -123,6 +123,13 @@ fn deferred(bailed: i32) -> bool {
 }
 
 impl Callable {
+    /// When an active call also owns the handle, its PHP value is an external root.
+    pub fn trace(handle: &Rc<Self>, roots: &mut crate::GcRoots) {
+        if Rc::strong_count(handle) == 1 {
+            roots.owned(&handle.value);
+        }
+    }
+
     /// `sw_callable_create(value)`: none, after a warning, when `value` is not
     /// callable. Dropping the last owner releases it, deferring a destructor's
     /// bailout.
