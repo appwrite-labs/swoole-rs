@@ -433,6 +433,9 @@ pub(crate) fn shutdown(ctx: &ReactorContext<'_>) -> Option<()> {
         }
     }
     let thread = ctx.thread_record()?;
+    if let Some(timer) = thread.close_timer.take() {
+        swoole_rs_corebase::timer::del_id(timer);
+    }
     if let Some(timer) = thread.heartbeat_timer.take() {
         swoole_rs_corebase::timer::del_id(timer);
     }

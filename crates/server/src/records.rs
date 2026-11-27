@@ -2,7 +2,7 @@
 use core::cell::Cell;
 use core::ffi::{c_int, c_void};
 use core::sync::atomic::{
-    AtomicBool, AtomicU8, AtomicU32,
+    AtomicBool, AtomicI32, AtomicU8, AtomicU32,
     Ordering::{AcqRel, Acquire, Relaxed, Release},
 };
 use swoole_rs_corebase::constants::SocketTypeCode;
@@ -42,6 +42,10 @@ pub struct ConnectionRecord {
     pub worker_id: Cell<c_int>,
     /// The event worker that accepted the close notification, identified across restarts.
     close_worker: Cell<Option<(u16, c_int)>>,
+    /// The process that started the close callback. A replacement may consume the original message.
+    close_callback_pid: AtomicI32,
+    /// One-based index in the owning reactor's pending close list.
+    close_wait_index: Cell<usize>,
     pub session_id: Cell<libc::c_long>,
     pub ssl: Cell<bool>,
     pub ssl_ready: Cell<bool>,
@@ -121,6 +125,8 @@ impl ConnectionRecord {
         self.fd.set(0);
         self.worker_id.set(0);
         self.close_worker.set(None);
+        self.close_callback_pid.store(0, Relaxed);
+        self.close_wait_index.set(0);
         self.session_id.set(0);
         for flag in [
             &self.ssl,
@@ -380,6 +386,8 @@ impl<'a> Connection<'a> {
     }
 
     field!(socket_type, set_socket_type: SocketTypeCode);
+    field!(@[pub(crate)] close_wait_index = close_wait_index, set_close_wait_index: usize);
+    field!(atomic close_callback_pid: AtomicI32);
     field!(fd, set_fd: c_int);
     field!(worker_id, set_worker_id: c_int);
     field!(@[pub(crate)] close_worker = close_worker, set_close_worker: Option<(u16, c_int)>);

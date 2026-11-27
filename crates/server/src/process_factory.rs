@@ -238,8 +238,14 @@ pub(crate) fn end(serv: view::Server<'_>, session: c_long, flags: c_int) -> bool
             .compare_exchange(0, 1, Relaxed, Relaxed)
             .is_ok()
     {
+        conn.close_callback_pid().store(
+            std::process::id().cast_signed(),
+            core::sync::atomic::Ordering::Release,
+        );
         let call = |info: &mut DataHead| state.callbacks.event(EventSlot::Close, serv, info);
-        _ = crate::base_factory::on_close(|| Some(conn), session, call);
+        if crate::base_factory::on_close(|| serv.verified(session), session, call).is_none() {
+            return false;
+        }
     }
     conn.set_close_errno(0);
     let close = SendData::empty(DataHead {

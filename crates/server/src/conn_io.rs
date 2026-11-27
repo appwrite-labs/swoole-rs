@@ -19,7 +19,7 @@ use swoole_rs_corebase::reactor::{Event, Heap, SendStall, Socket, SocketFields, 
 use swoole_rs_corebase::timer::{del_id, delay_held};
 use swoole_rs_corebase::tls::Accept;
 use swoole_rs_corebase::tls::upstream as tls;
-use swoole_rs_corebase::{CCast, DataHead, microtime};
+use swoole_rs_corebase::{CCast, CellExt, DataHead, microtime};
 
 use crate::base_factory::SendData;
 use crate::callbacks::CallbackKind;
@@ -403,7 +403,9 @@ pub(crate) fn peer_close(serv: view::Server<'_>, reactor: Reactor, event: &Event
     }
     let session = conn.session_id();
     let original = sock.as_ptr();
-    if crate::server_methods::notify(serv, conn, ServerEvent::Close) {
+    if track_worker_close(serv, reactor, conn)
+        && crate::server_methods::notify(serv, conn, ServerEvent::Close)
+    {
         return true;
     }
     // The notification can enter PHP and retire this session before returning.
@@ -421,6 +423,82 @@ pub(crate) fn peer_close(serv: view::Server<'_>, reactor: Reactor, event: &Event
         format_args!("close notification failed for session#{session}; releasing transport"),
     );
     crate::conn_io::close_connection(serv, reactor, Some(socket))
+}
+
+/// The owning process-mode reactor checks pending closes after a manager-reaped exit.
+/// An acknowledgement removes the session before its descriptor can be reused.
+fn track_worker_close(serv: view::Server<'_>, reactor: Reactor, conn: Connection<'_>) -> bool {
+    if serv.config().mode_ != Mode::Process || reactor.handle().wait_exit() {
+        return true;
+    }
+    let id = usize::from(reactor.handle().id());
+    let Some(thread) = serv.state().tables_ref().reactor_thread(id) else {
+        return true;
+    };
+    if thread.close_timer.get().is_none() {
+        let timer = swoole_rs_corebase::timer::add_fn(1000, true, move || {
+            if let Some(serv) = reactor.server() {
+                check_worker_closes(serv, reactor, id);
+            }
+        });
+        let Some(timer) = timer else { return false };
+        thread.close_timer.set(Some(timer));
+    }
+    thread.waiting_close.with_taken(|waiting| {
+        if waiting.is_empty() {
+            thread.last_worker_exit.set(None);
+        }
+        waiting.push(conn.session_id());
+        conn.set_close_wait_index(waiting.len());
+    });
+    true
+}
+
+fn check_worker_closes(serv: view::Server<'_>, reactor: Reactor, id: usize) {
+    let Some(thread) = serv.state().tables_ref().reactor_thread(id) else {
+        return;
+    };
+    if thread
+        .waiting_close
+        .with_taken(|waiting| waiting.is_empty())
+    {
+        if let Some(timer) = thread.close_timer.take() {
+            del_id(timer);
+        }
+        return;
+    }
+    let exits = serv
+        .counters()
+        .worker_exits
+        .load(core::sync::atomic::Ordering::Acquire);
+    if thread.last_worker_exit.replace(Some(exits)) == Some(exits) {
+        return;
+    }
+    let mut claimed = thread.waiting_close.with_taken(|waiting| {
+        waiting
+            .iter()
+            .filter_map(|&session| {
+                let pid = serv
+                    .verified(session)?
+                    .close_callback_pid()
+                    .load(core::sync::atomic::Ordering::Acquire);
+                (pid > 0).then_some((pid, session))
+            })
+            .collect::<Vec<_>>()
+    });
+    claimed.sort_unstable();
+    for group in claimed.chunk_by(|a, b| a.0 == b.0) {
+        if let Some(&(pid, _)) = group.first()
+            && swoole_rs_corebase::sys::kill(pid, 0)
+                .is_err_and(|e| e.raw_os_error() == Some(libc::ESRCH))
+        {
+            for &(_, session) in group {
+                if let Some(conn) = serv.verified(session) {
+                    close_connection(serv, reactor, conn.socket());
+                }
+            }
+        }
+    }
 }
 
 /// Whether the peer's FIN ends the connection. A synchronous process worker with
@@ -489,6 +567,22 @@ pub(crate) fn close_connection(
     }
     if !removed && !reactor.del(*sock) {
         return false;
+    }
+    if let Some(index) = conn.close_wait_index().checked_sub(1)
+        && let Some(thread) = state
+            .tables_ref()
+            .reactor_thread(usize::from(reactor.handle().id()))
+    {
+        thread.waiting_close.with_taken(|waiting| {
+            waiting.swap_remove(index);
+            conn.set_close_wait_index(0);
+            if let Some(moved) = waiting
+                .get(index)
+                .and_then(|&session| serv.verified(session))
+            {
+                moved.set_close_wait_index(index + 1);
+            }
+        });
     }
     count_close(state, port, reactor);
     let ssl = sock.read(|s| !s.ssl().is_null());

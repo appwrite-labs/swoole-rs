@@ -531,6 +531,9 @@ fn read_worker_message(pool: PoolRef<'_>, msg: &[u8; EVENT_DATA_SIZE]) {
 pub fn restart_worker_process(serv: view::Server<'_>, status: &ExitStatus) {
     const ORIGIN: &core::ffi::CStr = c"Server::restart_worker_process";
     let pid = status.pid();
+    serv.counters()
+        .worker_exits
+        .fetch_add(1, core::sync::atomic::Ordering::Release);
     let worker = worker_methods::get_worker_by_pid(serv, pid);
     let Some(worker) = serv.own_worker(worker) else {
         // A child that is not a worker: a detached worker finishing, or unknown.
