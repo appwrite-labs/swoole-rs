@@ -164,6 +164,8 @@ impl Plain {
 /// installed function must receive the copy as its userdata.
 pub(super) fn copy_handlers(copy: PhpHandle<'_>, source: PhpHandle<'_>) {
     swoole_curl_copy_streams(copy, source);
+    *swoole_curl_file_stream(copy, CURLOPT_STDERR) =
+        swoole_curl_file_stream(source, CURLOPT_STDERR).copy();
     for stream in [Stream::Read, Stream::Write, Stream::Header] {
         swoole_curl_copy_callback(copy, source, stream as c_int, 0);
     }
