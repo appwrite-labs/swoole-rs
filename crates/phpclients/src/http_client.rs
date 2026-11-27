@@ -152,7 +152,6 @@ struct Client {
     wait_response: Cell<bool>,
     body: Cell<BoundedBytes>,
     compress: Cell<Compress>,
-    compression_error: Cell<bool>,
     package_max_length: Cell<Option<usize>>,
     decoder: Cell<Option<Decoder>>,
     request_connection_close: Cell<bool>,
@@ -503,7 +502,6 @@ impl Client {
             wait_response: Cell::new(false),
             body: Cell::new(BoundedBytes::new(0, 0)),
             compress: Cell::new(Compress::None),
-            compression_error: Cell::new(false),
             package_max_length: Cell::new(None),
             decoder: Cell::default(),
             request_connection_close: Cell::new(false),
@@ -1569,7 +1567,6 @@ impl Client {
         self.wait_response.set(false);
         self.event_stream.set(false);
         self.compress.set(Compress::None);
-        self.compression_error.set(false);
         drop(self.decoder.take());
         if self.has_upload_files.get() {
             self.props().null(c"uploadFiles");
@@ -1678,10 +1675,7 @@ impl Client {
                 Ok(true)
             }
             Err(DecodeError::Limit(limit)) => Err(limit),
-            Err(DecodeError::Codec(message)) => {
-                native::swoole_http_client_coro_inflate_warning(&message);
-                Ok(false)
-            }
+            Err(DecodeError::Codec(_)) => Ok(false),
         }
     }
 }
@@ -1850,21 +1844,17 @@ fn on_body(hooks: &mut Hooks, data: &[u8]) -> Result<Flow, usize> {
     if client.collect_stats.get() {
         add_stat(hooks.props, b"size_download", data.len());
     }
-    let decompress = client.body_decompression.get()
-        && !client.compression_error.get()
-        && client.compress.get() != Compress::None;
-    let callable = client.write_func.with_taken(|callable| callable.clone());
-    let decoded = if decompress {
-        let decoded = client.decompress(data).inspect_err(|limit| {
+    let decoded = client.body_decompression.get() && client.compress.get() != Compress::None;
+    if decoded
+        && !client.decompress(data).inspect_err(|limit| {
             native::swoole_http_client_coro_inflate_warning(&format!(
                 "decoded response exceeds {limit} bytes"
             ));
-        })?;
-        client.compression_error.set(!decoded);
-        decoded
-    } else {
-        false
-    };
+        })?
+    {
+        return Ok(Flow::Fail);
+    }
+    let callable = client.write_func.with_taken(|callable| callable.clone());
     if let Some(callable) = callable {
         let retval = Owned::default();
         let write = |chunk: &[u8]| {

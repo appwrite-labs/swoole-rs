@@ -38,7 +38,7 @@ impl Inflate {
     pub fn new(gzip: bool, limit: usize) -> Self {
         Self {
             stream: None,
-            first_chunk: true,
+            first_chunk: !gzip,
             gzip,
             limit,
             remaining: limit,
@@ -50,9 +50,7 @@ impl Inflate {
     /// falls back to raw deflate: the HTTP/2 client's.
     #[must_use]
     pub fn gzip_only(limit: usize) -> Self {
-        let mut inflate = Self::new(true, limit);
-        inflate.first_chunk = false;
-        inflate
+        Self::new(true, limit)
     }
 
     /// Inflate one body chunk within the response's remaining budget.
@@ -196,6 +194,7 @@ mod tests {
         // A raw deflate stream (window bits -15) has no zlib header; the deflate
         // decoder must hit Z_DATA_ERROR on the first chunk and retry as raw.
         let payload = b"raw deflate body without a zlib header".to_vec();
+        assert_eq!(inflate_all(true, &deflate(&payload, -15)), None);
         assert_eq!(
             inflate_all(false, &deflate(&payload, -15)).as_deref(),
             Some(&payload[..])
