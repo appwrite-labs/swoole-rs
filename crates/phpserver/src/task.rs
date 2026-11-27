@@ -204,6 +204,11 @@ pub(crate) struct Pending {
     coroutines: HashMap<i64, (Weak<TaskCo>, Option<u64>)>,
 }
 
+/// A reloading worker owns each per-task callback and suspended task waiter until completion.
+pub(crate) fn tasks_complete(_: &mut usize) -> bool {
+    crate::lifecycle::with_tasks(|tasks| tasks.callbacks.is_empty() && tasks.coroutines.is_empty())
+}
+
 fn facts(server: view::Server<'_>) -> Facts {
     let config = server.config();
     let worker_type = crate::server::worker_type();

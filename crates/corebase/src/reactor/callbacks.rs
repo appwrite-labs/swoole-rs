@@ -62,6 +62,7 @@ pub enum ExitCondition {
     SignalListener,
     AioTask,
     Signalfd,
+    ServerTask,
     UserBeforeDefault,
     ForcedTermination,
     Iouring,

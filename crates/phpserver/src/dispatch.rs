@@ -185,7 +185,17 @@ pub(crate) fn use_zend_strings(server: view::Server<'_>) {
 /// runtime (not in thread mode), and the worker's bus allocates Zend strings.
 fn prepare_worker(server: view::Server<'_>) {
     let config = server.config();
-    if crate::server::worker_type() == Some(crate::server::WorkerType::Task)
+    let worker_type = crate::server::worker_type();
+    if config.mode_ == Mode::Process
+        && config.task_worker_num.get() > 0
+        && worker_type == Some(crate::server::WorkerType::Event)
+    {
+        swoole_rs_corebase::reactor::swr_v1_event_set_exit_condition(
+            swoole_rs_corebase::reactor::ExitCondition::ServerTask,
+            crate::task::tasks_complete,
+        );
+    }
+    if worker_type == Some(crate::server::WorkerType::Task)
         && !config.task_enable_coroutine.get()
         && config.mode_ != Mode::Thread
     {
