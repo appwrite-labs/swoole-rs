@@ -446,9 +446,14 @@ pub fn sw_rs_http2_header_defaults(published: u32) -> u32 {
     (2 | 16 | 32) & !published
 }
 
+/// Whether the entire Content-Length is an unsigned decimal within the request limit.
 #[must_use]
-pub fn sw_rs_http2_content_length_rejected(complete: bool, parsed: i64, maximum: u32) -> bool {
-    !complete || parsed > i64::from(maximum)
+pub fn valid_content_length(value: &[u8], maximum: u32) -> bool {
+    matches!(value.first(), Some(b'0'..=b'9'))
+        && std::str::from_utf8(value)
+            .ok()
+            .and_then(|s| s.parse::<u32>().ok())
+            .is_some_and(|n| n <= maximum)
 }
 
 /// A content type or encoding the session acts on.

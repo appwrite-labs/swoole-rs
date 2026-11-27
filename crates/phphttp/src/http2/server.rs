@@ -17,11 +17,11 @@ use swoole_rs_http2::{
     FileCompletion, FrameAction, FrameType, GOAWAY_SIZE, HeaderKind, HeaderRole, Http2HeaderPlan,
     Http2RespondFacts, Http2WindowPlan, Media, PING_PAYLOAD, Respond, WindowAction, decode_packet,
     hpack::{Encoder, Error},
-    send_frame_size, sw_rs_http2_chunk, sw_rs_http2_content_length_rejected,
-    sw_rs_http2_file_complete, sw_rs_http2_header_defaults, sw_rs_http2_header_plan,
-    sw_rs_http2_headers_flags, sw_rs_http2_inflate_step, sw_rs_http2_media_kind,
-    sw_rs_http2_pack_frame_header, sw_rs_http2_respond_next, sw_rs_http2_response_status,
-    sw_rs_http2_setting_plan, sw_rs_http2_window_action, sw_rs_http2_window_plan,
+    send_frame_size, sw_rs_http2_chunk, sw_rs_http2_file_complete, sw_rs_http2_header_defaults,
+    sw_rs_http2_header_plan, sw_rs_http2_headers_flags, sw_rs_http2_inflate_step,
+    sw_rs_http2_media_kind, sw_rs_http2_pack_frame_header, sw_rs_http2_respond_next,
+    sw_rs_http2_response_status, sw_rs_http2_setting_plan, sw_rs_http2_window_action,
+    sw_rs_http2_window_plan, valid_content_length,
 };
 use swoole_rs_phpserver::RecvData;
 use swoole_rs_server::{Connection, view};
@@ -1055,6 +1055,15 @@ fn header_block(session: &Session, stream: &Stream, flags: u32, payload: &[u8]) 
     if let Err(code) = session.remaining_headers.get() {
         return reset_stream(session, stream, code);
     }
+    if stream.bad_length.get() {
+        let ctx = stream.ctx();
+        set(ctx, Field::Status, REQUEST_ENTITY_TOO_LARGE.cast_unsigned());
+        if !send_header(ctx, session, stream, None, true) {
+            close(ctx);
+            return false;
+        }
+        return reset_stream(session, stream, swoole_rs_http2::error_code::NO_ERROR);
+    }
     if !trailers && !headers_complete(stream, session.max_body_size) {
         return false;
     }
@@ -1065,20 +1074,10 @@ fn header_block(session: &Session, stream: &Stream, flags: u32, payload: &[u8]) 
     true
 }
 
-/// `std::strtol` consumed the whole Content-Length and it is within the body limit.
-fn content_length_valid(session: &Session, value: &[u8]) -> bool {
-    let (parsed, complete) = strtol(value);
-    !sw_rs_http2_content_length_rejected(complete, parsed, session.max_body_size)
-}
-
 /// `http2_server_on_headers_complete`: the request's Content-Length, body
 /// parser and compression, from its whole initial header block.
 fn headers_complete(stream: &Stream, limit: u32) -> bool {
     let ctx = stream.ctx();
-    if stream.bad_length.get() {
-        send_status_code(ctx, REQUEST_ENTITY_TOO_LARGE.cast_unsigned());
-        return false;
-    }
     if let Some(cookie) = stream.cookie_header.take() {
         add_string(ctx, Value::Header, b"cookie", &cookie);
     }
@@ -1385,7 +1384,7 @@ fn request_header(session: &Session, stream: &Stream, name: &[u8], value: &[u8])
             });
         }
         HeaderKind::ContentLength => {
-            if !content_length_valid(session, value) {
+            if !valid_content_length(value, session.max_body_size) {
                 stream.bad_length.set(true);
             }
             // The header keeps the last value.
@@ -1417,35 +1416,26 @@ fn path(ctx: Ctx, value: &[u8]) {
     ctx.insert(Value::Server, b"path_info", ZString::url_decode(path));
 }
 
-/// `std::strtol(value, &end, 10)` and whether it consumed the whole value.
-fn strtol(value: &[u8]) -> (i64, bool) {
-    match swoole_rs_corebase::strtol(value) {
-        (_, 0) => (0, value.is_empty()),
-        (parsed, end) => (parsed, end == value.len()),
-    }
-}
-
-/// `http2_server_send_status_code`: a header-only response.
-fn send_status_code(ctx: Ctx, status: u32) {
-    if let Some((session, stream)) = of(ctx) {
-        set(ctx, Field::Status, status);
-        send_header(ctx, &session, &stream, None, true);
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn strtol_matches_libc() {
-        assert_eq!(strtol(b"123"), (123, true));
-        assert_eq!(strtol(b" 12"), (12, true));
-        assert_eq!(strtol(b"12a"), (12, false));
-        assert_eq!(strtol(b"-5"), (-5, true));
-        assert_eq!(strtol(b"abc"), (0, false));
-        assert_eq!(strtol(b""), (0, true));
-        assert_eq!(strtol(b"99999999999999999999999"), (i64::MAX, true));
+    fn content_length_is_unsigned_decimal_within_limit() {
+        for bytes in [b"123".as_slice(), b"000123", b"0"] {
+            assert!(valid_content_length(bytes, 123));
+        }
+        for bytes in [
+            b" 12".as_slice(),
+            b"+12",
+            b"-5",
+            b"12a",
+            b"",
+            b"124",
+            b"99999999999999999999999",
+        ] {
+            assert!(!valid_content_length(bytes, 123));
+        }
     }
 
     #[test]
