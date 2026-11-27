@@ -759,6 +759,7 @@ pub extern "C" fn server_rinit() {
 /// deferred is raised last, into the hook's `zend_try`.
 pub extern "C" fn server_rshutdown() {
     swr_zend_http_uploads_rshutdown();
+    crate::http2::release_sessions();
     drop(ManuallyDrop::into_inner(ADDRESSES.take()));
     while let Some(hold) = dequeue() {
         abandon(hold.ctx());
