@@ -48,6 +48,7 @@ unsafe extern "C" {
         name: CText<'_>,
         value: &Value,
         access: c_int,
+        mask: u32,
     ) -> bool;
     safe fn swr_zend_minit_property_string(
         class: ClassEntry<'static>,
@@ -566,42 +567,51 @@ impl Minit {
     /// # Panics
     /// `class` is not registered.
     pub fn property_long(&self, class: &Class, name: &CStr, value: zend_long, access: u32) {
-        self.property(class, name, &Owned::long(value), access);
+        self.scalar_property(class, name, &Owned::long(value), access, 0);
     }
 
     /// `zend_declare_property_double` with `access` flags.
     /// # Panics
     /// `class` is not registered.
     pub fn property_double(&self, class: &Class, name: &CStr, value: f64, access: u32) {
-        self.property(class, name, &Owned::double(value), access);
+        self.scalar_property(class, name, &Owned::double(value), access, 0);
     }
 
     /// `zend_declare_property_bool` with `access` flags.
     /// # Panics
     /// `class` is not registered.
     pub fn property_bool(&self, class: &Class, name: &CStr, value: bool, access: u32) {
-        self.property(class, name, &Owned::bool(value), access);
+        self.scalar_property(class, name, &Owned::bool(value), access, 0);
     }
 
     /// `zend_declare_property_null` with `access` flags.
     /// # Panics
     /// `class` is not registered.
     pub fn property_null(&self, class: &Class, name: &CStr, access: u32) {
-        self.property(class, name, &Owned::null(), access);
+        self.scalar_property(class, name, &Owned::null(), access, 0);
     }
 
-    /// `zend_declare_property` of a scalar default, as Zend's typed
-    /// `zend_declare_property_{long,double,bool,null}` each call it.
+    /// Declare a property with a scalar default and a Zend builtin type mask
+    /// (zero for an untyped property). An undefined default leaves it uninitialized.
     /// # Panics
-    /// `class` is not registered, or `value` is no scalar: an internal class's
-    /// default must not be a request allocation.
-    #[expect(
-        clippy::unused_self,
-        reason = "the token is what proves this runs at MINIT"
-    )]
-    fn property(&self, class: &Class, name: &CStr, value: &Owned, access: u32) {
+    /// The class is unregistered, the default is refcounted, or the mask is unsupported.
+    pub fn scalar_property(
+        &self,
+        class: &Class,
+        name: &CStr,
+        value: &Owned,
+        access: u32,
+        mask: u32,
+    ) {
         assert!(value.kind() < IS_STRING, "a scalar default");
-        swr_zend_minit_property(registered(class), name.into(), value, flags(access));
+        assert!(
+            matches!(
+                mask,
+                0 | crate::sys::MAY_BE_STRING | crate::sys::MAY_BE_LONG | crate::sys::MAY_BE_BOOL
+            ),
+            "a builtin property type"
+        );
+        swr_zend_minit_property(registered(class), name.into(), value, flags(access), mask);
     }
 
     /// `zend_declare_property_string` with `access` flags.

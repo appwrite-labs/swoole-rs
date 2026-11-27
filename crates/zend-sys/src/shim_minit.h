@@ -19,7 +19,7 @@ bool swr_zend_minit_class_constant_string(zend_class_entry *ce, const char *name
 
 /* zend_declare_property of a default that is not refcounted (false for one that
  * is, where Zend raises a fatal error), and zend_declare_property_string. */
-bool swr_zend_minit_property(zend_class_entry *ce, const char *name, const zval *value, int access);
+bool swr_zend_minit_property(zend_class_entry *ce, const char *name, const zval *value, int access, uint32_t mask);
 void swr_zend_minit_property_string(zend_class_entry *ce, const char *name, const char *value, int access);
 
 /* zend_add_parameter_attribute(method `lcname` of `ce`, `offset`, SensitiveParameter).
