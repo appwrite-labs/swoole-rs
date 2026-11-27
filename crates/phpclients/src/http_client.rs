@@ -16,10 +16,10 @@ use std::{
     rc::Rc,
     sync::atomic::{AtomicU32, Ordering},
 };
-use swoole_rs_corebase::CCast;
 use swoole_rs_corebase::CellExt;
 use swoole_rs_corebase::buffer::BoundedBytes;
 use swoole_rs_corebase::reactor::{Events, SocketFields};
+use swoole_rs_corebase::{CCast, microtime};
 use swoole_rs_http::llhttp::{self, Callbacks, EndOfInput, Flow, Parser};
 use swoole_rs_http::status::{BAD_GATEWAY, NO_CONTENT, SERVICE_UNAVAILABLE, SWITCHING_PROTOCOLS};
 use swoole_rs_inflate::{DecodeError, Inflate, brotli, zstd};
@@ -133,6 +133,7 @@ struct Client {
     defer: Cell<bool>,
     keep_alive: Cell<bool>,
     collect_stats: Cell<bool>,
+    stats_begin: Cell<f64>,
     http_compression: Cell<bool>,
     body_decompression: Cell<bool>,
     /// Where the client is in a WebSocket upgrade ([`Client::websocket`]).
@@ -211,6 +212,20 @@ impl<'i> Callbacks<'i> for Spans<'_, '_, 'i> {
             return Flow::Go;
         }
         hooks.props.long(c"statusCode", i64::from(status));
+        if hooks.client.collect_stats.get() {
+            hooks.props.edit_array(c"stats", |stats| {
+                let length = if hooks.parser.flags & llhttp::F_CONTENT_LENGTH == 0 {
+                    -1.0
+                } else {
+                    hooks.parser.content_length.c_cast()
+                };
+                stats.insert_double(b"download_content_length", length);
+                stats.insert_long(
+                    b"http_version",
+                    if hooks.parser.http_minor == 0 { 1 } else { 2 },
+                );
+            });
+        }
         if hooks.client.head.get() || i32::from(hooks.parser.status_code) == NO_CONTENT {
             Flow::SkipBody
         } else {
@@ -474,6 +489,7 @@ impl Client {
             defer: Cell::new(false),
             keep_alive: Cell::new(true),
             collect_stats: Cell::new(false),
+            stats_begin: Cell::new(0.0),
             http_compression: Cell::new(true),
             body_decompression: Cell::new(true),
             websocket: Cell::new(Upgrade::Http),
@@ -663,6 +679,17 @@ impl Client {
             .set_resolve_context(Some(Rc::clone(&self.resolve)));
         socket.configure_http(self.connect_timeout.get());
         if !socket.connect_http(&self.host, c_int::from(self.port)) {
+            if self.collect_stats.get()
+                && let Some(result) = socket
+                    .with_net(|net| {
+                        swoole_rs_corebase::tls::Ssl::of(net).map(|ssl| ssl.get().verify_result())
+                    })
+                    .flatten()
+            {
+                self.props().edit_array(c"stats", |stats| {
+                    stats.insert_long(b"ssl_verify_result", result);
+                });
+            }
             self.set_socket_error(socket, ErrorStatus::ConnectFailed);
             self.close(true);
             return false;
@@ -713,6 +740,20 @@ impl Client {
         let Some(socket) = self.co() else {
             return false;
         };
+        if self.collect_stats.get() {
+            props.edit_array(c"stats", |stats| {
+                stats.insert_double(b"pretransfer_time", microtime() - self.stats_begin.get());
+                if let Some((ip, port)) = socket.getpeername() {
+                    stats.insert_bytes(b"primary_ip", Some(ip.to_bytes()));
+                    stats.insert_long(b"primary_port", port.into());
+                }
+                if socket.getsockname() {
+                    let (ip, port) = socket.address();
+                    stats.insert_bytes(b"local_ip", Some(ip.to_bytes()));
+                    stats.insert_long(b"local_port", port.into());
+                }
+            });
+        }
         socket.check_bound(Events::WRITE);
         swoole_rs_corebase::log::set_last_error(0);
         self.with_body(|body| {
@@ -1031,6 +1072,7 @@ impl Client {
                 crate::resolver::swoole_name_resolver_context_reset(resolve, self.use_default_port);
             });
             if self.collect_stats.get() {
+                self.stats_begin.set(microtime());
                 self.props().null(c"stats");
             }
             let mut multipart = MultipartBody::capture(self.props());
@@ -1066,6 +1108,13 @@ impl Client {
                 return true;
             }
             false
+        })
+        .inspect(|_| {
+            if self.collect_stats.get() {
+                self.props().edit_array(c"stats", |stats| {
+                    stats.insert_double(b"total_time", microtime() - self.stats_begin.get());
+                });
+            }
         })
         .unwrap_or(false)
     }
@@ -1104,6 +1153,18 @@ impl Client {
         result
     }
 
+    fn record_first_byte(&self, props: Props<'_>) {
+        props.edit_array(c"stats", |stats| {
+            if stats
+                .array()
+                .and_then(|stats| stats.find(b"starttransfer_time"))
+                .is_none()
+            {
+                stats.insert_double(b"starttransfer_time", microtime() - self.stats_begin.get());
+            }
+        });
+    }
+
     fn recv_response_into(
         &self,
         parser: &mut Parser,
@@ -1116,7 +1177,6 @@ impl Client {
         };
         let mut header_completed = false;
         let mut header_offset = 0_usize;
-        let mut header_size = 0;
         let mut buffered = None;
         parser.reset();
         let mut hooks = Hooks {
@@ -1149,6 +1209,9 @@ impl Client {
                 break false;
             };
             if !header_completed {
+                if self.collect_stats.get() && header_offset == 0 {
+                    self.record_first_byte(hooks.props);
+                }
                 let unparsed = input.view().get(header_offset..).unwrap_or_default();
                 let Some(end) = swoole_rs_http::header_delimiter(unparsed) else {
                     if length == size {
@@ -1159,10 +1222,7 @@ impl Client {
                     continue;
                 };
                 if self.collect_stats.get() {
-                    header_size += header_offset + end + 4;
-                    hooks.props.edit_array(c"stats", |stats| {
-                        stats.insert_long(b"header_size", header_size.c_cast());
-                    });
+                    add_stat(hooks.props, b"header_size", header_offset + end + 4);
                 }
                 header_completed = true;
                 header_offset = 0;
@@ -1768,8 +1828,22 @@ fn on_header_value(hooks: &Hooks, name: &[u8], data: &[u8]) -> Flow {
     Flow::Go
 }
 
+fn add_stat(props: Props<'_>, key: &[u8], count: usize) {
+    props.edit_array(c"stats", |stats| {
+        let previous = stats
+            .array()
+            .and_then(|a| a.find(key))
+            .and_then(Value::as_long)
+            .unwrap_or_default();
+        stats.insert_long(key, previous.saturating_add(count.c_cast()));
+    });
+}
+
 fn on_body(hooks: &mut Hooks, data: &[u8]) -> Result<Flow, usize> {
     let client = hooks.client;
+    if client.collect_stats.get() {
+        add_stat(hooks.props, b"size_download", data.len());
+    }
     let decompress = client.body_decompression.get()
         && !client.compression_error.get()
         && client.compress.get() != Compress::None;
