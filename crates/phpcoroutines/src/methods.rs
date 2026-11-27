@@ -432,11 +432,12 @@ fn stats(call: &Call) {
     let mut stats = host::Stats::default();
     host::stats(&mut stats);
     call.set_array();
-    let values: [(&std::ffi::CStr, i64); 9] = [
+    let values: [(&std::ffi::CStr, i64); 10] = [
         (c"event_num", stats.event_num),
         (c"signal_listener_num", stats.signal_listener_num),
         (c"aio_task_num", stats.aio_task_num),
         (c"aio_worker_num", stats.aio_worker_num),
+        (c"aio_idle_worker_num", stats.aio_idle_worker_num),
         (c"aio_queue_size", stats.aio_queue_size),
         (c"c_stack_size", stats.c_stack_size),
         (c"coroutine_num", stats.coroutine_num),

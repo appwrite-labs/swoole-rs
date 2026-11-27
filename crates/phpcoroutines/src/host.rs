@@ -18,6 +18,7 @@ pub(crate) struct Stats {
     pub(crate) signal_listener_num: i64,
     pub(crate) aio_task_num: i64,
     pub(crate) aio_worker_num: i64,
+    pub(crate) aio_idle_worker_num: i64,
     pub(crate) aio_queue_size: i64,
     pub(crate) c_stack_size: i64,
     pub(crate) coroutine_num: i64,
@@ -232,6 +233,7 @@ pub(crate) fn stats(stats: &mut Stats) {
         let count = |n| i64::try_from(n).unwrap_or(i64::MAX);
         stats.aio_task_num = count(tasks);
         stats.aio_worker_num = count(workers);
+        stats.aio_idle_worker_num = count(swoole_rs_corebase::offload::threads::idle_worker_num());
         stats.aio_queue_size = count(queued);
     }
     // `corebase::reactor` counts this thread's listeners.

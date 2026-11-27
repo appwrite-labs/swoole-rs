@@ -289,6 +289,11 @@ impl Pool {
     }
 
     #[must_use]
+    pub(crate) fn idle_worker_num(&self) -> usize {
+        self.waiting.load(Ordering::Acquire)
+    }
+
+    #[must_use]
     pub fn queue_size(&self) -> usize {
         lock(&self.state).queue.len()
     }
