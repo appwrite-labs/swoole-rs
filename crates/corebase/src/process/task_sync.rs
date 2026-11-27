@@ -379,11 +379,8 @@ impl<'a, H: TaskHost> Waiting<'a, H> {
             // The task's id once it is dispatched.
             let task_id = if let Some(id) = multi.pack(index, &mut event)? {
                 event.add_flags(TASK_WAITALL);
-                tasks.tasking.fetch_add(1, Ordering::SeqCst);
                 let dispatched = tasks.task(event.packed(), None, true)?;
-                if dispatched {
-                    tasks.tasking.fetch_sub(1, Ordering::SeqCst);
-                } else {
+                if !dispatched {
                     log::warning(c"task_sync", format_args!("failed to dispatch task"));
                 }
                 dispatched.then_some(id)
@@ -418,6 +415,7 @@ impl<'a, H: TaskHost> Waiting<'a, H> {
 
         tasks.host.lock(true);
         let mut content = StringBuffer::EMPTY;
+        set_last_error(0);
         let read = file_get_contents(path, &mut content);
         tasks.host.lock(false);
         let unpacked = if read {
