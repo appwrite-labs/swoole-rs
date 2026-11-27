@@ -862,7 +862,7 @@ fn start(call: &Call) {
     swoole_rs_corebase::reactor::swoole_event_free();
     let master_pid = getpid();
     // Keep the caller’s dispositions saved until the pool and its timers finish.
-    let _signals = swoole_rs_corebase::process::signal::SignalGuard::install(
+    let _signals = swoole_rs_corebase::process::signal_upstream::SignalGuard::install(
         pool_signals(),
         SignalHandler::new(on_signal),
     );

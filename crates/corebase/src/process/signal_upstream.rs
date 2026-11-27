@@ -6,11 +6,12 @@
 //! and the warnings. The process patch deletes `src/os/signal.cc`.
 use crate::log;
 pub use crate::process::signal::Handler;
-use crate::process::signal::signal_name;
+use crate::process::signal::{Slot, origin, save_origin, sigaction, signal_name, signal_set, slot};
 use crate::process::signal_loop::{self, Ops, Report};
 use crate::reactor::ReactorPrepared;
 use crate::sys::set_errno;
 use std::ffi::c_int;
+use std::sync::atomic::Ordering::Relaxed;
 
 /// `SW_FD_SIGNAL` and `SW_ERROR_UNREGISTERED_SIGNAL`.
 #[cfg(target_os = "linux")]
@@ -40,7 +41,7 @@ fn available() -> bool {
     !crate::reactor::event_api::swr_v1_event_reactor().is_null()
 }
 
-pub(super) fn has_reactor() -> bool {
+fn has_reactor() -> bool {
     current().is_some()
 }
 
@@ -217,9 +218,110 @@ mod descriptor {
     };
 }
 
-#[cfg(target_os = "linux")]
-pub(super) fn restore_descriptor() {
-    signal_loop::setup(&OPS);
+struct SavedSignal {
+    number: c_int,
+    handler: usize,
+    registered: u16,
+    slot: &'static Slot,
+    active: bool,
+    action: libc::sigaction,
+    origin: Option<libc::sigaction>,
+    blocked: bool,
+    #[cfg(target_os = "linux")]
+    descriptor: bool,
+}
+
+/// Temporarily install native pool handlers, preserving how the calling thread
+/// received each signal, including those previously routed through signalfd.
+#[must_use]
+pub struct SignalGuard<const N: usize> {
+    saved: [Option<SavedSignal>; N],
+    mask: libc::sigset_t,
+    pid: c_int,
+}
+
+impl<const N: usize> SignalGuard<N> {
+    /// Install the handlers until the guard drops in the installing process.
+    pub fn install(numbers: [c_int; N], handler: Handler) -> Self {
+        use crate::sys;
+        let mut mask = sys::zeroed();
+        sys::sigemptyset(&mut mask);
+        for signo in numbers.into_iter().filter(|&signo| signo > 0) {
+            sys::sigaddset(&mut mask, signo);
+        }
+        let mut previous = sys::zeroed();
+        sys::pthread_sigmask(libc::SIG_BLOCK, Some(&mask), Some(&mut previous));
+        let mut unblock = mask;
+        let saved = numbers.map(|number| {
+            if number == 0 {
+                return None;
+            }
+            let slot = slot(number)?;
+            let action = sigaction(number, None)?;
+            let mut saved_origin = None;
+            origin(number, |old| saved_origin = *old);
+            let saved = SavedSignal {
+                number,
+                handler: slot.handler.load(Relaxed),
+                registered: slot.signo.load(Relaxed),
+                slot,
+                active: slot.activated.load(Relaxed),
+                action,
+                origin: saved_origin,
+                blocked: sys::sigismember(&previous, number) == 1,
+                #[cfg(target_os = "linux")]
+                descriptor: super::signalfd::route(number, false),
+            };
+            let keep_blocked = saved.blocked;
+            #[cfg(target_os = "linux")]
+            let keep_blocked = keep_blocked && !saved.descriptor;
+            if keep_blocked {
+                sys::sigdelset(&mut unblock, number);
+            }
+            signal_set(number, handler, false, swoole_signal_callback, has_reactor);
+            Some(saved)
+        });
+        #[cfg(target_os = "linux")]
+        super::signalfd::update_mask();
+        sys::pthread_sigmask(libc::SIG_UNBLOCK, Some(&unblock), None);
+        Self {
+            saved,
+            mask,
+            pid: super::os::getpid(),
+        }
+    }
+}
+
+impl<const N: usize> Drop for SignalGuard<N> {
+    fn drop(&mut self) {
+        use crate::sys;
+        if super::os::getpid() != self.pid {
+            return;
+        }
+        sys::pthread_sigmask(libc::SIG_BLOCK, Some(&self.mask), None);
+        let mut unblock = self.mask;
+        for saved in self.saved.iter().flatten().rev() {
+            let number = saved.number;
+            saved.slot.handler.store(saved.handler, Relaxed);
+            saved.slot.signo.store(saved.registered, Relaxed);
+            saved.slot.activated.store(saved.active, Relaxed);
+            save_origin(number, saved.origin);
+            sigaction(number, Some(&saved.action));
+            if saved.blocked {
+                sys::sigdelset(&mut unblock, number);
+            }
+            #[cfg(target_os = "linux")]
+            super::signalfd::route(number, saved.descriptor);
+        }
+        #[cfg(target_os = "linux")]
+        {
+            super::signalfd::update_mask();
+            if self.saved.iter().flatten().any(|saved| saved.descriptor) {
+                signal_loop::setup(&OPS);
+            }
+        }
+        sys::pthread_sigmask(libc::SIG_UNBLOCK, Some(&unblock), None);
+    }
 }
 
 /// Reattach listeners to the newly published main-thread reactor.
