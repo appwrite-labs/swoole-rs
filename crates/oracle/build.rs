@@ -172,7 +172,6 @@ fn http_frame() {
     let mut parts = vec![slice(&text, "static const char *method_strings[]", "\n};") + "\n};"];
     parts.push(include_str!("shim/http_frame_v630.inc").to_owned());
     for signature in [
-        "void Request::parse_header_info(",
         "int Request::get_header_length(",
         "static bool is_http_token_char(",
         "static bool is_http_quoted_char(",
