@@ -7,6 +7,7 @@
 use super::session::{Session, SessionState, Stream};
 use libc::c_int;
 use std::ffi::{CStr, CString};
+use swoole_rs_corebase::timer::Deadline;
 use swoole_rs_corebase::{CCast, CellExt};
 use swoole_rs_http::status::{BAD_REQUEST, REQUEST_ENTITY_TOO_LARGE};
 use swoole_rs_http2::frame_flag::{
@@ -747,10 +748,15 @@ fn append_body(
 }
 
 /// `Stream::send_trailer`: HEADERS with `END_STREAM`, even an empty block.
-fn send_trailer(ctx: Ctx, session: &Session, stream: &Stream) -> bool {
+fn send_trailer(ctx: Ctx, session: &Session, stream: &Stream, deadline: Deadline) -> bool {
     let Some(mut headers) = build_trailer(ctx, session) else {
         return false;
     };
+    // Converting a trailer value to a PHP string can suspend the writer.
+    if deadline.remaining().is_some_and(|time| time.is_zero()) {
+        write_timed_out(session);
+        return false;
+    }
     send_header_frame(
         ctx,
         session,
@@ -779,15 +785,15 @@ pub(crate) fn respond_with_length(ctx: Ctx, data: &[u8], length: usize) -> bool 
     let Some((session, stream)) = of(ctx) else {
         return false;
     };
-    let trailer = has_trailer(ctx);
-    let end_stream = !trailer;
+    let trailer = has_trailer(ctx).then(|| ctx.send_deadline());
+    let end_stream = trailer.is_none();
     let mut body: Vec<u8> = Vec::new();
     let mut compressed = false;
     // Whether the body went out with the header.
     let mut body_sent = false;
     let mut facts = Http2RespondFacts {
         header_sent: get(ctx, Field::SendHeader) != 0,
-        trailer_present: trailer,
+        trailer_present: trailer.is_some(),
         chunked: false,
         shutting_down: false,
         streams_empty: false,
@@ -853,7 +859,8 @@ pub(crate) fn respond_with_length(ctx: Ctx, data: &[u8], length: usize) -> bool 
                 action = next(action, sent, &facts);
             }
             Respond::Trailer => {
-                let sent = send_trailer(ctx, &session, &stream);
+                let sent =
+                    trailer.is_some_and(|deadline| send_trailer(ctx, &session, &stream, deadline));
                 action = next(action, sent, &facts);
             }
             Respond::ErrorClose | Respond::Remove => {
@@ -919,7 +926,7 @@ pub(crate) fn begin_file(ctx: Ctx, content_type: &[u8], length: usize) -> Option
 }
 
 /// The trailer, then the stream is done: false after an error.
-pub(crate) fn finish_file(ctx: Ctx, trailer: bool, error: bool) -> bool {
+pub(crate) fn finish_file(ctx: Ctx, trailer: bool, error: bool, deadline: Deadline) -> bool {
     let Some(session) = SessionState::of(ctx) else {
         return false;
     };
@@ -930,7 +937,7 @@ pub(crate) fn finish_file(ctx: Ctx, trailer: bool, error: bool) -> bool {
             FileCompletion::Trailer => {
                 let sent = session
                     .stream(stream_id, false)
-                    .is_some_and(|stream| send_trailer(ctx, &session, &stream));
+                    .is_some_and(|stream| send_trailer(ctx, &session, &stream, deadline));
                 action = sw_rs_http2_file_complete(sent, false);
             }
             FileCompletion::Close => {

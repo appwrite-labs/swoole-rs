@@ -186,6 +186,7 @@ fn content_range(offset: i64, length: usize, size: usize) -> String {
 /// context) held while a coroutine reads it.
 fn send_ranges(ctx: Ctx, handler: &mut StaticHandler<'_>) -> bool {
     let _held = of(ctx);
+    let deadline = ctx.send_deadline();
     let Some(trailer) = begin_file(ctx, &handler.content_type(), handler.content_length()) else {
         return false;
     };
@@ -214,7 +215,7 @@ fn send_ranges(ctx: Ctx, handler: &mut StaticHandler<'_>) -> bool {
     if multipart && !error {
         error = !body(ctx, &handler.end_part(), end_stream);
     }
-    finish_file(ctx, trailer, error);
+    finish_file(ctx, trailer, error, deadline);
     true
 }
 
@@ -231,6 +232,7 @@ pub(crate) fn send_file(ctx: Ctx, path: &[u8], offset: i64, length: usize) -> bo
     else {
         return false;
     };
+    let deadline = ctx.send_deadline();
     let Some(trailer) = begin_file(ctx, &swoole_rs_framing::mime::get(path), length) else {
         return false;
     };
@@ -257,7 +259,7 @@ pub(crate) fn send_file(ctx: Ctx, path: &[u8], offset: i64, length: usize) -> bo
         }
         sent += n;
     }
-    finish_file(ctx, trailer, sent != length)
+    finish_file(ctx, trailer, sent != length, deadline)
 }
 
 #[cfg(test)]
