@@ -20,6 +20,32 @@ const SERVER_ERROR: c_int = swoole_rs_error::ErrorCode::SW_ERROR_SOCKS5_SERVER_E
 const HANDSHAKE_FAILED: c_int =
     swoole_rs_error::ErrorCode::SW_ERROR_SOCKS5_HANDSHAKE_FAILED as c_int;
 
+/// Fill one proxy reply, stopping before any tunnel data queued after it.
+pub fn receive_socks5_reply(
+    state: u8,
+    buffer: &mut [u8],
+    mut read: impl FnMut(&mut [u8]) -> Option<usize>,
+) -> Option<usize> {
+    let mut used = 0;
+    loop {
+        let (prefix, spare) = buffer.split_at_mut_checked(used)?;
+        let Some(end) = swoole_rs_protocols::socks_reply_length(state, prefix) else {
+            log::set_last_error(HANDSHAKE_FAILED);
+            return None;
+        };
+        if end == used {
+            return Some(used);
+        }
+        let room = spare.get_mut(..end.checked_sub(used)?)?;
+        let n = read(room)?;
+        if n == 0 {
+            log::set_last_error(HANDSHAKE_FAILED);
+            return None;
+        }
+        used += n;
+    }
+}
+
 /// A `swoole::Socks5Proxy`: a borrow of its Rust proxy state.
 pub struct Socks5Proxy<'a> {
     owner: &'a ProxyState,

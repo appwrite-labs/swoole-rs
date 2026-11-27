@@ -94,7 +94,14 @@ pub trait Connecting {
     fn connect(&mut self) -> bool;
     /// The socket's `send` and `recv`.
     fn send(&mut self, data: &[u8]) -> Option<usize>;
-    fn recv(&mut self, into: &mut [u8]) -> Option<usize>;
+    fn recv_socks5_reply(&mut self, into: &mut [u8]) -> Option<usize>;
+    /// Receive the proxy replies under one read timer.
+    fn socks5_replies(&mut self) -> bool
+    where
+        Self: Sized,
+    {
+        socks5_replies(self)
+    }
     /// Packs the SOCKS5 negotiation, moving the proxy to the handshake state.
     fn socks5_negotiate(&mut self) -> Vec<u8>;
     /// `Socks5Proxy::handshake` of a reply (sending what it packs): whether the
@@ -155,9 +162,13 @@ fn socks5(ops: &mut impl Connecting) -> bool {
     if ops.send(&request).is_none() {
         return false;
     }
-    let mut reply = [0u8; 512];
+    ops.socks5_replies()
+}
+
+fn socks5_replies(ops: &mut impl Connecting) -> bool {
+    let mut reply = [0u8; 262];
     loop {
-        let Some(received) = ops.recv(&mut reply).filter(|&n| n > 0) else {
+        let Some(received) = ops.recv_socks5_reply(&mut reply).filter(|&n| n > 0) else {
             return false;
         };
         match ops.socks5_step(reply.get(..received).unwrap_or_default()) {
@@ -441,8 +452,19 @@ impl Connecting for Live<'_> {
         self.socket.send(data)
     }
 
-    fn recv(&mut self, into: &mut [u8]) -> Option<usize> {
-        lend_spare(into, |out| self.socket.recv(out)).0
+    fn recv_socks5_reply(&mut self, into: &mut [u8]) -> Option<usize> {
+        let state = self.socks5?.fields().state;
+        swoole_rs_clients::owned_proxy::receive_socks5_reply(state, into, |room| {
+            lend_spare(room, |out| self.socket.recv(out)).0
+        })
+    }
+
+    fn socks5_replies(&mut self) -> bool {
+        let mut timer =
+            crate::co_io::Timer::new(self.socket, Events::READ, self.socket.read_timeout());
+        let ready = timer.start() && socks5_replies(self);
+        timer.stop();
+        ready
     }
 
     fn socks5_negotiate(&mut self) -> Vec<u8> {
@@ -779,7 +801,7 @@ mod tests {
         fn send(&mut self, data: &[u8]) -> Option<usize> {
             usize::try_from(take("send", data.len().cast_signed())).ok()
         }
-        fn recv(&mut self, _: &mut [u8]) -> Option<usize> {
+        fn recv_socks5_reply(&mut self, _: &mut [u8]) -> Option<usize> {
             usize::try_from(take("recv", 2)).ok()
         }
         fn socks5_negotiate(&mut self) -> Vec<u8> {

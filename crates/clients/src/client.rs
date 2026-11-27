@@ -1280,53 +1280,35 @@ fn socks5_receive_sync(this: Handle<'_>, timeout: f64) -> bool {
     let started = std::time::Instant::now();
     // The longest reply is a CONNECT with a 255-byte domain and a port.
     let mut reply = [0; 262];
-    let mut used = 0;
     while let Some(state) = this.proxy_state(Proxy::Socks5) {
         if state == SOCKS5_READY {
             return true;
         }
-        let Some((prefix, spare)) = reply.split_at_mut_checked(used) else {
-            return false;
-        };
-        let Some(end) = swoole_rs_protocols::socks_reply_length(state, prefix) else {
-            log::set_last_error(ERROR_SOCKS5_HANDSHAKE_FAILED);
-            return false;
-        };
-        if end == used {
-            if !this.socks5_handshake(prefix) {
-                return false;
-            }
-            used = 0;
-            continue;
-        }
-        if timeout > 0.0 {
-            let remaining = timeout - started.elapsed().as_secs_f64();
-            if remaining <= 0.0 {
-                log::set_last_error(ERROR_SOCKET_POLL_TIMEOUT);
-                return false;
-            }
-            this.socket().edit(|socket| {
-                socket.set_timeout(
-                    remaining.max(0.001),
-                    swoole_rs_corebase::reactor::TimeoutKind::READ,
-                );
-            });
-        }
-        let Some(room) = spare.get_mut(..end.saturating_sub(used)) else {
-            return false;
-        };
-        match recv(this, room, 0) {
-            Some(0) => {
-                log::set_last_error(ERROR_SOCKS5_HANDSHAKE_FAILED);
-                return false;
-            }
-            Some(n) => used += n,
-            None => {
-                if timeout > 0.0 && log::last_error() == libc::ETIMEDOUT {
+        let received = crate::owned_proxy::receive_socks5_reply(state, &mut reply, |room| {
+            if timeout > 0.0 {
+                let remaining = timeout - started.elapsed().as_secs_f64();
+                if remaining <= 0.0 {
                     log::set_last_error(ERROR_SOCKET_POLL_TIMEOUT);
+                    return None;
                 }
-                return false;
+                this.socket().edit(|socket| {
+                    socket.set_timeout(
+                        remaining.max(0.001),
+                        swoole_rs_corebase::reactor::TimeoutKind::READ,
+                    );
+                });
             }
+            let n = recv(this, room, 0);
+            if n.is_none() && timeout > 0.0 && log::last_error() == libc::ETIMEDOUT {
+                log::set_last_error(ERROR_SOCKET_POLL_TIMEOUT);
+            }
+            n
+        });
+        if !received
+            .and_then(|n| reply.get(..n))
+            .is_some_and(|frame| this.socks5_handshake(frame))
+        {
+            return false;
         }
     }
     false
