@@ -112,10 +112,15 @@ impl Packet {
         loop {
             if !known {
                 let buffer = self.buffer();
-                let received = self.recv(
-                    buffer.length,
-                    (header_len as usize).wrapping_sub(buffer.length),
-                )?;
+                let target = header_len as usize;
+                if target <= buffer.length {
+                    self.fail(Failure::LengthNotFound);
+                    return Some(0);
+                }
+                if target > buffer.size {
+                    self.extend(target);
+                }
+                let received = self.recv(buffer.length, target - buffer.length)?;
                 if received == 0 {
                     return Some(0);
                 }
@@ -478,6 +483,13 @@ pub(crate) mod tests {
         let wire = [first, second].concat();
         let (results, _) = run(&[&wire[..4], &wire[4..12], &wire[12..]], 8, true, b"", 1024);
         assert_eq!(results, [Some(9), Some(7), Some(0)]);
+    }
+
+    #[test]
+    fn length_protocol_grows_the_buffer_for_the_header() {
+        let (packets, fake) = run(&[b"ab\0\0\0\0"], 2, true, b"", 1024);
+        assert_eq!(packets, [Some(6), Some(0)]);
+        assert_eq!(fake.buffer.size, 6);
     }
 
     #[test]
