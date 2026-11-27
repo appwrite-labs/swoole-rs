@@ -511,18 +511,7 @@ static void php_ssh2_session_dtor(zend_resource *rsrc) {
 static void php_ssh2_listener_dtor(zend_resource *rsrc) {
     php_ssh2_listener_data *data = (php_ssh2_listener_data *) rsrc->ptr;
     LIBSSH2_LISTENER *listener = data->listener;
-    auto session = data->session;
-
-    if (data->session_rsrc->ptr) {
-        swr_ssh2_forward_enter(session);
-        if (swr_v1_ssh2_is_bound(session)) {
-            // A destructor cannot park on the socket while its owner is waiting.
-            (libssh2_channel_forward_cancel)(listener);
-        } else {
-            libssh2_channel_forward_cancel(listener);
-        }
-        swr_ssh2_forward_leave(session);
-    }
+    release_ssh_resource(data->session_rsrc, 0, [&] { return (libssh2_channel_forward_cancel)(listener); });
     zend_list_delete(data->session_rsrc);
     efree(data);
 }

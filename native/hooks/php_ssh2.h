@@ -23,7 +23,9 @@
 
 #ifdef SW_HAVE_SSH2LIB
 
+#include <algorithm>
 #include <chrono>
+#include <climits>
 
 #include "ext/standard/url.h"
 #include "main/php_network.h"
@@ -206,8 +208,24 @@ static ssize_t session_io(zend_resource *resource, bool may_block, double timeou
 // A destructor can yield during request shutdown. Every retry spends the same timeout.
 template <typename Operation>
 static void ssh2_release_call(LIBSSH2_SESSION *session, double timeout, Operation operation) {
+    if (!swoole::Coroutine::get_current()) {
+        if (swr_v1_ssh2_is_bound(session) || (EG(flags) & EG_FLAGS_IN_SHUTDOWN)) {
+            operation();
+            return;
+        }
+        const auto blocking = libssh2_session_get_blocking(session);
+        const auto previous_timeout = libssh2_session_get_timeout(session);
+        const double ms = timeout * 1000;
+        const long timeout_ms = ms >= static_cast<double>(LONG_MAX) ? LONG_MAX : std::max(1L, static_cast<long>(ms));
+        libssh2_session_set_timeout(session, timeout_ms);
+        libssh2_session_set_blocking(session, 1);
+        operation();
+        libssh2_session_set_blocking(session, blocking);
+        libssh2_session_set_timeout(session, previous_timeout);
+        return;
+    }
     const auto start = std::chrono::steady_clock::now();
-    while (operation() == LIBSSH2_ERROR_EAGAIN && swoole::Coroutine::get_current() && !swr_v1_ssh2_is_bound(session)) {
+    while (operation() == LIBSSH2_ERROR_EAGAIN && !swr_v1_ssh2_is_bound(session)) {
         double remaining = timeout - std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
         bool timed_out = false;
         bool outbound = libssh2_session_block_directions(session) & LIBSSH2_SESSION_BLOCK_OUTBOUND;
