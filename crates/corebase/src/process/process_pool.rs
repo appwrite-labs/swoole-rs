@@ -1720,7 +1720,13 @@ impl<H: PoolHost> Pool<'_, H> {
     }
 
     /// `ProcessPool::create`.
-    fn create(&mut self, worker_num: u32, key: c_int, mode: u8) -> bool {
+    fn create(
+        &mut self,
+        worker_num: u32,
+        key: c_int,
+        mode: u8,
+        owner: Option<(libc::uid_t, libc::gid_t)>,
+    ) -> bool {
         let mode = IpcMode::from_code(mode.into());
         if mode == IpcMode::MsgQueue && !self.h.have_msgqueue() {
             self.op(Op::Log(Log::NoSysvmsg), 0);
@@ -1741,7 +1747,7 @@ impl<H: PoolHost> Pool<'_, H> {
             IpcMode::MsgQueue => {
                 self.set_use_msgqueue(true);
                 self.set_msgqueue_key(key);
-                let Some(queue) = crate::ossupport::QueueRecord::open(key) else {
+                let Some(queue) = crate::ossupport::QueueRecord::open_pool(key, owner) else {
                     return false;
                 };
                 self.p.set_queue(Some(queue));
@@ -2410,7 +2416,20 @@ pub fn swr_v1_process_pool_create(
     key: c_int,
     mode: u8,
 ) -> bool {
-    with(native, pool, |p| p.create(worker_num, key, mode))
+    with(native, pool, |p| p.create(worker_num, key, mode, None))
+}
+
+/// Create a server task queue with the credentials its workers will use.
+pub fn create_task_queue(
+    native: &dyn PoolNative,
+    pool: PoolRef<'_>,
+    worker_num: u32,
+    key: c_int,
+    owner: (libc::uid_t, libc::gid_t),
+) -> bool {
+    with(native, pool, |p| {
+        p.create(worker_num, key, IpcMode::MsgQueue.code(), Some(owner))
+    })
 }
 
 /// `ProcessPool::push_message(type, data, length)`.
@@ -2805,7 +2824,7 @@ mod tests {
         let mut script = Script::default();
         script.answers.insert(Op::HaveMsgqueue, 0);
         let mut pool = fixture.pool(script);
-        assert!(!pool.create(2, 0, IpcMode::MsgQueue.code()));
+        assert!(!pool.create(2, 0, IpcMode::MsgQueue.code(), None));
         assert_eq!(ops(&pool), [Op::HaveMsgqueue, Op::Log(Log::NoSysvmsg)]);
     }
 
@@ -2819,7 +2838,7 @@ mod tests {
         }
         let mut fixture = Fixture::new(3);
         let mut pool = fixture.pool(Script::default());
-        assert!(pool.create(3, 0, IpcMode::UnixSock.code()));
+        assert!(pool.create(3, 0, IpcMode::UnixSock.code(), None));
         assert_eq!(
             ops(&pool),
             [
@@ -2854,7 +2873,7 @@ mod tests {
         let mut script = Script::default();
         script.answers.insert(Op::NewPipe, 0);
         let mut pool = fixture.pool(script);
-        assert!(!pool.create(3, 0, IpcMode::UnixSock.code()));
+        assert!(!pool.create(3, 0, IpcMode::UnixSock.code(), None));
         assert_eq!(
             pool.h
                 .log
@@ -2869,7 +2888,7 @@ mod tests {
     fn an_unknown_ipc_mode_is_none() {
         let mut fixture = Fixture::new(1);
         let mut pool = fixture.pool(Script::default());
-        assert!(pool.create(1, 0, 9));
+        assert!(pool.create(1, 0, 9, None));
         assert_eq!(pool.ipc_mode(), IpcMode::None);
         pool.destroy();
     }

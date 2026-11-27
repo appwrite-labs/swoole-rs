@@ -14,11 +14,32 @@ use swoole_rs_corebase::DataHead;
 
 use crate::state::ServerState;
 
+fn effective_owner() -> (libc::uid_t, libc::gid_t) {
+    // The kernel returns the calling process's effective credentials by value.
+    unsafe extern "C" {
+        safe fn geteuid() -> libc::uid_t;
+        safe fn getegid() -> libc::gid_t;
+    }
+    (geteuid(), getegid())
+}
+
+fn task_worker_owner(serv: crate::view::Server<'_>) -> (libc::uid_t, libc::gid_t) {
+    use crate::state::ServerText;
+    use swoole_rs_corebase::sys;
+    let (uid, gid) = effective_owner();
+    if uid != 0 {
+        return (uid, gid);
+    }
+    let text = |kind| std::ffi::CString::new(&*serv.state().text(kind)).unwrap_or_default();
+    (
+        sys::user_id(&text(ServerText::User)).unwrap_or(uid),
+        sys::group_id(&text(ServerText::Group)).unwrap_or(gid),
+    )
+}
+
 /// Create the task endpoint before workers start. Its permissions apply from bind onward.
 fn listen_task_socket(serv: crate::view::Server<'_>, file: &core::ffi::CStr) -> bool {
-    use crate::state::ServerText;
     use std::os::unix::ffi::OsStrExt;
-    use swoole_rs_corebase::sys;
     // umask exchanges a mode value and accesses no caller memory.
     unsafe extern "C" {
         safe fn umask(mask: libc::mode_t) -> libc::mode_t;
@@ -34,17 +55,15 @@ fn listen_task_socket(serv: crate::view::Server<'_>, file: &core::ffi::CStr) -> 
         let _restore = Mask(umask(0o177));
         process::methods::listen_unix(serv.task_pool_ref(), file, 2048)
     };
-    if !listening || !swoole_rs_corebase::ossupport::swr_v1_os_is_root_user() {
-        return listening;
+    if !listening {
+        return false;
     }
-    let text = |kind| std::ffi::CString::new(&*serv.state().text(kind)).unwrap_or_default();
-    let uid = sys::user_id(&text(ServerText::User));
-    let gid = sys::group_id(&text(ServerText::Group));
-    if uid.is_none() && gid.is_none() {
+    let (uid, gid) = task_worker_owner(serv);
+    if (uid, gid) == effective_owner() {
         return true;
     }
     let path = std::path::Path::new(std::ffi::OsStr::from_bytes(file.to_bytes()));
-    if let Err(error) = std::os::unix::fs::lchown(path, uid, gid) {
+    if let Err(error) = std::os::unix::fs::lchown(path, Some(uid), Some(gid)) {
         swoole_rs_corebase::log::warning(
             c"Server::create_task_workers",
             format_args!("chown({}) failed: {error}", path.display()),
@@ -368,20 +387,24 @@ impl crate::hybrid::Hybrid for Linked {
         let config = serv.state().config_ref();
         // The server's task pool, reset to `{}` (no member has an initializer).
         serv.task_pool_ref().reset();
-        let key = if matches!(ipc, IpcMode::MsgQueue) {
-            swoole_rs_corebase::CCast::c_cast::<c_int>(config.message_queue_key.get())
-        } else {
-            0
-        };
         let pool_ref = serv.task_pool_ref();
-        let ipc = c_int::from(ipc.code());
-        if !pool::create(
-            crate::process_pool_native(),
-            pool_ref,
-            config.task_worker_num.get(),
-            key,
-            ipc,
-        ) {
+        let native = crate::process_pool_native();
+        let workers = config.task_worker_num.get();
+        let created = if matches!(ipc, IpcMode::MsgQueue) {
+            let key = swoole_rs_corebase::CCast::c_cast::<c_int>(config.message_queue_key.get());
+            process::process_pool::create_task_queue(
+                native,
+                pool_ref,
+                workers,
+                key,
+                task_worker_owner(serv),
+            )
+        } else {
+            pool::create(native, pool_ref, workers, 0, ipc.code().into())
+        };
+        if !created {
+            pool::destroy(native, pool_ref);
+            pool_ref.reset();
             return false;
         }
         let (max, grace) = (
