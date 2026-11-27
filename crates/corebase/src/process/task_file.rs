@@ -220,6 +220,11 @@ impl TaskBuffer {
         self.head.ext_flags |= flags;
     }
 
+    /// Identify the synchronous batch sharing a result slot.
+    pub fn set_batch_id(&mut self, id: u64) {
+        self.head.msg_id = id;
+    }
+
     /// `info.type = kind`.
     pub fn set_kind(&mut self, kind: u8) {
         self.head.kind = kind;
@@ -298,6 +303,15 @@ pub struct Packed<'a> {
 }
 
 impl<'a> Packed<'a> {
+    /// Remove a spilled result that its waiter abandoned.
+    pub(super) fn discard(self) {
+        if TaskFlag::from_bits(self.head().ext_flags).contains(TaskFlag::SW_TASK_TMPFILE)
+            && let Ok((_, path)) = PacketTask::read(self.payload())
+        {
+            _ = crate::sys::unlink(path);
+        }
+    }
+
     /// `Server::task_dump`: the header, and the temporary file's name if it has one.
     pub fn dump(self) {
         let mut buf = [0_u8; 1024];

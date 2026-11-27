@@ -8,12 +8,12 @@
 //! ([`crate::process::pool`]); a bailout returns [`Bailed`] for the caller to re-raise.
 use std::ffi::{CStr, c_int};
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::Instant;
 
 use crate::buffer::string::StringBuffer;
 use crate::log::{self, set_last_error};
 use crate::ossupport::file_get_contents;
-use crate::task_tmpfile;
+use crate::{DataHead, ServerEvent, task_tmpfile};
 
 use crate::constants::SW_IPC_MAX_SIZE;
 pub use crate::process::pool::Bailed;
@@ -140,12 +140,22 @@ impl<'a> ResultSlot<'a> {
         }
     }
 
-    /// `info.fd`, the id of the task whose result is in the slot.
-    fn task_id(self) -> i64 {
-        let [first, second, ..] = self.0;
-        let [a, b, c, d] = first.load(Ordering::Relaxed).to_ne_bytes();
-        let [e, f, g, h] = second.load(Ordering::Relaxed).to_ne_bytes();
-        i64::from_ne_bytes([a, b, c, d, e, f, g, h])
+    fn head(self) -> DataHead {
+        let mut bytes = [0; HEAD];
+        load_words(self.0, bytes.as_chunks_mut::<4>().0);
+        DataHead::from_bytes(&bytes)
+    }
+
+    /// Whether this slot still belongs to the task completing under the worker lock.
+    #[must_use]
+    pub fn awaits(self, task: &DataHead) -> bool {
+        let head = self.head();
+        head.event() == Some(ServerEvent::Task)
+            && if task.ext_flags & TASK_WAITALL != 0 {
+                head.ext_flags & TASK_WAITALL != 0 && head.msg_id == task.msg_id
+            } else {
+                head.ext_flags & TASK_WAITALL == 0 && head.fd == task.fd
+            }
     }
 
     /// The slot's data, which follows its head.
@@ -295,11 +305,20 @@ impl<'a, H: TaskHost> Waiting<'a, H> {
         timeout: f64,
     ) -> Result<bool, Bailed> {
         let (tasks, result) = (&mut self.tasks, self.result);
-        result.clear();
         let task_id = task.head().fd;
+        tasks.host.lock(true);
+        result.store(
+            &DataHead {
+                fd: task_id,
+                kind: ServerEvent::Task.code(),
+                ..DataHead::default()
+            }
+            .to_bytes(),
+        );
+        tasks.host.lock(false);
         // One trap for the whole wait: the body owns nothing a bailout skips, and
         // a bailout at any step ends the call, as a trap per step did.
-        trapped(|| {
+        let waited = trapped(|| {
             tasks.host.pipe_clean();
             tasks.host.set_timeout(timeout);
             let host = &mut tasks.host;
@@ -309,13 +328,45 @@ impl<'a, H: TaskHost> Waiting<'a, H> {
             if !matches!(sent, Ok(true)) {
                 return false;
             }
-            while tasks.host.read_notify().is_some_and(|n| n > 0) {
-                if result.task_id() == task_id {
+            let started = Instant::now();
+            loop {
+                if timeout > 0.0 {
+                    let remaining = timeout - started.elapsed().as_secs_f64();
+                    if remaining <= 0.0 {
+                        set_last_error(crate::reactor::POLL_TIMEOUT);
+                        crate::set_errno(libc::EAGAIN);
+                        break;
+                    }
+                    tasks.host.set_timeout(remaining);
+                }
+                if tasks.host.read_notify().is_none_or(|n| n == 0) {
+                    break;
+                }
+                tasks.host.lock(true);
+                let head = result.head();
+                tasks.host.lock(false);
+                if head.event() == Some(ServerEvent::Finish) && head.fd == task_id {
                     return true;
                 }
             }
             false
-        })
+        });
+        if !matches!(waited, Ok(true)) {
+            tasks.host.lock(true);
+            let head = result.head();
+            if head.fd == task_id && head.ext_flags & TASK_WAITALL == 0 {
+                if head.event() == Some(ServerEvent::Finish) {
+                    result.read(|bytes| {
+                        if let Some(packed) = Packed::from_bytes(bytes) {
+                            packed.discard();
+                        }
+                    });
+                }
+                result.clear();
+            }
+            tasks.host.lock(false);
+        }
+        waited
     }
 
     /// `Server::task_sync(mtask, timeout)`: the result slot cleared and pointed at
@@ -328,7 +379,6 @@ impl<'a, H: TaskHost> Waiting<'a, H> {
         multi: &mut impl MultiTask,
         timeout: f64,
     ) -> Result<bool, Bailed> {
-        self.result.clear();
         let mut path = [0; TASK_TMP_PATH_SIZE];
         // Upstream keeps only the path, so the file closes at once.
         let Some(file) = make_tmpfile(&task_tmpfile(), &mut path) else {
@@ -355,6 +405,7 @@ impl<'a, H: TaskHost> Waiting<'a, H> {
         data.push(0);
         self.tasks.host.lock(true);
         // An `EventData`'s data holds the count and a path of `SW_TASK_TMP_PATH_SIZE` bytes.
+        self.result.clear();
         self.result.write_data(&data);
         self.tasks.host.lock(false);
     }
@@ -375,9 +426,26 @@ impl<'a, H: TaskHost> Waiting<'a, H> {
         let mut pending = i64::from(count);
         let mut indexes = Vec::with_capacity(usize::from(count));
         let mut event = TaskBuffer::default();
+        let mut batch_id = None;
         for index in 0..count {
             // The task's id once it is dispatched.
             let task_id = if let Some(id) = multi.pack(index, &mut event)? {
+                let batch = *batch_id.get_or_insert_with(|| {
+                    let batch = id.cast_unsigned();
+                    tasks.host.lock(true);
+                    result.store(
+                        &DataHead {
+                            kind: ServerEvent::Task.code(),
+                            ext_flags: TASK_WAITALL,
+                            msg_id: batch,
+                            ..DataHead::default()
+                        }
+                        .to_bytes(),
+                    );
+                    tasks.host.lock(false);
+                    batch
+                });
+                event.set_batch_id(batch);
                 event.add_flags(TASK_WAITALL);
                 let dispatched = tasks.task(event.packed(), None, true)?;
                 if !dispatched {
@@ -400,10 +468,10 @@ impl<'a, H: TaskHost> Waiting<'a, H> {
         if timeout > 0.0 {
             tasks.set_timeout(timeout)?;
         }
-        let started = now();
+        let started = Instant::now();
         while i64::from(result.finish_count()) < pending {
             if tasks.read_notify()?.is_none_or(|n| n == 0)
-                || (timeout > 0.0 && now() - started > timeout)
+                || (timeout > 0.0 && started.elapsed().as_secs_f64() > timeout)
             {
                 break;
             }
@@ -414,6 +482,7 @@ impl<'a, H: TaskHost> Waiting<'a, H> {
         indexes.dedup_by_key(|&mut (task_id, _)| task_id);
 
         tasks.host.lock(true);
+        result.clear();
         let mut content = StringBuffer::EMPTY;
         set_last_error(0);
         let read = file_get_contents(path, &mut content);
@@ -447,12 +516,6 @@ fn unpack_all(
         bytes = rest;
     }
     Ok(())
-}
-
-fn now() -> f64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0.0, |elapsed| elapsed.as_secs_f64())
 }
 
 #[cfg(test)]
@@ -618,14 +681,13 @@ mod tests {
         assert_eq!(done.ok(), Some(Some(true)));
         assert_eq!(multi.unpacked, vec![(0, 11), (1, 12)]);
         assert_eq!(multi.failed, vec![2, 3]);
-        assert_eq!(tasks.tasks.host.locks, vec![true, false]);
+        assert_eq!(tasks.tasks.host.locks, vec![true, false, true, false]);
         assert!(
             std::fs::metadata(path.to_str().unwrap()).is_err(),
             "unlinked"
         );
-        // One in flight per dispatched task (its task worker takes it off), and the
-        // failed dispatch keeps its extra count, as upstream.
-        assert_eq!((counters.0.into_inner(), counters.1.into_inner()), (3, 2));
+        // Each successful dispatch leaves one task in flight.
+        assert_eq!((counters.0.into_inner(), counters.1.into_inner()), (2, 2));
     }
 
     #[test]

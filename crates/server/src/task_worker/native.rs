@@ -319,6 +319,10 @@ pub fn finish(
         };
         let lock = worker.lock();
         _ = lock.map(SharedMutex::lock);
+        if !slot.awaits(task) {
+            _ = lock.map(SharedMutex::unlock);
+            return false;
+        }
         let stored = if TaskFlag::from_bits(task.ext_flags).contains(TaskFlag::SW_TASK_WAITALL) {
             write_waitall(slot, &mut buf, data, |buf| reply(buf, flags));
             true

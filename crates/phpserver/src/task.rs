@@ -623,7 +623,10 @@ fn task_batch_coroutine(call: &Call, serv: view::Server<'_>, tasks: &Array, time
         .with_taken(|result| result.array().is_some_and(|array| array.count() == n_task));
     #[expect(clippy::disallowed_methods, reason = "taskCo's $timeout, from PHP")]
     let deadline = Deadline::from_timeout(timeout);
-    if !complete && !task_co.waiter.wait_for(deadline) {
+    if complete || task_co.waiter.wait_for(deadline) {
+        // A late result for a previous wait can set the worker error while parked.
+        set_last_error(0);
+    } else {
         if log::last_error() == swoole_rs_error::ErrorCode::SW_ERROR_CO_TIMEDOUT as c_int {
             set_last_error(SW_ERROR_TASK_TIMEOUT);
         }
