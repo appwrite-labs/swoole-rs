@@ -67,7 +67,10 @@ unsafe extern "C" {
         vm: &mut swr_zend_coroutine_vm,
         stack: *mut c_void,
         size: usize,
+        fiber: Option<Fiber>,
     );
+    /// Install the running coroutine's fiber state after its entry notification.
+    safe fn swr_zend_coroutine_restore_fiber(vm: Running);
     /// `destroy_context`'s end: frees the finishing context's VM stack, which
     /// its saved state stops naming, then restores `origin`'s.
     safe fn swr_zend_coroutine_finish(finished: Running, origin: Suspended) -> c_int;
@@ -639,7 +642,8 @@ fn open(args: &Args, context: &mut Context) -> Option<Ctx> {
     // The creator switched to this coroutine without a swap callback: its
     // state is still the executor's, saved here.
     let creator = origin(this).running();
-    this.with_vm(|vm| swr_zend_coroutine_start(creator, vm, stack, size));
+    let fiber = this.fiber();
+    this.with_vm(|vm| swr_zend_coroutine_start(creator, vm, stack, size, fiber));
     record_last_msec(this);
     let retval = this.return_value();
     this.with(|context| {
@@ -686,21 +690,25 @@ pub(crate) extern "C" fn run_defers(ctx: Ctx) {
 }
 }
 
-/// Show the mock fiber's user function to observers during the switch.
+/// Show the entry function to fiber observers, or the caller's frame for an internal entry.
 #[inline(never)]
 fn notify_entry(ctx: Ctx) {
     let (handler, opcodes) =
         ctx.with(|context| (context.call.fcc.function_handler, context.opcodes));
-    if let Some(opcodes) = opcodes {
-        let mut frame: zend_execute_data = swoole_rs_zend::zeroed();
+    let mut frame: zend_execute_data = swoole_rs_zend::zeroed();
+    let caller = origin(ctx);
+    let running = if let Some(opcodes) = opcodes {
         frame.opline = opcodes;
         frame.func = handler;
         // SAFETY: the zend_execute_data and its coroutine function stay live
         // through the notification. unshow restores the previous frame.
-        let running = Shown(unsafe { swr_zend_coroutine_set_frame(&raw mut frame) });
-        fiber_switch_try_notify(origin(ctx), ctx);
-        unshow(running);
-    }
+        Shown(unsafe { swr_zend_coroutine_set_frame(&raw mut frame) })
+    } else {
+        swr_zend_coroutine_show(caller.switched_out())
+    };
+    fiber_switch_try_notify(caller, ctx);
+    unshow(running);
+    swr_zend_coroutine_restore_fiber(ctx.running());
 }
 
 /// The next defer task (last in, first out), and a copy of the coroutine's

@@ -21,6 +21,8 @@ ZEND_TLS int default_error_reporting = E_ALL;
 /* globals: snapshot EG, including stack-limit fields present in checked builds. */
 static void save_vm_stack(swr_zend_coroutine_vm *vm) {
     vm->bailout = EG(bailout);
+    vm->current_fiber_context = EG(current_fiber_context);
+    vm->active_fiber = EG(active_fiber);
     vm->vm_stack_top = EG(vm_stack_top);
     vm->vm_stack_end = EG(vm_stack_end);
     vm->vm_stack = EG(vm_stack);
@@ -38,8 +40,15 @@ static void save_vm_stack(swr_zend_coroutine_vm *vm) {
 #endif
 }
 
+/* globals: install the coroutine’s Zend fiber state after a switch. */
+void swr_zend_coroutine_restore_fiber(swr_zend_coroutine_vm *vm) {
+    EG(current_fiber_context) = vm->current_fiber_context;
+    EG(active_fiber) = vm->active_fiber;
+}
+
 /* globals: restore the executor slots for this PHP thread. */
 static void restore_vm_stack(swr_zend_coroutine_vm *vm) {
+    swr_zend_coroutine_restore_fiber(vm);
     EG(bailout) = vm->bailout;
     EG(vm_stack_top) = vm->vm_stack_top;
     EG(vm_stack_end) = vm->vm_stack_end;
@@ -108,7 +117,7 @@ static zend_function frame_function = {ZEND_INTERNAL_FUNCTION};
 
 /* globals: install a new EG stack and first frame with this build's stack bounds. */
 void swr_zend_coroutine_start(swr_zend_coroutine_vm *from, swr_zend_coroutine_vm *vm, void *stack,
-                              size_t stack_size) {
+                              size_t stack_size, zend_fiber_context *fiber) {
     swr_zend_coroutine_save(from);
     EG(error_reporting) = default_error_reporting;
     EG(vm_stack) = zend_vm_stack_new_page(SWR_COROUTINE_PAGE_SIZE, NULL);
@@ -148,6 +157,9 @@ void swr_zend_coroutine_start(swr_zend_coroutine_vm *from, swr_zend_coroutine_vm
     (void) stack_size;
 #endif
     save_vm_stack(vm);
+    if (fiber) {
+        vm->current_fiber_context = fiber;
+    }
 }
 
 /* bailout: output handlers run PHP under a native jump target. */
