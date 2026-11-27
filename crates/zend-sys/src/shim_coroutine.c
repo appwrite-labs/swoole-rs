@@ -4,6 +4,7 @@
  * 8.4, ZEND_CHECK_STACK_LIMIT), allocator, budget and variadic (printf). */
 #include "shim.h"
 #include "shim_coroutine.h"
+#include "shim_private.h"
 
 #include "zend_builtin_functions.h"
 #include "zend_vm.h"
@@ -173,12 +174,16 @@ int swr_zend_coroutine_output_reset(void) {
     return OG(handlers).elements ? reset_output_handlers() : 0;
 }
 
-/* globals: destroy the active EG stack before restoring the origin. */
-void swr_zend_coroutine_finish(swr_zend_coroutine_vm *finished, swr_zend_coroutine_vm *origin) {
+static void throw_exit(void *exception) { zend_throw_exception_internal(exception); }
+
+/* globals, bailout: transfer an exit to the restored frame inside a native trap. */
+int swr_zend_coroutine_finish(swr_zend_coroutine_vm *finished, swr_zend_coroutine_vm *origin) {
+    zend_object *exit = swr_zend_unwind_exit_pending() ? EG(exception) : NULL;
     zend_vm_stack_destroy();
     finished->vm_stack = NULL;
     finished->execute_data = NULL;
     swr_zend_coroutine_restore(origin);
+    return exit ? swr_zend_try(throw_exit, exit) : SWR_ZEND_RETURN;
 }
 
 /* globals: return this executor's main fiber after saving its state. */
@@ -190,7 +195,7 @@ zend_fiber_context *swr_zend_coroutine_main(swr_zend_coroutine_vm *vm) {
 
 /* globals: report the current EG exception from inside the native trap. */
 static int coroutine_catch(void) {
-    if (UNEXPECTED(EG(exception))) {
+    if (UNEXPECTED(EG(exception)) && !swr_zend_unwind_exit_pending()) {
         zend_exception_error(EG(exception), E_ERROR);
         return 1;
     }

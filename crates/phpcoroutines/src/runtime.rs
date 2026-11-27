@@ -136,6 +136,9 @@ pub(crate) fn create(
     argv: *mut zval,
     callable: *mut zval,
 ) -> Result<c_long, Bailout> {
+    if swoole_rs_zend::host::unwind_exit_pending() {
+        return Ok(ERR_INVALID);
+    }
     let count = host::count();
     if count as u64 >= CONFIG.with(|c| c.max_num.get()) {
         host::fatal_error(

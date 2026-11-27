@@ -70,7 +70,7 @@ unsafe extern "C" {
     );
     /// `destroy_context`'s end: frees the finishing context's VM stack, which
     /// its saved state stops naming, then restores `origin`'s.
-    safe fn swr_zend_coroutine_finish(finished: Running, origin: Suspended);
+    safe fn swr_zend_coroutine_finish(finished: Running, origin: Suspended) -> c_int;
     /// Makes the frame the suspended context stopped in Zend's current one, as
     /// its backtraces and exception locations read it; the running one.
     safe fn swr_zend_coroutine_show(vm: Suspended) -> Shown;
@@ -613,7 +613,7 @@ pub(crate) fn run(args: &Args) -> bool {
         // A destructor failed before normal close restored the origin. Leave
         // no executor pointer into this stack context when its body returns;
         // main relays the escape from the coroutine's native bailout hook.
-        swr_zend_coroutine_finish(ctx.running(), origin(ctx).switched_out());
+        finish(ctx);
     }
     // The context goes with this frame.
     swoole_rs_corebase::coroutine::clear_current_task();
@@ -680,7 +680,7 @@ pub(crate) extern "C" fn enter(ctx: Ctx) -> Option<Call> {
 /// Only enter the defer loop when this coroutine registered a task.
 pub(crate) extern "C" fn run_defers(ctx: Ctx) {
     ctx.set_callback_running(false);
-    if ctx.with(|context| context.defer.is_some()) {
+    if ctx.with(|context| context.defer.is_some()) && !swoole_rs_zend::host::unwind_exit_pending() {
         host::run_defers(ctx);
     }
 }
@@ -729,6 +729,17 @@ fn release(value: Owned) -> Result<(), bailout::Bailout> {
     }
 }
 
+fn finish(ctx: Ctx) {
+    if swoole_rs_zend::host::unwind_exit_pending() {
+        swoole_rs_corebase::coroutine::stop_resumes();
+        swoole_rs_corebase::reactor::event_api::swoole_event_bail_out();
+    }
+    bailout::defer(bailout::trapped(swr_zend_coroutine_finish(
+        ctx.running(),
+        origin(ctx).switched_out(),
+    )));
+}
+
 /// `destroy_context`, on the running, finishing coroutine, then
 /// `PHPCoroutine::on_close`'s join hook. Native destructors contain their jumps;
 /// a failed close returns to the owner, which restores the origin's executor.
@@ -775,7 +786,7 @@ fn close(ctx: Ctx) -> Result<(), bailout::Bailout> {
     {
         swoole_rs_corebase::timer::del_id(timer);
     }
-    swr_zend_coroutine_finish(ctx.running(), origin(ctx).switched_out());
+    finish(ctx);
     if let Some(join) = ctx.replace_join(None) {
         join.closed(ctx);
     }

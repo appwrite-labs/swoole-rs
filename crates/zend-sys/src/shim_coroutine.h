@@ -58,7 +58,7 @@ int swr_zend_coroutine_output_reset(void);
 /* destroy_context's end: zend_vm_stack_destroy of the running coroutine's
  * VM stack, which `finished`, its saved state, no longer names, then
  * restore_context of `origin`. */
-void swr_zend_coroutine_finish(swr_zend_coroutine_vm *finished, swr_zend_coroutine_vm *origin);
+int swr_zend_coroutine_finish(swr_zend_coroutine_vm *finished, swr_zend_coroutine_vm *origin);
 /* init_main_context: EG(main_fiber_context), then save_context into `vm`. */
 zend_fiber_context *swr_zend_coroutine_main(swr_zend_coroutine_vm *vm);
 /* A coroutine's body (main_func) inside zend_first_try: call the function

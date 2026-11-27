@@ -534,6 +534,10 @@ pub(crate) fn run_defers(ctx: Ctx) {
                 return;
             }
         }
+        if swoole_rs_zend::host::unwind_exit_pending() {
+            bailout::defer(task.release());
+            return;
+        }
         if !swoole_rs_zend::host::exception().is_null() {
             bailout::Bailout.defer();
             return;

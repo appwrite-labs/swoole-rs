@@ -137,6 +137,11 @@ pub extern "C-unwind" fn activate() {
     });
 }
 
+/// Stop dispatching suspended work while the caller unwinds its PHP frames.
+pub fn stop_resumes() {
+    with_scheduler(|s| s.bailout = true);
+}
+
 /// `static void Coroutine::deactivate()`.
 pub extern "C-unwind" fn deactivate() {
     if build() & THREAD != 0 {
@@ -175,6 +180,10 @@ pub fn cancel_cid(cid: c_long) -> bool {
 }
 
 fn cancel_wait(co: Co) -> bool {
+    if with_scheduler(|s| s.bailout) {
+        set_last_error(SW_ERROR_CO_CANNOT_CANCEL);
+        return false;
+    }
     let canceler = co.with(|co| {
         let canceler = co.cancel.take();
         if canceler.is_some() {
