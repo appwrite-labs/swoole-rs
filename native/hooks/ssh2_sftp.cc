@@ -110,24 +110,20 @@ static inline int php_ssh2_sftp_attr2ssb(php_stream_statbuf *ssb, LIBSSH2_SFTP_A
 
 typedef struct _php_ssh2_sftp_handle_data {
     LIBSSH2_SFTP_HANDLE *handle;
-    // The sftp_rsrc resource holds a reference to session_rsrc,
-    // so you can store the pointer directly without worrying about its lifetime.
-    // In the destructor, the session reference is dropped only after the sftp_rsrc resource has been freed.
-    LIBSSH2_SESSION *session;
-    LIBSSH2_SFTP *sftp;
     zend_resource *sftp_rsrc;
 } php_ssh2_sftp_handle_data;
+
+static LIBSSH2_SESSION *stream_session(const php_ssh2_sftp_handle_data *data) {
+    auto *sftp = static_cast<php_ssh2_sftp_data *>(data->sftp_rsrc->ptr);
+    return sftp && sftp->session_rsrc ? static_cast<LIBSSH2_SESSION *>(sftp->session_rsrc->ptr) : nullptr;
+}
 
 /* {{{ php_ssh2_sftp_stream_write
  */
 static ssize_t php_ssh2_sftp_stream_write(php_stream *stream, const char *buf, size_t count) {
     php_ssh2_sftp_handle_data *data = (php_ssh2_sftp_handle_data *) stream->abstract;
-    ssize_t bytes_written;
-
-    auto session = data->session;
-    bytes_written = libssh2_sftp_write(data->handle, buf, count);
-
-    return bytes_written;
+    auto session = stream_session(data);
+    return session ? libssh2_sftp_write(data->handle, buf, count) : -1;
 }
 /* }}} */
 
@@ -135,12 +131,9 @@ static ssize_t php_ssh2_sftp_stream_write(php_stream *stream, const char *buf, s
  */
 static ssize_t php_ssh2_sftp_stream_read(php_stream *stream, char *buf, size_t count) {
     php_ssh2_sftp_handle_data *data = (php_ssh2_sftp_handle_data *) stream->abstract;
-    ssize_t bytes_read;
-
-    auto session = data->session;
-    bytes_read = libssh2_sftp_read(data->handle, buf, count);
-
-    stream->eof = (bytes_read <= 0 && bytes_read != LIBSSH2_ERROR_EAGAIN);
+    auto session = stream_session(data);
+    ssize_t bytes_read = session ? libssh2_sftp_read(data->handle, buf, count) : -1;
+    stream->eof = bytes_read == 0;
 
     return bytes_read;
 }
@@ -150,9 +143,9 @@ static ssize_t php_ssh2_sftp_stream_read(php_stream *stream, char *buf, size_t c
  */
 static int php_ssh2_sftp_stream_close(php_stream *stream, int close_handle) {
     php_ssh2_sftp_handle_data *data = (php_ssh2_sftp_handle_data *) stream->abstract;
-    auto session = data->session;
-
-    libssh2_sftp_close(data->handle);
+    if (auto session = stream_session(data)) {
+        libssh2_sftp_close(data->handle);
+    }
     zend_list_delete(data->sftp_rsrc);
     efree(data);
 
@@ -164,7 +157,10 @@ static int php_ssh2_sftp_stream_close(php_stream *stream, int close_handle) {
  */
 static int php_ssh2_sftp_stream_seek(php_stream *stream, zend_off_t offset, int whence, zend_off_t *newoffset) {
     php_ssh2_sftp_handle_data *data = (php_ssh2_sftp_handle_data *) stream->abstract;
-    auto session = data->session;
+    auto session = stream_session(data);
+    if (!session) {
+        return -1;
+    }
 
     switch (whence) {
     case SEEK_END: {
@@ -207,7 +203,10 @@ static int php_ssh2_sftp_stream_seek(php_stream *stream, zend_off_t offset, int 
 static int php_ssh2_sftp_stream_fstat(php_stream *stream, php_stream_statbuf *ssb) {
     php_ssh2_sftp_handle_data *data = (php_ssh2_sftp_handle_data *) stream->abstract;
     LIBSSH2_SFTP_ATTRIBUTES attrs;
-    auto session = data->session;
+    auto session = stream_session(data);
+    if (!session) {
+        return -1;
+    }
 
     if (libssh2_sftp_fstat(data->handle, &attrs)) {
         return -1;
@@ -264,7 +263,7 @@ static php_stream *php_ssh2_sftp_stream_opener(php_stream_wrapper *wrapper,
     }
 
     data = (php_ssh2_sftp_handle_data *) emalloc(sizeof(php_ssh2_sftp_handle_data));
-    *data = {handle, session, sftp, sftp_rsrc};
+    *data = {handle, sftp_rsrc};
 
     stream = php_stream_alloc(&php_ssh2_sftp_stream_ops, data, 0, mode);
     if (!stream) {
@@ -287,12 +286,13 @@ static php_stream *php_ssh2_sftp_stream_opener(php_stream_wrapper *wrapper,
 static ssize_t php_ssh2_sftp_dirstream_read(php_stream *stream, char *buf, size_t count) {
     php_ssh2_sftp_handle_data *data = (php_ssh2_sftp_handle_data *) stream->abstract;
     php_stream_dirent *ent = (php_stream_dirent *) buf;
-    auto session = data->session;
-    int bytesread = libssh2_sftp_readdir(data->handle, ent->d_name, sizeof(ent->d_name) - 1, NULL);
+    auto session = stream_session(data);
+    int bytesread = session ? libssh2_sftp_readdir(data->handle, ent->d_name, sizeof(ent->d_name) - 1, NULL) : -1;
+    stream->eof = bytesread == 0;
     zend_string *basename;
 
     if (bytesread <= 0) {
-        return 0;
+        return bytesread;
     }
     ent->d_name[bytesread] = 0;
 
@@ -310,24 +310,10 @@ static ssize_t php_ssh2_sftp_dirstream_read(php_stream *stream, char *buf, size_
 }
 /* }}} */
 
-/* {{{ php_ssh2_sftp_dirstream_close
- */
-static int php_ssh2_sftp_dirstream_close(php_stream *stream, int close_handle) {
-    php_ssh2_sftp_handle_data *data = (php_ssh2_sftp_handle_data *) stream->abstract;
-    auto session = data->session;
-
-    libssh2_sftp_close(data->handle);
-    zend_list_delete(data->sftp_rsrc);
-    efree(data);
-
-    return 0;
-}
-/* }}} */
-
 static php_stream_ops php_ssh2_sftp_dirstream_ops = {
     NULL, /* write */
     php_ssh2_sftp_dirstream_read,
-    php_ssh2_sftp_dirstream_close,
+    php_ssh2_sftp_stream_close,
     NULL, /* flush */
     PHP_SSH2_SFTP_DIRSTREAM_NAME,
     NULL, /* seek */
@@ -366,7 +352,7 @@ static php_stream *php_ssh2_sftp_dirstream_opener(php_stream_wrapper *wrapper,
     }
 
     data = (php_ssh2_sftp_handle_data *) emalloc(sizeof(php_ssh2_sftp_handle_data));
-    *data = {handle, session, sftp, sftp_rsrc};
+    *data = {handle, sftp_rsrc};
 
     stream = php_stream_alloc(&php_ssh2_sftp_dirstream_ops, data, 0, mode);
     if (!stream) {
