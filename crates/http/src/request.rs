@@ -804,6 +804,8 @@ mod tests {
         assert!(!r.has_expect_header(i.bytes()), "no Expect");
         let i = input(b"POST /submit HTTP/1.1\r\nHost: www.example.com\r\nContent-Type: application/json\r\nContent-Length: 1000000\r\nExpect: 100-continue\r\n\r\n");
         assert!(r.has_expect_header(i.bytes()), "Expect: 100-continue");
+        let i = input(b"POST /submit HTTP/1.1\r\nHost: www.example.com\r\nContent-Length: 1000000\r\nExpect:\t100-continue\r\n\r\n");
+        assert!(r.has_expect_header(i.bytes()), "tab after Expect:");
     }
 
     #[test]

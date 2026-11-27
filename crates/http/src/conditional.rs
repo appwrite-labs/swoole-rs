@@ -1,5 +1,6 @@
 //! Conditional-date policy over a [`Calendar`].
 
+use super::skip_ows;
 use std::ffi::CStr;
 use swoole_rs_locale as locale;
 pub use swoole_rs_locale::Tm;
@@ -64,13 +65,6 @@ pub fn conditional(date: &[u8], kind: Conditional, mtime: i64, calendar: &impl C
         Conditional::ModifiedSince => date.is_some_and(|time| time >= mtime),
         Conditional::Range => date != Some(mtime),
     }
-}
-
-fn skip_ows(mut bytes: &[u8]) -> &[u8] {
-    while let [b' ' | b'\t', rest @ ..] = bytes {
-        bytes = rest;
-    }
-    bytes
 }
 
 pub(crate) fn matches_etag(mut list: &[u8], tag: &[u8], weak: bool) -> bool {

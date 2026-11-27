@@ -145,8 +145,8 @@ pub fn expect(input: &[u8]) -> bool {
         at += cr;
         if length - at > 9 {
             at += 2;
-            if starts(tail(input, at), b"Expect: ") {
-                return starts(tail(input, at + 8), b"100-continue");
+            if starts(tail(input, at), b"Expect:") {
+                return starts(super::skip_ows(tail(input, at + 7)), b"100-continue");
             }
             at += 1;
         }
@@ -214,8 +214,12 @@ mod tests {
         while at < length {
             if input[at] == b'\r' && length - at > 9 {
                 at += 2;
-                if starts(&input[at..], b"Expect: ") {
-                    return i32::from(starts(&input[at + 8..], b"100-continue"));
+                if starts(&input[at..], b"Expect:") {
+                    at += 7;
+                    while matches!(input.get(at), Some(b' ' | b'\t')) {
+                        at += 1;
+                    }
+                    return i32::from(starts(&input[at..], b"100-continue"));
                 }
                 at += 1;
             }
@@ -248,6 +252,8 @@ mod tests {
             for header in [
                 "\r\nExpect: 100-continue",
                 "\r\nexpect: 100-CONTINUE",
+                "\r\nExpect:100-continue",
+                "\r\nExpect: \t 100-continue",
                 "\r\nExpect: nope",
                 "\r\nExpect: 100",
                 "\r\nX: 1\r\nExpect: 100-continue",

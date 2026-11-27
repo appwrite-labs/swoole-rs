@@ -126,11 +126,8 @@ pub fn header_info(
                         let length = memchr::memchr(b'\r', value).unwrap_or(value.len());
                         state.flags |= 8;
                         let codings = value.get(..length).unwrap_or_default();
-                        for mut coding in codings.split(|&b| b == b',') {
-                            while let [b' ' | b'\t', rest @ ..] = coding {
-                                coding = rest;
-                            }
-                            let coding = super::rtrim_ows(coding);
+                        for coding in codings.split(|&b| b == b',') {
+                            let coding = super::trim_ows(coding);
                             if state.flags & 32 != 0 {
                                 state.flags |= 64;
                             }
