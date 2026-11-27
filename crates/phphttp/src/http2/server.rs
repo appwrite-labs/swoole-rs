@@ -359,7 +359,7 @@ struct Body<'a> {
 }
 
 /// `http2_server_build_header`.
-fn build_header(ctx: Ctx, session: &Session, body: Option<Body<'_>>) -> Option<Headers> {
+fn build_header(mut ctx: Ctx, session: &Session, body: Option<Body<'_>>) -> Option<Headers> {
     let zheader = property(ctx, ResponseArray::Header);
     let zcookie = property(ctx, ResponseArray::Cookie);
     let mut headers =
@@ -373,6 +373,7 @@ fn build_header(ctx: Ctx, session: &Session, body: Option<Body<'_>>) -> Option<H
     );
 
     let mut header_flags = 0;
+    let mut explicit_lengths = None;
     if zheader.is_some() {
         let can_capture =
             get(ctx, Field::AcceptCompression) != 0 && get(ctx, Field::CompressionTypes) != 0;
@@ -389,7 +390,17 @@ fn build_header(ctx: Ctx, session: &Session, body: Option<Body<'_>>) -> Option<H
             }
             let plan = header_plan(HeaderRole::Server, key, can_capture);
             if plan.suppress {
+                let lengths = explicit_lengths.get_or_insert_with(Vec::new);
+                if !text.is_empty() {
+                    lengths.push(text.to_vec());
+                }
                 return Some(());
+            }
+            if key.eq_ignore_ascii_case(b"content-encoding") {
+                set(ctx, Field::AcceptCompression, 0);
+                if text.is_empty() {
+                    return Some(());
+                }
             }
             header_flags |= plan.publish_flags;
             if plan.capture_content_type {
@@ -410,7 +421,7 @@ fn build_header(ctx: Ctx, session: &Session, body: Option<Body<'_>>) -> Option<H
                 add(&mut headers, key, value)?;
             }
         }
-        if can_capture {
+        if can_capture && get(ctx, Field::AcceptCompression) != 0 {
             let kind = content_type
                 .as_ref()
                 .map_or(&b"text/html"[..], ZString::bytes);
@@ -437,18 +448,32 @@ fn build_header(ctx: Ctx, session: &Session, body: Option<Body<'_>>) -> Option<H
             headers.add(b"set-cookie", cookie);
         }
     }
-    if let Some(body) = body {
-        let mut content_length = body.length;
-        if let Some((encoding, compressed)) = ctx.compress(body.data) {
-            content_length = compressed;
-            headers.add(b"content-encoding", encoding.to_bytes());
+    let compressed = body.and_then(|body| ctx.compress(body.data));
+    let length = if let Some((encoding, length)) = compressed {
+        headers.add(b"content-encoding", encoding.to_bytes());
+        if explicit_lengths.is_some() {
+            log(
+                LOG_WARNING,
+                swoole_rs_error::ErrorCode::SW_ERROR_HTTP_CONFLICT_HEADER as c_int,
+                c"http2_server_build_header",
+                "The client has set 'Accept-Encoding', 'Content-Length' will be ignored",
+            );
         }
+        Some(length)
+    } else if let Some(lengths) = explicit_lengths {
+        for value in lengths {
+            headers.add(b"content-length", &value);
+        }
+        None
+    } else {
+        body.map(|body| body.length).filter(|&length| {
+            length != 0 || ctx.state().parser.method != swoole_rs_http::llhttp::HEAD
+        })
+    };
+    if let Some(length) = length {
         headers.add(
             b"content-length",
-            decimal(
-                &mut [0; 20],
-                i64::try_from(content_length).unwrap_or(i64::MAX),
-            ),
+            decimal(&mut [0; 20], i64::try_from(length).unwrap_or(i64::MAX)),
         );
     }
     let headers = headers.deflate(session);
@@ -1365,7 +1390,12 @@ fn request_header(session: &Session, stream: &Stream, name: &[u8], value: &[u8])
     let kind = header_plan(HeaderRole::Request, name, false).kind;
     if name.first() == Some(&b':') {
         match kind {
-            HeaderKind::Method => add_string(ctx, Value::Server, b"request_method", value),
+            HeaderKind::Method => {
+                if value.eq_ignore_ascii_case(b"HEAD") {
+                    stream.ctx().state().parser.method = swoole_rs_http::llhttp::HEAD;
+                }
+                add_string(ctx, Value::Server, b"request_method", value);
+            }
             HeaderKind::Path => path(ctx, value),
             HeaderKind::Authority => add_string(ctx, Value::Header, b"host", value),
             _ => {}
