@@ -204,6 +204,22 @@ LIBSSH2_DISCONNECT_FUNC(php_ssh2_disconnect_cb) {
  * Userspace API *
  ***************** */
 
+static void free_callback(zval *callback) {
+    if (callback) {
+        zval_ptr_dtor(callback);
+        efree(callback);
+    }
+}
+
+static void free_session_data(php_ssh2_session_data *data) {
+    free_callback(data->ignore_cb);
+    free_callback(data->debug_cb);
+    free_callback(data->macerror_cb);
+    free_callback(data->disconnect_cb);
+    delete data->socket;
+    efree(data);
+}
+
 /* {{{ php_ssh2_set_callback
  * Try to set a method if it's passed in with the hash table
  */
@@ -234,34 +250,26 @@ static int php_ssh2_set_callback(LIBSSH2_SESSION *session,
     switch (callback_type) {
     case LIBSSH2_CALLBACK_IGNORE:
         internal_handler = (void *) php_ssh2_ignore_cb;
-        if (data->ignore_cb) {
-            zval_ptr_dtor(data->ignore_cb);
-        }
+        free_callback(data->ignore_cb);
         data->ignore_cb = copyval;
         break;
     case LIBSSH2_CALLBACK_DEBUG:
         internal_handler = (void *) php_ssh2_debug_cb;
-        if (data->debug_cb) {
-            zval_ptr_dtor(data->debug_cb);
-        }
+        free_callback(data->debug_cb);
         data->debug_cb = copyval;
         break;
     case LIBSSH2_CALLBACK_MACERROR:
         internal_handler = (void *) php_ssh2_macerror_cb;
-        if (data->macerror_cb) {
-            zval_ptr_dtor(data->macerror_cb);
-        }
+        free_callback(data->macerror_cb);
         data->macerror_cb = copyval;
         break;
     case LIBSSH2_CALLBACK_DISCONNECT:
         internal_handler = (void *) php_ssh2_disconnect_cb;
-        if (data->disconnect_cb) {
-            zval_ptr_dtor(data->disconnect_cb);
-        }
+        free_callback(data->disconnect_cb);
         data->disconnect_cb = copyval;
         break;
     default:
-        zval_ptr_dtor(copyval);
+        free_callback(copyval);
         return -1;
     }
 
@@ -336,11 +344,8 @@ extern "C" int swr_ssh2_session_fd(LIBSSH2_SESSION *session) {
 
 extern "C" void swr_ssh2_session_drop(LIBSSH2_SESSION *session) {
     php_ssh2_session_data *data = *(php_ssh2_session_data **) libssh2_session_abstract(session);
-    SocketImpl *sock = data->socket;
-
     libssh2_session_free(session);
-    efree(data);
-    delete sock;
+    free_session_data(data);
 }
 
 extern "C" void swr_ssh2_session_resource(LIBSSH2_SESSION *session, zval *return_value) {
@@ -452,21 +457,7 @@ static void destroy_session(LIBSSH2_SESSION *session) {
     libssh2_session_disconnect(session, "swoole_ssh2 (https://github.com/swoole/swoole-src)");
 
     if (*data) {
-        if ((*data)->ignore_cb) {
-            zval_ptr_dtor((*data)->ignore_cb);
-        }
-        if ((*data)->debug_cb) {
-            zval_ptr_dtor((*data)->debug_cb);
-        }
-        if ((*data)->macerror_cb) {
-            zval_ptr_dtor((*data)->macerror_cb);
-        }
-        if ((*data)->disconnect_cb) {
-            zval_ptr_dtor((*data)->disconnect_cb);
-        }
-
-        delete (*data)->socket;
-        efree(*data);
+        free_session_data(*data);
         *data = NULL;
     }
 
