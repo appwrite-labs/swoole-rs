@@ -274,6 +274,7 @@ unsafe extern "C" {
         message_len: c_uint,
     ) -> c_int;
     safe fn libssh2_channel_free(channel: Opened) -> c_int;
+    safe fn libssh2_channel_eof(channel: Opened) -> c_int;
     /// `libssh2_scp_recv` of `path`, retried through the hook: the channel the
     /// file arrives on, its size in `size`, or null.
     safe fn swr_ssh2_scp_recv(session: Session, path: Text<'_>, size: &mut i64) -> Option<Opened>;
@@ -2108,7 +2109,10 @@ fn scp_recv(call: &Call<'_>) {
         return;
     };
     let mut buffer = [0u8; 8192];
-    while remaining != 0 {
+    let complete = loop {
+        if remaining == 0 {
+            break true;
+        }
         // C's int bytes_read of at most 8192 bytes, or the rest of the file.
         let want = usize::try_from(remaining.clamp(0, 8192)).unwrap_or_default();
         let slots = buffer.get_mut(..want).unwrap_or_default();
@@ -2117,24 +2121,33 @@ fn scp_recv(call: &Call<'_>) {
                 libssh2_channel_read_ex(channel, 0, out, count)
             })
         });
-        let Ok(length) = usize::try_from(read) else {
+        let Some(bytes) = usize::try_from(read).ok().and_then(|n| slots.get(..n)) else {
             warn("Error reading from remote file");
-            free();
-            drop(file);
-            call.set_bool(false);
-            return;
+            break false;
         };
-        // C wrote what arrived and went on, whatever the stream took.
-        let _written = file.write(buffer.get(..length).unwrap_or_default());
+        if bytes.is_empty() && libssh2_channel_eof(channel) != 0 {
+            warn("Error reading from remote file");
+            break false;
+        }
+        let written = file.write(bytes);
         if bailout::pending() {
-            // As at the open: the stream is left to the request's shutdown.
             return;
         }
-        remaining -= i64::from(read);
-    }
+        match written {
+            Some(n) if n == bytes.len() => remaining -= i64::from(read),
+            Some(_) => {
+                warn("Mismatch in bytes read from remote file and bytes written to local file");
+                break false;
+            }
+            None => {
+                warn("Error writing to local file");
+                break false;
+            }
+        }
+    };
     free();
     drop(file);
-    call.set_bool(true);
+    call.set_bool(complete);
 }
 
 /// `LIBSSH2_ERROR_*` a channel write reports, each with C's warning.
