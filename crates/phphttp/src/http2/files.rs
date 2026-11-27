@@ -68,7 +68,7 @@ pub(crate) fn static_file(server: view::Server<'_>, ctx: Ctx) -> Result<bool, ba
     bailout::outcome(serve(server, ctx))
 }
 
-fn serve(server: view::Server<'_>, ctx: Ctx) -> bool {
+fn serve(server: view::Server<'_>, mut ctx: Ctx) -> bool {
     let Some(method) = entry(ctx, Value::Server, b"request_method") else {
         return false;
     };
@@ -91,6 +91,25 @@ fn serve(server: view::Server<'_>, ctx: Ctx) -> bool {
     let redirect = handler.directory_redirect();
     if status == 200 && (!handler.try_serve_index_file() || !handler.open_file()) {
         return false;
+    }
+    if !swoole_rs_phpcoroutines::in_coroutine() {
+        let state = ctx.state();
+        let response = state.response.zobject.value().copy();
+        let request = state.request.zobject.value().copy();
+        match swoole_rs_phpcoroutines::CREATOR.call_method(
+            &response,
+            &crate::response::RESPONSE,
+            c"sendstaticfile",
+            swoole_rs_zend::Zvals::one(&request),
+        ) {
+            Ok(true) => {}
+            Ok(false) => {
+                set(ctx, Field::End, 1);
+                ctx.close();
+            }
+            Err(bailout) => bailout.defer(),
+        }
+        return true;
     }
     ctx.unhook();
     set(ctx, Field::AcceptCompression, 0);

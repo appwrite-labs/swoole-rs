@@ -350,10 +350,7 @@ impl Minit {
             let info = methods.find(method).map_or(Info::NONE, Info::row);
             // Lookup lowercases the method's ASCII bytes.
             let lower = CString::new(method.to_bytes().to_ascii_lowercase()).unwrap_or_default();
-            let found = swr_zend_minit_method_find(entry, lower.as_c_str().into());
-            // The class's table owns this live function, which remains live
-            // and unchanged throughout the registration.
-            let function = (!found.is_null()).then_some(Function(found, PhantomData));
+            let function = entry.method(&lower);
             self.alias_from(function, alias, info)?;
         }
         Ok(())
@@ -750,6 +747,13 @@ impl<'a> Alias<'a> {
         entries[0].arg_info = info.start;
         entries[0].num_args = args;
         Some((Self(entries, PhantomData), kind))
+    }
+}
+
+impl ClassEntry<'static> {
+    pub(crate) fn method(self, lowercase: &CStr) -> Option<Function<'static>> {
+        let found = swr_zend_minit_method_find(self, lowercase.into());
+        (!found.is_null()).then_some(Function(found, PhantomData))
     }
 }
 

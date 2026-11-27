@@ -258,6 +258,36 @@ pub fn function_call(
 }
 
 impl Creator {
+    /// Start an internal instance method in the declaring class's scope.
+    /// # Errors
+    /// PHP bailed out while starting the coroutine.
+    pub fn call_method(
+        self,
+        object: &crate::Value,
+        class: &crate::Class,
+        method: &CStr,
+        args: crate::Zvals<'_>,
+    ) -> Result<bool, bailout::Bailout> {
+        let Some(object) = object.object_of(class) else {
+            return Ok(false);
+        };
+        let Some(scope) = class.handle() else {
+            return Ok(false);
+        };
+        let Some(function) = scope.method(method) else {
+            return Ok(false);
+        };
+        let mut cache = crate::EMPTY_FCC;
+        cache.function_handler = function.as_ptr();
+        cache.object = object;
+        cache.called_scope = scope.as_ptr();
+        let callee = Callee {
+            cache: CalleePtr(&raw mut cache, std::marker::PhantomData),
+            resolved: true,
+        };
+        self.call(callee, args, NO_THEN).map(|cid| cid >= 0)
+    }
+
     /// Start a callback coroutine and return its ID, or a negative creation error.
     /// # Errors
     /// PHP bailed out while starting the coroutine or releasing the caller's objects.

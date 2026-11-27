@@ -98,6 +98,7 @@ method_table! {
         c"goaway" => zim_swoole_http_response_goaway, &http_response::arginfo_class_Swoole_Http_Response_goaway, z::ZEND_ACC_PUBLIC;
         c"write" => zim_swoole_http_response_write, &http_response::arginfo_class_Swoole_Http_Response_write, z::ZEND_ACC_PUBLIC;
         c"end" => zim_swoole_http_response_end, &http_response::arginfo_class_Swoole_Http_Response_end, z::ZEND_ACC_PUBLIC;
+        c"sendStaticFile" => zim_swoole_http_response_sendStaticFile, &http_response::arginfo_class_Swoole_Http_Response_sendStaticFile, z::ZEND_ACC_PRIVATE;
         c"sendfile" => zim_swoole_http_response_sendfile, &http_response::arginfo_class_Swoole_Http_Response_sendfile, z::ZEND_ACC_PUBLIC;
         c"redirect" => zim_swoole_http_response_redirect, &http_response::arginfo_class_Swoole_Http_Response_redirect, z::ZEND_ACC_PUBLIC;
         c"detach" => zim_swoole_http_response_detach, &http_response::arginfo_class_Swoole_Http_Response_detach, z::ZEND_ACC_PUBLIC;
@@ -240,6 +241,27 @@ fn stat(file: &ZStr) -> Result<libc::stat, ()> {
     message.extend_from_slice(format!("[{error}]").as_bytes());
     host::report(error, false, message);
     Err(())
+}
+
+fn send_static_file(call: &Call) {
+    if call.arity(1, 1).is_err() {
+        return;
+    }
+    let Some(request) = call.value(1) else { return };
+    if !request.instance_of(&crate::request::REQUEST) {
+        call.wrong_class(1, c"Swoole\\Http\\Request", request);
+        return;
+    }
+    let Some(mut ctx) = checked(call) else { return };
+    if ctx.flags() & (HTTP2 | CO_SOCKET) != HTTP2 {
+        return;
+    }
+    if crate::http2::of(ctx).is_none() {
+        ctx.state().end = true;
+        return;
+    }
+    let server = context::server(ctx.state());
+    bailout::defer(crate::http2::static_file(server, ctx).map(|_| ()));
 }
 
 fn send_file(call: &Call) {
@@ -790,6 +812,7 @@ handlers! {
     zim_swoole_http_response_goaway => goaway;
     zim_swoole_http_response_write => write;
     zim_swoole_http_response_end => end;
+    zim_swoole_http_response_sendStaticFile => send_static_file;
     zim_swoole_http_response_sendfile => send_file;
     zim_swoole_http_response_redirect => redirect;
     zim_swoole_http_response_detach => detach;
