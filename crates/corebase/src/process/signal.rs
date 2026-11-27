@@ -288,7 +288,7 @@ extern "C" fn immediate(signo: c_int) {
 }
 
 /// `void swoole_signal_dispatch()`: runs `swoole_signal_callback` for each signal
-/// the deferred handler marked, in signal order, clearing each mark after its
+/// the deferred handler marked, in signal order, clearing each mark before its
 /// callback.
 pub fn swoole_signal_dispatch() {
     dispatch_if_pending();
@@ -301,7 +301,7 @@ pub(crate) fn pending() -> bool {
 pub(crate) fn dispatch_if_pending() -> bool {
     let pending = pending();
     if pending {
-        dispatch_pending();
+        dispatch_pending(crate::process::pool::bailout_pending);
     }
     pending
 }
@@ -309,7 +309,7 @@ pub(crate) fn dispatch_if_pending() -> bool {
 // Keep the signal walk out of the hot reactor callback loop so its fixed slots
 // can be unrolled even when the process and reactor modules share a crate.
 #[inline(never)]
-fn dispatch_pending() {
+fn dispatch_pending(bailout_pending: impl Fn() -> bool) {
     // Only the deferred handler marks a signal, and `signal_set` stores its
     // `Dispatch` before installing that handler.
     let Some(callback) = callback() else {
@@ -322,7 +322,9 @@ fn dispatch_pending() {
             // Upstream calls dispatch from a safe context, never a signal frame; the
             // callback may run PHP, and no value with a destructor is live across it.
             callback(signo);
-            if crate::process::pool::bailout_pending() {
+            if bailout_pending() {
+                // Resume the unfinished walk at the next safe dispatch.
+                PENDING.store(true, Relaxed);
                 return;
             }
         }
@@ -515,6 +517,18 @@ mod tests {
         assert!(crate::reactor::signals::dispatch());
         assert_eq!(SEEN.swap(0, Relaxed), libc::SIGUSR2);
         assert!(!crate::reactor::signals::dispatch());
+
+        // A bailout interrupts the walk after the first callback.
+        let mut signals = [libc::SIGUSR1, libc::SIGUSR2];
+        signals.sort_unstable();
+        for signo in signals {
+            deferred(signo);
+        }
+        dispatch_pending(|| true);
+        assert_eq!(SEEN.swap(0, Relaxed), signals[0]);
+        assert!(dispatch_if_pending());
+        assert_eq!(SEEN.swap(0, Relaxed), signals[1]);
+        assert!(!pending());
 
         // Removing a handler puts back the action from before its registration.
         set_action(libc::SIGUSR2, 0, false, false);
