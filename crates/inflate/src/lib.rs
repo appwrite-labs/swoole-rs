@@ -1,6 +1,6 @@
 //! HTTP body codecs over the system libraries the PHP build links: response
 //! decompression (gzip/deflate over a per-`Client` zlib stream, with the raw-deflate
-//! retry; Brotli and zstd streams in [`brotli`] and [`zstd`]), their compression for
+//! header detection; Brotli and zstd streams in [`brotli`] and [`zstd`]), their compression for
 //! the server, and permessage-deflate inflation.
 
 #![forbid(unsafe_code)]
@@ -14,8 +14,7 @@ use swoole_rs_corebase::buffer::BoundedBytes;
 
 pub use swoole_rs_zlib::error;
 use swoole_rs_zlib::{
-    ENCODING_DEFLATE, ENCODING_GZIP, ENCODING_RAW, Stream, Z_DATA_ERROR, Z_OK, Z_STREAM_END,
-    Z_SYNC_FLUSH,
+    ENCODING_DEFLATE, ENCODING_GZIP, ENCODING_RAW, Stream, Z_OK, Z_STREAM_END, Z_SYNC_FLUSH,
 };
 
 /// Default decoded HTTP response body limit, covering the largest upstream compression PHPT.
@@ -25,7 +24,8 @@ pub const DEFAULT_BODY_LIMIT: usize = 32 * 1024 * 1024;
 /// the most recent chunk; the caller copies them into its body buffer.
 pub struct Inflate {
     stream: Option<Stream>,
-    first_chunk: bool,
+    header_byte: Option<u8>,
+    finished: bool,
     gzip: bool,
     limit: usize,
     remaining: usize,
@@ -38,7 +38,8 @@ impl Inflate {
     pub fn new(gzip: bool, limit: usize) -> Self {
         Self {
             stream: None,
-            first_chunk: !gzip,
+            header_byte: None,
+            finished: false,
             gzip,
             limit,
             remaining: limit,
@@ -53,41 +54,61 @@ impl Inflate {
         Self::new(true, limit)
     }
 
+    /// Whether the last member ended at a codec-confirmed boundary.
+    #[must_use]
+    pub fn finished(&self) -> bool {
+        self.finished
+    }
+
     /// Inflate one body chunk within the response's remaining budget.
     /// # Errors
     /// Returns the configured limit on overflow or a codec error on empty or malformed input.
-    pub fn decode(&mut self, input: &[u8]) -> Result<&[u8], DecodeError> {
+    pub fn decode(&mut self, mut input: &[u8]) -> Result<&[u8], DecodeError> {
         let codec_error =
             || DecodeError::Codec("HttpClient::decompress_response failed".to_owned());
-        if input.is_empty() {
+        let Some((&initial, rest)) = input.split_first() else {
             return Err(codec_error());
-        }
-        if self.stream.is_none() {
-            let encoding = if self.gzip {
-                ENCODING_GZIP
-            } else {
-                ENCODING_DEFLATE
+        };
+        let header;
+        let mut prefix = &[][..];
+        if !self.gzip && self.stream.is_none() {
+            let (first, tail) = match self.header_byte.take() {
+                Some(previous) => (previous, input),
+                None => (initial, rest),
             };
-            self.stream = Stream::inflate(encoding).ok();
-        }
-        let stream = self.stream.as_mut().ok_or_else(codec_error)?;
-        let mut result = run(stream, input, &mut self.out, self.remaining);
-        // Upstream retries a first-chunk data error as raw deflate (no zlib header).
-        if std::mem::take(&mut self.first_chunk)
-            && result == Err(MessageFailure::Inflate(Z_DATA_ERROR))
-        {
-            self.stream = Stream::inflate(ENCODING_RAW).ok();
-            result = run(
-                self.stream.as_mut().ok_or_else(codec_error)?,
-                input,
-                &mut self.out,
-                self.remaining,
+            let Some((&second, rest)) = tail.split_first() else {
+                self.header_byte = Some(first);
+                return Ok(&[]);
+            };
+            header = [first, second];
+            let zlib =
+                first & 15 == 8 && first >> 4 <= 7 && u16::from_be_bytes(header).is_multiple_of(31);
+            self.stream = Some(
+                Stream::inflate(if zlib { ENCODING_DEFLATE } else { ENCODING_RAW })
+                    .map_err(|_| codec_error())?,
             );
+            prefix = &header;
+            input = rest;
         }
-        let filled = result.map_err(|err| match err {
-            MessageFailure::Limit(_) => DecodeError::Limit(self.limit),
-            _ => codec_error(),
-        })?;
+        let mut filled = 0;
+        for mut part in [prefix, input] {
+            while !part.is_empty() {
+                if self.finished && !self.gzip {
+                    return Err(codec_error());
+                }
+                if self.stream.is_none() || self.finished {
+                    self.stream = Some(Stream::inflate(ENCODING_GZIP).map_err(|_| codec_error())?);
+                }
+                let stream = self.stream.as_mut().ok_or_else(codec_error)?;
+                (filled, self.finished) =
+                    run(stream, &mut part, &mut self.out, self.remaining, filled).map_err(
+                        |err| match err {
+                            MessageFailure::Limit(_) => DecodeError::Limit(self.limit),
+                            _ => codec_error(),
+                        },
+                    )?;
+            }
+        }
         self.remaining -= filled;
         Ok(self.out.as_ref().split_at(filled).0)
     }
@@ -108,10 +129,10 @@ pub enum MessageFailure {
 ///
 /// # Errors
 /// Returns the configured limit on overflow or the zlib status on a codec error.
-pub fn message(input: &[u8], max: usize) -> Result<Vec<u8>, MessageFailure> {
+pub fn message(mut input: &[u8], max: usize) -> Result<Vec<u8>, MessageFailure> {
     let mut stream = Stream::inflate(ENCODING_RAW).map_err(MessageFailure::Init)?;
     let mut out = BoundedBytes::new(max.saturating_add(1), 0);
-    let filled = run(&mut stream, input, &mut out, max)?;
+    let (filled, _) = run(&mut stream, &mut input, &mut out, max, 0)?;
     let mut out = out.into_vec();
     out.truncate(filled);
     Ok(out)
@@ -119,22 +140,25 @@ pub fn message(input: &[u8], max: usize) -> Result<Vec<u8>, MessageFailure> {
 
 fn run(
     stream: &mut Stream,
-    mut input: &[u8],
+    input: &mut &[u8],
     out: &mut BoundedBytes,
     max: usize,
-) -> Result<usize, MessageFailure> {
+    mut filled: usize,
+) -> Result<(usize, bool), MessageFailure> {
     let ceiling = max.saturating_add(1);
     let mut end = match out.as_ref().len() {
         0 => input.len().saturating_add(1024),
         retained => retained,
     }
     .min(ceiling);
-    let mut filled = 0;
     loop {
+        if filled == end {
+            end = end.saturating_mul(2).min(ceiling);
+        }
         let prefix = out.writable_prefix(end).map_err(MessageFailure::Limit)?;
         let room = prefix.split_at_mut(filled).1;
         let room_len = room.len().min(u32::MAX as usize);
-        let step = stream.run_into_slice(&mut input, room, Z_SYNC_FLUSH);
+        let step = stream.run_into_slice(input, room, Z_SYNC_FLUSH);
         filled += step.written;
         if filled > max {
             return Err(MessageFailure::Limit(max));
@@ -144,13 +168,10 @@ fn run(
                 && (step.status == Z_OK && step.written < room_len
                     || step.status == swoole_rs_zlib::Z_BUF_ERROR && filled != 0))
         {
-            return Ok(filled);
+            return Ok((filled, step.status == Z_STREAM_END));
         }
         if step.status != Z_OK {
             return Err(MessageFailure::Inflate(step.status));
-        }
-        if filled == end {
-            end = end.saturating_mul(2).min(ceiling);
         }
     }
 }
@@ -218,6 +239,33 @@ mod tests {
             got.extend_from_slice(inflate.decode(piece).expect("chunk inflates"));
         }
         assert_eq!(got, payload);
+    }
+
+    #[test]
+    fn gzip_members_share_the_response_budget_and_require_a_complete_trailer() {
+        let member = deflate(b"abc", ENCODING_GZIP);
+        let members = member.repeat(2);
+        let mut decoder = Inflate::new(true, 6);
+        let (prefix, trailer) = members.split_at(members.len() - 1);
+        assert_eq!(decoder.decode(prefix), Ok(&b"abcabc"[..]));
+        assert!(!decoder.finished());
+        assert_eq!(decoder.decode(trailer), Ok(&[][..]));
+        assert!(decoder.finished());
+        let mut limited = Inflate::new(true, 5);
+        assert_eq!(limited.decode(&members), Err(DecodeError::Limit(5)));
+    }
+
+    #[test]
+    fn deflate_reads_a_split_header_and_rejects_trailing_bytes() {
+        for encoding in [ENCODING_RAW, ENCODING_DEFLATE] {
+            let wire = deflate(b"abc", encoding);
+            let mut decoder = Inflate::new(false, 3);
+            let (first, rest) = wire.split_at(1);
+            assert_eq!(decoder.decode(first), Ok(&[][..]));
+            assert_eq!(decoder.decode(rest), Ok(&b"abc"[..]));
+            assert!(decoder.finished());
+            assert!(decoder.decode(b"x").is_err());
+        }
     }
 
     #[test]

@@ -143,6 +143,7 @@ pub enum DecodeError {
 /// A response's Brotli decoder. The first bytes of `out` hold what the last chunk
 /// produced; all of it is initialised, so it grows, zeroed, only past its largest.
 pub struct Decoder {
+    finished: bool,
     state: Owned,
     out: BoundedBytes,
     limit: usize,
@@ -157,6 +158,7 @@ impl Decoder {
         let state = BrotliDecoderCreateInstance(None, None, None)
             .ok_or("BrotliDecoderCreateInstance() failed")?;
         Ok(Self {
+            finished: false,
             state,
             out: BoundedBytes::new(limit.saturating_add(1), 0),
             limit,
@@ -164,11 +166,20 @@ impl Decoder {
         })
     }
 
+    /// Whether Brotli consumed the complete response representation.
+    #[must_use]
+    pub fn finished(&self) -> bool {
+        self.finished
+    }
+
     /// Decode one body chunk: the bytes it produced, growing the output until
     /// libbrotli has consumed the chunk or finished the stream.
     /// # Errors
     /// Returns the response limit on overflow or libbrotli's diagnostic on corrupt input.
     pub fn decode(&mut self, input: &[u8]) -> Result<&[u8], DecodeError> {
+        if self.finished {
+            return Err(DecodeError::Codec("trailing Brotli data".to_owned()));
+        }
         let (state, out) = (self.state.live(), &mut self.out);
         let decoded = lend_in(input, |mut next_in, mut available_in| {
             let mut filled = 0_usize;
@@ -198,7 +209,13 @@ impl Decoder {
                     return Err(DecodeError::Limit(self.limit));
                 }
                 match result {
-                    SUCCESS | NEEDS_MORE_INPUT => return Ok(filled),
+                    SUCCESS if available_in.get() != 0 => {
+                        return Err(DecodeError::Codec("trailing Brotli data".to_owned()));
+                    }
+                    SUCCESS | NEEDS_MORE_INPUT => {
+                        self.finished = result == SUCCESS;
+                        return Ok(filled);
+                    }
                     NEEDS_MORE_OUTPUT => {}
                     _ => return Err(DecodeError::Codec(error(state))),
                 }

@@ -21,7 +21,9 @@ use swoole_rs_corebase::buffer::BoundedBytes;
 use swoole_rs_corebase::reactor::{Events, SocketFields};
 use swoole_rs_corebase::{CCast, microtime};
 use swoole_rs_http::llhttp::{self, Callbacks, EndOfInput, Flow, Parser};
-use swoole_rs_http::status::{BAD_GATEWAY, NO_CONTENT, SERVICE_UNAVAILABLE, SWITCHING_PROTOCOLS};
+use swoole_rs_http::status::{
+    BAD_GATEWAY, NO_CONTENT, NOT_MODIFIED, SERVICE_UNAVAILABLE, SWITCHING_PROTOCOLS,
+};
 use swoole_rs_inflate::{DecodeError, Inflate, brotli, zstd};
 use swoole_rs_phpstubs::http_client_coro;
 use swoole_rs_phpswoole::{nonnegative_setting, setting_callable, setting_ok};
@@ -1687,6 +1689,16 @@ enum Decoder {
     Zstd(zstd::Decoder),
 }
 
+impl Decoder {
+    fn finished(&self) -> bool {
+        match self {
+            Self::Zlib(stream) => stream.finished(),
+            Self::Brotli(stream) => stream.finished(),
+            Self::Zstd(stream) => stream.finished(),
+        }
+    }
+}
+
 impl Drop for Client {
     /// Runs to the end even when a destructor the callable's release runs
     /// bails out; that bailout stays pending for the `free` handler to raise.
@@ -1930,6 +1942,19 @@ fn on_message_complete(hooks: &mut Hooks) -> Flow {
         return Flow::Pause;
     }
     let client = hooks.client;
+    if client.body_decompression.get()
+        && client.compress.get() != Compress::None
+        && !client.head.get()
+        && !matches!(
+            i32::from(hooks.parser.status_code),
+            NO_CONTENT | NOT_MODIFIED
+        )
+        && !client
+            .decoder
+            .with_taken(|state| state.as_ref().is_some_and(Decoder::finished))
+    {
+        return Flow::Fail;
+    }
     if hooks.parser.upgrade && !matches!(client.websocket(), WebSocket::Open(_)) {
         hooks.parser.upgrade = false;
         return Flow::Pause;
