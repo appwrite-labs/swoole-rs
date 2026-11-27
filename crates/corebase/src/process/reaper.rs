@@ -72,6 +72,31 @@ pub fn wait_child(nonblock: bool) -> Waited {
     Waited { pid, status }
 }
 
+/// Wait with a SIGCHLD handler installed. Block signals across the state check
+/// so a command arriving before the wait still wakes the manager.
+pub fn wait_manager_child(should_wait: impl FnOnce() -> bool) -> Waited {
+    let mut all = crate::sys::zeroed();
+    let mut previous = crate::sys::zeroed();
+    crate::sys::sigfillset(&mut all);
+    if crate::sys::sigprocmask(libc::SIG_BLOCK, Some(&all), Some(&mut previous)) < 0 {
+        return Waited {
+            pid: Err(std::io::Error::last_os_error()),
+            status: 0,
+        };
+    }
+    let mut child = wait_child(true);
+    if matches!(child.pid, Ok(None))
+        && !crate::swr_v1_core_signal_alarm()
+        && !super::signal::pending()
+        && should_wait()
+    {
+        crate::sys::sigsuspend(&previous);
+        child = wait_child(true);
+    }
+    crate::sys::sigprocmask(libc::SIG_SETMASK, Some(&previous), None);
+    child
+}
+
 /// Run a manager's reap loop until it stops or a callback requests an escape.
 /// # Errors
 /// A callback bailed out; the caller must return to its native boundary.

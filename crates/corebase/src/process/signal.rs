@@ -264,8 +264,12 @@ pub fn swoole_signal_dispatch() {
     dispatch_if_pending();
 }
 
+pub(crate) fn pending() -> bool {
+    PENDING.load(Relaxed)
+}
+
 pub(crate) fn dispatch_if_pending() -> bool {
-    let pending = PENDING.load(Relaxed);
+    let pending = pending();
     if pending {
         dispatch_pending();
     }

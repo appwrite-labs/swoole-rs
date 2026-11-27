@@ -150,6 +150,14 @@ fn require(name: &str) -> Json {
     answer(4003, Json::Str(format!("require parameter {name}")))
 }
 
+fn numeric_id<T: std::str::FromStr>(msg: &[u8], key: &str) -> Option<T> {
+    let text = json::param(msg, key)?;
+    if !text.bytes().all(|byte| byte.is_ascii_digit()) {
+        return None;
+    }
+    text.parse().ok()
+}
+
 /// Admin command `index`'s answer to request `msg`.
 fn run<F: Facts>(f: &mut F, index: usize, msg: &[u8]) -> Json {
     match COMMAND_TABLE.get(index).map_or("", |(name, _)| name) {
@@ -269,13 +277,13 @@ fn all_commands<F: Facts>(f: &mut F) -> Json {
 }
 
 fn socket_info(msg: &[u8]) -> Json {
-    let Some(fd) = json::param(msg, "fd") else {
+    let Some(fd) = numeric_id(msg, "fd") else {
         return require("fd");
     };
     if !TCP_INFO_SUPPORTED {
         return answer(5001, Json::Str("platform unsupported".into()));
     }
-    let data = match tcp_info_of(swoole_rs_corebase::atoi(fd.as_bytes())) {
+    let data = match tcp_info_of(fd) {
         Some(fields) => Json::Object(fields.into_iter().collect()),
         // Upstream returned the dumped error object as the data.
         None => Json::Str(
@@ -363,11 +371,10 @@ fn connections<F: Facts>(f: &mut F) -> Json {
 }
 
 fn connection_info<F: Facts>(f: &mut F, msg: &[u8]) -> Json {
-    let Some(session_id) = json::param(msg, "session_id") else {
+    let Some(session_id) = numeric_id(msg, "session_id") else {
         return require("session_id");
     };
-    // An `int` session id, widened as `SessionId`.
-    if !f.session(swoole_rs_corebase::atoi(session_id.as_bytes()).into()) {
+    if !f.session(session_id) {
         return answer(4004, Json::Str("connection not exists".into()));
     }
     answer(0, connection_json(f.connection(0)))
@@ -621,7 +628,7 @@ mod tests {
         let out = run(
             &mut Script::default(),
             index("get_socket_info"),
-            br#"{"fd":"-1"}"#,
+            br#"{"fd":"2147483647"}"#,
         )
         .dump();
         assert_eq!(

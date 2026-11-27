@@ -220,6 +220,9 @@ mod c {
             set: Option<&libc::sigset_t>,
             old: Option<&mut libc::sigset_t>,
         ) -> c_int;
+        /// Atomically restore a signal mask and wait until a handler runs.
+        #[cfg_attr(target_os = "netbsd", link_name = "__sigsuspend14")]
+        pub(crate) safe fn sigsuspend(mask: &libc::sigset_t) -> c_int;
         /// `pthread_sigmask(3)`, as `sigprocmask` for the calling thread: 0 or an error
         /// number.
         pub safe fn pthread_sigmask(
@@ -283,7 +286,7 @@ pub use c::malloc_trim;
 pub use c::{calloc, malloc};
 #[cfg(any(target_os = "linux", target_os = "android"))]
 pub use c::{epoll_create, epoll_create1, epoll_ctl, signalfd};
-pub(crate) use c::{fork, getrlimit, srandom, uname};
+pub(crate) use c::{fork, getrlimit, sigsuspend, srandom, uname};
 pub use c::{
     pthread_sigmask, sigaddset, sigdelset, sigemptyset, sigfillset, sigismember, sigprocmask,
 };

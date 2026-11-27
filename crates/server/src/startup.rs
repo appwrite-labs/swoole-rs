@@ -49,6 +49,8 @@ pub(crate) fn start(serv: view::Server<'_>) -> bool {
     if config.daemonize.get() && !hybrid().step(serv, Step::Daemon) {
         return false;
     }
+    gs.master_pid
+        .store(std::process::id().cast_signed(), Relaxed);
     gs.start_time.store(swoole_rs_corebase::time_now(), Relaxed);
     crate::shared::workers_start(serv);
     state.set_running(true);
@@ -70,11 +72,7 @@ pub(crate) fn start(serv: view::Server<'_>) -> bool {
     let started = match config.mode_ {
         Mode::Base => crate::reactor_process::start_reactor_processes(serv),
         Mode::Process => hybrid().step(serv, Step::StartProcess),
-        Mode::Thread => {
-            // Before the worker threads start, which read it in onWorkerStart.
-            set_master_pid(gs);
-            hybrid().start_worker_threads(serv)
-        }
+        Mode::Thread => hybrid().start_worker_threads(serv),
     };
     if !started || swoole_rs_corebase::process::pool::bailout_pending() {
         return false;
@@ -84,11 +82,6 @@ pub(crate) fn start(serv: view::Server<'_>) -> bool {
     }
     state.unlink_pid();
     true
-}
-
-fn set_master_pid(gs: &crate::shared::ServerCounters) {
-    gs.master_pid
-        .store(std::process::id().cast_signed(), Relaxed);
 }
 
 /// `Server::create` after the global before-create hook: shared memory, bounded
@@ -423,11 +416,6 @@ pub(crate) fn start_master_thread(serv: view::Server<'_>, reactor: Reactor) -> b
     if mode == Mode::Process {
         hybrid().step(serv, Step::ManagerBarrier);
     }
-    if mode != Mode::Thread
-        && let Some(gs) = crate::shared::server_counters(state)
-    {
-        set_master_pid(gs);
-    }
     state.callbacks.call_server(ServerSlot::Start, serv);
     if swoole_rs_corebase::process::pool::bailout_pending() {
         return false;
@@ -590,9 +578,9 @@ mod tests {
             assert!(live.state().running(), "running");
             assert!(live.counters().start.load(Relaxed), "claimed");
             assert_eq!(
-                live.counters().master_pid.load(Relaxed) != 0,
-                mode == Mode::Thread,
-                "only thread mode sets the master pid before its workers"
+                live.counters().master_pid.load(Relaxed),
+                std::process::id().cast_signed(),
+                "workers inherit the master pid in every mode"
             );
         }
     }
@@ -961,7 +949,6 @@ mod tests {
             swoole_rs_corebase::process::methods::worker_type(),
             Some(WorkerType::Master)
         );
-        assert_ne!(live.counters().master_pid.load(Relaxed), 0, "master pid");
         assert_eq!(
             master(Mode::Base),
             (
