@@ -6,6 +6,7 @@
 use crate::{
     callable::Callable,
     server::{SERVER, fatal, running, server},
+    settings::{Stop, invalid_setting},
 };
 use std::{
     cell::{Cell, OnceCell},
@@ -1065,14 +1066,6 @@ pub(crate) fn runtime_warning(text: &CStr) {
     }
 }
 
-/// Stop: an `E_ERROR` or a trapped bailout is pending.
-struct Stop;
-
-fn stop<T>(level: i32, text: &CStr) -> Result<T, Stop> {
-    fatal(level, text);
-    Err(Stop)
-}
-
 fn trapped(bailed: bool) -> Result<(), Stop> {
     if bailed {
         bailout::defer(Err(bailout::Bailout));
@@ -1149,7 +1142,7 @@ fn before_start(object: ServerObject<'_>, serv: view::Server<'_>) -> Result<(), 
         let mut text = Message::new();
         text.push(b"failed to create the server. Error: ");
         text.push(reason.to_bytes());
-        return stop(E_ERROR, text.as_cstr());
+        return Err(invalid_setting(text.as_cstr()));
     }
     if fact(serv, Fact::EnableCoroutine) {
         crate::settings::set_reload_async(serv);
@@ -1203,10 +1196,10 @@ fn before_start(object: ServerObject<'_>, serv: view::Server<'_>) -> Result<(), 
             } else if http_server {
                 if kind == Kind::WebSocket {
                     if !isset(serv, primary.port, PortCallback::Message) {
-                        return stop(E_ERROR, c"require onMessage callback");
+                        return Err(invalid_setting(c"require onMessage callback"));
                     }
                 } else if !isset(serv, primary.port, PortCallback::Request) {
-                    return stop(E_ERROR, c"require onRequest callback");
+                    return Err(invalid_setting(c"require onRequest callback"));
                 }
                 settings.insert_bool(b"open_http_protocol", true);
                 settings.insert_bool(b"open_mqtt_protocol", false);
@@ -1229,12 +1222,12 @@ fn before_start(object: ServerObject<'_>, serv: view::Server<'_>) -> Result<(), 
             } else {
                 if primary.dgram && !primary.ssl && !isset(serv, primary.port, PortCallback::Packet)
                 {
-                    return stop(E_ERROR, c"require onPacket callback");
+                    return Err(invalid_setting(c"require onPacket callback"));
                 }
                 if ((primary.dgram && primary.ssl) || primary.stream)
                     && !isset(serv, primary.port, PortCallback::Receive)
                 {
-                    return stop(E_ERROR, c"require onReceive callback");
+                    return Err(invalid_setting(c"require onReceive callback"));
                 }
                 put(serv, Install::Receive);
             }
@@ -1246,7 +1239,8 @@ fn before_start(object: ServerObject<'_>, serv: view::Server<'_>) -> Result<(), 
         if bailout::pending() {
             return Err(Stop);
         }
-        return stop(E_ERROR, c"Swoole\\Server::$setting must be an array");
+        fatal(E_ERROR, c"Swoole\\Server::$setting must be an array");
+        return Err(Stop);
     };
     if !edited? {
         return Ok(());
@@ -1278,36 +1272,28 @@ fn before_start(object: ServerObject<'_>, serv: view::Server<'_>) -> Result<(), 
                     String::from_utf8_lossy(&port.host),
                     port.port
                 );
-                crate::settings::invalid_setting(text.as_cstr());
-                return Err(Stop);
+                return Err(invalid_setting(text.as_cstr()));
             }
         }
     }
     for zport in &ports {
         let port = port_facts(zport)?;
         if port.dgram && !port.ssl && !isset(serv, port.port, PortCallback::Packet) {
-            return stop(E_ERROR, c"require onPacket callback");
+            return Err(invalid_setting(c"require onPacket callback"));
         }
         if port.ssl_verify_without_ca {
-            return stop(
-                E_ERROR,
-                c"server open verify peer require `ssl_client_cert_file` or `ssl_capath` or `ssl_cafile` config",
-            );
+            return Err(invalid_setting(c"server open verify peer require `ssl_client_cert_file` or `ssl_capath` or `ssl_cafile` config"));
         }
         if port.protocols.http2 && !fact(serv, Fact::HashDispatch) {
-            return stop(
-                E_ERROR,
-                c"server dispatch mode should be FDMOD(2) or IPMOD(4) if open_http2_protocol is true",
-            );
+            return Err(invalid_setting(c"server dispatch mode should be FDMOD(2) or IPMOD(4) if open_http2_protocol is true"));
         }
         if port.protocols.http2
             && serv.config().http2_cancel_on_stream_reset.get()
             && !fact(serv, Fact::EnableCoroutine)
         {
-            crate::settings::invalid_setting(
+            return Err(invalid_setting(
                 c"'http2_cancel_on_stream_reset' requires 'enable_coroutine'",
-            );
-            return Err(Stop);
+            ));
         }
         let mut http = port.protocols.http;
         if !http && (port.protocols.websocket || port.protocols.http2) {
@@ -1319,10 +1305,10 @@ fn before_start(object: ServerObject<'_>, serv: view::Server<'_>) -> Result<(), 
             let receive = isset(serv, port.port, PortCallback::Receive);
             if port.protocols.websocket {
                 if !isset(serv, port.port, PortCallback::Message) && !receive {
-                    return stop(E_ERROR, c"require onMessage callback");
+                    return Err(invalid_setting(c"require onMessage callback"));
                 }
             } else if !isset(serv, port.port, PortCallback::Request) && !receive {
-                return stop(E_ERROR, c"require onRequest callback");
+                return Err(invalid_setting(c"require onRequest callback"));
             }
             if !http_server && isset(serv, port.port, PortCallback::Request) {
                 let text = message!(
@@ -1338,7 +1324,7 @@ fn before_start(object: ServerObject<'_>, serv: view::Server<'_>) -> Result<(), 
             && port.stream
             && !isset(serv, port.port, PortCallback::Receive)
         {
-            return stop(E_ERROR, c"require onReceive callback");
+            return Err(invalid_setting(c"require onReceive callback"));
         }
     }
     if find_http_port {
@@ -1397,10 +1383,8 @@ fn start(call: &Call) {
             let mut text = Message::new();
             text.push(b"failed to start server. Error: ");
             text.push(reason.to_bytes());
-            fatal(E_ERROR, text.as_cstr());
-            if bailout::pending() {
-                return;
-            }
+            swoole_rs_phpswoole::invalid_setting(text.as_cstr());
+            return;
         }
         _ => {}
     }

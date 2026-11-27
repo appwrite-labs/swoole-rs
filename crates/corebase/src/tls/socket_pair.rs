@@ -64,7 +64,7 @@ fn open(blocking: bool, unix: Option<c_int>, fd_type: c_int, origin: &CStr) -> (
 /// `Pipe(blocking)` by value: both ends null when it failed.
 #[must_use]
 pub fn pipe(blocking: bool) -> SocketPair {
-    open(blocking, None, FD_PIPE, c"Pipe").0
+    open(blocking, None, FD_PIPE, c"Pipe::Pipe").0
 }
 
 /// `UnixSocket(blocking, protocol)` by value: both ends null when it failed.

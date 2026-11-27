@@ -154,9 +154,6 @@ fn create_on(serv: view::Server<'_>, cpu: u32) -> bool {
             return false;
         };
         tables.task_results.fill(results);
-        if !hybrid().task_workers(serv) {
-            return false;
-        }
     }
     serv.call_hook(view::ServerHook::AfterCreate);
     true
@@ -236,7 +233,7 @@ fn bound_workers(config: &crate::ServerConfig, cpu: u32) {
     }
 }
 
-/// `Server::create_task_workers` up to `init_task_workers`: the task pool's memory, not
+/// `Server::create_task_workers` including `init_task_workers`: the task pool's memory, not
 /// its processes, and the task results it returns and notify pipes for `Server::task_sync()`.
 fn create_task_workers(serv: view::Server<'_>) -> Option<Table<crate::records::ResultWords>> {
     let state = serv.state();
@@ -263,13 +260,14 @@ fn create_task_workers(serv: view::Server<'_>) -> Option<Table<crate::records::R
     if results.is_null() {
         let m = format_args!("sw_shm_calloc({workers}, {size}) for task_result failed");
         log::warning(c"Server::create_task_workers", m);
-        return None;
-    }
-    if !state.open_task_pipes(workers) {
+    } else if state.open_task_pipes(workers, || hybrid().task_workers(serv)) {
+        return Some(results);
+    } else {
         results.free();
-        return None;
     }
-    Some(results)
+    hybrid().step(serv, Step::DestroyTaskPool);
+    serv.task_pool_ref().reset();
+    None
 }
 
 /// `Server::start_check`: settings the mode cannot honour, required callbacks, and
@@ -760,6 +758,16 @@ mod tests {
     }
 
     #[test]
+    fn failed_task_init_does_not_publish_notify_pipes() {
+        let live = LiveServer::new();
+        assert!(!live.state().open_task_pipes(2, || false));
+        assert!(live.server().task_notify_pipe(0).is_none());
+        assert!(live.state().open_task_pipes(1, || true));
+        assert!(live.server().task_notify_pipe(0).is_some());
+        assert!(live.server().task_notify_pipe(1).is_none());
+    }
+
+    #[test]
     fn task_workers_by_ipc_mode() {
         let live = LiveServer::new();
         config(&live).worker_num.set(2);
@@ -774,7 +782,7 @@ mod tests {
             let mut results = create_task_workers(live.server()).unwrap();
             assert_eq!(
                 calls(),
-                [Call::TaskPool(ipc.code(), socket)],
+                [Call::TaskPool(ipc.code(), socket), Call::TaskWorkers],
                 "only stream mode listens, mode {mode:?}"
             );
             assert!(!results.is_null(), "results");

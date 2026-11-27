@@ -306,26 +306,25 @@ impl ServerState {
     }
 
     /// `task_notify_pipes.emplace_back(new Pipe(true))` for each of `count` workers:
-    /// false, closing those it opened, when a pipe isn't ready. Pipes already set stay.
-    pub(crate) fn open_task_pipes(&self, count: u32) -> bool {
+    /// Publish the pipes only once all are open and the task workers initialize.
+    pub(crate) fn open_task_pipes(&self, count: u32, init: impl FnOnce() -> bool) -> bool {
         let mut pipes = Vec::new();
-        for _ in 0..count {
+        let ready = (0..count).all(|_| {
             let pair = swoole_rs_corebase::tls::socket_pair::pipe(true);
             let ready = pair.master_end().is_some() && pair.worker_end().is_some();
             pipes.push(pair);
-            if !ready {
-                for pipe in &mut pipes {
-                    swoole_rs_corebase::tls::socket_pair::drop(pipe);
-                }
-                return false;
-            }
+            ready
+        }) && init();
+        if ready {
+            pipes = match self.task_pipes.set(pipes.into_boxed_slice()) {
+                Ok(()) => return true,
+                Err(existing) => existing.into_vec(),
+            };
         }
-        if let Err(mut pipes) = self.task_pipes.set(pipes.into_boxed_slice()) {
-            for pipe in &mut pipes {
-                swoole_rs_corebase::tls::socket_pair::drop(pipe);
-            }
+        for pipe in &mut pipes {
+            swoole_rs_corebase::tls::socket_pair::drop(pipe);
         }
-        true
+        ready
     }
 
     /// `task_notify_pipes.at(index)`, or `None` past the end.
