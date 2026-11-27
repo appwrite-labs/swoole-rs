@@ -454,13 +454,23 @@ impl Rewrite<'_> {
         Flow::Pause
     }
 
+    fn metadata_too_large(&mut self, reason: &str) -> Flow {
+        log::error_log(
+            NOTICE,
+            INVALID_REQUEST,
+            c"http_server::multipart_process_header",
+            format_args!("reconstructed multipart request is too large: {reason}"),
+        );
+        self.too_large()
+    }
+
     fn append_metadata(&mut self, parts: &[&[u8]]) -> Flow {
         if self
             .saved
             .append_bounded(parts, self.request.max_length as usize)
             .is_err()
         {
-            return self.too_large();
+            return self.metadata_too_large("part framing exceeds the byte limit");
         }
         Flow::Go
     }
@@ -504,7 +514,7 @@ impl Parts<'_> for Rewrite<'_> {
             .append_bounded(&[name, b": ", data, b"\r\n"], limit)
             .is_err()
         {
-            return self.too_large();
+            return self.metadata_too_large("header exceeds the byte limit");
         }
         let disposition = crate::multipart_disposition(name);
         if disposition && std::mem::replace(&mut form.disposition_seen, true) {
@@ -520,7 +530,7 @@ impl Parts<'_> for Rewrite<'_> {
             return Flow::Go;
         }
         if form.uploads.len() >= MAX_UPLOAD_FILES {
-            return self.too_large();
+            return self.metadata_too_large("file count exceeds the limit");
         }
         let mut template = form.template.clone();
         form.upload_size = 0;
@@ -570,7 +580,7 @@ impl Parts<'_> for Rewrite<'_> {
             None => &[b"\r\n"],
         };
         if self.saved.append_bounded(parts, limit).is_err() {
-            return self.too_large();
+            return self.metadata_too_large("generated header exceeds the byte limit");
         }
         Flow::Go
     }
