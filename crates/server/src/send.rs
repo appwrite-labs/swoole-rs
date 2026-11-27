@@ -396,16 +396,13 @@ pub(crate) fn queue_close(
     conn: Connection<'_>,
     sock: swoole_rs_corebase::reactor::Heap<'_>,
 ) -> bool {
-    if sock.read(|s| s.registered_for(Events::READ))
-        && !reactor.interest(sock, Interest::RemoveRead)
-    {
-        return false;
-    }
+    // The close callback may already have run. Keep the close behind queued data
+    // even if the kernel refuses to update the socket's read interest.
     if !conn.close_queued() {
         sock.read(SocketFields::queue_close);
         conn.set_close_queued(true);
     }
-    true
+    !sock.read(|s| s.registered_for(Events::READ)) || reactor.interest(sock, Interest::RemoveRead)
 }
 
 /// Queues `data` in the socket's output buffer, if it has one: the bytes queued after.
@@ -791,6 +788,33 @@ mod tests {
         let fd = a.conn().fd();
         assert_eq!(a.send(ServerEvent::Close, 1, b""), SW_OK);
         assert!(a.closed(fd), "closed now");
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn queued_close_survives_a_stale_epoll_registration() {
+        let a = Accepted::new();
+        a.sock().edit(|s| s.direct_send = false);
+        assert_eq!(a.send(ServerEvent::SendData, 1, b"hello"), SW_OK);
+        let reactor = a.live.reactor();
+        let conn = a.conn();
+        let sock = conn.socket().unwrap();
+        assert!(reactor.del(*sock));
+        // Simulate an epoll registration lost while the socket still records it.
+        sock.edit(|s| {
+            s.events = Events::READ | Events::WRITE;
+            s.removed = false;
+        });
+        assert!(!queue_close(reactor, conn, sock));
+        assert!(conn.close_queued());
+        assert!(reactor.add(sock, Events::WRITE));
+        let fd = conn.fd();
+        assert!(crate::conn_io::write(
+            a.serv(),
+            reactor,
+            &mut conn.event(0, 0)
+        ));
+        assert!(a.closed(fd));
     }
 
     #[test]
