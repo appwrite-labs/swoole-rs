@@ -73,6 +73,24 @@ int swr_lent_call_method(zend_object *object, zend_class_entry *scope, struct io
     return bailed;
 }
 
+/* globals, bailout: run a cleanup method with the original exception suspended. */
+int swr_lent_call_cleanup(zend_object *object, struct iovec name) {
+    zend_object *exception = EG(exception);
+    EG(exception) = NULL;
+    volatile int bailed = 0;
+    SWR_ZEND_TRY {
+        zend_call_method(object, NULL, NULL, name.iov_base, name.iov_len, NULL, 0, NULL, NULL);
+        if (exception && EG(exception)) {
+            zend_clear_exception();
+        }
+    }
+    SWR_ZEND_CATCH { bailed = 1; } SWR_ZEND_END_TRY();
+    if (exception) {
+        EG(exception) = exception;
+    }
+    return bailed;
+}
+
 void swr_lent_push_bytes(zval *array, struct iovec bytes) {
     /* allocator: ZVAL_STRINGL creates the Zend-owned element. */
     zval string;

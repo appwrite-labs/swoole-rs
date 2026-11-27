@@ -476,7 +476,24 @@ fn run_start(call: &Call) -> Result<Option<bool>, bailout::Bailout> {
             return Ok(None);
         }
     }
+    let Some(this) = call.this_value() else {
+        return Ok(None);
+    };
     server.running.set(true);
+    let registration = Owned::default();
+    if table.get(b"service_name").is_some() {
+        let function = Owned::string(ZString::new(
+            br"Swoole\NameResolver\ServiceRegistration::start",
+        ));
+        let result = Zvals::with([this, &settings], |args| {
+            swoole_rs_zend::host::user_call(&function, args, &registration)
+        });
+        if !matches!(result, Ok(0)) || !setting_ok() {
+            server.running.set(false);
+            result?;
+            return Ok(None);
+        }
+    }
     let errors = AcceptErrors {
         per_process: libc::EMFILE,
         system: libc::ENFILE,
@@ -495,6 +512,7 @@ fn run_start(call: &Call) -> Result<Option<bool>, bailout::Bailout> {
     if start.bailed {
         return Err(bailout::Bailout);
     }
+    registration.call_cleanup(b"stop")?;
     Ok(Some(accepted))
 }
 
