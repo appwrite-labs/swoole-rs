@@ -120,7 +120,9 @@ fn accept<'a>(
     let socket = conn.socket()?;
     // `ListenPort::create_dtls_session(sock)`, over the port's context.
     let context = listen.config().tls.settings.get();
-    if context.is_some_and(|context| dtls_open(*socket, &context)) {
+    if context.is_some_and(|context| dtls_open(*socket, &context))
+        && crate::port_tls::bind_listener(listen.config(), *socket)
+    {
         return Some(socket);
     }
     conn.active()
