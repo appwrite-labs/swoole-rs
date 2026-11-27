@@ -1305,7 +1305,10 @@ impl Client {
                 let kind = header_kind(HeaderRole::Response, name);
                 if name.first() == Some(&b':') {
                     if kind == HeaderKind::Status {
-                        props.own().long(c"statusCode", atol(text));
+                        let Some(status) = swoole_rs_http2::parse_status_code(text) else {
+                            return Some(Error);
+                        };
+                        props.own().long(c"statusCode", i64::from(status));
                         block.trailing = false;
                         self.streams.with_taken(|streams| {
                             if let Some(stream) = streams.get_mut(&block.stream_id) {
@@ -1363,15 +1366,6 @@ impl Drop for Client {
 fn warn(message: &CStr) {
     use swoole_rs_phpruntime::{Report, report};
     swoole_rs_zend::bailout::defer(report(Report::Swoole, swoole_rs_zend::E_WARNING, message));
-}
-
-/// `sw_atol`.
-fn atol(text: &[u8]) -> i64 {
-    let digits = text.split(|b| !b.is_ascii_digit()).next();
-    std::str::from_utf8(digits.unwrap_or_default())
-        .ok()
-        .and_then(|text| text.parse().ok())
-        .unwrap_or(0)
 }
 
 /// `rust_fold_header`: at most 33 bytes, lowercased.

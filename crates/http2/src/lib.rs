@@ -442,6 +442,15 @@ pub fn sw_rs_http2_header_defaults(published: u32) -> u32 {
     (2 | 16 | 32) & !published
 }
 
+/// Parse the three ASCII digits of an HTTP/2 response status (100 through 599).
+#[must_use]
+pub fn parse_status_code(value: &[u8]) -> Option<u16> {
+    let &[hundreds @ b'1'..=b'5', tens @ b'0'..=b'9', units @ b'0'..=b'9'] = value else {
+        return None;
+    };
+    Some(u16::from(hundreds - b'0') * 100 + u16::from(tens - b'0') * 10 + u16::from(units - b'0'))
+}
+
 /// Whether the entire Content-Length is an unsigned decimal within the request limit.
 #[must_use]
 pub fn valid_content_length(value: &[u8], maximum: u32) -> bool {
@@ -1009,6 +1018,27 @@ mod tests {
             }
         }
     }
+    #[test]
+    fn status_code_boundaries() {
+        for (text, expected) in [
+            (b"100".as_slice(), Some(100)),
+            (b"200", Some(200)),
+            (b"599", Some(599)),
+            (b"099", None),
+            (b"600", None),
+            (b"", None),
+            (b"20", None),
+            (b"2000", None),
+            (b"+20", None),
+            (b"2 0", None),
+            (b"20\0", None),
+            (b"2\xff0", None),
+        ] {
+            assert_eq!(parse_status_code(text), expected, "{text:?}");
+        }
+        assert_eq!(parse_status_code(&b"200x"[..3]), Some(200));
+    }
+
     #[test]
     fn frame_length_requires_complete_header() {
         let frame = sw_rs_http2_pack_frame_header(FrameType::Data, 0xff_ffff, 0, 1);
