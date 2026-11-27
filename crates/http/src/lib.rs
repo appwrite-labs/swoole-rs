@@ -2,11 +2,20 @@
 #![forbid(unsafe_code)]
 use std::mem::MaybeUninit;
 use swoole_rs_locale::case_prefix;
+fn skip_ows(mut bytes: &[u8]) -> &[u8] {
+    while let [b' ' | b'\t', rest @ ..] = bytes {
+        bytes = rest;
+    }
+    bytes
+}
 fn rtrim_ows(mut bytes: &[u8]) -> &[u8] {
     while let [rest @ .., b' ' | b'\t'] = bytes {
         bytes = rest;
     }
     bytes
+}
+fn trim_ows(bytes: &[u8]) -> &[u8] {
+    rtrim_ows(skip_ows(bytes))
 }
 const INVALID: i32 = -1;
 const OVERFLOW: i32 = -2;

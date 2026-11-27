@@ -1,14 +1,7 @@
 //! Parse a complete bytes range set before preparing the file sends.
-use super::HttpSpan;
+use super::{HttpSpan, trim_ows};
 
 pub const MAX_RANGES: usize = 16;
-
-fn trim(mut bytes: &[u8]) -> &[u8] {
-    while let [b' ' | b'\t', rest @ ..] = bytes {
-        bytes = rest;
-    }
-    super::rtrim_ows(bytes)
-}
 
 fn decimal(bytes: &[u8]) -> Option<usize> {
     if bytes.is_empty() {
@@ -21,13 +14,13 @@ fn decimal(bytes: &[u8]) -> Option<usize> {
 }
 
 fn part(bytes: &[u8], size: usize) -> Option<HttpSpan> {
-    let bytes = trim(bytes);
+    let bytes = trim_ows(bytes);
     let (start, end) = if let Some(suffix) = bytes.strip_prefix(b"-") {
         (size.saturating_sub(decimal(suffix)?), size)
     } else {
         let mut fields = bytes.splitn(2, |&b| b == b'-');
-        let start = decimal(trim(fields.next()?))?;
-        let last = trim(fields.next()?);
+        let start = decimal(trim_ows(fields.next()?))?;
+        let last = trim_ows(fields.next()?);
         let end = if last.is_empty() {
             size
         } else {
