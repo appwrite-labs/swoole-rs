@@ -78,6 +78,8 @@ method_table! {
 #[cfg(feature = "ssh2")]
 // The bundled ext/ssh2's handlers (crates/ssh2).
 unsafe extern "C" {
+    safe fn swr_ssh2_has_signal() -> bool;
+    safe fn zif_ssh2_send_signal(frame: Entered<'_>, value: Returned<'_>);
     safe fn zif_ssh2_connect(frame: Entered<'_>, value: Returned<'_>);
     safe fn zif_ssh2_disconnect(frame: Entered<'_>, value: Returned<'_>);
     safe fn zif_ssh2_set_timeout(frame: Entered<'_>, value: Returned<'_>);
@@ -164,6 +166,13 @@ method_table! {
     ];
 }
 
+#[cfg(feature = "ssh2")]
+method_table! {
+    static SSH2_SIGNAL = [
+        c"ssh2_send_signal" => zif_ssh2_send_signal, &swoole_rs_phpstubs::ssh2::arginfo_ssh2_send_signal, 0;
+    ];
+}
+
 /// The complete table, in upstream's order: the optional families the build
 /// has sit between the head and the tracer's functions.
 pub(crate) fn functions() -> *const zend_function_entry {
@@ -171,6 +180,12 @@ pub(crate) fn functions() -> *const zend_function_entry {
         HEAD.table(),
         #[cfg(feature = "ssh2")]
         SSH2_FUNCTIONS.table(),
+        #[cfg(feature = "ssh2")]
+        if swr_ssh2_has_signal() {
+            SSH2_SIGNAL.table()
+        } else {
+            Table::NONE
+        },
         TAIL.table(),
     ])
     .as_ptr()

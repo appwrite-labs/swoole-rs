@@ -645,6 +645,16 @@ static php_stream_wrapper_ops php_ssh2_shell_stream_wops = {php_ssh2_fopen_wrapp
 php_stream_wrapper php_ssh2_stream_wrapper_shell = {&php_ssh2_shell_stream_wops, NULL, 0};
 
 
+// Older SDKs omit the channel-signal API.
+using channel_signal_fn = int (*)(LIBSSH2_CHANNEL *, const char *, size_t);
+extern "C" channel_signal_fn swr_ssh2_signal_function() {
+#ifdef libssh2_channel_signal
+    return libssh2_channel_signal_ex;
+#else
+    return nullptr;
+#endif
+}
+
 /* ssh2_shell_resize and ssh2_send_eof are Rust (crates/ssh2/src/php.rs). What
  * they keep C: the stream and its ops table, which the channel data hangs off. */
 extern "C" LIBSSH2_CHANNEL *swr_ssh2_stream_channel(zval *zstream, bool abstract_warns) {

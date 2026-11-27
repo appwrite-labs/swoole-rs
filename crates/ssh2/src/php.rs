@@ -308,6 +308,8 @@ unsafe extern "C" {
     ) -> isize;
     /// libssh2's own channel declarations.
     safe fn libssh2_channel_send_eof(channel: StreamChannel) -> c_int;
+    /// The optional channel signal function from the installed libssh2 header.
+    safe fn swr_ssh2_signal_function() -> Option<SignalFunction>;
     safe fn libssh2_channel_request_pty_size_ex(
         channel: StreamChannel,
         width: c_int,
@@ -426,6 +428,14 @@ struct Started(NonNull<c_void>);
 #[derive(Clone, Copy)]
 struct StreamChannel(NonNull<c_void>);
 
+type SignalFunction = for<'a> extern "C" fn(StreamChannel, In<'a, u8>, Count<'a>) -> c_int;
+
+/// Whether to register the PHP signal function for this SDK.
+#[unsafe(no_mangle)]
+extern "C" fn swr_ssh2_has_signal() -> bool {
+    swr_ssh2_signal_function().is_some()
+}
+
 /// What no value has: the password-change callback `ssh2_auth_password` never
 /// passes, the bound port `ssh2_forward_listen` never asks for, and the pty
 /// modes a shell or command never sends.
@@ -437,6 +447,7 @@ swoole_rs_zend::handlers! {
     zif_ssh2_set_timeout => set_timeout;
     zif_ssh2_sftp => sftp_init;
     zif_ssh2_send_eof => send_eof;
+    zif_ssh2_send_signal => send_signal;
     zif_ssh2_fetch_stream => fetch_stream;
     zif_ssh2_tunnel => tunnel;
     zif_ssh2_shell => shell;
@@ -1635,6 +1646,34 @@ fn stat(call: &Call<'_>, stat_type: c_int) {
         add(9, b"mtime", mtime.c_cast());
     }
     call.set_owned(stat.into_owned());
+}
+
+fn send_signal(call: &Call<'_>) {
+    if call.arity(2, 2).is_err() {
+        return;
+    }
+    let Ok(stream) = call.resource(1) else { return };
+    let Some(signal) = path(call, 2) else { return };
+    let Some(channel) = swr_ssh2_stream_channel(stream, true) else {
+        call.set_bool(false);
+        return;
+    };
+    let Some(send) = swr_ssh2_signal_function() else {
+        call.set_bool(false);
+        return;
+    };
+    let session = swr_ssh2_stream_session(stream);
+    let status = hooked(session, || {
+        lend_in(signal.bytes(), |name, len| send(channel, name, len))
+    });
+    if status < 0 {
+        warn_bytes(&[
+            b"Couldn't send signal ",
+            text(signal).0.get().to_bytes(),
+            format!(" to channel (Return code {status})").as_bytes(),
+        ]);
+    }
+    call.set_bool(status >= 0);
 }
 
 /// `ssh2_send_eof(resource $channel): bool`: EOF sent on the stream's channel,
