@@ -52,7 +52,7 @@ install() {
             libpq5 libcurl4t64 libssh2-1t64 libbrotli1 libzstd1 libodbc2 libsqlite3-0 libffi8 "$@"
     fi
     apt_run install -yq --no-install-recommends \
-        php-sqlite3 php-curl php-xml php-mbstring python3 composer git ca-certificates curl locales procps strace "$@"
+        php-sqlite3 php-curl php-xml php-mbstring python3 composer git ca-certificates curl locales iproute2 procps strace "$@"
 }
 # Cached indexes (refreshed weekly by the cache key) are enough when every package
 # is cached too; if one isn't and the mirror has moved on, refresh and retry once.
