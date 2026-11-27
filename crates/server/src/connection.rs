@@ -192,8 +192,6 @@ pub fn add<'a>(
             format_args!("setsockopt(TCP_NODELAY) failed"),
         );
     }
-    // Upstream sets the buffer sizes on the listening socket.
-    let listen_fd = listener.map_or(-1, |listener| listener.fd());
     for (name, label, size) in [
         (
             libc::SO_RCVBUF,
@@ -207,8 +205,7 @@ pub fn add<'a>(
         ),
     ] {
         if size > 0
-            && swoole_rs_corebase::sys::setsockopt(listen_fd, libc::SOL_SOCKET, name, &size)
-                .is_err()
+            && swoole_rs_corebase::sys::setsockopt(fd, libc::SOL_SOCKET, name, &size).is_err()
         {
             let m = format_args!("setsockopt({label}, {size}) failed");
             log::sys_warning(c"Server::add_connection", m);

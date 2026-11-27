@@ -367,16 +367,8 @@ pub(crate) fn write(serv: view::Server<'_>, reactor: Reactor, event: &mut Event)
         }
     }
     if !conn.peer_closed() && !removed && empty {
-        // A notified close no longer reads: it only drains.
-        if BUILT_PREQUEUE {
-            reactor.interest(sock, swoole_rs_corebase::reactor::Interest::RemoveWrite);
-        } else {
-            reactor.change(
-                sock,
-                swoole_rs_corebase::reactor::ChangeOp::Set,
-                Events::READ,
-            );
-        }
+        // Draining output preserves an application pause on reads.
+        reactor.interest(sock, swoole_rs_corebase::reactor::Interest::RemoveWrite);
     }
     true
 }

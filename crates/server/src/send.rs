@@ -3,8 +3,7 @@
 //! owns, over the connection, its socket and its output buffer.
 //!
 //! `--fix-halfclose` (M15) builds have the `halfclose` feature (upstream's
-//! `SW_HALFCLOSE_DRAIN`): pause and resume then go through the reactor's read-event
-//! helpers, a resume skips closing connections, and a queued close stops reading.
+//! `SW_HALFCLOSE_DRAIN`): a queued close stops reading.
 use crate::base_factory::{SendData, allocated};
 use crate::callbacks::CallbackKind::{BufferEmpty, BufferFull};
 use crate::reactor_handle::Reactor;
@@ -18,7 +17,7 @@ use swoole_rs_corebase::constants::SW_SEND_BUFFER_SIZE;
 use swoole_rs_corebase::log::LogLevel::{
     SW_LOG_NOTICE as LOG_NOTICE, SW_LOG_TRACE as LOG_TRACE, SW_LOG_WARNING as LOG_WARNING,
 };
-use swoole_rs_corebase::reactor::{ChangeOp, Drain, Interest, Socket, count_write, steady_ms};
+use swoole_rs_corebase::reactor::{Drain, Interest, Socket, count_write, steady_ms};
 use swoole_rs_corebase::reactor::{Events, SocketFields, SocketIo};
 use swoole_rs_corebase::{CCast, DataHead, log, microtime};
 use swoole_rs_error::ErrorCode as E;
@@ -247,38 +246,17 @@ fn to_connection(serv: Server<'_>, info: &DataHead, data: &[u8], first: Option<i
     }
     let halfclose = cfg!(feature = "halfclose");
     if matches!(kind, Some(ServerEvent::PauseRecv | ServerEvent::ResumeRecv)) {
-        let (removed, notified) = sock.read(|s| (s.has_left_reactor(), s.close_reported()));
-        let on = |events| sock.read(|s| s.registered_for(events));
-        let (reading, writing) = (on(Events::READ), on(Events::WRITE));
+        let reading = sock.read(|s| s.registered_for(Events::READ));
         if kind == Some(ServerEvent::PauseRecv) {
-            if removed || !reading {
-                return true;
-            }
-            return if halfclose {
-                reactor.interest(sock, Interest::RemoveRead)
-            } else if writing {
-                reactor.change(sock, ChangeOp::Set, Events::WRITE)
-            } else {
-                reactor.del(*sock)
-            };
+            return !reading || reactor.interest(sock, Interest::RemoveRead);
         }
-
-        let skip = if halfclose {
-            let closing = conn.closed().load(core::sync::atomic::Ordering::Relaxed) != 0;
-            closing || conn.peer_closed() || conn.close_queued() || notified || reading
-        } else {
-            !removed || reading
-        };
-        if skip {
-            return true;
-        }
-        return if halfclose {
-            reactor.interest(sock, Interest::AddRead)
-        } else if writing {
-            reactor.change(sock, ChangeOp::Set, Events::READ | Events::WRITE)
-        } else {
-            reactor.change(sock, ChangeOp::Add, Events::READ)
-        };
+        let closing = conn.closed().load(core::sync::atomic::Ordering::Relaxed) != 0;
+        return reading
+            || closing
+            || conn.peer_closed()
+            || conn.close_queued()
+            || sock.read(SocketFields::close_reported)
+            || reactor.interest(sock, Interest::AddRead);
     }
     let (mut data, file) = (data, kind == Some(ServerEvent::SendFile));
     let (out_empty, unbuffered, direct) = sock.read(|s| {
