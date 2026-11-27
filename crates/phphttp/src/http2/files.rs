@@ -7,47 +7,43 @@ use super::server::{
 };
 use crate::http2::{Ctx, Field};
 use std::ffi::CString;
+use std::os::unix::ffi::OsStrExt;
 use swoole_rs_corebase::CCast;
 use swoole_rs_corebase::offload::async_job;
 use swoole_rs_http::PreconditionStatus;
 use swoole_rs_http::status::{BAD_REQUEST, NOT_FOUND, PARTIAL_CONTENT, RANGE_NOT_SATISFIABLE};
-use swoole_rs_http2::{FileMode, sw_rs_http2_file_length, sw_rs_http2_file_mode};
+use swoole_rs_http2::sw_rs_http2_file_length;
 use swoole_rs_server::static_handler::{StaticHandler, page_404};
+use swoole_rs_server::static_select::Handler as _;
 use swoole_rs_server::view;
 use swoole_rs_zend::bailout;
 
-/// A file opened read-only, closed on drop.
-struct File(libc::c_int);
-
-impl File {
-    fn open(path: &[u8]) -> Option<Self> {
-        let path = CString::new(path).ok()?;
-        swoole_rs_corebase::sys::open(&path, libc::O_RDONLY, 0)
-            .ok()
-            .map(Self)
-    }
-
-    /// One read of up to `buf.len()` bytes at `offset`, on the thread pool
-    /// when `pooled`; `None` if it failed.
-    fn read(&self, offset: i64, buf: &mut [u8], pooled: bool) -> Option<usize> {
-        let fd = self.0;
-        let mut result = None;
-        let mut read = || result = swoole_rs_corebase::sys::pread(fd, buf, offset);
-        if pooled {
-            if !async_job(&mut read) {
-                return None;
+/// Read the entire advertised range before any of its bytes are sent.
+fn read_range(fd: libc::c_int, offset: i64, length: usize, pooled: bool) -> Option<Vec<u8>> {
+    let mut buf = vec![0; length];
+    let mut used = 0;
+    let mut read = || {
+        while used < length {
+            let Some(at) = offset.checked_add_unsigned(used as u64) else {
+                break;
+            };
+            match swoole_rs_corebase::sys::pread(fd, buf.split_at_mut(used).1, at) {
+                Some(0) => break,
+                Some(n) => used += n,
+                None if std::io::Error::last_os_error().kind()
+                    == std::io::ErrorKind::Interrupted => {}
+                None => break,
             }
-        } else {
-            read();
         }
-        result
+    };
+    if pooled {
+        if !async_job(&mut read) {
+            return None;
+        }
+    } else {
+        read();
     }
-}
-
-impl Drop for File {
-    fn drop(&mut self) {
-        _ = swoole_rs_corebase::sys::close(self.0);
-    }
+    (used == length).then_some(buf)
 }
 
 /// The text up to its first NUL, as a C string reads it.
@@ -93,7 +89,7 @@ fn serve(server: view::Server<'_>, ctx: Ctx) -> bool {
     }
     let status = handler.status();
     let redirect = handler.directory_redirect();
-    if status == 200 && !handler.try_serve_index_file() {
+    if status == 200 && (!handler.try_serve_index_file() || !handler.open_file()) {
         return false;
     }
     ctx.unhook();
@@ -195,46 +191,26 @@ fn send_ranges(ctx: Ctx, handler: &mut StaticHandler<'_>) -> bool {
     };
     let end_stream = !trailer;
     let tasks = handler.tasks();
-    let first = if let [task] = tasks.as_slice() {
-        task.length
-    } else {
-        0
-    };
-    let mode = sw_rs_http2_file_mode(tasks.len(), first);
+    let multipart = tasks.len() > 1;
     let mut error = false;
-    if mode != FileMode::Empty {
-        let Some(file) = File::open(&handler.filename()) else {
-            return false;
-        };
-        if mode == FileMode::Multi {
-            for task in &tasks {
-                if !body(ctx, c_text(&task.part_header), false) {
-                    error = true;
-                    break;
-                }
-                let mut buf = vec![0; task.length];
-                if file.read(task.offset, &mut buf, false).is_none() {
-                    return false;
-                }
-                if !body(ctx, &buf, false) {
-                    error = true;
-                    break;
-                }
-            }
-            if !error && !body(ctx, &handler.end_part(), end_stream) {
+    for task in &tasks {
+        if multipart && !body(ctx, c_text(&task.part_header), false) {
+            error = true;
+            break;
+        }
+        if task.length > 0 {
+            let pooled = !multipart && swoole_rs_phpcoroutines::in_coroutine();
+            let buf = handler
+                .file()
+                .and_then(|file| read_range(file.descriptor(), task.offset, task.length, pooled));
+            if !buf.is_some_and(|buf| body(ctx, &buf, !multipart && end_stream)) {
                 error = true;
-            }
-        } else if let (FileMode::Single, [task]) = (mode, tasks.as_slice()) {
-            let mut buf = vec![0; task.length];
-            let pooled = swoole_rs_phpcoroutines::in_coroutine();
-            let Some(read) = file.read(task.offset, &mut buf, pooled) else {
-                return false;
-            };
-            buf.truncate(read);
-            if !body(ctx, &buf, end_stream) {
-                error = true;
+                break;
             }
         }
+    }
+    if multipart && !error {
+        error = !body(ctx, &handler.end_part(), end_stream);
     }
     finish_file(ctx, trailer, error);
     true
@@ -263,13 +239,7 @@ fn content(path: &[u8]) -> Option<Vec<u8>> {
     if swoole_rs_phpcoroutines::in_coroutine() {
         return swoole_rs_hooks::file_io::read_file(&path, false).ok();
     }
-    let mut content = Vec::new();
-    let file = File::open(path.as_bytes())?;
-    let mut buf = [0u8; 8192];
-    while let Some(n @ 1..) = swoole_rs_corebase::sys::read(file.0, &mut buf) {
-        content.extend_from_slice(buf.get(..n).unwrap_or(&buf));
-    }
-    Some(content)
+    std::fs::read(std::ffi::OsStr::from_bytes(path.as_bytes())).ok()
 }
 
 fn send_content(ctx: Ctx, path: &[u8], content: &[u8], offset: i64, length: usize) -> bool {
