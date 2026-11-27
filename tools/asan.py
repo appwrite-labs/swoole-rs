@@ -16,7 +16,7 @@ ld keeps whole, so under --gc-sections every global and every function a global'
 points to stays, and the gates' executables would need all the extension's libraries
 (OpenSSL, the multipart parser, the context switch) to link. C and C++ globals keep
 theirs. PHP has FFI built in for the timer and ports gates. A report from code this repository
-builds fails the run whatever the tests say; upstream's reference build is counted apart. Reports stay in target/asan/reports/ and are only counted on stdout: a
+builds fails the run whatever the tests say; upstream's reference build is counted apart. Reports stay in target/asan/reports/ and are counted by stage on stdout: a
 report may locate an upstream bug, which goes to the private security repository (AGENTS.md), so a public CI log
 never shows one. Rerun locally to read them. LeakSanitizer runs at MSHUTDOWN, in the loader
 and in any process forked from it that shuts PHP down (pcntl_fork, Swoole\Process).
@@ -88,12 +88,17 @@ def main():
     reports = OUT / 'reports'
     shutil.rmtree(reports, ignore_errors=True)
     reports.mkdir(parents=True)
-    options = f'log_path={reports}/report:print_stacktrace=1'
     leaks = f':leak_check_at_exit=0:suppressions={ROOT}/tools/lsan.supp:print_suppressions=0'
-    run = {**build,
-           'PATH': f"{php / 'bin'}{os.pathsep}{build['PATH']}", 'USE_ZEND_ALLOC': '0',
-           'USE_TRACKED_ALLOC': '1', 'ASAN_OPTIONS': options, 'LSAN_OPTIONS': options + leaks,
-           'UBSAN_OPTIONS': options}
+
+    def environment(stage):
+        directory = reports / stage
+        directory.mkdir()
+        options = f'log_path={directory}/report:print_stacktrace=1'
+        return {**build, 'PATH': f"{php / 'bin'}{os.pathsep}{build['PATH']}", 'USE_ZEND_ALLOC': '0',
+                'USE_TRACKED_ALLOC': '1', 'ASAN_OPTIONS': options, 'LSAN_OPTIONS': options + leaks,
+                'UBSAN_OPTIONS': options}
+
+    run = environment('gates')
     gates = [sys.executable, 'tools/dev.py', 'integrate', '--all-modules', '--php', str(php / 'bin/php')]
     # Every gate but the lints, cargo_asan.py's runs (they make an ASan build of their own) and the
     # syscall differential: ASan's runtime makes syscalls of its own, and `applications` already
@@ -110,18 +115,21 @@ def main():
                        '--phase-timeout', '2400'], cwd=ROOT, env=run).returncode:
         failed.append('gates')
     if cases or not args.gate:
-        if subprocess.run([sys.executable, 'tools/build_ext.py', '--php-config', php / 'bin/php-config'], cwd=ROOT, env=run).returncode:
+        if subprocess.run([sys.executable, 'tools/build_ext.py', '--php-config', php / 'bin/php-config'], cwd=ROOT, env=environment('extension-build')).returncode:
             failed.append('extension build')
         else:
-            if not worker_leak_check(php / 'bin/php', run, args.timeout):
+            if not worker_leak_check(php / 'bin/php', environment('worker-leak-check'), args.timeout):
                 failed.append('worker leak check')
             if subprocess.run([sys.executable, 'corpus/upstream/run.py', '--timeout', str(args.timeout), '--php', php / 'bin/php',
-                               '--engine', f"cargo={ROOT / 'target/ext/swoole.so'}", '--output', OUT / 'phpt.json', *cases], cwd=ROOT, env=run).returncode:
+                               '--engine', f"cargo={ROOT / 'target/ext/swoole.so'}", '--output', OUT / 'phpt.json', *cases], cwd=ROOT, env=environment('phpt')).returncode:
                 failed.append('phpt')
-    kinds = [origin(path.read_text(errors='replace')) for path in sorted(reports.iterdir())]
-    if found := kinds.count('ours'):
-        failed.append(f'{found} sanitizer reports in {reports}')
-    if upstream := kinds.count('upstream'):
+    upstream = 0
+    for directory in sorted(reports.iterdir()):
+        kinds = [origin(path.read_text(errors='replace')) for path in directory.iterdir()]
+        if found := kinds.count('ours'):
+            failed.append(f'{directory.name} ({found} sanitizer reports)')
+        upstream += kinds.count('upstream')
+    if upstream:
         print(f"{upstream} reports from upstream's reference build in {reports}: triage them privately")
     print('sanitizer run: ' + (', '.join(failed) + ' failed' if failed else 'clean'))
     return int(bool(failed))
