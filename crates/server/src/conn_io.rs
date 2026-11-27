@@ -647,6 +647,12 @@ pub(crate) mod tests {
         let conn = session(&live, 1);
         let fd = conn.fd();
         clients[0].shutdown(std::net::Shutdown::Write).unwrap();
+        let mut poll = [libc::pollfd {
+            fd,
+            events: libc::POLLIN,
+            revents: 0,
+        }];
+        assert_eq!(swoole_rs_corebase::sys::poll(&mut poll, 2000).unwrap(), 1);
         assert_eq!(
             tls::recv(*conn.socket().unwrap(), &mut [0u8; 1], 0),
             Some(0)

@@ -222,7 +222,26 @@ pub(crate) fn close(serv: view::Server<'_>, reactor: Reactor, event: &Event) -> 
     if !conn.close_reset() {
         socket.read(|s| s.finish_stream(false));
     }
-    crate::server_methods::notify(serv, conn, ServerEvent::Close)
+    let session = conn.session_id();
+    let original = socket.as_ptr();
+    if crate::server_methods::notify(serv, conn, ServerEvent::Close) {
+        return true;
+    }
+    // The notification can enter PHP and retire this session before returning.
+    let Some(socket) = serv
+        .verified(session)
+        .and_then(crate::Connection::socket)
+        .filter(|socket| socket.as_ptr() == original)
+    else {
+        return false;
+    };
+    swoole_rs_corebase::log::error_log(
+        swoole_rs_corebase::log::LogLevel::SW_LOG_WARNING,
+        swoole_rs_error::ErrorCode::SW_ERROR_SESSION_CLOSING as c_int,
+        c"Server::request_close",
+        format_args!("close notification failed for session#{session}; releasing transport"),
+    );
+    crate::conn_io::close_connection(serv, reactor, Some(socket))
 }
 
 /// `ReactorProcess_onTimeout`: close the connections idle past the heartbeat, or
@@ -406,6 +425,15 @@ mod tests {
         assert_eq!(calls(), [], "a queued close closes now");
         assert!(closed(conn));
         assert!(!close(serv, reactor, &conn.event(0, 0)), "gone");
+    }
+
+    #[test]
+    fn failed_close_notification_releases_the_transport() {
+        let (live, _clients) = accepted();
+        let conn = session(&live, 1);
+        crate::hybrid::tests::FAIL_NOTIFY.set(true);
+        assert!(close(live.server(), live.reactor(), &conn.event(0, 0)));
+        assert!(closed(conn));
     }
 
     #[test]

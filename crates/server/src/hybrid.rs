@@ -261,6 +261,7 @@ pub(crate) mod tests {
 
     thread_local! {
         pub(crate) static BASE_PAYLOAD: RefCell<Vec<u8>> = const { RefCell::new(Vec::new()) };
+        pub(crate) static FAIL_NOTIFY: core::cell::Cell<bool> = const { core::cell::Cell::new(false) };
         static CALLS: RefCell<Vec<Call>> = const { RefCell::new(Vec::new()) };
         static FAILING: core::cell::Cell<Option<Step>> = const { core::cell::Cell::new(None) };
         static ON_STEP: RefCell<Option<StepCheck>> = const { RefCell::new(None) };
@@ -309,7 +310,7 @@ pub(crate) mod tests {
                 head.reactor_id,
                 head.kind,
                 head.server_fd,
-            ))
+            )) && !FAIL_NOTIFY.replace(false)
         }
 
         fn pipe_to_worker(&self, _: Server<'_>, worker_id: u32, message: &TaskBuffer) -> bool {
