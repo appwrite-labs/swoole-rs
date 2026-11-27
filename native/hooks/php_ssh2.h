@@ -100,6 +100,7 @@ typedef struct _php_ssh2_channel_data {
     /* Distinguish which stream we should read/write from/to */
     unsigned int streamid;
     char is_blocking;
+    bool timed_out;
     long timeout;
 
     /* Resource */

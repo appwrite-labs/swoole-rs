@@ -52,68 +52,56 @@ void *php_ssh2_zval_from_resource_handle(int handle) {
 
 static ssize_t php_ssh2_channel_stream_write(php_stream *stream, const char *buf, size_t count) {
     php_ssh2_channel_data *abstract = (php_ssh2_channel_data *) stream->abstract;
-    ssize_t writestate;
-    LIBSSH2_SESSION *session;
-
-    session =
-        (LIBSSH2_SESSION *) zend_fetch_resource(abstract->session_rsrc, PHP_SSH2_SESSION_RES_NAME, le_ssh2_session);
+    auto session = static_cast<LIBSSH2_SESSION *>(abstract->session_rsrc->ptr);
+    abstract->timed_out = false;
+    if (!session) {
+        return -1;
+    }
+    if (!abstract->is_blocking) {
+        ssize_t result = (libssh2_channel_write_ex)(abstract->channel, abstract->streamid, buf, count);
+        return result == LIBSSH2_ERROR_EAGAIN ? 0 : result;
+    }
 
 #ifdef PHP_SSH2_SESSION_TIMEOUT
-    if (abstract->is_blocking) {
-        ssh2_set_socket_timeout(session, abstract->timeout);
-    }
+    ssh2_set_socket_timeout(session, abstract->timeout);
 #endif
 
-    writestate = libssh2_channel_write_ex(abstract->channel, abstract->streamid, buf, count);
+    ssize_t writestate = libssh2_channel_write_ex(abstract->channel, abstract->streamid, buf, count);
 
 #ifdef PHP_SSH2_SESSION_TIMEOUT
-    if (abstract->is_blocking) {
-        ssh2_set_socket_timeout(session, -1);
-    }
+    ssh2_set_socket_timeout(session, -1);
 #endif
 
-    if (writestate < 0) {
-        char *error_msg = NULL;
-        if (libssh2_session_last_error(session, &error_msg, NULL, 0) == writestate) {
-            php_error_docref(NULL, E_WARNING, "Failure '%s' (%ld)", error_msg, writestate);
-        }
-
-        stream->eof = 1;
-    }
-
+    abstract->timed_out = writestate == LIBSSH2_ERROR_TIMEOUT;
     return writestate;
 }
 
 static ssize_t php_ssh2_channel_stream_read(php_stream *stream, char *buf, size_t count) {
     php_ssh2_channel_data *abstract = (php_ssh2_channel_data *) stream->abstract;
-    ssize_t readstate;
-    auto session = ssh2_get_session(abstract);
-
-    stream->eof = libssh2_channel_eof(abstract->channel);
-
-#ifdef PHP_SSH2_SESSION_TIMEOUT
-    if (abstract->is_blocking) {
-        ssh2_set_socket_timeout(session, abstract->timeout);
-    }
-#endif
-
-    readstate = libssh2_channel_read_ex(abstract->channel, abstract->streamid, buf, count);
-
-#ifdef PHP_SSH2_SESSION_TIMEOUT
-    if (abstract->is_blocking) {
-        ssh2_set_socket_timeout(session, -1);
-    }
-#endif
-
-    if (readstate < 0) {
-        char *error_msg = NULL;
-        if (libssh2_session_last_error(session, &error_msg, NULL, 0) == readstate) {
-            php_error_docref(NULL, E_WARNING, "Failure '%s' (%ld)", error_msg, readstate);
-        }
-
+    auto session = static_cast<LIBSSH2_SESSION *>(abstract->session_rsrc->ptr);
+    abstract->timed_out = false;
+    if (!session) {
         stream->eof = 1;
-        readstate = 0;
+        return -1;
     }
+    if (!abstract->is_blocking) {
+        ssize_t result = (libssh2_channel_read_ex)(abstract->channel, abstract->streamid, buf, count);
+        stream->eof = result == 0 && (libssh2_channel_eof)(abstract->channel);
+        return result == LIBSSH2_ERROR_EAGAIN ? 0 : result;
+    }
+
+#ifdef PHP_SSH2_SESSION_TIMEOUT
+    ssh2_set_socket_timeout(session, abstract->timeout);
+#endif
+
+    ssize_t readstate = libssh2_channel_read_ex(abstract->channel, abstract->streamid, buf, count);
+
+#ifdef PHP_SSH2_SESSION_TIMEOUT
+    ssh2_set_socket_timeout(session, -1);
+#endif
+
+    stream->eof = readstate == 0 && (libssh2_channel_eof)(abstract->channel);
+    abstract->timed_out = readstate == LIBSSH2_ERROR_TIMEOUT;
     return readstate;
 }
 
@@ -166,7 +154,7 @@ static int php_ssh2_channel_stream_cast(php_stream *stream, int castas, void **r
 
 static int php_ssh2_channel_stream_set_option(php_stream *stream, int option, int value, void *ptrparam) {
     php_ssh2_channel_data *abstract = (php_ssh2_channel_data *) stream->abstract;
-    auto session = ssh2_get_session(abstract);
+    auto session = static_cast<LIBSSH2_SESSION *>(abstract->session_rsrc->ptr);
     int ret;
 
     switch (option) {
@@ -176,8 +164,14 @@ static int php_ssh2_channel_stream_set_option(php_stream *stream, int option, in
         return ret;
     }
     case PHP_STREAM_OPTION_META_DATA_API: {
-        add_assoc_long((zval *) ptrparam, "exit_status", libssh2_channel_get_exit_status(abstract->channel));
-        break;
+        auto *metadata = static_cast<zval *>(ptrparam);
+        add_assoc_bool(metadata, "blocked", abstract->is_blocking);
+        add_assoc_bool(metadata, "eof", stream->eof);
+        add_assoc_bool(metadata, "timed_out", abstract->timed_out);
+        if (session) {
+            add_assoc_long(metadata, "exit_status", libssh2_channel_get_exit_status(abstract->channel));
+        }
+        return PHP_STREAM_OPTION_RETURN_OK;
     }
     case PHP_STREAM_OPTION_READ_TIMEOUT: {
         ret = abstract->timeout;
@@ -190,7 +184,8 @@ static int php_ssh2_channel_stream_set_option(php_stream *stream, int option, in
         return ret;
     }
     case PHP_STREAM_OPTION_CHECK_LIVENESS: {
-        return stream->eof = libssh2_channel_eof(abstract->channel);
+        stream->eof = !session || (libssh2_channel_eof)(abstract->channel);
+        return stream->eof ? PHP_STREAM_OPTION_RETURN_ERR : PHP_STREAM_OPTION_RETURN_OK;
     }
     }
 
@@ -788,7 +783,8 @@ static php_stream *php_ssh2_scp_xfer(LIBSSH2_SESSION *session, zend_resource *rs
     channel_data = (php_ssh2_channel_data *) emalloc(sizeof(php_ssh2_channel_data));
     channel_data->channel = channel;
     channel_data->streamid = 0;
-    channel_data->is_blocking = 0;
+    channel_data->is_blocking = 1;
+    channel_data->timed_out = false;
     channel_data->timeout = 0;
     channel_data->session_rsrc = rsrc;
     channel_data->refcount = NULL;
@@ -872,7 +868,8 @@ static php_stream *php_ssh2_channel_stream(zend_resource *rsrc, LIBSSH2_CHANNEL 
     channel_data = (php_ssh2_channel_data *) emalloc(sizeof(php_ssh2_channel_data));
     channel_data->channel = channel;
     channel_data->streamid = 0;
-    channel_data->is_blocking = 0;
+    channel_data->is_blocking = 1;
+    channel_data->timed_out = false;
     channel_data->timeout = 0;
     channel_data->session_rsrc = rsrc;
     channel_data->refcount = NULL;
