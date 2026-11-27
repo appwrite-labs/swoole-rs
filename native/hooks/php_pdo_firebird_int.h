@@ -43,10 +43,6 @@
 /* Firebird API has a couple of missing const decls in its API */
 #define const_cast(s) ((char*)(s))
 
-#ifndef min
-#define min(a,b) ((a)<(b)?(a):(b))
-#endif
-
 #if defined(_LP64) || defined(__LP64__) || defined(__arch64__) || defined(_WIN64)
 # define PDO_FIREBIRD_HANDLE_INITIALIZER 0U
 #else
