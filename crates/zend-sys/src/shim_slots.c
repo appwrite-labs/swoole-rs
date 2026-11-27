@@ -8,8 +8,11 @@ void swr_slot_create_object(zend_class_entry *ce, zend_object *(*create)(zend_cl
 
 /* budget: the typed Rust free and destroy handlers need pointer-signature casts for the Zend slots. */
 void swr_slot_object_free(zend_object_handlers *handlers, zend_object_free_obj_t free_obj,
-                          zend_object_dtor_obj_t dtor_obj) {
+                          zend_object_dtor_obj_t dtor_obj, zend_object_get_gc_t get_gc) {
     handlers->free_obj = free_obj;
+    if (get_gc) {
+        handlers->get_gc = get_gc;
+    }
     if (dtor_obj) {
         handlers->dtor_obj = dtor_obj;
     }
@@ -29,4 +32,20 @@ void swr_slot_module(zend_module_entry *entry, zend_result (*startup)(int, int),
     entry->request_startup_func = request_startup;
     entry->request_shutdown_func = request_shutdown;
     entry->info_func = info;
+}
+
+/* budget: Zend's inline GC buffer helpers copy values without taking another reference. */
+void swr_slot_gc_add(zend_get_gc_buffer *roots, zval *value) {
+    zend_get_gc_buffer_add_zval(roots, value);
+}
+
+HashTable *swr_slot_gc_properties(zend_object *object, zval **table, int *count,
+                                  void (*visit)(zend_object *, zend_get_gc_buffer *)) {
+    zend_get_gc_buffer *roots = zend_get_gc_buffer_create();
+    /* free_obj may already have dropped the native fields. */
+    if (!(OBJ_FLAGS(object) & IS_OBJ_FREE_CALLED)) {
+        visit(object, roots);
+    }
+    zend_get_gc_buffer_use(roots, table, count);
+    return zend_std_get_properties(object);
 }

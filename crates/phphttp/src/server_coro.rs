@@ -44,12 +44,34 @@ static SERVER: CustomClass<Data> = CustomClass::new();
 struct Data(OnceCell<HttpServer>);
 
 impl Custom for Data {
+    // SAFETY: trace visits the client array and each exclusively held callable once.
+    const TRACE: Option<swoole_rs_zend::GcTrace<Self>> =
+        Some(unsafe { swoole_rs_zend::GcTrace::new(Self::trace) });
+
     fn class() -> &'static CustomClass<Self> {
         &SERVER
     }
 
     fn new() -> Self {
         Self(OnceCell::new())
+    }
+}
+
+impl Data {
+    fn trace(&self, roots: &mut swoole_rs_zend::GcRoots) {
+        if let Some(server) = self.0.get() {
+            server.clients.with_taken(|clients| roots.owned(clients));
+            server.default_handler.with_taken(|handler| {
+                if let Some(handler) = handler {
+                    Callable::trace(handler, roots);
+                }
+            });
+            server.handlers.with_taken(|handlers| {
+                for (_, handler) in handlers {
+                    Callable::trace(handler, roots);
+                }
+            });
+        }
     }
 }
 
