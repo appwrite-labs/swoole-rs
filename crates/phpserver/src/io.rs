@@ -262,20 +262,17 @@ fn sendto(call: &Call) {
 
 fn sendfile(call: &Call) {
     let Some(serv) = running(call) else { return };
-    let parsed = call.arity(2, 4).and_then(|()| {
-        Ok((
-            call.long(1, 0)?,
-            call.string(2, b"")?,
-            call.long(3, 0)?,
-            call.long(4, 0)?,
-        ))
-    });
-    let Ok((fd, filename, offset, length)) = parsed else {
+    if call.arity(2, 5).is_err() {
+        return call.set_bool(false);
+    }
+    let Ok(fd) = call.long(1, 0) else {
         return call.set_bool(false);
     };
-    if filename.contains(&0) {
-        return call.argument_value_error(2, c"must not contain any null bytes");
-    }
+    let Some(options) = swoole_rs_phpswoole::SendFile::parse(call, 2) else {
+        return call.set_bool(false);
+    };
+    let filename = options.filename.bytes();
+    let (offset, length) = (options.offset, options.length);
     if crate::server::worker_type() == Some(crate::server::WorkerType::Master) {
         let text = message!(
             "can't sendfile[{}] to the connections in master process",
@@ -285,6 +282,10 @@ fn sendfile(call: &Call) {
         return call.set_bool(false);
     }
     if !swoole_rs_phpswoole::valid_sendfile_range(offset, length) {
+        return call.set_bool(false);
+    }
+    if options.delete {
+        // The asynchronous factory must take ownership before deletion is supported here.
         return call.set_bool(false);
     }
     let size = length.c_cast::<usize>();
