@@ -396,18 +396,31 @@ pub(crate) fn peer_close(serv: view::Server<'_>, reactor: Reactor, event: &Event
     if !sock.edit(SocketFields::claim_close_report) {
         return true;
     }
-    let mut head = DataHead {
-        reactor_id: i16::try_from(reactor.handle().id()).unwrap_or_default(),
-        fd: c_long::from(fd),
-        kind: ServerEvent::Close.code(),
-        ..DataHead::default()
-    };
     // The connection is no longer available.
     conn.set_peer_closed(fin_ends(BUILT_PREQUEUE, state, conn));
     if conn.peer_closed() && !conn.close_reset() {
         sock.read(|s| s.finish_stream(false));
     }
-    crate::hybrid::hybrid().factory_notify(serv, &mut head)
+    let session = conn.session_id();
+    let original = sock.as_ptr();
+    if crate::server_methods::notify(serv, conn, ServerEvent::Close) {
+        return true;
+    }
+    // The notification can enter PHP and retire this session before returning.
+    let Some(socket) = serv
+        .verified(session)
+        .and_then(crate::Connection::socket)
+        .filter(|socket| socket.as_ptr() == original)
+    else {
+        return false;
+    };
+    swoole_rs_corebase::log::error_log(
+        swoole_rs_corebase::log::LogLevel::SW_LOG_WARNING,
+        swoole_rs_error::ErrorCode::SW_ERROR_SESSION_CLOSING as c_int,
+        c"Server::request_close",
+        format_args!("close notification failed for session#{session}; releasing transport"),
+    );
+    crate::conn_io::close_connection(serv, reactor, Some(socket))
 }
 
 /// Whether the peer's FIN ends the connection. A synchronous process worker with
@@ -661,7 +674,12 @@ pub(crate) mod tests {
         );
         let event = conn.event(0, 0);
         assert!(peer_close(serv, reactor, &event));
-        let close = Call::Notify(c_long::from(fd), 0, ServerEvent::Close.code(), 0);
+        let close = Call::Notify(
+            c_long::from(fd),
+            0,
+            ServerEvent::Close.code(),
+            u16::try_from(live.listener_fd).unwrap(),
+        );
         assert_eq!(calls(), [close]);
         assert!(conn.peer_closed(), "upstream: the connection is gone");
         assert!(conn.socket().unwrap().read(|s| s.close_notified));

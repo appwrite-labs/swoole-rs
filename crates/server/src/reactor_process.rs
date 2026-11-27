@@ -1,13 +1,12 @@
 //! Base-mode reactor processes (upstream's `src/server/reactor_process.cc`): every
 //! worker accepts, reads and runs its callbacks itself. What only the hybrid links
 //! runs as its steps; the reads from the server's message bus are in `native`.
+use crate::conn_io::peer_close;
 use core::ffi::c_int;
 use core::sync::atomic::Ordering::Relaxed;
-use swoole_rs_corebase::ServerEvent;
 use swoole_rs_corebase::process::worker_record::{Worker, WorkerType};
 use swoole_rs_corebase::reactor::ErrorHandler::ConnectionDefault;
 use swoole_rs_corebase::reactor::Events;
-use swoole_rs_corebase::reactor::SocketFields;
 use swoole_rs_corebase::reactor::{Event, Running};
 
 use crate::callbacks::{CallbackKind, ServerSlot};
@@ -197,51 +196,7 @@ fn on_close(reactor: Running<'_>, event: &mut Event) -> bool {
     let reactor = Reactor::running(reactor);
     reactor
         .server()
-        .is_some_and(|serv| close(serv, reactor, event))
-}
-
-/// Notify the worker once, including when reads were already paused.
-pub(crate) fn close(serv: view::Server<'_>, reactor: Reactor, event: &Event) -> bool {
-    let Some(conn) = serv.at(event.fd()).filter(|conn| conn.is_active()) else {
-        return false;
-    };
-    let Some(socket) = event.socket() else {
-        return false;
-    };
-    if !socket.read(SocketFields::has_left_reactor) && !reactor.del(*socket) {
-        return false;
-    }
-    if conn.close_queued() {
-        return crate::conn_io::close_connection(serv, reactor, Some(socket));
-    }
-    if !socket.edit(SocketFields::claim_close_report) {
-        return true;
-    }
-    // The client closed the connection: it is no longer usable.
-    conn.set_peer_closed(true);
-    if !conn.close_reset() {
-        socket.read(|s| s.finish_stream(false));
-    }
-    let session = conn.session_id();
-    let original = socket.as_ptr();
-    if crate::server_methods::notify(serv, conn, ServerEvent::Close) {
-        return true;
-    }
-    // The notification can enter PHP and retire this session before returning.
-    let Some(socket) = serv
-        .verified(session)
-        .and_then(crate::Connection::socket)
-        .filter(|socket| socket.as_ptr() == original)
-    else {
-        return false;
-    };
-    swoole_rs_corebase::log::error_log(
-        swoole_rs_corebase::log::LogLevel::SW_LOG_WARNING,
-        swoole_rs_error::ErrorCode::SW_ERROR_SESSION_CLOSING as c_int,
-        c"Server::request_close",
-        format_args!("close notification failed for session#{session}; releasing transport"),
-    );
-    crate::conn_io::close_connection(serv, reactor, Some(socket))
+        .is_some_and(|serv| peer_close(serv, reactor, event))
 }
 
 /// `ReactorProcess_onTimeout`: close the connections idle past the heartbeat, or
@@ -255,7 +210,7 @@ pub(crate) fn heartbeat(serv: view::Server<'_>, reactor: Reactor) {
         if !crate::connection::begin_idle_close(serv, reactor, conn) {
             return;
         }
-        close(
+        peer_close(
             serv,
             reactor,
             &conn.event(i16::from(conn.reactor_id()), FD_SESSION),
@@ -412,7 +367,7 @@ mod tests {
         let (serv, reactor) = (live.server(), live.reactor());
         let conn = session(&live, 1);
         let fd = conn.fd();
-        assert!(close(serv, reactor, &conn.event(0, 0)));
+        assert!(peer_close(serv, reactor, &conn.event(0, 0)));
         let listener = u16::try_from(live.listener_fd).unwrap();
         let notify = Call::Notify(c_long::from(fd), 0, 4, listener);
         assert_eq!(calls(), [notify], "the worker hears");
@@ -421,10 +376,10 @@ mod tests {
 
         let conn = session(&live, 2);
         conn.set_close_queued(true);
-        assert!(close(serv, reactor, &conn.event(0, 0)));
+        assert!(peer_close(serv, reactor, &conn.event(0, 0)));
         assert_eq!(calls(), [], "a queued close closes now");
         assert!(closed(conn));
-        assert!(!close(serv, reactor, &conn.event(0, 0)), "gone");
+        assert!(!peer_close(serv, reactor, &conn.event(0, 0)), "gone");
     }
 
     #[test]
@@ -432,7 +387,7 @@ mod tests {
         let (live, _clients) = accepted();
         let conn = session(&live, 1);
         crate::hybrid::tests::FAIL_NOTIFY.set(true);
-        assert!(close(live.server(), live.reactor(), &conn.event(0, 0)));
+        assert!(peer_close(live.server(), live.reactor(), &conn.event(0, 0)));
         assert!(closed(conn));
     }
 
@@ -442,13 +397,13 @@ mod tests {
         let (serv, reactor) = (live.server(), live.reactor());
         let conn = session(&live, 1);
         assert!(reactor.del(*conn.socket().unwrap()));
-        assert!(close(serv, reactor, &conn.event(0, 0)));
+        assert!(peer_close(serv, reactor, &conn.event(0, 0)));
         let listener = u16::try_from(live.listener_fd).unwrap();
         assert_eq!(
             calls(),
             [Call::Notify(c_long::from(conn.fd()), 0, 4, listener)]
         );
-        assert!(close(serv, reactor, &conn.event(0, 0)));
+        assert!(peer_close(serv, reactor, &conn.event(0, 0)));
         assert_eq!(calls(), []);
         assert!(conn.is_active(), "the worker closes it");
     }
