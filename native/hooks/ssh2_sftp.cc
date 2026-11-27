@@ -48,9 +48,7 @@ void php_ssh2_sftp_dtor(zend_resource *rsrc) {
         return;
     }
 
-    if (data->session_rsrc->ptr != NULL) {
-        libssh2_sftp_shutdown(data->sftp);
-    }
+    release_ssh_resource(data->session_rsrc, 0, [&] { return libssh2_sftp_shutdown(data->sftp); });
 
     zend_list_delete(data->session_rsrc);
 

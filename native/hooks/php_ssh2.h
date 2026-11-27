@@ -172,6 +172,50 @@ static inline LIBSSH2_SESSION *ssh2_get_session(php_ssh2_channel_data *abstract)
     return static_cast<LIBSSH2_SESSION *>(abstract->session_rsrc->ptr);
 }
 
+template <typename Operation>
+static ssize_t session_io(zend_resource *resource, bool may_block, double timeout, bool &timed_out, Operation operation) {
+    auto session = static_cast<LIBSSH2_SESSION *>(resource->ptr);
+    if (!session) {
+        return -1;
+    }
+    while (resource->ptr == session) {
+        if (may_block) {
+            ssh2_bound(session);
+        } else if (swr_v1_ssh2_is_bound(session)) {
+            return LIBSSH2_ERROR_EAGAIN;
+        }
+        ssize_t result = operation();
+        if (result != LIBSSH2_ERROR_EAGAIN || !may_block) {
+            return result;
+        }
+        bool outbound = libssh2_session_block_directions(session) & LIBSSH2_SESSION_BLOCK_OUTBOUND;
+        swr_ssh2_forward_enter(session);
+        bool ready = swr_v1_ssh2_channel_wait(session, outbound, timeout, &timed_out);
+        swr_ssh2_forward_leave(session);
+        if (!ready) {
+            return -1;
+        }
+    }
+    return -1;
+}
+
+// A destructor inside a coroutine can yield even during PHP request shutdown.
+template <typename Operation>
+static void release_ssh_resource(zend_resource *resource, double timeout, Operation operation) {
+    auto session = static_cast<LIBSSH2_SESSION *>(resource->ptr);
+    if (!session) {
+        return;
+    }
+    swr_ssh2_forward_enter(session);
+    if (swoole::Coroutine::get_current() && !swr_v1_ssh2_is_bound(session)) {
+        bool timed_out = false;
+        session_io(resource, true, timeout, timed_out, operation);
+    } else {
+        operation();
+    }
+    swr_ssh2_forward_leave(session);
+}
+
 #endif /* PHP_SSH2_H */
 
 /*

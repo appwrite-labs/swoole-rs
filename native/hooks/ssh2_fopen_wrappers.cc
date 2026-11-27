@@ -50,33 +50,6 @@ void *php_ssh2_zval_from_resource_handle(int handle) {
  * channel_stream_ops *
  ********************** */
 
-template <typename Operation>
-static ssize_t channel_io(php_ssh2_channel_data *data, bool may_block, Operation operation) {
-    auto session = ssh2_get_session(data);
-    if (!session) {
-        return -1;
-    }
-    while (data->session_rsrc->ptr == session) {
-        if (may_block) {
-            ssh2_bound(session);
-        } else if (swr_v1_ssh2_is_bound(session)) {
-            return LIBSSH2_ERROR_EAGAIN;
-        }
-        ssize_t result = operation();
-        if (result != LIBSSH2_ERROR_EAGAIN || !may_block) {
-            return result;
-        }
-        bool outbound = libssh2_session_block_directions(session) & LIBSSH2_SESSION_BLOCK_OUTBOUND;
-        swr_ssh2_forward_enter(session);
-        bool ready = swr_v1_ssh2_channel_wait(session, outbound, data->timeout, &data->timed_out);
-        swr_ssh2_forward_leave(session);
-        if (!ready) {
-            return -1;
-        }
-    }
-    return -1;
-}
-
 // Zero means the channel is complete. EAGAIN leaves the stream readable.
 static ssize_t channel_completion(php_ssh2_channel_data *data, bool may_block) {
     if (!(libssh2_channel_eof)(data->channel)) {
@@ -86,13 +59,13 @@ static ssize_t channel_completion(php_ssh2_channel_data *data, bool may_block) {
         return 0;
     }
     auto wait_closed = [&] { return libssh2_channel_wait_closed(data->channel); };
-    return channel_io(data, may_block, wait_closed);
+    return session_io(data->session_rsrc, may_block, data->timeout, data->timed_out, wait_closed);
 }
 
 static ssize_t php_ssh2_channel_stream_write(php_stream *stream, const char *buf, size_t count) {
     auto *data = static_cast<php_ssh2_channel_data *>(stream->abstract);
     data->timed_out = false;
-    ssize_t result = channel_io(data, data->is_blocking, [&] {
+    ssize_t result = session_io(data->session_rsrc, data->is_blocking, data->timeout, data->timed_out, [&] {
         return (libssh2_channel_write_ex)(data->channel, data->streamid, buf, count);
     });
     return result == LIBSSH2_ERROR_EAGAIN ? 0 : result;
@@ -101,7 +74,7 @@ static ssize_t php_ssh2_channel_stream_write(php_stream *stream, const char *buf
 static ssize_t php_ssh2_channel_stream_read(php_stream *stream, char *buf, size_t count) {
     auto *data = static_cast<php_ssh2_channel_data *>(stream->abstract);
     data->timed_out = false;
-    ssize_t result = channel_io(data, data->is_blocking, [&] {
+    ssize_t result = session_io(data->session_rsrc, data->is_blocking, data->timeout, data->timed_out, [&] {
         return (libssh2_channel_read_ex)(data->channel, data->streamid, buf, count);
     });
     if (!data->session_rsrc->ptr) {
@@ -126,11 +99,9 @@ static int php_ssh2_channel_stream_close(php_stream *stream, int close_handle) {
         if (abstract->refcount) {
             efree(abstract->refcount);
         }
-        if (auto session = ssh2_get_session(abstract)) {
-            swr_ssh2_forward_enter(session);
-            libssh2_channel_free(abstract->channel);
-            swr_ssh2_forward_leave(session);
-        }
+        release_ssh_resource(abstract->session_rsrc, abstract->timeout, [&] {
+            return libssh2_channel_free(abstract->channel);
+        });
         zend_list_delete(abstract->session_rsrc);
     }
     efree(abstract);
