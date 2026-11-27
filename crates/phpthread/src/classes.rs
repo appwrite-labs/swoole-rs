@@ -170,7 +170,7 @@ pub(crate) fn shared(value: &ZValue) -> Option<Item> {
         crate::host::defer(crate::host::Pending::Unconstructed { list });
         return Some(Item {
             kind: Kind::Undef,
-            value: Value::Bare(0),
+            value: Value::Bare,
         });
     };
     Some(Item { kind, value })
@@ -455,7 +455,11 @@ fn list_set(call: &Call) {
     let Some((index, value)) = call.value(1).zip(call.value(2)) else {
         return;
     };
-    if !list.index_set(list_index(index), value) {
+    let index = list_index(index);
+    if !swoole_rs_zend::host::exception().is_null() || swoole_rs_zend::bailout::pending() {
+        return;
+    }
+    if !list.index_set(index, value) {
         out_of_range(call);
     }
 }
