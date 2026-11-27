@@ -7,10 +7,7 @@ fn trim(mut bytes: &[u8]) -> &[u8] {
     while let [b' ' | b'\t', rest @ ..] = bytes {
         bytes = rest;
     }
-    while let [rest @ .., b' ' | b'\t'] = bytes {
-        bytes = rest;
-    }
-    bytes
+    super::rtrim_ows(bytes)
 }
 
 fn decimal(bytes: &[u8]) -> Option<usize> {

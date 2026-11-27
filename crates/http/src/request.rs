@@ -1019,10 +1019,14 @@ mod tests {
             "file\r\n--AB--\r\n",
         );
         let head = format!(
-            "POST / HTTP/1.1\r\nContent-Type: multipart/form-data; boundary=AB\r\nContent-Length: {}\r\n\r\n",
+            "POST / HTTP/1.1\r\nContent-Type: multipart/form-data; boundary=AB \t\r\nX-Whitespace: \talpha \t beta \t \r\nContent-Length: {}\r\n\r\n",
             wire.len()
         );
         let (mut i, mut r) = parsed(head.as_bytes());
+        assert_eq!(
+            r.header_bytes(i.bytes(), b"X-Whitespace"),
+            Some(&b"alpha \t beta"[..])
+        );
         r.max_length = 1 << 20;
         let dir = std::env::temp_dir();
         assert!(
