@@ -172,3 +172,86 @@ std::string Request::get_header(const char *name) const {
 
     return {};
 }
+
+// Swoole v6.3.0, src/protocol/http.cc (e0d606594), unchanged.
+void Request::parse_header_info() {
+    // header field start
+    char *p = buffer_->str + request_line_length_ + (sizeof("\r\n") - 1);
+    // point-end: start + strlen(all-header) without strlen("\r\n\r\n")
+    char *pe = buffer_->str + header_length_ - (sizeof("\r\n\r\n") - 1);
+    bool transfer_encoding = false;
+    bool chunked_seen = false;
+    bool after_chunked = false;
+
+    for (; p < pe; p++) {
+        if (*(p - 1) == '\n' && *(p - 2) == '\r') {
+            if (SW_STR_ISTARTS_WITH(p, pe - p, "Content-Length:")) {
+                // strlen("Content-Length:")
+                p += (sizeof("Content-Length:") - 1);
+                // skip spaces
+                while (*p == ' ') {
+                    p++;
+                }
+                content_length_ = strtoull(p, nullptr, 10);
+                known_length = 1;
+            } else if (SW_STR_ISTARTS_WITH(p, pe - p, "Connection:")) {
+                // strlen("Connection:")
+                p += (sizeof("Connection:") - 1);
+                // skip OWS
+                while (*p == ' ' || *p == '\t') {
+                    p++;
+                }
+                if (SW_STR_ISTARTS_WITH(p, pe - p, "keep-alive")) {
+                    keep_alive = 1;
+                }
+            } else if (SW_STR_ISTARTS_WITH(p, pe - p, "Transfer-Encoding:")) {
+                // strlen("Transfer-Encoding:")
+                p += (sizeof("Transfer-Encoding:") - 1);
+                char *value_end = (char *) memchr(p, '\r', pe - p + 1);
+                transfer_encoding = true;
+                while (true) {
+                    while (p < value_end && (*p == ' ' || *p == '\t')) {
+                        p++;
+                    }
+                    char *coding = p;
+                    while (p < value_end && *p != ',') {
+                        p++;
+                    }
+                    const size_t coding_length = rtrim_ows(coding, p - coding);
+                    if (chunked_seen) {
+                        after_chunked = true;
+                    }
+                    if (SW_STRCASEEQ(coding, coding_length, "chunked")) {
+                        chunked_seen = true;
+                    }
+                    if (p == value_end) {
+                        break;
+                    }
+                    p++;
+                }
+                p = value_end;
+            } else if (SW_STR_ISTARTS_WITH(p, pe - p, "Content-Type:")) {
+                delete form_data_;
+                form_data_ = nullptr;
+                p += (sizeof("Content-Type:") - 1);
+                while (*p == ' ' || *p == '\t') {
+                    p++;
+                }
+                if (SW_STR_ISTARTS_WITH(p, pe - p, "multipart/form-data")) {
+                    form_data_ = new FormData();
+                    form_data_->multipart_boundary_buf = p + (sizeof("multipart/form-data") - 1);
+                    form_data_->multipart_boundary_len = rtrim_ows(
+                        form_data_->multipart_boundary_buf, strchr(p, '\r') - form_data_->multipart_boundary_buf);
+                }
+            }
+        }
+    }
+
+    if (transfer_encoding) {
+        chunked = chunked_seen && !after_chunked;
+        if (!chunked) {
+            excepted = 1;
+        }
+    }
+    header_parsed = 1;
+}

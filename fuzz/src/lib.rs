@@ -926,7 +926,7 @@ fn multipart_nul(bytes: &[u8], start: usize, end: usize) -> Option<usize> {
             return false;
         }
         let mut value = at + 13;
-        while bytes.get(value) == Some(&b' ') {
+        while matches!(bytes.get(value), Some(b' ' | b'\t')) {
             value += 1;
         }
         starts(value, b"multipart/form-data")

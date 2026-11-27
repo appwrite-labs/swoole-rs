@@ -9,7 +9,6 @@
 #include <string>
 #include <strings.h>
 #include <sys/types.h>
-#include <vector>
 #include "http_frame_flags.inc"
 
 #define SWR_CAT2(a, b) a##_##b
@@ -33,21 +32,9 @@ struct String {
     size_t length;
     off_t offset;
 };
-// The facade owns every FormData the body allocates and frees them after each call.
 struct FormData {
     const char *multipart_boundary_buf;
     uint32_t multipart_boundary_len;
-    static std::vector<FormData *> &owned() {
-        static std::vector<FormData *> all;
-        return all;
-    }
-    FormData() : multipart_boundary_buf(nullptr), multipart_boundary_len(0) {
-        owned().push_back(this);
-    }
-    static void release() {
-        for (FormData *data : owned()) delete data;
-        owned().clear();
-    }
 };
 struct Request {
     uint8_t method;
@@ -156,7 +143,7 @@ void SWR_CAT(swr_oracle_http_header_info, SWR_FRAME_ENGINE)(char *data, size_t l
                  (request.excepted ? SWR_HTTP_FLAG_EXCEPTED : 0);
     out->boundary_offset = request.form_data_ ? request.form_data_->multipart_boundary_buf - data : -1;
     out->boundary_length = request.form_data_ ? request.form_data_->multipart_boundary_len : 0;
-    SWR_FRAME_ENGINE::FormData::release();
+    delete request.form_data_;
 }
 
 bool SWR_CAT(swr_oracle_http_expect, SWR_FRAME_ENGINE)(char *data, size_t length) {
