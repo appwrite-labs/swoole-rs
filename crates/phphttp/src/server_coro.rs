@@ -509,10 +509,10 @@ fn run_start(call: &Call) -> Result<Option<bool>, bailout::Bailout> {
         bailed: false,
     };
     let accepted = accept_loop(&mut start, &errors);
+    registration.call_cleanup(b"stop")?;
     if start.bailed {
         return Err(bailout::Bailout);
     }
-    registration.call_cleanup(b"stop")?;
     Ok(Some(accepted))
 }
 
