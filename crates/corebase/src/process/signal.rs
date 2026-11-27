@@ -315,18 +315,22 @@ fn dispatch_pending() {
     let Some(callback) = callback() else {
         return;
     };
+    PENDING.store(false, Relaxed);
     for (signo, triggered) in (0..).zip(&TRIGGERED) {
         if triggered.load(Relaxed) {
+            triggered.store(false, Relaxed);
             // Upstream calls dispatch from a safe context, never a signal frame; the
             // callback may run PHP, and no value with a destructor is live across it.
             callback(signo);
             if crate::process::pool::bailout_pending() {
                 return;
             }
-            triggered.store(false, Relaxed);
         }
     }
-    PENDING.store(false, Relaxed);
+    if pending() {
+        // A callback raised a signal whose slot was already visited.
+        _ = crate::reactor::event_api::swoole_event_defer_value(());
+    }
 }
 
 /// What `swoole_signal_callback` should do for a signal.

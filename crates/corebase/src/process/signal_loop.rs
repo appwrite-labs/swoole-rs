@@ -60,7 +60,6 @@ pub struct DescriptorOps {
     pub del: fn(crate::reactor::Running<'_>),
     pub installed: fn() -> bool,
     pub install: fn(),
-    pub erase_end: fn(),
 }
 #[cfg(any(
     target_os = "linux",
@@ -131,7 +130,7 @@ pub fn listener_num() -> u32 {
         .wrapping_add(corebase::swr_v1_core_signal_async_listener_num())
 }
 #[cfg(target_os = "linux")]
-fn setup(ops: &Ops) -> bool {
+pub(super) fn setup(ops: &Ops) -> bool {
     let Some(descriptor) = ops.descriptor else {
         return false;
     };
@@ -157,11 +156,7 @@ fn setup(ops: &Ops) -> bool {
         (descriptor.install)();
     }
     let read = corebase::constants::EventType::SW_EVENT_READ as i32;
-    if !(descriptor.reading)() && !(descriptor.add)(read) {
-        return false;
-    }
-    (descriptor.erase_end)();
-    true
+    (descriptor.reading)() || (descriptor.add)(read)
 }
 #[cfg(target_os = "linux")]
 fn close(ops: &Ops) {
@@ -195,11 +190,8 @@ pub fn clear(ops: &Ops) {
         target_os = "openbsd",
         target_os = "dragonfly"
     ))]
-    if caps & 2 != 0 && corebase::swr_v1_core_enable_kqueue() {
-        let available = (ops.available)();
-        let kq = if available { (ops.native_handle)() } else { -1 };
-        // The actual kqueue, or -1 when unavailable.
-        crate::process::signal_kqueue::signal_kqueue_clear(kq, available);
+    if caps & 2 != 0 && corebase::swr_v1_core_enable_kqueue() && (ops.available)() {
+        crate::process::signal_kqueue::signal_kqueue_clear((ops.native_handle)());
         return;
     }
     signal::signal_clear();

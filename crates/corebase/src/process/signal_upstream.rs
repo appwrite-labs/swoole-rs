@@ -206,10 +206,6 @@ mod descriptor {
         crate::reactor::event_api::on_destroy(destroyed);
     }
 
-    pub(super) fn erase_end() {
-        crate::reactor::swr_v1_event_erase_end_callback(crate::reactor::Priority::SignalCallback);
-    }
-
     pub(super) static OPS_DESCRIPTOR: DescriptorOps = DescriptorOps {
         make,
         free,
@@ -218,8 +214,19 @@ mod descriptor {
         del,
         installed,
         install,
-        erase_end,
     };
+}
+
+/// Reattach listeners to the newly published main-thread reactor.
+pub(crate) fn init_reactor() {
+    crate::reactor::swr_v1_event_set_exit_condition(
+        crate::reactor::ExitCondition::SignalListener,
+        |_| crate::swr_v1_core_signal_listener_num() == 0 || !crate::swr_v1_core_wait_signal(),
+    );
+    #[cfg(target_os = "linux")]
+    if crate::swr_v1_core_enable_signalfd() && crate::process::signalfd::signalfd_fd() != -1 {
+        signal_loop::setup(&OPS);
+    }
 }
 
 static OPS: Ops = Ops {

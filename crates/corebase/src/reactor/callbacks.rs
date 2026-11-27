@@ -263,13 +263,6 @@ pub fn swr_v1_event_set_end_callback(id: Priority, callback: EndFn) {
     }
 }
 
-/// `sw_reactor()->erase_end_callback(id)`.
-pub fn swr_v1_event_erase_end_callback(id: Priority) {
-    if let Some(reactor) = running() {
-        reactor.with(|owner| owner.callbacks.set_end(id, None));
-    }
-}
-
 /// `sw_reactor()->set_exit_condition(id, condition)`.
 pub fn swr_v1_event_set_exit_condition(id: ExitCondition, condition: ExitFn) {
     if let Some(reactor) = running() {

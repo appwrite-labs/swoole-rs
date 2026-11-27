@@ -341,6 +341,12 @@ pub trait Deferred: Sized + 'static {
     fn dispose(self);
 }
 
+/// An empty deferred callback keeps the reactor alive for one more pass.
+impl Deferred for () {
+    fn run(self) {}
+    fn dispose(self) {}
+}
+
 /// `sw_reactor()->defer(...)` of `value`, which comes back without a reactor.
 /// # Errors
 /// There is no reactor.

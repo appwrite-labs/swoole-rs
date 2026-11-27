@@ -150,6 +150,7 @@ pub fn register_upper_layer() {
         created: |reactor| crate::hook::call(crate::hook::Hook::ReactorCreate(reactor)),
         destroyed: |reactor| crate::hook::call(crate::hook::Hook::ReactorDestroy(reactor)),
         main_thread: swoole_is_main_thread,
+        init_signals: crate::process::signal_upstream::init_reactor,
     });
 }
 

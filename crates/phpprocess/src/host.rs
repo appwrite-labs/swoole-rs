@@ -12,7 +12,7 @@ use swoole_rs_corebase::CCast;
 use swoole_rs_corebase::process::worker_record::WorkerType;
 use swoole_rs_corebase::process::{methods, worker_record::Worker};
 use swoole_rs_corebase::reactor::event_api::{Deferred, swoole_event_defer_value};
-use swoole_rs_corebase::{swr_v1_core_signal_listener_num, thread_async_threads};
+use swoole_rs_corebase::thread_async_threads;
 use swoole_rs_phpswoole::{Switch, built_with};
 use swoole_rs_server::view;
 use swoole_rs_zend::host::callable;
@@ -326,20 +326,6 @@ pub fn timer_uses_reactor() -> bool {
     .unwrap_or_else(|| {
         crate::pool::timer_uses_reactor(kind == Some(WorkerType::Master)).unwrap_or(true)
     })
-}
-
-fn listening(_event_num: &mut usize) -> bool {
-    swr_v1_core_signal_listener_num() == 0 || !swoole_rs_corebase::swr_v1_core_wait_signal()
-}
-
-/// `php_swoole_check_reactor()`, then the loop runs while a signal listener
-/// waits (setting it again replaces it with the same condition).
-pub(crate) fn signal_listen() {
-    swoole_rs_phpswoole::check_reactor();
-    swoole_rs_corebase::reactor::swr_v1_event_set_exit_condition(
-        swoole_rs_corebase::reactor::ExitCondition::SignalListener,
-        listening,
-    );
 }
 
 /// Outside thread builds, a process that is not a user worker forgets its
