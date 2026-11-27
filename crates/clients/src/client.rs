@@ -41,6 +41,7 @@ use swoole_rs_corebase::tls::{
 use swoole_rs_corebase::{BoxCellExt, CCast, CellExt, TrustedAllocator};
 use swoole_rs_corebase::{ProxyState, ResolverRequest, log};
 use swoole_rs_error::ErrorCode;
+use swoole_rs_http::{ProxyReadError, http_proxy_fragment};
 
 /// The flags [`Client::flag`] reads.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -176,8 +177,6 @@ const ERROR_SSL_CREATE_SESSION_FAILED: c_int =
     ErrorCode::SW_ERROR_SSL_CREATE_SESSION_FAILED as c_int;
 const ERROR_SOCKET_POLL_TIMEOUT: c_int = ErrorCode::SW_ERROR_SOCKET_POLL_TIMEOUT as c_int;
 const ERROR_SOCKS5_HANDSHAKE_FAILED: c_int = ErrorCode::SW_ERROR_SOCKS5_HANDSHAKE_FAILED as c_int;
-const ERROR_HTTP_PROXY_HANDSHAKE_ERROR: c_int =
-    ErrorCode::SW_ERROR_HTTP_PROXY_HANDSHAKE_ERROR as c_int;
 
 /// The public, trivially copyable fields of `network::Client`.
 #[derive(Clone, Copy)]
@@ -1275,6 +1274,22 @@ pub fn connect(this: Handle<'_>, host: &CStr, port: c_int, timeout: f64, flags: 
     }
 }
 
+fn set_remaining_read_timeout(this: Handle<'_>, timeout: f64, started: std::time::Instant) -> bool {
+    if timeout > 0.0 {
+        let remaining = timeout - started.elapsed().as_secs_f64();
+        if remaining <= 0.0 {
+            return false;
+        }
+        this.socket().edit(|socket| {
+            socket.set_timeout(
+                remaining.max(0.001),
+                swoole_rs_corebase::reactor::TimeoutKind::READ,
+            );
+        });
+    }
+    true
+}
+
 /// Receive one complete SOCKS5 reply per handshake step, leaving tunnel data queued.
 fn socks5_receive_sync(this: Handle<'_>, timeout: f64) -> bool {
     let started = std::time::Instant::now();
@@ -1285,18 +1300,9 @@ fn socks5_receive_sync(this: Handle<'_>, timeout: f64) -> bool {
             return true;
         }
         let received = crate::owned_proxy::receive_socks5_reply(state, &mut reply, |room| {
-            if timeout > 0.0 {
-                let remaining = timeout - started.elapsed().as_secs_f64();
-                if remaining <= 0.0 {
-                    log::set_last_error(ERROR_SOCKET_POLL_TIMEOUT);
-                    return None;
-                }
-                this.socket().edit(|socket| {
-                    socket.set_timeout(
-                        remaining.max(0.001),
-                        swoole_rs_corebase::reactor::TimeoutKind::READ,
-                    );
-                });
+            if !set_remaining_read_timeout(this, timeout, started) {
+                log::set_last_error(ERROR_SOCKET_POLL_TIMEOUT);
+                return None;
             }
             let n = recv(this, room, 0);
             if n.is_none() && timeout > 0.0 && log::last_error() == libc::ETIMEDOUT {
@@ -1362,22 +1368,39 @@ fn tcp_connect_sync(
         if !ready {
             return false;
         }
-    } else if this.proxy_state(Proxy::Http).is_some()
-        && !this.with_buffer(|shared| {
-            if send(this, this.http_pack(shared), 0).is_none() {
-                return false;
-            }
-            // `HttpProxy::handshake` of one recv into the cleared buffer.
-            shared.clear();
-            let mut n = 0;
-            shared.read_zeroed(shared.size(), |bytes| {
-                n = recv(this, bytes, 0).unwrap_or(0);
-                n
+    } else if this.proxy_state(Proxy::Http).is_some() {
+        if !this.with_buffer(|shared| send(this, this.http_pack(shared), 0).is_some()) {
+            return false;
+        }
+        let timeout = this.socket().read(|socket| socket.io_timeout(false));
+        let started = std::time::Instant::now();
+        let mut input = OwnedString::default();
+        input.alloc(CLIENT_BUFFER_SIZE, None);
+        let result = loop {
+            let fragment = http_proxy_fragment(&mut input, |room, peek| {
+                if !set_remaining_read_timeout(this, timeout, started) {
+                    return Err(ProxyReadError::Socket);
+                }
+                let flags = if peek {
+                    libc::MSG_PEEK
+                } else {
+                    libc::MSG_WAITALL
+                };
+                recv_spare(this, room, flags)
+                    .map(Some)
+                    .ok_or(ProxyReadError::Socket)
             });
-            n > 0 && swoole_rs_http::proxy_accept(shared.view())
-        })
-    {
-        return false;
+            if fragment != Ok(false) {
+                break fragment;
+            }
+        };
+        this.socket().edit(|socket| {
+            socket.set_timeout(timeout, swoole_rs_corebase::reactor::TimeoutKind::READ);
+        });
+        if let Err(error) = result {
+            log::set_last_error(error.code(ErrorCode::SW_ERROR_HTTP_PROXY_HANDSHAKE_FAILED));
+            return false;
+        }
     }
     !this.flag(Flag::OpenSsl) || ssl_handshake(this)
 }
@@ -1818,13 +1841,22 @@ fn on_read(this: Handle<'_>) -> bool {
     let do_ssl_handshake = this.flag(Flag::OpenSsl);
     let http = this.proxy_state(Proxy::Http);
     if http.is_some_and(|state| state != HTTP_PROXY_READY) {
-        let accepted = this.edit_input(|input, socket, ops| {
-            input.fill(|room| (ops.recv)(socket, room, 0)) > Some(0)
-                && swoole_rs_http::proxy_accept(input.view())
+        let response = this.edit_input(|input, socket, ops| {
+            http_proxy_fragment(input, |room, peek| {
+                let flags = if peek { libc::MSG_PEEK } else { 0 };
+                match (ops.recv)(socket, room, flags) {
+                    None if peek && socket.catch_error(errno()) == Caught::Wait => Ok(None),
+                    result => result.map(Some).ok_or(ProxyReadError::Socket),
+                }
+            })
         });
-        if !accepted {
-            log::set_last_error(ERROR_HTTP_PROXY_HANDSHAKE_ERROR);
-            return connect_failed(this);
+        match response {
+            Ok(false) => return true,
+            Err(error) => {
+                log::set_last_error(error.code(ErrorCode::SW_ERROR_HTTP_PROXY_HANDSHAKE_ERROR));
+                return connect_failed(this);
+            }
+            Ok(true) => {}
         }
         this.set_proxy_state(Proxy::Http, HTTP_PROXY_READY);
         this.input_clear();

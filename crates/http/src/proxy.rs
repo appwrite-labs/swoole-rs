@@ -124,6 +124,38 @@ pub fn proxy_pack(request: &HttpProxyRequest<'_>) -> Result<Vec<u8>, i32> {
     written.map_err(|_| OVERFLOW)?;
     Ok(out)
 }
+/// Parse a v6.3 CONNECT response. A complete head ends before any tunnel data.
+///
+/// # Errors
+/// An invalid HTTP version or a status other than 200.
+pub(crate) fn proxy_response_length(input: &[u8]) -> Result<Option<usize>, crate::MalformedHead> {
+    let Some(rest) = input.get(8..) else {
+        return Ok(None);
+    };
+    if !crate::case_prefix(input, b"HTTP/1.1") && !crate::case_prefix(input, b"HTTP/1.0") {
+        return Err(crate::MalformedHead);
+    }
+    let Some(end) = swoole_rs_corebase::buffer::string::find_bytes(rest, b"\r\n") else {
+        return Ok(None);
+    };
+    let line = rest.get(..end).unwrap_or_default();
+    let at = line
+        .iter()
+        .position(|b| !b.is_ascii_whitespace() && *b != 0x0b)
+        .unwrap_or(line.len());
+    let line = tail(line, at);
+    let Some(reason) = line.strip_prefix(b"200") else {
+        return Err(crate::MalformedHead);
+    };
+    if reason
+        .first()
+        .is_some_and(|b| !b.is_ascii_whitespace() && *b != 0x0b)
+    {
+        return Err(crate::MalformedHead);
+    }
+    Ok(crate::header_delimiter(input).map(|position| position + 4))
+}
+
 /// A proxy's response to CONNECT.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Handshake {
