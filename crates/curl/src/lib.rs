@@ -476,10 +476,11 @@ impl Multi {
         if self.add_handle(handle) != CURLM_OK {
             return CURLE_FAILED_INIT;
         }
+        self.timer_callback.set(true);
         let mut canceled = false;
         loop {
             self.selector_prepare();
-            if self.wait_event() {
+            if !self.timer_callback.get() && !self.has_active() && self.wait_event() {
                 let co = (self.host.current)();
                 let Some(waiter) = Waiter::running(co, (self.host.current_cid)())
                     .filter(|_| self.co.get().is_none())
