@@ -298,14 +298,15 @@ pub unsafe extern "C" fn swoole_curl_check_bound_co(multi: &Multi) -> *mut c_voi
 /// `CURLE_FAILED_INIT` without a Swoole handle.
 #[unsafe(no_mangle)]
 pub extern "C" fn swoole_curl_easy_perform(cp: Idle<'_>) -> CURLcode {
-    let Some(handle) = cp.0.handle() else {
+    let Some(handle) = crate::owner(cp.0) else {
         return CURLE_FAILED_INIT;
     };
     // The handle's own multi, held while it runs the handle.
     let multi = handle
         .easy_multi
         .with_taken(|slot| Rc::clone(slot.get_or_insert_with(Multi::create)));
-    let result = multi.exec(handle);
+    let result = multi.exec(&handle);
+    drop(handle);
     let mut buffer = [0; 128];
     let unbound = if result == EXEC_NEEDS_COROUTINE {
         bound_co(&multi, &mut buffer).err()

@@ -1,6 +1,6 @@
 use super::*;
 use std::{cell::RefCell, ffi::CString, net::TcpListener};
-use swoole_rs_curl_sys::{CURLOPT_URL, curl_easy_cleanup, curl_easy_init};
+use swoole_rs_curl_sys::{CURLOPT_URL, curl_easy_cleanup, curl_easy_init, curl_easy_setopt};
 
 thread_local! {
     /// What the fake host saw, and whether its event loop runs.
@@ -172,10 +172,10 @@ fn exec_without_a_coroutine_asks_cxx_for_the_fatal_error() {
     LOOP.with(|on| on.set(true));
     take();
     let cp = easy("http://127.0.0.1:1/");
-    let handle = Easy(cp, PhantomData).handle().unwrap();
+    let handle = owner(Easy(cp, PhantomData)).unwrap();
     let multi = new_multi();
     assert_eq!(
-        swr_v1_curl_multi_exec(multi, handle),
+        swr_v1_curl_multi_exec(multi, &handle),
         EXEC_NEEDS_COROUTINE,
         "needs one"
     );
@@ -189,7 +189,7 @@ fn exec_without_a_coroutine_asks_cxx_for_the_fatal_error() {
         Some("timer 1"),
         "curl's immediate timeout"
     );
-    assert_eq!(multi.remove_handle(handle), CURLM_OK, "removed");
+    assert_eq!(multi.remove_handle(&handle), CURLM_OK, "removed");
     assert!(handle.multi().is_none(), "detached");
     free(multi);
     close(cp);

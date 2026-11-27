@@ -53,7 +53,7 @@ void swr_v1_curl_multi_free(swr_v1_curl_released multi);
 struct swr_v1_curl_handle *swr_v1_curl_get_handle(swr_v1_curl_easy cp);
 struct swr_v1_curl_handle *swr_v1_curl_create_handle(swr_v1_curl_easy cp);
 /* The handle leaves the multi it is in, while that multi lives. */
-void swr_v1_curl_handle_leave_multi(struct swr_v1_curl_handle *handle);
+void swr_v1_curl_handle_leave_multi(const struct swr_v1_curl_handle *handle);
 /* No transfer of cp runs, and nothing uses its handle afterwards. */
 void swr_v1_curl_destroy_handle(swr_v1_curl_easy cp);
 /* Curl's FILE* may be a PHP stream cookie, so fread/fwrite must not run in an AIO thread. */

@@ -430,7 +430,6 @@ extern "C" void swoole_curl_free_lists(php_curl *ch) {
 }
 
 extern "C" bool swoole_curl_prepare_free(php_curl *ch) {
-    swoole_curl_verify_handlers(ch, false);
 #if PHP_VERSION_ID >= 80400
     if (!swr_v1_curl_get_handle(ch->cp)) {
         original_handlers->free_obj(&ch->std);
@@ -442,6 +441,7 @@ extern "C" bool swoole_curl_prepare_free(php_curl *ch) {
     curl_easy_setopt(ch->cp, CURLOPT_HEADERFUNCTION, discard);
     curl_easy_setopt(ch->cp, CURLOPT_WRITEFUNCTION, discard);
 #endif
+    swoole_curl_verify_handlers(ch, false);
     return true;
 }
 

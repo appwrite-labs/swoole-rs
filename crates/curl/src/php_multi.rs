@@ -150,13 +150,13 @@ fn close(call: &Call<'_>) {
 }
 
 fn remove_easy(multi: &Multi, easy: crate::Easy<'_>) -> swoole_rs_curl_sys::CURLMcode {
-    if let Some(transfer) = easy.handle()
+    if let Some(transfer) = crate::owner(easy)
         && transfer
             .multi()
             .as_deref()
             .is_some_and(|owner| std::ptr::eq(owner, multi))
     {
-        return multi.remove_handle(transfer);
+        return multi.remove_handle(&transfer);
     }
     crate::curl_multi_remove_handle(multi.live(), easy)
 }
@@ -242,9 +242,7 @@ fn membership(call: &Call<'_>, add: bool) {
         if !crate::callbacks::prepare_transfer(easy) {
             return;
         }
-        swoole_curl_easy(easy)
-            .handle()
-            .map_or(CURLM_BAD_EASY_HANDLE, |h| multi.add_handle(h))
+        crate::owner(swoole_curl_easy(easy)).map_or(CURLM_BAD_EASY_HANDLE, |h| multi.add_handle(&h))
     } else {
         remove_easy(multi, swoole_curl_easy(easy))
     };

@@ -305,11 +305,11 @@ pub(super) fn pushed_object(
     easy: Easy<'_>,
     parent: PhpHandle<'_>,
 ) -> Option<swoole_rs_zend::Owned> {
-    let owner = swoole_curl_easy(parent).handle()?;
+    let owner = crate::owner(swoole_curl_easy(parent))?;
     let mut object = swoole_rs_zend::Owned::default();
     let child = swoole_curl_new_handle(&mut object);
     init_copy(child, parent, easy);
-    crate::Handle::create(easy, owner.multi_ref());
+    crate::create_handle(easy, owner.multi_ref());
     Some(object)
 }
 
@@ -428,10 +428,10 @@ pub extern "C" fn swoole_curl_free_obj(object: ObjectRef<'_>) {
                 if !swoole_curl_prepare_free(handle) {
                     return;
                 }
-                if let Some(owner) = easy.handle()
+                if let Some(owner) = crate::owner(easy)
                     && let Some(multi) = owner.multi()
                 {
-                    multi.remove_handle(owner);
+                    multi.remove_handle(&owner);
                 }
             }
             // A denied push returns its easy handle to libcurl but keeps its PHP storage
