@@ -47,6 +47,8 @@ pub struct HttpHeaderInfo {
     /// Bit1=range error seen,bit2=last numeric error had no digits. Native
     /// reproduces libc errno policy after return, before native allocation.
     pub number_errors: u32,
+    /// A non-multipart Content-Type superseded the previous form during this scan.
+    pub clear_form: bool,
 }
 /// A request head `header_info` refuses.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -65,6 +67,7 @@ pub fn header_info(
 ) -> Result<Option<HttpSpan>, MalformedHead> {
     let length = input.len();
     state.number_errors = 0;
+    state.clear_form = false;
     let Some(head) = input.get(..end) else {
         return Err(MalformedHead);
     };
@@ -155,6 +158,7 @@ pub fn header_info(
                                 length: at + count - begin,
                             }));
                         }
+                        state.clear_form = true;
                     }
                     _ => unreachable!(),
                 }
