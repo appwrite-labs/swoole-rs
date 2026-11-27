@@ -98,6 +98,8 @@ method_table! {
         c"goaway" => zim_swoole_http_response_goaway, &http_response::arginfo_class_Swoole_Http_Response_goaway, z::ZEND_ACC_PUBLIC;
         c"write" => zim_swoole_http_response_write, &http_response::arginfo_class_Swoole_Http_Response_write, z::ZEND_ACC_PUBLIC;
         c"end" => zim_swoole_http_response_end, &http_response::arginfo_class_Swoole_Http_Response_end, z::ZEND_ACC_PUBLIC;
+        c"sendHttp2Response" => zim_swoole_http_response_sendHttp2Response, &http_response::arginfo_class_Swoole_Http_Response_sendHttp2Response, z::ZEND_ACC_PRIVATE;
+        c"sendHttp2File" => zim_swoole_http_response_sendHttp2File, &http_response::arginfo_class_Swoole_Http_Response_sendHttp2File, z::ZEND_ACC_PRIVATE;
         c"sendStaticFile" => zim_swoole_http_response_sendStaticFile, &http_response::arginfo_class_Swoole_Http_Response_sendStaticFile, z::ZEND_ACC_PRIVATE;
         c"sendfile" => zim_swoole_http_response_sendfile, &http_response::arginfo_class_Swoole_Http_Response_sendfile, z::ZEND_ACC_PUBLIC;
         c"redirect" => zim_swoole_http_response_redirect, &http_response::arginfo_class_Swoole_Http_Response_redirect, z::ZEND_ACC_PUBLIC;
@@ -241,6 +243,33 @@ fn stat(file: &ZStr) -> Result<libc::stat, ()> {
     message.extend_from_slice(format!("[{error}]").as_bytes());
     host::report(error, false, message);
     Err(())
+}
+
+fn send_http2_response(call: &Call) {
+    if call.arity(1, 1).is_ok()
+        && let Ok(Some(body)) = call.zstr(1)
+        && let Some(mut ctx) = open(call).filter(|ctx| ctx.flags() & HTTP2 != 0)
+    {
+        let sent = crate::http2::respond(ctx, body.bytes());
+        if !sent {
+            ctx.state().response.scheduled_fields = None;
+        }
+    }
+}
+
+fn send_http2_file(call: &Call) {
+    if call.arity(3, 3).is_ok()
+        && let Ok(Some(file)) = call.zstr(1)
+        && let Ok(offset) = call.long(2, 0)
+        && let Ok(length) = call.long(3, 0)
+        && let Some(mut ctx) = open(call).filter(|ctx| ctx.flags() & HTTP2 != 0)
+    {
+        let sent = usize::try_from(length)
+            .is_ok_and(|len| crate::http2::send_file(ctx, file.bytes(), offset, len));
+        if !sent {
+            ctx.state().response.scheduled_fields = None;
+        }
+    }
 }
 
 fn send_static_file(call: &Call) {
@@ -812,6 +841,8 @@ handlers! {
     zim_swoole_http_response_goaway => goaway;
     zim_swoole_http_response_write => write;
     zim_swoole_http_response_end => end;
+    zim_swoole_http_response_sendHttp2Response => send_http2_response;
+    zim_swoole_http_response_sendHttp2File => send_http2_file;
     zim_swoole_http_response_sendStaticFile => send_static_file;
     zim_swoole_http_response_sendfile => send_file;
     zim_swoole_http_response_redirect => redirect;

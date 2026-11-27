@@ -166,6 +166,7 @@ pub(crate) struct State {
 
 /// `swoole::http::Response`.
 pub(crate) struct Response {
+    pub(crate) scheduled_fields: Option<Box<(Owned, Owned)>>,
     pub(crate) status: c_int,
     pub(crate) reason: Option<ZString>,
     pub(crate) zobject: Slot,

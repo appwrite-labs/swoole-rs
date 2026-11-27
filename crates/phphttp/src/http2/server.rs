@@ -25,7 +25,7 @@ use swoole_rs_http2::{
 };
 use swoole_rs_phpserver::RecvData;
 use swoole_rs_server::{Connection, view};
-use swoole_rs_zend::{Array, HeldArray, Value as Zval, ZString, bailout};
+use swoole_rs_zend::{Array, HeldArray, Owned, OwnedArray, Value as Zval, ZString, bailout};
 
 /// Frame sizes, types and flags (`swoole_http2.h`).
 const FRAME_HEADER: usize = swoole_rs_http2::FRAME_HEADER_SIZE as usize;
@@ -314,8 +314,85 @@ impl Drop for Headers {
 /// `trailer` properties, and [`length_safe`] and [`entries`] take only a
 /// [`HeldArray`]: a value's `__toString` may replace or unset the property while
 /// the array is walked, and the hold keeps the walked table live.
-fn property(ctx: Ctx, which: ResponseArray) -> Option<HeldArray> {
+fn property(mut ctx: Ctx, which: ResponseArray) -> Option<HeldArray> {
+    if let Some(fields) = &ctx.state().response.scheduled_fields {
+        match which {
+            ResponseArray::Header => return fields.0.hold(),
+            ResponseArray::Trailer => return fields.1.hold(),
+            ResponseArray::Cookie => {}
+        }
+    }
     ctx.response_array(which)
+}
+
+fn detached_fields(ctx: Ctx, which: ResponseArray) -> Owned {
+    let mut fields = ctx
+        .response_array(which)
+        .map_or_else(Owned::empty_array, |a| a.copy());
+    if let Some(array) = fields.array_mut() {
+        array.separate();
+    }
+    fields
+}
+
+fn snapshot(source: &Owned, multiple: bool) -> Option<Owned> {
+    let mut result = OwnedArray::default();
+    for (key, value) in source.array()?.entries() {
+        let value = value.dereferenced();
+        let Some(key) = key.filter(|_| !value.is_null()) else {
+            continue;
+        };
+        let converted = if multiple && let Some(items) = value.hold() {
+            let mut values = OwnedArray::default();
+            for (_, item) in entries(Some(&items)) {
+                let item = item.dereferenced();
+                if !item.is_null() {
+                    values.push(Owned::string(item.try_string()?));
+                }
+            }
+            values.into_owned()
+        } else {
+            Owned::string(value.try_string()?)
+        };
+        result.insert(key, converted);
+    }
+    Some(result.into_owned())
+}
+
+/// Convert user values in the caller's scope before the writer can suspend.
+pub(crate) fn schedule(
+    mut ctx: Ctx,
+    method: &std::ffi::CStr,
+    args: swoole_rs_zend::Zvals<'_>,
+) -> Result<bool, bailout::Bailout> {
+    if !swoole_rs_zend::host::exception().is_null() || of(ctx).is_none() {
+        return Ok(false);
+    }
+    let headers = detached_fields(ctx, ResponseArray::Header);
+    let trailers = detached_fields(ctx, ResponseArray::Trailer);
+    let fields = snapshot(&headers, true).and_then(|h| Some((h, snapshot(&trailers, false)?)));
+    let Some(fields) = fields else {
+        return bailout::outcome(false);
+    };
+    if ctx.state().end || ctx.state().detached || !crate::context::available(ctx) {
+        return Ok(false);
+    }
+    let response = &mut ctx.state().response;
+    let object = response.zobject.value().copy();
+    response.scheduled_fields = Some(Box::new(fields));
+    let started = swoole_rs_phpcoroutines::CREATOR.call_method(
+        &object,
+        &crate::response::RESPONSE,
+        method,
+        args,
+    );
+    let accepted = matches!(started, Ok(true)) && ctx.state().response.scheduled_fields.is_some();
+    if accepted {
+        ctx.state().end = true;
+    } else {
+        ctx.state().response.scheduled_fields = None;
+    }
+    started.map(|_| accepted)
 }
 
 /// `php_swoole_array_length_safe`.
@@ -904,7 +981,7 @@ pub(crate) fn write(ctx: Ctx, chunk: &[u8]) -> bool {
 
 /// Sends a file response's headers: whether trailers follow the body, `None` when
 /// the headers could not be sent.
-pub(crate) fn begin_file(ctx: Ctx, content_type: &[u8], length: usize) -> Option<bool> {
+pub(crate) fn begin_file(mut ctx: Ctx, content_type: &[u8], length: usize) -> Option<bool> {
     let (session, stream) = of(ctx)?;
     set(ctx, Field::AcceptCompression, 0);
     let trailer = has_trailer(ctx);
@@ -915,6 +992,11 @@ pub(crate) fn begin_file(ctx: Ctx, content_type: &[u8], length: usize) -> Option
         .is_some_and(|zheader| zheader.find(b"content-type").is_some());
     if !typed {
         ctx.set_header(b"content-type", content_type);
+        if let Some(fields) = &mut ctx.state().response.scheduled_fields
+            && let Some(headers) = fields.0.array_mut()
+        {
+            headers.insert_bytes(b"content-type", Some(content_type));
+        }
     }
     let body = Body { data: &[], length };
     if !send_header(ctx, &session, &stream, Some(body), !trailer) {

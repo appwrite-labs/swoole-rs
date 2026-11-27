@@ -16,7 +16,7 @@ use crate::{
 };
 use std::io::Write;
 use swoole_rs_zend::{
-    ZStr,
+    Owned, ZStr, Zvals,
     bailout::{self, Bailout},
 };
 
@@ -123,6 +123,13 @@ fn send_trailer(mut ctx: Ctx) -> Result<bool, Bailout> {
 pub(crate) fn end(mut ctx: Ctx, data: Option<&ZStr>) -> Result<bool, Bailout> {
     let flags = ctx.flags();
     if flags & HTTP2 != 0 {
+        if flags & CO_SOCKET == 0
+            && !swoole_rs_phpcoroutines::in_coroutine()
+            && let Some(body) = data.filter(|body| !body.bytes().is_empty())
+        {
+            let body = Owned::string(body.to_owned());
+            return crate::http2::schedule(ctx, c"sendhttp2response", Zvals::one(&body));
+        }
         return http2(ctx, Http2::End(of(data)));
     }
     if ctx.state().send_chunked {
@@ -216,6 +223,17 @@ pub(crate) fn send_file(
     delete_file: &mut bool,
 ) -> Result<bool, Bailout> {
     if ctx.flags() & HTTP2 != 0 {
+        if ctx.flags() & CO_SOCKET == 0 && !swoole_rs_phpcoroutines::in_coroutine() {
+            let file = Owned::string(file.to_owned());
+            return Zvals::with(
+                [
+                    &file,
+                    &Owned::long(offset),
+                    &Owned::long(i64::try_from(length).unwrap_or(i64::MAX)),
+                ],
+                |args| crate::http2::schedule(ctx, c"sendhttp2file", args),
+            );
+        }
         return http2(ctx, Http2::SendFile(file.bytes(), offset, length));
     }
     file_type(ctx, file);
