@@ -311,6 +311,9 @@ impl HttpStaticContext {
 }
 
 #[cfg(test)]
+mod rewrite_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     fn make() -> HttpStaticContext {

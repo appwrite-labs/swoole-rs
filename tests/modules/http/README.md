@@ -128,6 +128,7 @@ helpers' in `helpers.rs` and the others beside the Rust each one calls:
 | --- | --- |
 | `EncodeDecodeBasic`, `EncodeDecodeWithSpecialChars` | `helpers.rs`: `encode_decode_basic`, `encode_decode_with_special_chars` |
 | `get_method`, `get_method_str`, `get_status_message`, `parse_multipart_boundary` | `helpers.rs`: `get_method_cases`, `get_method_str`, `get_status_message_cases`, `parse_multipart_boundary_cases` |
+| `static_handler.cpp`: all six `rewrite_*` cases | `crates/http/src/static_context/rewrite_tests.rs`: same names |
 | `static_handler.cpp`: `set_filename_rejects_path_too_long`, `set_filename_accepts_path_with_room_for_null` | `crates/http/src/static_context/filesystem.rs`: same names |
 | `static_handler.cpp`: `preconditions_and_if_range_share_validators` | `crates/server/src/static_handler/tests.rs`: same name |
 | `static_handler.cpp`: `http_dates_are_utc_and_strict` | `crates/http/src/conditional.rs`: same name, with timezone comparisons in the server conditional gate |
