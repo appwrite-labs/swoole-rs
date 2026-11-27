@@ -8,7 +8,7 @@ use crate::{
     },
     send, websocket,
 };
-use std::ffi::{CString, c_int};
+use std::ffi::c_int;
 use swoole_rs_corebase::{CCast, HookType, swoole_isset_hook};
 use swoole_rs_http::status::INTERNAL_SERVER_ERROR;
 use swoole_rs_httpbindings::{RangeError, canonical_case, file_range};
@@ -376,17 +376,14 @@ fn status(call: &Call) {
     let run = || -> Option<()> {
         let parsed = call
             .arity(1, 2)
-            .and_then(|()| Ok((call.long(1, 0)?, call.string_opt(2)?)));
+            .and_then(|()| Ok((call.long(1, 0)?, call.zstr(2)?)));
         let (code, reason) = parsed.ok()?;
         let mut ctx = checked(call)?;
-        let reason = reason.unwrap_or_default();
         let response = &mut ctx.state().response;
-        let code = code.c_cast::<i32>();
-        response.status = code;
-        response.reason = (!reason.is_empty()).then(|| {
-            let text = reason.split(|&byte| byte == 0).next().unwrap_or_default();
-            Box::new(CString::new(text).unwrap_or_default())
-        });
+        response.status = code.c_cast::<i32>();
+        response.reason = reason
+            .filter(|text| !text.bytes().is_empty())
+            .map(ZStr::to_owned);
         call.set_bool(true);
         Some(())
     };

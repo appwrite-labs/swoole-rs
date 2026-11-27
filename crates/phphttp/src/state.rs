@@ -5,7 +5,7 @@ use std::{
     ffi::{CString, c_int, c_void},
     rc::Rc,
 };
-use swoole_rs_zend::{Declared, Kept, Owned, Props, Value};
+use swoole_rs_zend::{Declared, Kept, Owned, Props, Value, ZString};
 
 /// A context's request or response object: empty until the context sets it.
 #[repr(transparent)]
@@ -167,8 +167,7 @@ pub(crate) struct State {
 /// `swoole::http::Response`.
 pub(crate) struct Response {
     pub(crate) status: c_int,
-    /// `status()`'s reason, as `%s` prints it: up to its first NUL.
-    pub(crate) reason: Option<Box<CString>>,
+    pub(crate) reason: Option<ZString>,
     pub(crate) zobject: Slot,
     /// The array properties made so far, a bit per `host::Property`.
     pub(crate) arrays: u8,
