@@ -242,6 +242,14 @@ int swr_zend_try_stream_stat(
 }
 
 /* bailout: trap user code invoked by the stream close. */
+/* bailout: a seek through a PHP stream wrapper can exit nonlocally. */
+int swr_zend_try_stream_seek(php_stream *stream, int64_t offset) {
+    volatile int result = -2;
+    SWR_ZEND_TRY { result = php_stream_seek(stream, offset, SEEK_SET) == 0 ? 0 : -1; }
+    SWR_ZEND_CATCH {} SWR_ZEND_END_TRY();
+    return result;
+}
+
 int swr_zend_try_stream_close(php_stream *stream) {
     volatile int bailed = 0;
     SWR_ZEND_TRY { php_stream_close(stream); }

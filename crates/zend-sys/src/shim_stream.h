@@ -55,5 +55,6 @@ int swr_zend_try_stream_open(const char *, const char *, int, php_stream **);
 int swr_zend_try_stream_write(php_stream *, const char *, size_t, ssize_t *);
 int swr_zend_try_stream_read(php_stream *, char *, size_t, ssize_t *);
 int swr_zend_try_stream_stat(php_stream *, bool *, int64_t *, uint32_t *, int64_t *, int64_t *);
+int swr_zend_try_stream_seek(php_stream *, int64_t);
 int swr_zend_try_stream_close(php_stream *);
 #endif

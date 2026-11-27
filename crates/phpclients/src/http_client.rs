@@ -18,7 +18,7 @@ use std::{
 };
 use swoole_rs_corebase::CellExt;
 use swoole_rs_corebase::buffer::BoundedBytes;
-use swoole_rs_corebase::reactor::{Events, SocketFields};
+use swoole_rs_corebase::reactor::{Events, SocketFields, TimeoutKind};
 use swoole_rs_corebase::{CCast, microtime};
 use swoole_rs_http::llhttp::{self, Callbacks, EndOfInput, Flow, Parser};
 use swoole_rs_http::status::{
@@ -162,6 +162,7 @@ struct Client {
     /// The response parser; whoever takes it out owns the socket's receive.
     parser: Cell<Option<Parser>>,
     has_upload_files: Cell<bool>,
+    in_stream_request: Cell<bool>,
     stream_length: Cell<Option<(i64, i64)>>,
     download_name: Cell<Option<ZString>>,
     download_offset: Cell<i64>,
@@ -346,18 +347,20 @@ fn readable_body(data: &Value) -> bool {
     }
 }
 
+fn has_uploads(props: Props<'_>) -> bool {
+    property(props, c"uploadFiles")
+        .referred()
+        .array()
+        .is_some_and(|files| files.count() > 0)
+}
+
 fn set_request_body(client: &Client, data: &Value, length: Option<i64>) -> bool {
     let props = client.props();
     let data = data.dereferenced();
     if !readable_body(&data) {
         return false;
     }
-    if data.kind() == z::IS_RESOURCE
-        && property(props, c"uploadFiles")
-            .referred()
-            .array()
-            .is_some_and(|files| files.count() > 0)
-    {
+    if data.kind() == z::IS_RESOURCE && has_uploads(props) {
         return allows_multipart(&data);
     }
     if length.is_some() && data.kind() != z::IS_RESOURCE {
@@ -369,6 +372,12 @@ fn set_request_body(client: &Client, data: &Value, length: Option<i64>) -> bool 
         .set(length.map(|n| (data.resource_handle(), n)));
     props.value(c"requestBody", &data);
     true
+}
+
+struct StreamBody {
+    source: Owned,
+    length: usize,
+    offset: Option<i64>,
 }
 
 /// Keep the original upload across coroutine yields and 502/503 retries.
@@ -567,6 +576,7 @@ impl Client {
             in_callback: Cell::new(false),
             parser: Cell::new(Some(Parser::new(llhttp::Kind::Response))),
             has_upload_files: Cell::new(false),
+            in_stream_request: Cell::new(false),
             stream_length: Cell::new(None),
             download_name: Cell::default(),
             download_offset: Cell::new(0),
@@ -779,7 +789,12 @@ impl Client {
         clippy::too_many_lines,
         reason = "upstream's send_request, in its order"
     )]
-    fn send_request(&self, path: &[u8], multipart: &mut Option<MultipartBody>) -> bool {
+    fn send_request(
+        &self,
+        path: &[u8],
+        stream: &mut Option<StreamBody>,
+        multipart: &mut Option<MultipartBody>,
+    ) -> bool {
         if path.is_empty() {
             set_error_properties(self.props(), INVALID_PARAMS, &strerror(INVALID_PARAMS));
             return false;
@@ -797,6 +812,10 @@ impl Client {
         let Some(socket) = self.co() else {
             return false;
         };
+        let _guard_socket = self.hold();
+        if !self.prepare_connected_stream(socket, stream) {
+            return false;
+        }
         if self.collect_stats.get() {
             props.edit_array(c"stats", |stats| {
                 stats.insert_double(b"pretransfer_time", microtime() - self.stats_begin.get());
@@ -822,17 +841,25 @@ impl Client {
             }
         });
 
+        let stream = stream.as_ref();
         let method = not_null(props, c"requestMethod");
         let headers_value = property(props, c"requestHeaders");
         let headers = headers_value.array();
-        if multipart.is_none() {
+        if stream.is_none() && multipart.is_none() {
             let Ok(current) = MultipartBody::capture(props) else {
                 return false;
             };
             *multipart = current;
         }
+        if let Some(stream) = stream
+            && (multipart.is_some() || has_uploads(props))
+        {
+            return allows_multipart(&stream.source);
+        }
         let ordinary_body;
-        let (body, files) = if let Some(multipart) = multipart {
+        let (body, files) = if let Some(stream) = stream {
+            (Some(&*stream.source), None)
+        } else if let Some(multipart) = multipart {
             (multipart.fields.as_deref(), multipart.files.array())
         } else {
             ordinary_body = not_null(props, c"requestBody");
@@ -966,9 +993,22 @@ impl Client {
         }
 
         self.has_upload_files.set(files.is_some());
+        if let Some(stream) = stream {
+            return self.send_stream(socket, out, stream);
+        }
         if let Some(files) = files {
             return self.send_multipart(out, body, files);
         }
+        self.send_body(socket, out, body, has_length)
+    }
+
+    fn send_body(
+        &self,
+        socket: Co,
+        mut out: Vec<u8>,
+        body: Option<&Value>,
+        has_length: bool,
+    ) -> bool {
         let payload = match body.and_then(Value::array) {
             Some(fields) => {
                 request::header(
@@ -1125,93 +1165,222 @@ impl Client {
         false
     }
 
-    fn valid_stream_length(&self, body: &Value) -> bool {
-        let body = body.referred();
+    // Connection setup can yield before the caller selects the stream.
+    fn prepare_connected_stream(&self, socket: Co, stream: &mut Option<StreamBody>) -> bool {
+        if stream.is_none() {
+            let Ok(current) = self.prepare_stream() else {
+                return false;
+            };
+            *stream = current;
+        }
+        if !socket.is_connected() {
+            self.set_error(
+                libc::ECONNRESET,
+                c"Connection closed while preparing request body stream",
+                ErrorStatus::SendFailed.code(),
+            );
+            return false;
+        }
+        true
+    }
+
+    fn prepare_stream(&self) -> Result<Option<StreamBody>, ()> {
+        let value = self.property(c"requestBody");
+        let body = value.dereferenced();
         if body.kind() != z::IS_RESOURCE {
-            return true;
+            return Ok(None);
+        }
+        self.in_stream_request.set(true);
+        if !readable_body(&body) {
+            return Err(());
+        }
+        if has_uploads(self.props()) {
+            allows_multipart(&body);
+            return Err(());
         }
         let length = self
             .stream_length
             .get()
-            .filter(|(id, _)| *id == body.resource_handle());
-        let available = body.stream_extent().and_then(|(offset, stat)| {
+            .filter(|(id, _)| *id == body.resource_handle())
+            .map(|(_, n)| n);
+        let extent = body.stream_extent();
+        if bailout::pending() || !swoole_rs_zend::host::exception().is_null() {
+            return Err(());
+        }
+        let available = extent.and_then(|(offset, stat)| {
+            let stat = stat?;
             (stat.size >= 0
                 && u64::from(stat.mode) & u64::from(libc::S_IFMT) == u64::from(libc::S_IFREG))
             .then(|| (stat.size - offset).max(0))
         });
-        if bailout::pending() || !swoole_rs_zend::host::exception().is_null() {
+        let Some(selected) = length.or(available) else {
+            swoole_rs_zend::value_error(c"Cannot determine the remaining request body stream length; specify $length in setData()");
+            return Err(());
+        };
+        if available.is_some_and(|max| selected > max) {
+            swoole_rs_zend::value_error(
+                c"Request body stream length exceeds the remaining stream size",
+            );
+            return Err(());
+        }
+        let length = usize::try_from(selected).map_err(|_| {
+            swoole_rs_zend::value_error(c"Request body stream length exceeds the supported size");
+        })?;
+        Ok(Some(StreamBody {
+            source: body.into_owned(),
+            length,
+            offset: extent.map(|(offset, _)| offset),
+        }))
+    }
+
+    fn send_stream(&self, socket: Co, mut headers: Vec<u8>, body: &StreamBody) -> bool {
+        self.content_length(&mut headers, body.length);
+        if self.header_too_large(&headers) {
             return false;
         }
-        match (length, available) {
-            (None, None) => swoole_rs_zend::value_error(c"Cannot determine the remaining request body stream length; specify $length in setData()"),
-            (Some((_, n)), Some(available)) if n > available => swoole_rs_zend::value_error(c"Request body stream length exceeds the remaining stream size"),
-            _ => return true,
+        if !socket.send_buffered(&headers, &[]) {
+            return self.send_failed();
         }
-        false
+        let mut timeout =
+            socket.timeout(socket.get_timeout(TimeoutKind::WRITE), TimeoutKind::WRITE);
+        let mut remaining = body.length;
+        let mut buffer = vec![0; remaining.min(64 * 1024)];
+        while remaining > 0 {
+            if body.source.stream().is_null() {
+                self.set_error(
+                    libc::EBADF,
+                    c"Request body stream was closed during upload",
+                    ErrorStatus::SendFailed.code(),
+                );
+                self.close(true);
+                return false;
+            }
+            buffer.truncate(remaining);
+            let read = match body.source.read_stream(&mut buffer) {
+                Ok(chunk) => chunk,
+                Err(bailout) => {
+                    bailout.defer();
+                    return false;
+                }
+            };
+            let Some(chunk) = read
+                .filter(|chunk| !chunk.is_empty() && swoole_rs_zend::host::exception().is_null())
+            else {
+                self.set_error(
+                    libc::EIO,
+                    c"Failed to read the complete request body stream",
+                    ErrorStatus::SendFailed.code(),
+                );
+                self.close(true);
+                return false;
+            };
+            if self
+                .co()
+                .is_none_or(|current| current.as_ptr() != socket.as_ptr())
+                || !socket.is_connected()
+            {
+                self.set_error(
+                    libc::ECONNRESET,
+                    c"Connection closed during request body stream upload",
+                    ErrorStatus::SendFailed.code(),
+                );
+                return false;
+            }
+            if timeout.timed_out(TimeoutKind::WRITE) || !socket.send_all(chunk) {
+                return self.send_failed();
+            }
+            remaining -= chunk.len();
+        }
+        self.sent_request(headers.len(), body.length);
+        true
     }
 
     /// `exec`: send, and unless deferred receive, retrying 502 and 503.
     fn exec(&self, path: &[u8]) -> bool {
-        self.receiving(|parser| {
-            self.resolve.with_taken(|resolve| {
-                crate::resolver::swoole_name_resolver_context_reset(resolve, self.use_default_port);
-            });
-            if self.collect_stats.get() {
-                self.stats_begin.set(microtime());
-                self.props().null(c"stats");
-            }
-            let value = property(self.props(), c"requestBody");
-            let body = value.dereferenced();
-            if !readable_body(&body) {
-                return false;
-            }
-            let Ok(mut multipart) = MultipartBody::capture(self.props()) else {
-                return false;
-            };
-            if !self.valid_stream_length(&body) {
-                return false;
-            }
-            let mut attempt = 0;
-            while attempt < u32::from(self.max_retries.get()) + 1 {
-                if !self.send_request(path, &mut multipart) {
+        if self.in_stream_request.get() {
+            swoole_rs_zend::throw_error(
+                c"The HTTP client is already sending a request body stream",
+            );
+            return false;
+        }
+        let result = self
+            .receiving(|parser| {
+                self.resolve.with_taken(|resolve| {
+                    crate::resolver::swoole_name_resolver_context_reset(
+                        resolve,
+                        self.use_default_port,
+                    );
+                });
+                if self.collect_stats.get() {
+                    self.stats_begin.set(microtime());
+                    self.props().null(c"stats");
+                }
+                let Ok(mut stream) = self.prepare_stream() else {
                     self.reset_download();
                     return false;
-                }
-                if self.defer.get() {
+                };
+                let Ok(mut multipart) = MultipartBody::capture(self.props()) else {
+                    return false;
+                };
+                let mut attempt = 0;
+                while attempt < u32::from(self.max_retries.get()) + 1 {
+                    if !self.send_request(path, &mut stream, &mut multipart) {
+                        self.reset_download();
+                        return false;
+                    }
+                    if self.defer.get() {
+                        return true;
+                    }
+                    let retry_download = self.download_name.with_taken(|name| {
+                        name.as_ref()
+                            .filter(|_| attempt < u32::from(self.max_retries.get()))
+                            .map(|name| (name.clone(), self.download_offset.get()))
+                    });
+                    if !self.recv_response(parser, 0.0) || self.bailout.get() {
+                        return false;
+                    }
+                    let status = self.status.get();
+                    if self.max_retries.get() > 0
+                        && matches!(i32::from(status), BAD_GATEWAY | SERVICE_UNAVAILABLE)
+                    {
+                        self.close(true);
+                        if let Some(stream) = &stream {
+                            let Some(offset) = stream.offset else {
+                                return true;
+                            };
+                            if attempt < u32::from(self.max_retries.get())
+                                && (!stream.source.seek_stream(offset)
+                                    || !swoole_rs_zend::host::exception().is_null())
+                            {
+                                self.set_error(
+                                    libc::EIO,
+                                    c"Failed to rewind request body stream for retry",
+                                    ErrorStatus::SendFailed.code(),
+                                );
+                                return false;
+                            }
+                        }
+                        if let Some((name, offset)) = retry_download {
+                            self.props().value(c"downloadFile", &Owned::string(name));
+                            self.props().long(c"downloadOffset", offset);
+                        }
+                        attempt += 1;
+                        continue;
+                    }
                     return true;
                 }
-                let retry_download = self.download_name.with_taken(|name| {
-                    name.as_ref()
-                        .filter(|_| attempt < u32::from(self.max_retries.get()))
-                        .map(|name| (name.clone(), self.download_offset.get()))
-                });
-                if !self.recv_response(parser, 0.0) || self.bailout.get() {
-                    return false;
+                false
+            })
+            .inspect(|_| {
+                if self.collect_stats.get() {
+                    self.props().edit_array(c"stats", |stats| {
+                        stats.insert_double(b"total_time", microtime() - self.stats_begin.get());
+                    });
                 }
-                let status = self.status.get();
-                if self.max_retries.get() > 0
-                    && matches!(i32::from(status), BAD_GATEWAY | SERVICE_UNAVAILABLE)
-                {
-                    self.close(true);
-                    if let Some((name, offset)) = retry_download {
-                        self.props().value(c"downloadFile", &Owned::string(name));
-                        self.props().long(c"downloadOffset", offset);
-                    }
-                    attempt += 1;
-                    continue;
-                }
-                return true;
-            }
-            false
-        })
-        .inspect(|_| {
-            if self.collect_stats.get() {
-                self.props().edit_array(c"stats", |stats| {
-                    stats.insert_double(b"total_time", microtime() - self.stats_begin.get());
-                });
-            }
-        })
-        .unwrap_or(false)
+            })
+            .unwrap_or(false);
+        self.in_stream_request.set(false);
+        result
     }
 
     /// `receive` with the response parser, taken out for a whole request or

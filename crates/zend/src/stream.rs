@@ -67,6 +67,8 @@ unsafe extern "C" {
         atime: &mut i64,
         mtime: &mut i64,
     ) -> c_int;
+    /// Absolute seek in a PHP wrapper under `zend_try`. Returns -2 after a bailout.
+    safe fn swr_zend_try_stream_seek(stream: Lent<'_>, offset: i64) -> c_int;
     /// `php_stream_close` inside `zend_try`, which frees the stream.
     safe fn swr_zend_try_stream_close(stream: Stream) -> c_int;
 }
@@ -163,9 +165,22 @@ impl crate::Value {
         })
     }
 
+    /// Restore a saved stream position. A wrapper bailout is deferred.
+    #[must_use]
+    pub fn seek_stream(&self, offset: i64) -> bool {
+        let Some(stream) = Lent::resource(self) else {
+            return false;
+        };
+        let result = swr_zend_try_stream_seek(stream, offset);
+        if result == -2 {
+            bailout::Bailout.defer();
+        }
+        result == 0
+    }
+
     /// Offset and stat of an unfiltered, seekable resource. The wrapper may run PHP during stat.
     #[must_use]
-    pub fn stream_extent(&self) -> Option<(i64, Stat)> {
+    pub fn stream_extent(&self) -> Option<(i64, Option<Stat>)> {
         let stream = Lent::resource(self)?;
         let offset = stream.fields(|stream| {
             // SAFETY: a live stream has a valid operations table for its wrapper.
@@ -176,7 +191,7 @@ impl crate::Value {
                 && stream.position >= 0)
                 .then_some(stream.position)
         })?;
-        Some((offset, stream.stat()?))
+        Some((offset, stream.stat()))
     }
 }
 

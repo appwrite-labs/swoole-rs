@@ -252,7 +252,7 @@ fn supply_data(
         // the sequence completes.
         let mut sent = false;
         loop {
-            let chunk = match value.read_stream(&mut page) {
+            let chunk = match value.read_stream(&mut page[..]) {
                 Ok(Some([])) if sent => break,
                 Ok(Some(chunk)) => chunk,
                 Ok(None) => {
