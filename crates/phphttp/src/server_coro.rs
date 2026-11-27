@@ -297,6 +297,7 @@ method_table! {
         c"__construct" => zim_swoole_http_server_coro___construct, &http_server_coro::arginfo_class_Swoole_Coroutine_Http_Server___construct, z::ZEND_ACC_PUBLIC;
         c"set" => zim_swoole_http_server_coro_set, &http_server_coro::arginfo_class_Swoole_Coroutine_Http_Server_set, z::ZEND_ACC_PUBLIC;
         c"handle" => zim_swoole_http_server_coro_handle, &http_server_coro::arginfo_class_Swoole_Coroutine_Http_Server_handle, z::ZEND_ACC_PUBLIC;
+        c"flushHttp2Queue" => zim_swoole_http_server_coro_flushHttp2Queue, &http_server_coro::arginfo_class_Swoole_Coroutine_Http_Server_flushHttp2Queue, z::ZEND_ACC_PRIVATE;
         c"onAccept" => zim_swoole_http_server_coro_onAccept, &http_server_coro::arginfo_class_Swoole_Coroutine_Http_Server_onAccept, z::ZEND_ACC_PRIVATE;
         c"start" => zim_swoole_http_server_coro_start, &http_server_coro::arginfo_class_Swoole_Coroutine_Http_Server_start, z::ZEND_ACC_PUBLIC;
         c"shutdown" => zim_swoole_http_server_coro_shutdown, &http_server_coro::arginfo_class_Swoole_Coroutine_Http_Server_shutdown, z::ZEND_ACC_PUBLIC;
@@ -757,6 +758,7 @@ fn objects<R>(mut context: Ctx, call: impl FnOnce(Zvals<'_>) -> R) -> R {
 struct Connection<'a> {
     /// The server object, whose `onAccept` call holds it.
     this: &'a Value,
+    frame: swoole_rs_zend::CallFrame<'a>,
     server: &'a HttpServer,
     socket: Co,
     /// The connection object, held for the loop.
@@ -773,6 +775,12 @@ impl Connection<'_> {
 enum Step {
     Recv,
     Parse,
+}
+
+fn flush_http2_queue(call: &Call) {
+    if let Some(socket) = call.value(1).and_then(get_socket) {
+        crate::http2::flush_pending(socket.handle());
+    }
 }
 
 fn on_accept(call: &Call) {
@@ -820,6 +828,7 @@ fn on_accept(call: &Call) {
     };
     let mut conn = Connection {
         this,
+        frame: call.call_frame(),
         server,
         socket,
         zconn,
@@ -1019,12 +1028,16 @@ fn data(buffer: &Buffer, from: usize, to: usize) -> &[u8] {
 /// until the peer goes or a frame fails (or a handler bailed out, which
 /// `onAccept` re-raises).
 fn http2(conn: &mut Connection, mut context: Ctx) -> Result<(), bailout::Bailout> {
+    let name = Owned::string(ZString::new(b"flushHttp2Queue"));
+    let Some(flush) = FrameCallable::resolve(name, conn.frame)? else {
+        return Ok(());
+    };
     http2_begin(conn.socket);
     let fd = context.state().fd;
     let max_body_size = conn.package_max_length().c_cast::<u32>();
     // The session holds the context, and its handler the server object.
     let this = conn.this.copy();
-    crate::http2::session_new(
+    let session = crate::http2::session_new(
         fd,
         context.hold(),
         max_body_size,
@@ -1042,7 +1055,18 @@ fn http2(conn: &mut Connection, mut context: Ctx) -> Result<(), bailout::Bailout
         }
         // Owned, not lent: handling the frame may send, or call PHP that bails out.
         let frame = conn.socket.own_read_buffer();
-        if !crate::http2::session_receive(fd, frame.view()) {
+        let parsed = crate::http2::session_receive(&session, frame.view());
+        if !bailout::pending() && session.needs_flush(conn.socket) {
+            match flush.create_coroutine(Zvals::one(conn.zconn), swoole_rs_phpcoroutines::CREATOR) {
+                Ok(cid) if cid < 0 => break,
+                Err(error) => {
+                    error.defer();
+                    break;
+                }
+                Ok(_) => {}
+            }
+        }
+        if !parsed {
             break;
         }
         if bailout::pending() {
@@ -1069,6 +1093,7 @@ handlers! {
     zim_swoole_http_server_coro_set => set;
     zim_swoole_http_server_coro_handle => handle;
     zim_swoole_http_server_coro_onAccept => on_accept;
+    zim_swoole_http_server_coro_flushHttp2Queue => flush_http2_queue;
     zim_swoole_http_server_coro_shutdown => shutdown;
     zim_swoole_http_server_coro_start => start;
 }

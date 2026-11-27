@@ -53,6 +53,7 @@ type Sessions = IdMap<i64, Session>;
 /// and put back with nothing in between that yields or runs PHP code.
 pub(crate) struct SessionState {
     fd: i64,
+    writer: Option<super::writer::Writer>,
     streams: Cell<Streams>,
     /// Decodes through a shared reference, so it is never taken out or
     /// borrowed: `request_header`, which gets each field `inflater` emits,
@@ -138,6 +139,8 @@ impl SessionState {
         let local = defaults();
         Self {
             fd,
+            writer: (default_ctx.ctx().get(super::Field::CoSocket) != 0)
+                .then(super::writer::Writer::new),
             streams: Cell::default(),
             inflater: Decoder::new(MAX_DECODED_STRING),
             field: Cell::default(),
@@ -156,6 +159,38 @@ impl SessionState {
             default_ctx,
             handle,
         }
+    }
+
+    pub(super) fn writing(&self, ctx: Ctx, action: impl FnOnce() -> bool) -> bool {
+        if let Some(writer) = &self.writer {
+            writer.run(ctx, action)
+        } else {
+            action()
+        }
+    }
+
+    pub(super) fn send(&self, ctx: Ctx, parts: &[&[u8]]) -> bool {
+        self.writer.as_ref().map_or_else(
+            || parts.iter().all(|bytes| ctx.send(bytes)),
+            |writer| writer.run(ctx, || writer.send(ctx, parts)),
+        )
+    }
+
+    pub(crate) fn needs_flush(&self, socket: swoole_rs_hooks::co_socket::Co) -> bool {
+        self.writer.as_ref().is_some_and(|w| w.needs_flush(socket))
+    }
+
+    pub(super) fn abort_writer(&self, ctx: Ctx, frame: &[u8]) {
+        if let Some(writer) = &self.writer {
+            writer.abort_with_goaway(ctx, frame);
+        }
+    }
+
+    pub(super) fn shutdown(&self, ctx: Ctx) {
+        if let Some(writer) = &self.writer {
+            writer.finish_reader(ctx);
+        }
+        ctx.close();
     }
 
     /// The session of connection `fd`.
@@ -259,15 +294,18 @@ impl StreamState {
 }
 
 /// Create a connection's session once, retaining its context and request handler.
-pub(crate) fn session_new(fd: i64, default_ctx: Hold, max_body_size: u32, handle: Handler) {
-    if with_sessions(|sessions| sessions.contains_key(&fd)) {
-        // The unused context is released here, outside the sessions.
-        drop(default_ctx);
-        return;
+pub(crate) fn session_new(
+    fd: i64,
+    default_ctx: Hold,
+    max_body_size: u32,
+    handle: Handler,
+) -> Session {
+    if let Some(session) = SessionState::find(fd) {
+        return session;
     }
     let session = Rc::new(SessionState::new(fd, default_ctx, max_body_size, handle));
-    let replaced = with_sessions(|sessions| sessions.insert(fd, session));
-    drop(replaced);
+    with_sessions(|sessions| sessions.insert(fd, session.clone()));
+    session
 }
 
 /// `swoole_http2_server_session_free`: forget connection `fd`'s session,
@@ -276,6 +314,9 @@ pub(crate) fn session_free(fd: i64) {
     let Some(session) = with_sessions(|sessions| sessions.remove(&fd)) else {
         return;
     };
+    if let Some(writer) = &session.writer {
+        writer.close();
+    }
     loop {
         let next = session
             .streams
@@ -284,6 +325,22 @@ pub(crate) fn session_free(fd: i64) {
         if !session.remove(id) {
             return;
         }
+    }
+}
+
+pub(crate) fn flush_pending(socket: swoole_rs_hooks::co_socket::Co) {
+    if let Some(s) = SessionState::find(i64::from(socket.sock_fd())) {
+        let mut ctx = s.default_ctx();
+        if crate::context::socket(ctx.state()) == Some(socket) {
+            s.writing(ctx, || true);
+        }
+    }
+}
+
+/// Release sessions left by a worker exit while their PHP objects are still live.
+pub(crate) fn release_sessions() {
+    while let Some(fd) = with_sessions(|sessions| sessions.keys().next().copied()) {
+        session_free(fd);
     }
 }
 

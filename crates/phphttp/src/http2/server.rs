@@ -43,7 +43,7 @@ const PHP_FATAL_ERROR: c_int = swoole_rs_error::ErrorCode::SW_ERROR_PHP_FATAL_ER
 const NO_PAYLOAD: c_int = swoole_rs_error::ErrorCode::SW_ERROR_NO_PAYLOAD as c_int;
 const STREAM_NOT_FOUND: c_int =
     swoole_rs_error::ErrorCode::SW_ERROR_HTTP2_STREAM_NOT_FOUND as c_int;
-const CO_TIMEDOUT: c_int = swoole_rs_error::ErrorCode::SW_ERROR_CO_TIMEDOUT as c_int;
+use super::CO_TIMEDOUT;
 
 use crate::decimal;
 use crate::http2::Field;
@@ -61,7 +61,11 @@ pub(crate) fn set(ctx: Ctx, field: Field, value: u32) {
 }
 
 fn send(ctx: Ctx, data: &[u8]) -> bool {
-    ctx.send(data)
+    if get(ctx, Field::CoSocket) != 0 {
+        SessionState::of(ctx).is_some_and(|session| session.send(ctx, &[data]))
+    } else {
+        ctx.send(data)
+    }
 }
 
 fn close(ctx: Ctx) {
@@ -624,25 +628,30 @@ fn send_header_then(
     end_stream: bool,
     then: impl FnOnce(&mut Vec<u8>),
 ) -> bool {
-    let Some(mut headers) = build_header(ctx, session, body) else {
-        // Upstream closes once the session has an encoder.
-        if session.with_deflater(|deflater| deflater.is_some()) {
-            set(ctx, Field::End, 1);
-            close(ctx);
+    session.writing(ctx, || {
+        if !current(session, stream) {
+            return false;
         }
-        return false;
-    };
-    let flags = sw_rs_http2_headers_flags(empty, end_stream, 0);
-    if flags & FLAG_END_STREAM != 0 {
-        set(ctx, Field::End, 1);
-    }
-    let frame = headers.seal(FrameType::Headers, flags, stream.id);
-    then(frame);
-    if !send_header_frame(ctx, session, stream, frame) {
-        set(ctx, Field::SendHeader, 0);
-        return false;
-    }
-    true
+        let Some(mut headers) = build_header(ctx, session, body) else {
+            // Upstream closes once the session has an encoder.
+            if session.with_deflater(|deflater| deflater.is_some()) {
+                set(ctx, Field::End, 1);
+                close(ctx);
+            }
+            return false;
+        };
+        let flags = sw_rs_http2_headers_flags(empty, end_stream, 0);
+        if flags & FLAG_END_STREAM != 0 {
+            set(ctx, Field::End, 1);
+        }
+        let frame = headers.seal(FrameType::Headers, flags, stream.id);
+        then(frame);
+        if !send_header_frame(ctx, session, stream, frame) {
+            set(ctx, Field::SendHeader, 0);
+            return false;
+        }
+        true
+    })
 }
 
 // An encoded block must retain its queue position if its request is reset.
@@ -714,6 +723,9 @@ pub(crate) fn send_body(
     while !rest.is_empty() {
         let window = send_credit(session, stream);
         if window == 0 {
+            if !current(session, stream) {
+                return false;
+            }
             if !swoole_rs_phpcoroutines::in_coroutine() {
                 swoole_rs_corebase::log::set_last_error(
                     swoole_rs_error::ErrorCode::SW_ERROR_OUTPUT_SEND_YIELD as c_int,
@@ -731,30 +743,40 @@ pub(crate) fn send_body(
                 }
                 return false;
             }
+            continue;
+        }
+        if !session.writing(ctx, || {
             if !current(session, stream) {
                 return false;
             }
-            continue;
-        }
-        let peer_limit = send_frame_size(session.remote[MAX_FRAME_SIZE].get()) as usize;
-        let send_n = rest.len().min(window).min(peer_limit).min(max_payload);
-        let send_flags = if send_n == rest.len() { flags } else { 0 };
-        let header = frame_header(FrameType::Data, send_n, send_flags, stream.id);
-        let (part, tail) = rest.split_at(send_n);
-        consume_window(session, stream, send_n);
-        let sent = if !co_socket || send_n < page {
-            // A yielding async send must enqueue the entire frame together.
-            send(ctx, &[header.as_slice(), part].concat())
-        } else {
-            send(ctx, &header) && send(ctx, part)
-        };
-        if !sent {
-            if !co_socket {
-                refund_window(session, stream, send_n);
+            // Other streams can spend connection credit while this one waits for the writer.
+            let window = send_credit(session, stream);
+            if window == 0 {
+                return true;
             }
+            let peer_limit = send_frame_size(session.remote[MAX_FRAME_SIZE].get()) as usize;
+            let send_n = rest.len().min(window).min(peer_limit).min(max_payload);
+            let send_flags = if send_n == rest.len() { flags } else { 0 };
+            let header = frame_header(FrameType::Data, send_n, send_flags, stream.id);
+            let (part, tail) = rest.split_at(send_n);
+            consume_window(session, stream, send_n);
+            let sent = if !co_socket || send_n < page {
+                // A yielding async send must enqueue the entire frame together.
+                send(ctx, &[header.as_slice(), part].concat())
+            } else {
+                session.send(ctx, &[&header, part])
+            };
+            if !sent {
+                if !co_socket {
+                    refund_window(session, stream, send_n);
+                }
+                return false;
+            }
+            rest = tail;
+            true
+        }) {
             return false;
         }
-        rest = tail;
     }
     true
 }
@@ -841,24 +863,29 @@ fn append_body(
 
 /// `Stream::send_trailer`: HEADERS with `END_STREAM`, even an empty block.
 fn send_trailer(ctx: Ctx, session: &Session, stream: &Stream, deadline: Deadline) -> bool {
-    let Some(mut headers) = build_trailer(ctx, session) else {
-        return false;
-    };
-    // Converting a trailer value to a PHP string can suspend the writer.
-    if deadline.remaining().is_some_and(|time| time.is_zero()) {
-        write_timed_out(session);
-        return false;
-    }
-    send_header_frame(
-        ctx,
-        session,
-        stream,
-        headers.seal(
-            FrameType::Headers,
-            FLAG_END_HEADERS | FLAG_END_STREAM,
-            stream.id,
-        ),
-    )
+    session.writing(ctx, || {
+        if !current(session, stream) {
+            return false;
+        }
+        let Some(mut headers) = build_trailer(ctx, session) else {
+            return false;
+        };
+        // Converting a trailer value to a PHP string can suspend the writer.
+        if deadline.remaining().is_some_and(|time| time.is_zero()) {
+            write_timed_out(session);
+            return false;
+        }
+        send_header_frame(
+            ctx,
+            session,
+            stream,
+            headers.seal(
+                FrameType::Headers,
+                FLAG_END_HEADERS | FLAG_END_STREAM,
+                stream.id,
+            ),
+        )
+    })
 }
 
 /// Whether the response has a trailer.
@@ -969,7 +996,7 @@ pub(crate) fn respond_with_length(ctx: Ctx, data: &[u8], length: usize) -> bool 
                 action = next(action, true, &facts);
             }
             Respond::ErrorShutdown | Respond::SuccessShutdown => {
-                close(ctx);
+                session.shutdown(ctx);
                 return action == Respond::SuccessShutdown;
             }
             Respond::True => return true,
@@ -1061,7 +1088,7 @@ pub(crate) fn on_receive(
     request: &mut RecvData<'_>,
 ) -> bool {
     let session_id = request.info().fd;
-    let session = SessionState::find(session_id).or_else(|| {
+    let session = SessionState::find(session_id).unwrap_or_else(|| {
         let default_ctx = Ctx::server_context(view, session_id);
         let max_body_size = swoole_rs_server::server_methods::package_max_length(view, conn.fd());
         super::session::session_new(
@@ -1069,13 +1096,12 @@ pub(crate) fn on_receive(
             default_ctx,
             max_body_size,
             Box::new(|ctx: Ctx<'_>, _: Ctx<'_>| crate::http2_request(ctx)),
-        );
-        SessionState::find(session_id)
+        )
     });
     let zdata = swoole_rs_phpserver::php_swoole_get_recv_data(view, request);
     let data = zdata.bytes().unwrap_or_default();
     // The session stays alive until its frame is handled.
-    let parsed = session.is_some_and(|session| parse(&session, data));
+    let parsed = session_receive(&session, data);
     // Released before a deferred bailout can jump past it.
     drop(zdata);
     if bailout::pending() {
@@ -1092,13 +1118,7 @@ pub fn server_on_close(session_id: i64) {
 /// `swoole_http2_server_parse` for the coroutine server's connection loop: one
 /// frame from the peer of connection `fd`, which `frame` starts with; a bailout
 /// stays pending for the caller's `finish`.
-pub(crate) fn session_receive(fd: i64, frame: &[u8]) -> bool {
-    SessionState::find(fd).is_some_and(|session| parse(&session, frame))
-}
-
-/// One frame, which `frame` starts with: false for one shorter than its header
-/// says, or one the session refuses.
-fn parse(session: &Session, frame: &[u8]) -> bool {
+pub(crate) fn session_receive(session: &Session, frame: &[u8]) -> bool {
     let last_stream_id = session.last_stream_id.get();
     let Ok((facts, payload)) = decode_packet(frame, last_stream_id, false) else {
         return false;
@@ -1381,8 +1401,10 @@ fn abort_session(session: &Session, code: u32, message: &[u8]) -> bool {
     }
     let mut ctx = session.default_ctx();
     if get(ctx, Field::CoSocket) != 0 {
-        goaway(ctx, i64::from(code), message);
-        close(ctx);
+        session.abort_writer(
+            ctx,
+            &goaway_frame(session.last_stream_id.get(), code, message),
+        );
     } else {
         // A timed-out writer must not re-enter the output-buffer wait to send GOAWAY.
         let fd = ctx.fd();
@@ -1483,13 +1505,17 @@ fn settings(session: &Session, payload: &[u8]) -> bool {
     )
 }
 
-/// The peer needs the ACK to continue, regardless of why sending failed.
+/// A full worker output buffer would silently lose the ACK. A peer already gone
+/// still has receive events queued ahead of its close notification.
 fn send_ack(ctx: Ctx, frame: &[u8]) -> bool {
-    let sent = send(ctx, frame);
-    if !sent {
+    if !send(ctx, frame)
+        && swoole_rs_corebase::log::last_error()
+            == swoole_rs_error::ErrorCode::SW_ERROR_OUTPUT_SEND_YIELD as c_int
+    {
         close(ctx);
+        return false;
     }
-    sent
+    true
 }
 
 fn reset_stream(session: &Session, stream: &Stream, code: u32) -> bool {

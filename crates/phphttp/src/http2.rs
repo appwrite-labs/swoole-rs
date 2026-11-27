@@ -3,6 +3,7 @@
 mod files;
 mod server;
 mod session;
+mod writer;
 
 use crate::{context, header, parse};
 pub(crate) use files::{send_file, static_file};
@@ -11,7 +12,7 @@ pub(crate) use server::{
     goaway, of, on_receive, ping, reset, respond, schedule, session_receive, write,
 };
 pub use session::IdMap;
-pub(crate) use session::{session_free, session_new};
+pub(crate) use session::{flush_pending, release_sessions, session_free, session_new};
 use std::{cell::Cell, ffi::CStr};
 use swoole_rs_corebase::{CCast, buffer::BoundedBytes};
 use swoole_rs_server::view;
@@ -19,6 +20,8 @@ use swoole_rs_zend::{
     ArrayMut, HeldArray, Owned, ZString,
     bailout::{self, Bailout},
 };
+
+const CO_TIMEDOUT: i32 = swoole_rs_error::ErrorCode::SW_ERROR_CO_TIMEDOUT as i32;
 
 /// The HTTP/2 server's contexts: a connection's settings context
 /// ([`Ctx::server_context`]) or a stream's ([`Ctx::stream_context`]), and the
