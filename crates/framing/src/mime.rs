@@ -480,34 +480,34 @@ static CATALOG: &[(&[u8], &[u8])] = &[
 
 #[cfg(test)]
 mod tests {
-    //! Upstream's `core-tests/src/protocol/mime_type.cpp`, one test per `TEST`,
-    //! with its inputs and expected values. Upstream runs them in order in one
-    //! process; here they share the table under `SERIAL`, and `del` puts back
-    //! the `json` it deletes so the order doesn't matter.
+    //! The v6.3 `MimeTypeTest` fixture restores the registry after every case.
     use super::*;
 
-    static SERIAL: Mutex<()> = Mutex::new(());
-
-    fn serial() -> MutexGuard<'static, ()> {
-        SERIAL.lock().unwrap_or_else(PoisonError::into_inner)
+    fn registry() -> impl Drop {
+        static SERIAL: Mutex<()> = Mutex::new(());
+        let lock = SERIAL.lock().unwrap_or_else(PoisonError::into_inner);
+        core::mem::DropGuard::new(map().clone(), move |original| {
+            *map() = original;
+            drop(lock);
+        })
     }
 
     #[test]
     fn get() {
-        let _serial = serial();
+        let _registry = registry();
         let result = super::get(b"test.html.json");
         assert_eq!(result, b"application/json");
     }
 
     #[test]
     fn exists() {
-        let _serial = serial();
+        let _registry = registry();
         assert!(super::exists(b"test.html.json"));
     }
 
     #[test]
     fn set() {
-        let _serial = serial();
+        let _registry = registry();
         let test_mime_type = c"application/swoole-core-test";
         super::set(b"swoole_test", test_mime_type);
 
@@ -517,10 +517,10 @@ mod tests {
 
     #[test]
     fn add() {
-        let _serial = serial();
+        let _registry = registry();
         let test_mime_type = c"application/swoole-core-test2";
         assert!(super::add(b"swoole_test2", test_mime_type));
-        assert!(!super::add(b"swoole_test2", test_mime_type));
+        assert!(!super::add(b"swoole_test2", c"application/replacement"));
 
         let result = super::get(b"test.swoole_test2");
         assert_eq!(result, test_mime_type.to_bytes());
@@ -528,10 +528,77 @@ mod tests {
 
     #[test]
     fn del() {
-        let _serial = serial();
+        let _registry = registry();
         assert!(super::del(b"json"));
         assert!(!super::exists(b"test.html.json"));
-        super::set(b"json", c"application/json");
+        assert!(!super::del(b"json"));
+        assert_eq!(super::get(b"test.json"), b"application/octet-stream");
+    }
+
+    #[test]
+    fn filename_suffix_is_case_insensitive() {
+        let _registry = registry();
+        for name in [
+            "report.JSON",
+            "report.JsOn",
+            ".json",
+            "/path.with.dots/report.json",
+        ] {
+            assert!(super::exists(name.as_bytes()), "{name}");
+            assert_eq!(super::get(name.as_bytes()), b"application/json", "{name}");
+        }
+    }
+
+    #[test]
+    fn unknown_or_empty_suffix_uses_default_without_registering_it() {
+        let _registry = registry();
+        let size = map().len();
+        for name in ["", "LICENSE", "report.", "report.swoole_unknown_suffix"] {
+            assert!(!super::exists(name.as_bytes()), "{name}");
+            assert_eq!(
+                super::get(name.as_bytes()),
+                b"application/octet-stream",
+                "{name}"
+            );
+        }
+        assert_eq!(map().len(), size);
+    }
+
+    #[test]
+    fn list_reflects_add_replace_and_remove() {
+        let _registry = registry();
+        let key = b"swoole_registry_test";
+        let entry = || {
+            map()
+                .iter()
+                .find(|(suffix, _)| suffix == key)
+                .map(|(_, kind)| kind.clone())
+        };
+        let size = map().len();
+        assert!(super::add(key, c"application/first"));
+        assert_eq!(map().len(), size + 1);
+        assert_eq!(entry().as_deref(), Some(c"application/first"));
+        super::set(key, c"application/second");
+        assert_eq!(map().len(), size + 1);
+        assert_eq!(entry().as_deref(), Some(c"application/second"));
+        assert_eq!(
+            super::get(b"file.SWOOLE_REGISTRY_TEST"),
+            b"application/second"
+        );
+        assert!(super::del(key));
+        assert_eq!(map().len(), size);
+        assert!(entry().is_none());
+    }
+
+    #[test]
+    fn replacing_builtin_mapping_does_not_add_an_entry() {
+        let _registry = registry();
+        let size = map().len();
+        super::set(b"json", c"application/custom-json");
+        assert_eq!(super::get(b"file.json"), b"application/custom-json");
+        assert_eq!(map().len(), size);
+        assert!(!super::add(b"json", c"application/ignored"));
+        assert_eq!(super::get(b"file.json"), b"application/custom-json");
     }
 
     #[test]
@@ -546,7 +613,7 @@ mod tests {
 
     #[test]
     fn long_registered_suffixes_keep_exact_keys_and_lookup_order() {
-        let _serial = serial();
+        let _registry = registry();
         let lower = vec![b'q'; 8192];
         let upper = lower.to_ascii_uppercase();
         assert!(super::add(&upper, c"test/upper"));
@@ -569,7 +636,7 @@ mod tests {
     /// The C ABI gate's lookups (`tests/modules/framing/gate.cc`).
     #[test]
     fn lookup_lowercases_and_an_empty_name_finds_nothing() {
-        let _serial = serial();
+        let _registry = registry();
         assert_eq!(super::get(b"a.html.JSON"), b"application/json");
         assert!(super::exists(b"a.html.JSON"));
         assert_eq!(super::get(b""), FALLBACK.to_bytes());
