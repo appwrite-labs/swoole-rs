@@ -638,7 +638,13 @@ fn refuse(call: &Call, message: &str) {
 /// a response on a server connection or a coroutine socket, sharing the
 /// request's context when one is given.
 fn respond_on(call: &Call, mut object: &Value, mut fd: zend_long) {
-    let mut paired = false;
+    let invalid = |message| {
+        call.throw(
+            swoole_rs_phpswoole::exception(),
+            message,
+            swoole_rs_error::ErrorCode::SW_ERROR_INVALID_PARAMS as i64,
+        );
+    };
     let mut ctx = None;
     // The running server's share, which keeps it while this method reads it.
     let shared;
@@ -659,8 +665,10 @@ fn respond_on(call: &Call, mut object: &Value, mut fd: zend_long) {
             );
         };
         object = first;
-        paired = true;
-        ctx = request.0.get().cloned();
+        let Some(hold) = request.0.get() else {
+            return invalid(c"parameter $1.second has no valid Http\\Request context");
+        };
+        ctx = Some(hold.clone());
     }
     if object.object().is_some() {
         if object.instance_of(swoole_rs_phpserver::server_class_ref()) {
@@ -675,8 +683,6 @@ fn respond_on(call: &Call, mut object: &Value, mut fd: zend_long) {
                 );
             }
         } else if object.instance_of(swoole_rs_phpclients::socket()) {
-            // A socket object whose constructor never ran holds no socket, so
-            // there is nothing to respond on: false, as without a target.
             if let Some(co) = swoole_rs_phpclients::get_socket(object) {
                 socket = Some(object);
                 fd = zend_long::from(co.handle().sock_fd());
@@ -696,9 +702,13 @@ fn respond_on(call: &Call, mut object: &Value, mut fd: zend_long) {
         return refuse(call, "server is not running");
     }
     if server.is_none() && socket.is_none() {
-        call.set_bool(false);
-        return;
+        return invalid(if ctx.is_some() {
+            c"failed to bind Http\\Response to the given context"
+        } else {
+            c"failed to create Http\\Response from the given arguments"
+        });
     }
+    let paired = ctx.is_some();
     let hold = ctx.unwrap_or_else(|| {
         let hold = context::alloc();
         let mut ctx = hold.ctx();
