@@ -15,6 +15,8 @@ SQLRETURN SQL_API swoole_odbc_SQLDriverConnect(SQLHDBC dbc, SQLHWND hwnd, SQLCHA
                                                SQLSMALLINT out_max, SQLSMALLINT *out_len, SQLUSMALLINT completion);
 SQLRETURN SQL_API swoole_odbc_SQLExecDirect(SQLHSTMT stmt, SQLCHAR *text, SQLINTEGER text_len);
 SQLRETURN SQL_API swoole_odbc_SQLPrepare(SQLHSTMT stmt, SQLCHAR *text, SQLINTEGER text_len);
+SQLRETURN SQL_API swoole_odbc_SQLCloseCursor(SQLHSTMT stmt);
+SQLRETURN SQL_API swoole_odbc_SQLFreeHandle(SQLSMALLINT kind, SQLHANDLE handle);
 SQLRETURN SQL_API swoole_odbc_SQLExecute(SQLHSTMT stmt);
 SQLRETURN SQL_API swoole_odbc_SQLPutData(SQLHSTMT stmt, SQLPOINTER data, SQLLEN len_or_ind);
 SQLRETURN SQL_API swoole_odbc_SQLGetData(SQLHSTMT stmt, SQLUSMALLINT column, SQLSMALLINT target_type, SQLPOINTER target,
@@ -28,6 +30,8 @@ SQLRETURN SQL_API swoole_odbc_SQLDisconnect(SQLHDBC dbc);
 #define SQLDriverConnect swoole_odbc_SQLDriverConnect
 #define SQLExecDirect swoole_odbc_SQLExecDirect
 #define SQLPrepare swoole_odbc_SQLPrepare
+#define SQLCloseCursor swoole_odbc_SQLCloseCursor
+#define SQLFreeHandle swoole_odbc_SQLFreeHandle
 #define SQLExecute swoole_odbc_SQLExecute
 #define SQLGetData swoole_odbc_SQLGetData
 #define SQLPutData swoole_odbc_SQLPutData

@@ -187,8 +187,6 @@ unsafe extern "C" {
         statement: Statement,
         count: &mut swoole_rs_odbc_sys::SQLLEN,
     ) -> SQLRETURN;
-    #[link_name = "SQLFreeHandle"]
-    pub(crate) safe fn free_handle(kind: i16, handle: Handle) -> SQLRETURN;
 }
 
 /// `PDO::exec` allocates a statement for this call, including when it affects no rows.
@@ -201,7 +199,7 @@ extern "C" fn swr_odbc_doer(
     exec_line: c_int,
     count_line: c_int,
 ) -> zend_long {
-    const SQL_HANDLE_STMT: i16 = 3;
+    use crate::SQL_HANDLE_STMT;
     let mut allocated = Handle(std::ptr::null_mut());
     if !matches!(
         alloc_handle(
@@ -237,7 +235,7 @@ extern "C" fn swr_odbc_doer(
         }
         _ => pdo_odbc_error(dbh, None, stmt, c"SQLExecDirect".into(), file, exec_line),
     }
-    free_handle(SQL_HANDLE_STMT, Handle(stmt.0));
+    crate::swoole_odbc_SQLFreeHandle(SQL_HANDLE_STMT, Handle(stmt.0));
     count
 }
 
@@ -309,9 +307,9 @@ extern "C" fn swr_odbc_close(dbh: &Dbh, env: Handle) {
     if !connection.0.is_null() {
         swoole_odbc_SQLEndTran(2, Handle(connection.0), 1);
         crate::swoole_odbc_SQLDisconnect(connection);
-        free_handle(2, Handle(connection.0));
+        crate::swoole_odbc_SQLFreeHandle(2, Handle(connection.0));
     }
-    free_handle(1, env);
+    crate::swoole_odbc_SQLFreeHandle(1, env);
     swr_odbc_free_record(dbh);
 }
 

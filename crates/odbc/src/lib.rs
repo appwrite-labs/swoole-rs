@@ -7,7 +7,7 @@
 //!
 //! The exports keep upstream's names: `native/hooks/php_swoole_odbc.h` declares them and
 //! the driver's macros call them. Upstream's pass-throughs (`SQLGetInfo`,
-//! `SQLGetDiagRec`, `SQLCloseCursor`, `SQLRowCount`, `SQLFreeHandle`), which only
+//! `SQLGetDiagRec`, `SQLRowCount`), which only
 //! traced, are not redirected: the driver calls ODBC for those.
 #![cfg_attr(
     not(test),
@@ -49,7 +49,7 @@ pub struct Connection(SQLHDBC);
 #[derive(Clone, Copy)]
 pub struct Statement(SQLHSTMT);
 
-/// An environment or connection handle, live and of the handle type passed beside it.
+/// An environment, statement or connection handle, live and of the handle type passed beside it.
 #[repr(transparent)]
 #[derive(Clone, Copy)]
 pub struct Handle(SQLHANDLE);
@@ -147,6 +147,10 @@ unsafe extern "C" {
         handle: Handle,
         completion: SQLSMALLINT,
     ) -> SQLRETURN;
+    #[link_name = "SQLFreeHandle"]
+    safe fn free_handle(kind: i16, handle: Handle) -> SQLRETURN;
+    #[link_name = "SQLCloseCursor"]
+    safe fn close_cursor(statement: Statement) -> SQLRETURN;
     #[link_name = "SQLDisconnect"]
     safe fn disconnect(connection: Connection) -> SQLRETURN;
 }
@@ -186,9 +190,17 @@ pub extern "C" fn swoole_odbc_SQLConnect(
             server_name,
             name_length1,
             user_name,
-            name_length2,
+            if user_name.0.is_null() {
+                0
+            } else {
+                name_length2
+            },
             authentication,
-            name_length3,
+            if authentication.0.is_null() {
+                0
+            } else {
+                name_length3
+            },
         )
     })
 }
@@ -243,6 +255,24 @@ pub extern "C" fn swoole_odbc_SQLPrepare(
 #[unsafe(no_mangle)]
 pub extern "C" fn swoole_odbc_SQLExecute(statement: Statement) -> SQLRETURN {
     offload(|| execute(statement))
+}
+
+/// Closing an unread cursor can wait for the remaining rows.
+#[unsafe(no_mangle)]
+pub extern "C" fn swoole_odbc_SQLCloseCursor(statement: Statement) -> SQLRETURN {
+    offload(|| close_cursor(statement))
+}
+
+const SQL_HANDLE_STMT: SQLSMALLINT = 3;
+
+/// Only statement destruction can wait for the server after the cursor closes.
+#[unsafe(no_mangle)]
+pub extern "C" fn swoole_odbc_SQLFreeHandle(kind: SQLSMALLINT, handle: Handle) -> SQLRETURN {
+    if kind == SQL_HANDLE_STMT {
+        offload(|| free_handle(kind, handle))
+    } else {
+        free_handle(kind, handle)
+    }
 }
 
 /// `swoole_odbc_SQLPutData`: `SQLPutData`, as [`swoole_odbc_SQLConnect`].
