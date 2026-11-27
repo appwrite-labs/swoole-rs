@@ -70,8 +70,9 @@ pub(crate) fn dispatch(serv: view::Server<'_>, send: &mut SendData) -> bool {
         .cast_signed();
     let target = match schedule_worker(serv, fd, Some(send)) {
         Ok(target) => target,
+        Err(DISPATCH_DISCARD_PACKET) => return true,
         Err(target) => {
-            if target != DISPATCH_DISCARD_PACKET && target != DISPATCH_CLOSE_CONNECTION {
+            if target != DISPATCH_CLOSE_CONNECTION {
                 let m = format_args!("invalid target worker id[{target}]");
                 log::warning(c"ProcessFactory::dispatch", m);
             }
