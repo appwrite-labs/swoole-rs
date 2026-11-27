@@ -1544,7 +1544,11 @@ impl SocketOps {
         recvfrom_sync: swoole_rs_corebase::tls::upstream::recvfrom_sync_spare,
         send_sync: swoole_rs_corebase::tls::upstream::send_sync,
         sendfile_sync: swoole_rs_corebase::tls::upstream::sendfile_sync,
-        sendfile_async: swoole_rs_corebase::tls::upstream::socket_sendfile_async,
+        sendfile_async: |sock, file, offset, length| {
+            swoole_rs_corebase::tls::upstream::socket_sendfile_async(
+                sock, file, offset, length, false,
+            )
+        },
         free_socket: swoole_rs_corebase::tls::upstream::socket_free,
         close_tls: swoole_rs_corebase::tls::upstream::socket_ssl_close,
         write: swoole_rs_corebase::reactor::event_api::event_write,

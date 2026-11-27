@@ -5,6 +5,7 @@ use crate::ossupport::FileRecord;
 use crate::reactor::{OutputEffects, OutputResult};
 use libc::{c_int, off_t};
 use std::ffi::CStr;
+use std::os::unix::ffi::OsStrExt;
 
 #[derive(Clone, Copy, Default)]
 pub struct SocketFileFields {
@@ -16,6 +17,7 @@ pub struct SocketFileFields {
 pub struct SocketFileRequest {
     file: FileRecord,
     open_error: c_int,
+    delete_file: bool,
     fields: SocketFileFields,
 }
 
@@ -23,10 +25,11 @@ impl SocketFileRequest {
     /// `path` opened read-only, to send from `offset`. A file that fails to open is
     /// still a request, which [`Self::check`] refuses; `None` when out of memory.
     #[must_use]
-    pub fn open(path: &CStr, offset: off_t) -> Option<Box<Self>> {
+    pub fn open(path: &CStr, offset: off_t, delete_file: bool) -> Option<Box<Self>> {
         let mut request = crate::buffer::try_box(|| Self {
             file: FileRecord::empty(),
             open_error: 0,
+            delete_file,
             fields: SocketFileFields {
                 begin: offset,
                 ..SocketFileFields::default()
@@ -109,6 +112,15 @@ impl SocketFileRequest {
     }
 }
 
+impl Drop for SocketFileRequest {
+    fn drop(&mut self) {
+        if self.delete_file {
+            self.file.close();
+            _ = std::fs::remove_file(std::ffi::OsStr::from_bytes(self.path()));
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -119,7 +131,7 @@ mod tests {
         let path = std::env::temp_dir().join(format!("swoole-request-{}", std::process::id()));
         std::fs::write(&path, b"abcdef").unwrap();
         let name = CString::new(path.as_os_str().as_encoded_bytes()).unwrap();
-        let mut request = SocketFileRequest::open(&name, 2).unwrap();
+        let mut request = SocketFileRequest::open(&name, 2, false).unwrap();
         let fd = request.descriptor();
         let file = |fd| {
             let mut stat = unsafe { std::mem::zeroed::<libc::stat>() };
@@ -141,14 +153,14 @@ mod tests {
     fn failed_open_remains_a_request_and_invalid_ranges_match_legacy() {
         let missing = c"/nonexistent/swoole-sendfile-request";
         assert_eq!(
-            SocketFileRequest::open(missing, 0).unwrap().check(0),
+            SocketFileRequest::open(missing, 0, false).unwrap().check(0),
             Err(crate::reactor::RangeError::Open)
         );
         let path =
             std::env::temp_dir().join(format!("swoole-request-range-{}", std::process::id()));
         std::fs::write(&path, b"abcdef").unwrap();
         let name = CString::new(path.as_os_str().as_encoded_bytes()).unwrap();
-        let mut request = SocketFileRequest::open(&name, -1).unwrap();
+        let mut request = SocketFileRequest::open(&name, -1, false).unwrap();
         assert_eq!(request.check(0), Err(crate::reactor::RangeError::Outside));
         request.fields().begin = 1;
         assert_eq!(request.check(3), Ok(()));
