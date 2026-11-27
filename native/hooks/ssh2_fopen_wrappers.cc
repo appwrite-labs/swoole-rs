@@ -196,7 +196,7 @@ static int php_ssh2_channel_stream_set_option(php_stream *stream, int option, in
     case PHP_STREAM_OPTION_READ_TIMEOUT: {
 #ifdef PHP_SSH2_SESSION_TIMEOUT
         struct timeval tv = *(struct timeval *) ptrparam;
-        abstract->timeout = static_cast<double>(tv.tv_sec) + (tv.tv_usec / 1000) / 1000.0;
+        abstract->timeout = static_cast<double>(tv.tv_sec) + tv.tv_usec / 1000000.0;
         abstract->timed_out = false;
         return PHP_STREAM_OPTION_RETURN_OK;
 #else
