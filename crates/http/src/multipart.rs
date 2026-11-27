@@ -59,9 +59,8 @@ pub fn multipart_result(
 pub fn multipart_disposition(name: &[u8]) -> bool {
     crate::case_equal(name, b"content-disposition")
 }
-/// Consume the destructive cookie iterator over `data` through the first filename:
-/// whether there is one. The legacy callback stops even for a filename with no '='
-/// or an empty value.
+/// Scan through the first filename and report whether it requires a temporary file.
+/// An explicitly quoted empty filename represents a file input with no selection.
 /// # Errors
 /// The iterator's status without a NUL.
 pub fn multipart_filename(data: &mut [u8]) -> Result<bool, i32> {
@@ -71,7 +70,7 @@ pub fn multipart_filename(data: &mut [u8]) -> Result<bool, i32> {
             Ok(Some(cookie)) => {
                 let key = data.get(cookie.key).unwrap_or_default();
                 if crate::case_equal(key, b"filename") {
-                    return Ok(true);
+                    return Ok(cookie.value.and_then(|range| data.get(range)) != Some(b"\"\""));
                 }
             }
             Ok(None) => return Ok(false),
@@ -88,6 +87,7 @@ mod tests {
     fn filename_stops_with_identical_destructive_cookie_state() {
         for input in [
             &b"form-data; name=x; filename=one; filename=two\0"[..],
+            b"filename=\"\";filename=selected\0",
             b"FiLeNaMe;next=x\0",
             b"filename =x;other=y\0",
             b"name=filename; \x0b\x0cFILENAME=value\0",
@@ -104,7 +104,9 @@ mod tests {
                 match crate::headers::cookie_next(&mut expected, &mut cursor) {
                     Ok(Some(out)) => {
                         if expected[out.key].eq_ignore_ascii_case(b"filename") {
-                            break Ok(true);
+                            break Ok(
+                                out.value.and_then(|range| expected.get(range)) != Some(b"\"\"")
+                            );
                         }
                     }
                     Ok(None) => break Ok(false),

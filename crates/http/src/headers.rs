@@ -191,15 +191,17 @@ fn cookie_key(token: &[u8]) -> Option<Range<usize>> {
     Some(start..end)
 }
 
-/// Whether a Content-Disposition value contains the filename parameter.
+/// Whether the first filename parameter calls for an upload temporary file.
 #[must_use]
 pub fn multipart_has_filename(data: &[u8]) -> bool {
     let text = data.split(|&b| b == 0).next().unwrap_or_default();
-    text.split(|&b| b == b';').any(|token| {
-        cookie_key(token)
-            .and_then(|key| token.get(key))
-            .is_some_and(|key| super::case_equal(key, b"filename"))
-    })
+    text.split(|&b| b == b';')
+        .find_map(|token| {
+            let key = cookie_key(token)?;
+            super::case_equal(token.get(key.clone())?, b"filename")
+                .then(|| token.get(key.end..) != Some(b"=\"\""))
+        })
+        .unwrap_or(false)
 }
 /// Tokenize the next cookie of `data` from `cursor`, as legacy `strtok_r`: the
 /// delimiter after it and its '=' become NULs. Reads stop at the NUL that ends the
