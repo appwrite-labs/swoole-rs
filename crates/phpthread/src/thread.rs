@@ -109,7 +109,7 @@ fn construct(call: &Call) {
     if file.is_empty() {
         call.throw(
             swoole_rs_phpswoole::exception(),
-            c"exec file name is empty",
+            c"thread entry is empty",
             INVALID_PARAMS,
         );
         return;
@@ -117,8 +117,7 @@ fn construct(call: &Call) {
     let argv = if call.num_args() > 1 {
         let argv = Arc::<Array>::default();
         for value in (2..=call.num_args()).filter_map(|n| call.value(n)) {
-            argv.push(value);
-            if bailout::pending() {
+            if !argv.push(value) {
                 return;
             }
         }

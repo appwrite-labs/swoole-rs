@@ -47,12 +47,13 @@ impl Array {
     }
 
     /// `append` (upstream's unlocked builder for thread arguments).
-    pub(crate) fn push(&self, value: &ZValue) {
+    pub(crate) fn push(&self, value: &ZValue) -> bool {
         let item = Item::store(value);
-        if bailout::pending() {
-            return;
+        if bailout::pending() || !swoole_rs_zend::host::exception().is_null() {
+            return false;
         }
         self.write().push(item);
+        true
     }
 
     pub(crate) fn clean(&self) {
