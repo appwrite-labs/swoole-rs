@@ -364,6 +364,14 @@ impl Connecting for Live<'_> {
     }
 
     fn set_host(&mut self, which: Host, host: &[u8], port: c_int) {
+        if which != Host::Tls
+            && self
+                .socket
+                .tls_context()
+                .is_some_and(|tls| tls.requires_host_name())
+        {
+            self.set_slot(SSL_HOST_NAME, host);
+        }
         let (mut host, mut port) = (host.to_vec(), port);
         if which == Host::Proxy
             && let Some(proxy) = self.socks5.or(self.http)
@@ -648,7 +656,7 @@ pub trait Handshaking {
     fn handshaked(&self) -> bool;
     /// Whether the SSL context has its `SSL_CTX`, and whether it verifies the peer.
     fn context_ready(&self) -> bool;
-    fn verify_peer(&self) -> bool;
+    fn verification_required(&self) -> bool;
     /// `is_available(SW_EVENT_RDWR)`.
     fn available(&mut self) -> bool;
     /// `set_err(code)`, or `set_err()` for -1.
@@ -695,7 +703,7 @@ pub fn ssl_handshake(ops: &mut impl Handshaking) -> bool {
         return false;
     }
     let prepared = ops.available() && (ops.context_ready() || ops.context_create()) && ops.create();
-    prepared && steps(ops) && (!ops.verify_peer() || ops.verify())
+    prepared && steps(ops) && (!ops.verification_required() || ops.verify())
 }
 
 #[cfg(test)]
@@ -1047,7 +1055,7 @@ mod tests {
         fn context_ready(&self) -> bool {
             self.context_ready
         }
-        fn verify_peer(&self) -> bool {
+        fn verification_required(&self) -> bool {
             self.verify_peer
         }
         fn available(&mut self) -> bool {

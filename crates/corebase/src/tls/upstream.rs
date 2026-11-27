@@ -666,10 +666,16 @@ pub fn ssl_get_peer_certificate(socket: Socket<'_>) -> Option<Cert> {
 /// `bool Socket::ssl_check_host(const char *tls_host_name) const`.
 #[must_use]
 pub fn socket_ssl_check_host(socket: Socket<'_>, name: &CStr) -> bool {
+    check_peer_name(socket, name, false)
+}
+
+/// Match the peer certificate against a DNS name or a strict IP identity.
+#[must_use]
+pub fn check_peer_name(socket: Socket<'_>, name: &CStr, strict: bool) -> bool {
     let Some(cert) = ssl_get_peer_certificate(socket) else {
         return false;
     };
-    if cert.get().matches_host(name) {
+    if cert.get().matches_host(name, strict) {
         return true;
     }
     log::warning(

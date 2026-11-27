@@ -412,6 +412,9 @@ fn set_ssl(s: &Array, socket: Co) -> Result<bool, Stop> {
     {
         text(&mut owner, Text::HostName, v)?;
     }
+    if let Some(v) = s.get(b"ssl_verify_host") {
+        owner.set_value(tls::Value::VerifyHost(v.truthy()));
+    }
     if let Some(v) = s.get(b"ssl_verify_peer") {
         owner.set_value(tls::Value::VerifyPeer(v.truthy()));
     }

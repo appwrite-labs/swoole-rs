@@ -35,6 +35,8 @@ unsafe extern "C" {
     /// Writes at most `length` bytes, NUL-terminated, into `buffer`: the length is the
     /// buffer's own, the one value [`ErrorLength`] has.
     safe fn ERR_error_string_n(error: c_ulong, buffer: &mut [u8; 512], length: ErrorLength);
+    safe fn X509_check_ip_asc(cert: NonNull<X509>, name: Text<'_>, flags: c_uint) -> c_int;
+    safe fn X509_get_ext_by_NID(cert: NonNull<X509>, nid: c_int, last: c_int) -> c_int;
     /// Whether the certificate matches the host `name`, which OpenSSL measures up to
     /// its NUL (the length [`Measured`] gives), storing the matched name where told to.
     safe fn X509_check_host(
@@ -752,8 +754,26 @@ impl CertRef<'_> {
     /// `Socket::ssl_check_host`'s test: whether the certificate matches the host
     /// `name` under `X509_check_host`.
     #[must_use]
-    pub fn matches_host(self, name: &CStr) -> bool {
-        X509_check_host(self, name.into(), Measured::UpToNul, 0, None) == 1
+    pub fn matches_host(self, name: &CStr, strict: bool) -> bool {
+        let ip = strict
+            && name
+                .to_str()
+                .is_ok_and(|s| s.parse::<std::net::IpAddr>().is_ok());
+        if ip {
+            if X509_check_ip_asc(self.0, name.into(), 0) == 1 {
+                return true;
+            }
+            if X509_get_ext_by_NID(self.0, openssl_sys::NID_subject_alt_name, -1) >= 0 {
+                return false;
+            }
+        }
+        let flags = if ip {
+            openssl_sys::X509_CHECK_FLAG_NO_WILDCARDS
+                | openssl_sys::X509_CHECK_FLAG_ALWAYS_CHECK_SUBJECT
+        } else {
+            0
+        };
+        X509_check_host(self, name.into(), Measured::UpToNul, flags, None) == 1
     }
 
     /// `_ssl_read_x509_file`: the certificate as PEM into at most `buffer`'s length.

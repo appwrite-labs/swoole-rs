@@ -26,6 +26,7 @@ pub struct OwnedTlsFields {
     pub verify_depth: u8,
     pub disable_compress: bool,
     pub verify_peer: bool,
+    pub(crate) verify_host: Option<bool>,
     pub allow_self_signed: bool,
     pub protocols: u32,
     pub create_flag: u8,
@@ -34,6 +35,19 @@ pub struct OwnedTlsFields {
     pub context: Option<crate::tls::SslContext>,
 }
 impl OwnedTlsFields {
+    fn set_value(&mut self, value: Value) {
+        match value {
+            Value::Protocols(value) => self.protocols = value.c_cast::<u32>(),
+            Value::DisableCompress(value) => self.disable_compress = value,
+            Value::VerifyHost(value) => self.verify_host = Some(value),
+            Value::VerifyPeer(value) => self.verify_peer = value,
+            Value::AllowSelfSigned(value) => self.allow_self_signed = value,
+            Value::VerifyDepth(value) => self.verify_depth = value,
+            Value::Grease(value) => self.grease = value,
+            Value::PreferServerCiphers(value) => self.prefer_server_ciphers = value,
+        }
+    }
+
     /// The context, or null without one.
     #[must_use]
     pub fn context_ptr(&self) -> *mut SSL_CTX {
@@ -85,6 +99,10 @@ impl TlsSettings {
     #[must_use]
     pub fn verify_peer(&self) -> bool {
         self.fields.verify_peer
+    }
+    #[must_use]
+    pub fn verify_host(&self) -> Option<bool> {
+        self.fields.verify_host
     }
     #[must_use]
     pub fn allow_self_signed(&self) -> bool {
@@ -243,6 +261,13 @@ impl OwnedTlsContext {
             .as_ref()
             .and_then(|fields| fields.try_clone())
             .unwrap_or_else(|| crate::fatal("cannot retain TLS configuration"))
+    }
+
+    /// Whether a connecting client should retain its target for identity verification.
+    #[must_use]
+    pub fn requires_host_name(&self) -> bool {
+        self.borrow_configuration()
+            .edit(|fields| fields.verify_host == Some(true))
     }
 
     /// Whether `client_cert_file` is set.
@@ -540,6 +565,7 @@ pub enum Value {
     Protocols(i64),
     DisableCompress(bool),
     VerifyPeer(bool),
+    VerifyHost(bool),
     AllowSelfSigned(bool),
     VerifyDepth(u8),
     Grease(u8),
@@ -600,15 +626,7 @@ impl Lent<'_> {
 
     /// Write the scalar setting into the owner.
     pub fn set_value(&mut self, value: Value) {
-        self.edit(|fields| match value {
-            Value::Protocols(value) => fields.protocols = value.c_cast::<u32>(),
-            Value::DisableCompress(value) => fields.disable_compress = value,
-            Value::VerifyPeer(value) => fields.verify_peer = value,
-            Value::AllowSelfSigned(value) => fields.allow_self_signed = value,
-            Value::VerifyDepth(value) => fields.verify_depth = value,
-            Value::Grease(value) => fields.grease = value,
-            Value::PreferServerCiphers(value) => fields.prefer_server_ciphers = value,
-        });
+        self.edit(|fields| fields.set_value(value));
     }
 
     /// Stores `value` in the owner's string slot `index`, as `RustStringView`'s
