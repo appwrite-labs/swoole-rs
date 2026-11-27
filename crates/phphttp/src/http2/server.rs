@@ -7,7 +7,7 @@
 use super::session::{Session, SessionState, Stream};
 use libc::c_int;
 use std::ffi::{CStr, CString};
-use swoole_rs_corebase::CCast;
+use swoole_rs_corebase::{CCast, CellExt};
 use swoole_rs_http::status::REQUEST_ENTITY_TOO_LARGE;
 use swoole_rs_http2::frame_flag::{
     ACK as FLAG_ACK, END_HEADERS as FLAG_END_HEADERS, END_STREAM as FLAG_END_STREAM,
@@ -905,7 +905,10 @@ fn parse(session: &Session, frame: &[u8]) -> bool {
     }
     // A header block continues only in CONTINUATION frames of its own stream.
     let pending = session.header_stream_id.get();
-    if pending != 0 && (facts.action != FrameAction::Continuation || stream_id != pending) {
+    if (facts.action == FrameAction::Continuation) != (pending != 0)
+        || (pending != 0 && stream_id != pending)
+    {
+        close(session.default_ctx());
         return false;
     }
     if session.shutting_down.get() {
@@ -922,8 +925,7 @@ fn parse(session: &Session, frame: &[u8]) -> bool {
         FrameAction::Settings => return settings(session, payload),
         FrameAction::Headers => return headers(session, stream_id, flags, payload, new_stream),
         FrameAction::Continuation => {
-            let stream = session.stream(stream_id, false);
-            let Some(stream) = stream.filter(|_| pending == stream_id) else {
+            let Some(stream) = session.stream(stream_id, false) else {
                 return false;
             };
             return header_block(session, &stream, flags & FLAG_END_HEADERS, payload);
@@ -1034,6 +1036,8 @@ fn header_block(session: &Session, stream: &Stream, flags: u32, payload: &[u8]) 
     }
     let discard = stream.headers_received.get();
     if !parse_header(session, stream, flags, payload, discard) {
+        // HPACK state belongs to the connection and cannot resume after a decoding error.
+        close(session.default_ctx());
         return false;
     }
     if flags & FLAG_END_HEADERS == 0 {
@@ -1068,6 +1072,9 @@ fn headers_complete(stream: &Stream, limit: u32) -> bool {
     if stream.bad_length.get() {
         send_status_code(ctx, REQUEST_ENTITY_TOO_LARGE.cast_unsigned());
         return false;
+    }
+    if let Some(cookie) = stream.cookie_header.take() {
+        add_string(ctx, Value::Header, b"cookie", &cookie);
     }
     if !stream.negotiates.get() {
         return true;
@@ -1283,8 +1290,8 @@ fn parse_header(
                 .get()
                 .and_then(|n| n.checked_sub(1));
             session.remaining_headers.set(remaining);
-            if remaining.is_some() && !discard && !request_header(session, stream, name, value) {
-                continue;
+            if remaining.is_some() && !discard {
+                request_header(session, stream, name, value);
             }
         }
         let step = sw_rs_http2_inflate_step(inflate_flags, input.len(), false);
@@ -1305,10 +1312,8 @@ fn add_string(ctx: Ctx, array: Value, key: &[u8], value: &[u8]) {
     ctx.insert(array, key, ZString::new(value));
 }
 
-/// One request header; `false` skips the rest of the step (a Cookie, parsed
-/// into `$cookie` and never kept in `$header`, or a Content-Length, checked
-/// here and judged once the block is complete).
-fn request_header(session: &Session, stream: &Stream, name: &[u8], value: &[u8]) -> bool {
+/// Apply one field from the initial request header block.
+fn request_header(session: &Session, stream: &Stream, name: &[u8], value: &[u8]) {
     let ctx = stream.ctx();
     let kind = header_plan(HeaderRole::Request, name, false).kind;
     if name.first() == Some(&b':') {
@@ -1318,12 +1323,18 @@ fn request_header(session: &Session, stream: &Stream, name: &[u8], value: &[u8])
             HeaderKind::Authority => add_string(ctx, Value::Header, b"host", value),
             _ => {}
         }
-        return true;
+        return;
     }
     match kind {
         HeaderKind::Cookie => {
             ctx.cookie(value);
-            false
+            stream.cookie_header.with_taken(|cookie| match cookie {
+                Some(joined) => {
+                    joined.extend_from_slice(b"; ");
+                    joined.extend_from_slice(value);
+                }
+                None => *cookie = Some(value.to_vec()),
+            });
         }
         HeaderKind::ContentLength => {
             if !content_length_valid(session, value) {
@@ -1331,14 +1342,12 @@ fn request_header(session: &Session, stream: &Stream, name: &[u8], value: &[u8])
             }
             // The header keeps the last value.
             add_string(ctx, Value::Header, b"content-length", value);
-            false
         }
         _ => {
             if matches!(kind, HeaderKind::ContentType | HeaderKind::AcceptEncoding) {
                 stream.negotiates.set(true);
             }
             add_string(ctx, Value::Header, name, value);
-            true
         }
     }
 }
