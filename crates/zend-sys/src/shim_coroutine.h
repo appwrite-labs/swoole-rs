@@ -16,6 +16,8 @@ typedef struct swr_zend_coroutine_vm {
     JMP_BUF *bailout;
     zend_fiber_context *current_fiber_context;
     zend_fiber *active_fiber;
+    /* A child stack may outlive the Fiber it inherited at creation. */
+    zend_object *creator_fiber;
     zval *vm_stack_top;
     zval *vm_stack_end;
     zend_vm_stack vm_stack;

@@ -160,6 +160,10 @@ void swr_zend_coroutine_start(swr_zend_coroutine_vm *from, swr_zend_coroutine_vm
     if (fiber) {
         vm->current_fiber_context = fiber;
     }
+    if (vm->active_fiber) {
+        vm->creator_fiber = &vm->active_fiber->std;
+        GC_ADDREF(vm->creator_fiber);
+    }
 }
 
 /* bailout: output handlers run PHP under a native jump target. */
@@ -186,6 +190,8 @@ int swr_zend_coroutine_output_reset(void) {
     return OG(handlers).elements ? reset_output_handlers() : 0;
 }
 
+static void release_fiber(void *fiber) { OBJ_RELEASE((zend_object *) fiber); }
+
 static void throw_exit(void *exception) { zend_throw_exception_internal(exception); }
 
 /* globals, bailout: transfer an exit to the restored frame inside a native trap. */
@@ -195,7 +201,16 @@ int swr_zend_coroutine_finish(swr_zend_coroutine_vm *finished, swr_zend_coroutin
     finished->vm_stack = NULL;
     finished->execute_data = NULL;
     swr_zend_coroutine_restore(origin);
-    return exit ? swr_zend_try(throw_exit, exit) : SWR_ZEND_RETURN;
+    int result = exit ? swr_zend_try(throw_exit, exit) : SWR_ZEND_RETURN;
+    if (finished->creator_fiber) {
+        zend_object *owner = finished->creator_fiber;
+        finished->creator_fiber = NULL;
+        int released = swr_zend_try(release_fiber, owner);
+        if (result == SWR_ZEND_RETURN) {
+            result = released;
+        }
+    }
+    return result;
 }
 
 /* globals: return this executor's main fiber after saving its state. */
