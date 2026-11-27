@@ -111,8 +111,7 @@ if ($case === 'convert_eof' || $case === 'convert_length_type') {
             throw new RuntimeException('port conversion sentinel');
         }
     };
-    // Upstream reports the conversion's exception as uncaught, then rejects the
-    // failed (empty) length type as fatal; observe the state at shutdown (#317).
+    // Observe the state at shutdown after the original conversion exception propagates.
     register_shutdown_function(static function () use ($port, $replacement, $value, $case) {
         $error = error_get_last();
         port_observe(['case'=>$case, 'shutdown'=>true, 'error_type'=>$error['type'] ?? null,

@@ -70,9 +70,9 @@ python3 tests/modules/ports/configuration.py --engine ... --build-manifest targe
 python3 tests/modules/ports/php.py --engine ... --output REPORT
 ```
 
-- `configuration.py`: setting conversion, reentry, ignored SSL, a throwing
-  conversion (reported uncaught, then fatal, as upstream does: #317) and the six
-  fatal rejections, compared across engines. Before running it checks that the
+- `configuration.py` compares setting conversion, reentry, ignored SSL, port
+  collection and the six fatal rejections across engines. It checks that a
+  throwing conversion propagates the original exception before type validation. Before running it checks that the
   one engine with the ports feature bit is the extension the build manifest
   names (pin and SHA-256).
 - `php.py`: reflected property order, visibility and defaults; event registration/lookup, unknown-event warnings, Stringable
