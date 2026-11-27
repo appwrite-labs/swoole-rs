@@ -997,7 +997,7 @@ fn unpadded(flags: u32, payload: &[u8]) -> Option<&[u8]> {
 }
 
 /// A HEADERS frame: a new stream's request headers, or its trailers, which
-/// are decoded (the HPACK table is the connection's) and discarded.
+/// share the connection's HPACK table.
 fn headers(
     session: &Session,
     stream_id: u32,
@@ -1020,9 +1020,17 @@ fn headers(
         close(session.default_ctx());
         return false;
     };
-    session
-        .remaining_headers
-        .set(Some(swoole_rs_http2::max_headers()));
+    let mut remaining = Ok(swoole_rs_http2::max_headers());
+    if stream.headers_received.get() {
+        crate::parse::init_property(
+            &mut stream.ctx().state().request,
+            crate::parse::Property::Trailer,
+        );
+        if flags & FLAG_END_STREAM == 0 {
+            remaining = Err(swoole_rs_http2::error_code::PROTOCOL_ERROR);
+        }
+    }
+    session.remaining_headers.set(remaining);
     header_block(session, &stream, flags, block)
 }
 
@@ -1033,8 +1041,8 @@ fn header_block(session: &Session, stream: &Stream, flags: u32, payload: &[u8]) 
     if stream.request_received.get() {
         return false;
     }
-    let discard = stream.headers_received.get();
-    if !parse_header(session, stream, flags, payload, discard) {
+    let trailers = stream.headers_received.get();
+    if !parse_header(session, stream, flags, payload, trailers) {
         // HPACK state belongs to the connection and cannot resume after a decoding error.
         close(session.default_ctx());
         return false;
@@ -1044,11 +1052,10 @@ fn header_block(session: &Session, stream: &Stream, flags: u32, payload: &[u8]) 
         return true;
     }
     session.header_stream_id.set(0);
-    if session.remaining_headers.get().is_none() {
-        const ENHANCE_YOUR_CALM: u32 = 11;
-        return reset_stream(session, stream, ENHANCE_YOUR_CALM);
+    if let Err(code) = session.remaining_headers.get() {
+        return reset_stream(session, stream, code);
     }
-    if !discard && !headers_complete(stream, session.max_body_size) {
+    if !trailers && !headers_complete(stream, session.max_body_size) {
         return false;
     }
     stream.headers_received.set(true);
@@ -1084,6 +1091,7 @@ fn headers_complete(stream: &Stream, limit: u32) -> bool {
         if media == Media::UrlEncoded {
             set(ctx, Field::Form, 1);
         } else if media == Media::Multipart && !ctx.multipart_start(value.bytes(), limit) {
+            close(ctx);
             return false;
         }
     }
@@ -1267,7 +1275,7 @@ fn parse_header(
     stream: &Stream,
     flags: u32,
     mut input: &[u8],
-    discard: bool,
+    trailers: bool,
 ) -> bool {
     if flags & FLAG_PRIORITY != 0 {
         // The stream dependency and weight are ignored.
@@ -1296,16 +1304,32 @@ fn parse_header(
         };
         input = rest;
         let inflate_flags = step.flags();
-        // Trailers are decoded for the HPACK table but never exposed or acted on.
-        if let Some((name, value)) = step.header {
-            let remaining = session
-                .remaining_headers
-                .get()
-                .and_then(|n| n.checked_sub(1));
+        if let Some((name, value)) = step.header
+            && let Ok(count) = session.remaining_headers.get()
+        {
+            const ENHANCE_YOUR_CALM: u32 = 11;
+            let remaining = if count == 0 {
+                Err(ENHANCE_YOUR_CALM)
+            } else if name.is_empty()
+                || (name.eq_ignore_ascii_case(b"te") && !value.eq_ignore_ascii_case(b"trailers"))
+                || (trailers && !valid_trailer(name, value))
+            {
+                Err(swoole_rs_http2::error_code::PROTOCOL_ERROR)
+            } else {
+                if trailers {
+                    crate::parse::edit(
+                        &mut stream.ctx().state().request,
+                        crate::parse::Property::Trailer,
+                        |array| {
+                            array.merge(name, swoole_rs_zend::Owned::string(ZString::new(value)));
+                        },
+                    );
+                } else {
+                    request_header(session, stream, name, value);
+                }
+                Ok(count - 1)
+            };
             session.remaining_headers.set(remaining);
-            if remaining.is_some() && !discard {
-                request_header(session, stream, name, value);
-            }
         }
         let step = sw_rs_http2_inflate_step(inflate_flags, input.len(), false);
         if step.end_headers {
@@ -1323,6 +1347,17 @@ fn parse_header(
 /// `add_assoc_stringl_ex` on the request's `$server` or `$header`.
 fn add_string(ctx: Ctx, array: Value, key: &[u8], value: &[u8]) {
     ctx.insert(array, key, ZString::new(value));
+}
+
+/// A lowercase HTTP field name and a value without leading or trailing whitespace.
+fn valid_trailer(name: &[u8], value: &[u8]) -> bool {
+    name.iter()
+        .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || b"!#$%&'*+-.^_`|~".contains(c))
+        && !matches!(value.first(), Some(b' ' | b'\t'))
+        && !matches!(value.last(), Some(b' ' | b'\t'))
+        && value
+            .iter()
+            .all(|&c| c == b'\t' || (c >= 0x20 && c != 0x7f))
 }
 
 /// Apply one field from the initial request header block.

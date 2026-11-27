@@ -276,9 +276,8 @@ const HEADER_KEYS: [Key; 8] = [
 static KEYS: [Interned; 25] = [const { Interned::new() }; 25];
 static METHODS: [Interned; llhttp::METHODS.len()] =
     [const { Interned::new() }; llhttp::METHODS.len()];
-/// `Swoole\Http\Request`'s `get`, `post`, `cookie`, `files` and `tmpfiles` slots.
-/// ... and `server` and `header`.
-static PROPERTIES: [Declared; 7] = [const { Declared::new() }; 7];
+/// Declared array slots on `Swoole\Http\Request`, in [`Property`] order.
+static PROPERTIES: [Declared; 8] = [const { Declared::new() }; 8];
 /// `Swoole\Http\Request`'s declared `fd` slot.
 pub(crate) static REQUEST_FD: Declared = Declared::new();
 static CODECS: AtomicU32 = AtomicU32::new(0);
@@ -303,6 +302,7 @@ pub(crate) enum Property {
     TmpFiles,
     Server,
     Header,
+    Trailer,
 }
 
 /// MINIT: intern the keys and find the array properties' slots.
@@ -323,6 +323,7 @@ pub(crate) fn minit(minit: &Minit, codecs: u32) {
         c"tmpfiles",
         c"server",
         c"header",
+        c"trailer",
     ]) {
         property.resolve(&crate::request::REQUEST, name);
     }
