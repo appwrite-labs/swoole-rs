@@ -403,7 +403,16 @@ pub(crate) fn peer_close(serv: view::Server<'_>, reactor: Reactor, event: &Event
     }
     let session = conn.session_id();
     let original = sock.as_ptr();
-    track_worker_close(serv, reactor, conn);
+    // v6.3 process dispatch requires a recovery timer before writing CLOSE to the worker pipe.
+    if !track_worker_close(serv, reactor, conn) {
+        swoole_rs_corebase::log::warning(
+            c"Server::request_close",
+            format_args!(
+                "failed to monitor worker exit for session#{session}; releasing transport"
+            ),
+        );
+        return close_connection(serv, reactor, Some(sock));
+    }
     if crate::server_methods::notify(serv, conn, ServerEvent::Close) {
         return true;
     }
@@ -426,13 +435,13 @@ pub(crate) fn peer_close(serv: view::Server<'_>, reactor: Reactor, event: &Event
 
 /// The owning process-mode reactor checks pending closes after a manager-reaped exit.
 /// An acknowledgement removes the session before its descriptor can be reused.
-fn track_worker_close(serv: view::Server<'_>, reactor: Reactor, conn: Connection<'_>) {
+fn track_worker_close(serv: view::Server<'_>, reactor: Reactor, conn: Connection<'_>) -> bool {
     if serv.config().mode_ != Mode::Process || reactor.handle().wait_exit() {
-        return;
+        return true;
     }
     let id = usize::from(reactor.handle().id());
     let Some(thread) = serv.state().tables_ref().reactor_thread(id) else {
-        return;
+        return false;
     };
     if thread.close_timer.get().is_none() {
         let timer = swoole_rs_corebase::timer::add_fn(1000, true, move || {
@@ -440,7 +449,7 @@ fn track_worker_close(serv: view::Server<'_>, reactor: Reactor, conn: Connection
                 check_worker_closes(serv, reactor, id);
             }
         });
-        let Some(timer) = timer else { return };
+        let Some(timer) = timer else { return false };
         thread.close_timer.set(Some(timer));
     }
     thread.waiting_close.with_taken(|waiting| {
@@ -450,6 +459,7 @@ fn track_worker_close(serv: view::Server<'_>, reactor: Reactor, conn: Connection
         waiting.push(conn.session_id());
         conn.set_close_wait_index(waiting.len());
     });
+    true
 }
 
 fn check_worker_closes(serv: view::Server<'_>, reactor: Reactor, id: usize) {
@@ -682,6 +692,12 @@ pub(crate) mod tests {
     /// The live server with sessions 1 and 2 accepted, and their clients.
     pub(crate) fn accepted() -> (LiveServer, [std::net::TcpStream; 2]) {
         let live = LiveServer::new();
+        let bus = crate::reactor_ops::PoolBus::std(swoole_rs_bus::MessageBus::create(
+            swoole_rs_corebase::constants::SW_BUFFER_SIZE_STD as usize,
+        ));
+        let threads =
+            crate::reactor_ops::ThreadRecord::new_array(1, crate::objects::Bus::over(&bus));
+        live.state().tables_ref().install_reactor_threads(threads);
         let clients = [(); 2].map(|()| {
             let client = live.connect();
             let event = live.accept_event();
@@ -790,6 +806,16 @@ pub(crate) mod tests {
         assert_eq!(calls(), [], "a queued close closes now");
         assert!(closed(conn));
         assert!(!peer_close(serv, reactor, &conn.event(0, 0)), "gone");
+    }
+
+    #[test]
+    fn peer_close_releases_a_session_when_monitoring_is_unavailable() {
+        let (mut live, _clients) = accepted();
+        drop(live.tables_mut().take_reactor_threads());
+        let conn = session(&live, 1);
+        assert!(peer_close(live.server(), live.reactor(), &conn.event(0, 0)));
+        assert!(closed(conn));
+        assert_eq!(calls(), []);
     }
 
     #[test]
