@@ -252,6 +252,12 @@ fn constructed<'c>(call: &'c Call<'_>) -> Option<&'c Lock> {
 
 /// `__construct(int $type = Lock::MUTEX)`.
 fn lock_construct(call: &Call) {
+    let Ok(requested) = call
+        .arity(0, 1)
+        .and_then(|()| call.long(1, Kind::Mutex.code()))
+    else {
+        return;
+    };
     let Some(this) = call.custom::<ThreadLock>() else {
         return;
     };
@@ -260,12 +266,6 @@ fn lock_construct(call: &Call) {
         call.set_bool(false);
         return;
     }
-    let Ok(requested) = call
-        .arity(0, 1)
-        .and_then(|()| call.long(1, Kind::Mutex.code()))
-    else {
-        return;
-    };
     // Upstream throws a C++ exception, which terminates the process, when a
     // lock cannot be made.
     // A mutex any thread may unlock, as a thread lock's users do.

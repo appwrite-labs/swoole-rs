@@ -765,10 +765,6 @@ pub(crate) fn class(object: ServerObject<'_>) -> String {
 
 fn construct(call: &Call) {
     let object = ServerObject::this(call);
-    if object.server().is_some() {
-        call.throw_constructed_twice();
-        return call.set_bool(false);
-    }
     if !swoole_rs_phpswoole::globals().cli.get() {
         let text = message!("{} can only be used in CLI mode", class(object));
         exception(call, text.as_cstr(), -1);
@@ -788,6 +784,10 @@ fn construct(call: &Call) {
     let Ok((address, port, mode, kind)) = parsed else {
         return call.set_bool(false);
     };
+    if object.server().is_some() {
+        call.throw_constructed_twice();
+        return call.set_bool(false);
+    }
     let thread = crate::server::THREAD.load(Ordering::Relaxed);
     let Some(server_mode) = Mode::from_code(mode).filter(|&m| thread || m != Mode::Thread) else {
         set_last_error(SW_ERROR_INVALID_PARAMS);

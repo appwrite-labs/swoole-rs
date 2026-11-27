@@ -69,6 +69,9 @@ pub(crate) fn object(barrier: Option<&Arc<Barrier>>) -> Owned {
 /// `__construct(int $count)`: the constructed check comes before the
 /// arguments, as upstream's does.
 fn construct(call: &Call) {
+    let Ok(count) = call.arity(1, 1).and_then(|()| call.long(1, 0)) else {
+        return;
+    };
     // The methods are non-static and the class final.
     let Some(BarrierObject(cell)) = call.custom() else {
         return;
@@ -77,9 +80,6 @@ fn construct(call: &Call) {
         call.throw_constructed_twice();
         return;
     }
-    let Ok(count) = call.arity(1, 1).and_then(|()| call.long(1, 0)) else {
-        return;
-    };
     if count < 2 {
         call.throw(
             swoole_rs_phpswoole::exception(),
