@@ -127,7 +127,7 @@ fn write_now(
     write: impl Fn(SocketIo) -> Option<usize>,
 ) -> Option<(Connection<'_>, Option<usize>)> {
     let conn = state.connection(session_id, Lookup::VerifiedTls)?;
-    if conn.overflow() {
+    if conn.overflow() || conn.peer_closed() {
         return None;
     }
     let socket = conn.socket()?;
@@ -291,11 +291,14 @@ fn to_connection(
     );
     let send_yield = config.send_yield.get();
     let yield_error = || log::set_last_error(E::SW_ERROR_OUTPUT_SEND_YIELD as c_int);
-    if conn.overflow()
-        && config.mode_ != Mode::Process
-        && matches!(kind, Some(ServerEvent::SendFile | ServerEvent::SendData))
-    {
-        if conn.peer_closed() || conn.close_reset() || conn.close_force() {
+    let output = matches!(kind, Some(ServerEvent::SendFile | ServerEvent::SendData));
+    if output && conn.peer_closed() {
+        let m = format_args!("socket#{} is closed by client", conn.fd());
+        error(LOG_NOTICE, E::SW_ERROR_SESSION_CLOSED_BY_CLIENT, m);
+        return false;
+    }
+    if output && conn.overflow() && config.mode_ != Mode::Process {
+        if conn.close_reset() || conn.close_force() {
             let m = format_args!("socket#{} is closed by client", conn.fd());
             error(LOG_NOTICE, E::SW_ERROR_SESSION_CLOSED_BY_CLIENT, m);
         } else if send_yield {
@@ -359,11 +362,6 @@ fn to_connection(
             return false;
         }
     } else {
-        if conn.peer_closed() {
-            let m = format_args!("socket#{} is closed by client", conn.fd());
-            error(LOG_NOTICE, E::SW_ERROR_SESSION_CLOSED_BY_CLIENT, m);
-            return true;
-        }
         let callback = |index| state.callbacks.slot(index).is_set();
         let (on_full, on_empty) = (callback(BufferFull), callback(BufferEmpty));
         if sock.read(SocketFields::output_full) {
@@ -634,6 +632,15 @@ mod tests {
         assert_eq!(a.read(5), b"hello");
         assert_eq!(a.queued(), 0, "nothing buffered");
         assert!(a.conn().last_send_time() > 0.0, "touched");
+        a.live.config_mut().mode_ = Mode::Base;
+        a.conn().set_peer_closed(true);
+        assert!(!send(a.serv(), 1, b"after close"));
+        assert!(a.client.set_nonblocking(true).is_ok());
+        assert_eq!(
+            (&a.client).read(&mut [0; 1]).unwrap_err().kind(),
+            std::io::ErrorKind::WouldBlock
+        );
+        assert_eq!(a.queued(), 0);
     }
 
     #[test]
@@ -692,7 +699,7 @@ mod tests {
         a.conn().set_peer_closed(true);
         assert_eq!(
             a.send(ServerEvent::SendData, 1, b"more"),
-            0,
+            SW_ERR,
             "closed by the client"
         );
         assert_eq!(a.queued(), 5);
