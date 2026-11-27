@@ -100,7 +100,22 @@ pub(crate) fn dispatch(serv: view::Server<'_>, send: &mut SendData) -> bool {
     {
         worker.count_dispatch();
     }
-    hybrid().process_send(serv, Pipe::Worker(target), send)
+    let close_owner = if event == Some(ServerEvent::Close) {
+        serv.worker_record(target)
+            .map(swoole_rs_corebase::process::worker_record::Worker::pid)
+            .filter(|pid| *pid > 0)
+    } else {
+        None
+    };
+    let session = send.info().fd;
+    let sent = hybrid().process_send(serv, Pipe::Worker(target), send);
+    if sent
+        && let Some(pid) = close_owner
+        && let Some(conn) = serv.state().connection(session, Lookup::Verified)
+    {
+        conn.set_close_worker(Some((target, pid)));
+    }
+    sent
 }
 
 /// `ProcessFactory::finish`: a worker sends `send` to its session through the reactor

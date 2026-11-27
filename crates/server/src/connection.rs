@@ -393,31 +393,46 @@ pub(crate) fn idle_timeout(serv: view::Server<'_>, reactor: Reactor, conn: Conne
     let active = conn
         .socket()
         .map_or_default(|s| s.read(|s| s.active_within(now, idle * 1000.0)));
-    if active {
-        return;
+    if !active && begin_idle_close(serv, reactor, conn) {
+        reactor.trigger_close(&mut conn.event(0, 0));
     }
-    if serv.config().disable_notify.get() || conn.closed().load(Relaxed) != 0 || conn.close_force()
-    {
-        crate::conn_io::close_connection(serv, reactor, conn.socket());
-        return;
-    }
+}
+
+/// Detach an expired stream and signal EOF before dispatching its close notification.
+pub(crate) fn begin_idle_close(
+    serv: view::Server<'_>,
+    reactor: Reactor,
+    conn: Connection<'_>,
+) -> bool {
     let Some(socket) = conn.socket() else {
-        return;
+        return false;
     };
+    // An elapsed heartbeat cannot retire a session while its live worker still owes onClose.
+    if conn.close_force()
+        && conn.closed().load(Relaxed) == 0
+        && let Some((worker, pid)) = conn.close_worker()
+        && serv.worker_record(worker).is_some_and(|w| w.pid() == pid)
+    {
+        return false;
+    }
+    if serv.config().disable_notify.get()
+        || conn.closed().load(Relaxed) != 0
+        || conn.close_force()
+        || (conn.ssl() && !conn.ssl_ready())
+        || socket.read(SocketFields::tls_handshaking)
+    {
+        crate::conn_io::close_connection(serv, reactor, Some(socket));
+        return false;
+    }
     if !socket.read(SocketFields::has_left_reactor) && !reactor.del(*socket) {
-        return;
+        return false;
     }
     swoole_rs_corebase::timer::del_disarmed(socket.edit(SocketFields::disarm_recv_timer));
-    if conn.ssl() && !conn.ssl_ready() {
-        crate::conn_io::close_connection(serv, reactor, Some(socket));
-        return;
-    }
     if !conn.close_reset() {
         socket.read(|s| s.finish_stream(true));
     }
     conn.set_close_force(true);
-    let mut event = conn.event(0, 0);
-    reactor.trigger_close(&mut event);
+    true
 }
 
 /// `Server::disable_accept`: stop accepting on stream ports until the retry timer.

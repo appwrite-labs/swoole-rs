@@ -233,14 +233,9 @@ pub(crate) fn heartbeat(serv: view::Server<'_>, reactor: Reactor) {
         if serv.healthy(now, conn) {
             return;
         }
-        let ssl_pending = conn
-            .socket()
-            .is_some_and(|s| s.read(swoole_rs_corebase::reactor::SocketFields::tls_handshaking));
-        if ssl_pending || serv.config().disable_notify.get() || conn.close_force() {
-            crate::conn_io::close_connection(serv, reactor, conn.socket());
+        if !crate::connection::begin_idle_close(serv, reactor, conn) {
             return;
         }
-        conn.set_close_force(true);
         close(
             serv,
             reactor,
@@ -432,7 +427,11 @@ mod tests {
 
     #[test]
     fn heartbeat_closes_or_notifies_idle_connections() {
-        let (live, _clients) = accepted();
+        let mut worker = swoole_rs_corebase::process::worker_record::WorkerRecord::boxed();
+        let (mut live, _clients) = accepted();
+        live.config_mut().worker_num.set(1);
+        live.tables_mut().workers =
+            unsafe { crate::records::tests::naming_at(&raw mut *worker, 1) };
         let (serv, reactor) = (live.server(), live.reactor());
         live.port().heartbeat_idle_time.set(1);
         let (idle, forced) = (session(&live, 1), session(&live, 2));
@@ -449,5 +448,18 @@ mod tests {
         idle.set_last_recv_time(swoole_rs_corebase::microtime());
         heartbeat(serv, reactor);
         assert_eq!(calls(), [], "healthy");
+
+        idle.set_last_recv_time(1.0);
+        idle.set_close_worker(Some((0, 123)));
+        let owner = serv.worker_record(0).unwrap();
+        owner.set_pid(123);
+        heartbeat(serv, reactor);
+        assert!(idle.is_active(), "the original worker still owes onClose");
+        owner.set_pid(124);
+        heartbeat(serv, reactor);
+        assert!(
+            closed(idle),
+            "the replacement cannot acknowledge the old close"
+        );
     }
 }

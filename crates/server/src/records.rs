@@ -40,6 +40,8 @@ pub struct ConnectionRecord {
     pub socket_type: Cell<SocketTypeCode>,
     pub fd: Cell<c_int>,
     pub worker_id: Cell<c_int>,
+    /// The event worker that accepted the close notification, identified across restarts.
+    close_worker: Cell<Option<(u16, c_int)>>,
     pub session_id: Cell<libc::c_long>,
     pub ssl: Cell<bool>,
     pub ssl_ready: Cell<bool>,
@@ -116,6 +118,7 @@ impl ConnectionRecord {
         self.socket_type.set(SocketTypeCode::default());
         self.fd.set(0);
         self.worker_id.set(0);
+        self.close_worker.set(None);
         self.session_id.set(0);
         for flag in [
             &self.ssl,
@@ -376,6 +379,7 @@ impl<'a> Connection<'a> {
     field!(socket_type, set_socket_type: SocketTypeCode);
     field!(fd, set_fd: c_int);
     field!(worker_id, set_worker_id: c_int);
+    field!(@[pub(crate)] close_worker = close_worker, set_close_worker: Option<(u16, c_int)>);
     field!(session_id, set_session_id: libc::c_long);
     field!(ssl, set_ssl: bool);
     field!(ssl_ready, set_ssl_ready: bool);

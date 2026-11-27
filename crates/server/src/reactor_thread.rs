@@ -148,14 +148,9 @@ pub(crate) fn close(serv: view::Server<'_>, reactor: Reactor, session: c_long) {
         log::error_log(SW_LOG_TRACE, code, c"ReactorThread::close_connection", m);
         return;
     };
-    // A TLS connection that never finished its handshake has nobody to notify.
-    let handshaking = conn.ssl() && !conn.ssl_ready();
-    if serv.state().config_ref().disable_notify.get() || conn.close_force() || handshaking {
-        crate::conn_io::close_connection(serv, reactor, conn.socket());
-        return;
+    if crate::connection::begin_idle_close(serv, reactor, conn) {
+        reactor.trigger_close(&mut conn.event(0, 0));
     }
-    conn.set_close_force(true);
-    reactor.trigger_close(&mut conn.event(0, 0));
 }
 
 /// `Server::heartbeat_check`: close `reactor`'s connections idle past their port's
