@@ -396,6 +396,11 @@ fn worker<'a>(call: &'a Call, method: &CStr) -> Option<(view::Server<'a>, Facts)
     Some((serv, facts))
 }
 
+/// Release outside the table borrow so the callable's destructor can submit another task.
+fn release_callback(id: i64) {
+    drop(crate::lifecycle::with_tasks(|p| p.callbacks.remove(&id)).map(ManuallyDrop::into_inner));
+}
+
 fn task(call: &Call) {
     let Some(serv) = running(call) else { return };
     let (Ok(()), Ok(dst)) = (call.arity(1, 3), call.long(2, -1)) else {
@@ -425,6 +430,9 @@ fn task(call: &Call) {
     if dispatch(serv, &mut buf, target(dst)) {
         call.set_long(id);
     } else {
+        if TaskFlag::from_bits(buf.packed().head().ext_flags).contains(CALLBACK) {
+            release_callback(id);
+        }
         call.set_bool(false);
     }
 }
@@ -750,17 +758,18 @@ pub(crate) fn on_finish(server: view::Server<'_>, task: Packed<'_>) -> Result<bo
     if flags.contains(COROUTINE) {
         return resume(id, data).map(|()| true);
     }
-    let mut callback = flags.contains(CALLBACK);
+    let callback = flags.contains(CALLBACK);
     let cb = if callback {
         // Its own reference: the callback may replace the pending entry.
-        let cb =
-            crate::lifecycle::with_tasks(|p| p.callbacks.get(&id).map(|cb| Callable::clone(cb)));
-        callback = cb.is_some();
-        cb
+        crate::lifecycle::with_tasks(|p| p.callbacks.get(&id).map(|cb| Callable::clone(cb)))
     } else {
         crate::lifecycle::callback(crate::lifecycle::ServerCallback::Finish)
     };
     let Some(cb) = cb else {
+        if callback {
+            expired(id);
+            return Ok(true);
+        }
         let outcome = event_warning(c"require 'onFinish' callback");
         drop(data);
         return outcome.map(|()| false);
@@ -785,13 +794,19 @@ pub(crate) fn on_finish(server: view::Server<'_>, task: Packed<'_>) -> Result<bo
         called => called.map(drop),
     };
     if callback {
-        // Freed once the table is no longer borrowed.
-        drop(
-            crate::lifecycle::with_tasks(|p| p.callbacks.remove(&id)).map(ManuallyDrop::into_inner),
-        );
+        release_callback(id);
     }
     drop(args);
     outcome.map(|()| true)
+}
+
+fn expired(id: i64) {
+    log::error_log(
+        SW_LOG_WARNING,
+        SW_ERROR_TASK_TIMEOUT,
+        c"php_swoole_server_onFinish",
+        format_args!("task[{id}] has expired"),
+    );
 }
 
 /// A coroutine task's result: into `taskwait`'s return value, or at its index
@@ -801,12 +816,7 @@ fn resume(id: i64, data: Owned) -> Result<(), Bailout> {
         let (task, index) = p.coroutines.remove(&id)?;
         Some((task.upgrade()?, index))
     }) else {
-        log::error_log(
-            SW_LOG_WARNING,
-            SW_ERROR_TASK_TIMEOUT,
-            c"php_swoole_server_onFinish",
-            format_args!("task[{id}] has expired"),
-        );
+        expired(id);
         return Ok(());
     };
     if let Some(index) = index {
