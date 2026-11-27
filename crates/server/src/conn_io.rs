@@ -403,9 +403,8 @@ pub(crate) fn peer_close(serv: view::Server<'_>, reactor: Reactor, event: &Event
     }
     let session = conn.session_id();
     let original = sock.as_ptr();
-    if track_worker_close(serv, reactor, conn)
-        && crate::server_methods::notify(serv, conn, ServerEvent::Close)
-    {
+    track_worker_close(serv, reactor, conn);
+    if crate::server_methods::notify(serv, conn, ServerEvent::Close) {
         return true;
     }
     // The notification can enter PHP and retire this session before returning.
@@ -427,13 +426,13 @@ pub(crate) fn peer_close(serv: view::Server<'_>, reactor: Reactor, event: &Event
 
 /// The owning process-mode reactor checks pending closes after a manager-reaped exit.
 /// An acknowledgement removes the session before its descriptor can be reused.
-fn track_worker_close(serv: view::Server<'_>, reactor: Reactor, conn: Connection<'_>) -> bool {
+fn track_worker_close(serv: view::Server<'_>, reactor: Reactor, conn: Connection<'_>) {
     if serv.config().mode_ != Mode::Process || reactor.handle().wait_exit() {
-        return true;
+        return;
     }
     let id = usize::from(reactor.handle().id());
     let Some(thread) = serv.state().tables_ref().reactor_thread(id) else {
-        return true;
+        return;
     };
     if thread.close_timer.get().is_none() {
         let timer = swoole_rs_corebase::timer::add_fn(1000, true, move || {
@@ -441,7 +440,7 @@ fn track_worker_close(serv: view::Server<'_>, reactor: Reactor, conn: Connection
                 check_worker_closes(serv, reactor, id);
             }
         });
-        let Some(timer) = timer else { return false };
+        let Some(timer) = timer else { return };
         thread.close_timer.set(Some(timer));
     }
     thread.waiting_close.with_taken(|waiting| {
@@ -451,7 +450,6 @@ fn track_worker_close(serv: view::Server<'_>, reactor: Reactor, conn: Connection
         waiting.push(conn.session_id());
         conn.set_close_wait_index(waiting.len());
     });
-    true
 }
 
 fn check_worker_closes(serv: view::Server<'_>, reactor: Reactor, id: usize) {
