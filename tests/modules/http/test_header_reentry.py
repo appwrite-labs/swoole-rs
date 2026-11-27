@@ -214,3 +214,24 @@ def test_standalone_request_upload_uses_php_temp_directory(engine, tmp_path):
     result = subprocess.run(engine.command('-d', f'sys_temp_dir={tmp_path}', '-r', code),
                             capture_output=True, text=True, check=True, timeout=10)
     assert [json.loads(line) for line in result.stdout.splitlines()] == [[str(tmp_path), 'notes'], False]
+
+
+def test_response_create_rejects_missing_server_and_request_context(engine):
+    code = r'''
+    use Swoole\Http\Request;
+    use Swoole\Http\Response;
+    foreach ([1, [new stdClass, new Request]] as $target) {
+        try {
+            Response::create($target);
+            echo "unexpected success\n";
+        } catch (Swoole\Exception $e) {
+            echo json_encode([$e->getCode() === SWOOLE_ERROR_INVALID_PARAMS, $e->getMessage()]), "\n";
+        }
+    }
+    '''
+    result = subprocess.run(engine.command('-r', code), capture_output=True, text=True,
+                            check=True, timeout=10)
+    assert [json.loads(line) for line in result.stdout.splitlines()] == [
+        [True, r'failed to create Http\Response from the given arguments'],
+        [True, r'parameter $1.second has no valid Http\Request context'],
+    ]
