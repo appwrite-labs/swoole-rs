@@ -987,6 +987,15 @@ fn parse(session: &Session, frame: &[u8]) -> bool {
     true
 }
 
+/// HEADERS and DATA share the same optional pad length and trailing padding.
+fn unpadded(flags: u32, payload: &[u8]) -> Option<&[u8]> {
+    if flags & FLAG_PADDED == 0 {
+        return Some(payload);
+    }
+    let (&padding, rest) = payload.split_first()?;
+    rest.get(..rest.len().checked_sub(usize::from(padding))?)
+}
+
 /// A HEADERS frame: a new stream's request headers, or its trailers, which
 /// are decoded (the HPACK table is the connection's) and discarded.
 fn headers(
@@ -1007,20 +1016,10 @@ fn headers(
         session.last_stream_id.set(stream_id);
     }
     session.header_end_stream.set(flags & FLAG_END_STREAM != 0);
-    let mut block = payload;
-    if flags & FLAG_PADDED != 0 {
-        // The pad length, the block, then that much padding.
-        let Some((&pad, rest)) = payload.split_first() else {
-            close(session.default_ctx());
-            return false;
-        };
-        let kept = rest.len().checked_sub(usize::from(pad));
-        let Some(kept) = kept.and_then(|kept| rest.get(..kept)) else {
-            close(session.default_ctx());
-            return false;
-        };
-        block = kept;
-    }
+    let Some(block) = unpadded(flags, payload) else {
+        close(session.default_ctx());
+        return false;
+    };
     session
         .remaining_headers
         .set(Some(swoole_rs_http2::max_headers()));
@@ -1202,6 +1201,10 @@ fn reset_stream(session: &Session, stream: &Stream, code: u32) -> bool {
 /// A DATA frame: buffer the body, keep the windows open and dispatch the
 /// request at the end of the stream.
 fn data(session: &Session, stream_id: u32, flags: u32, payload: &[u8]) -> bool {
+    let Some(body) = unpadded(flags, payload) else {
+        close(session.default_ctx());
+        return false;
+    };
     let Some(stream) = session.stream(stream_id, false) else {
         if stream_id != 0 && session.recently_reset.get().contains(&stream_id) {
             connection_flow(session, session.default_ctx(), payload.len());
@@ -1221,7 +1224,7 @@ fn data(session: &Session, stream_id: u32, flags: u32, payload: &[u8]) -> bool {
     let ctx = stream.ctx();
     let length = payload.len();
     if length > 0 {
-        if get(ctx, Field::End) != 0 || ctx.data_append(payload, session.max_body_size).is_err() {
+        if get(ctx, Field::End) != 0 || ctx.data_append(body, session.max_body_size).is_err() {
             connection_flow(session, ctx, length);
             return reset_stream(session, &stream, 0);
         }
