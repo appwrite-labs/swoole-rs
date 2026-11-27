@@ -571,7 +571,7 @@ mod tests {
         }
         fn pack(&mut self, index: u16, event: &mut TaskBuffer) -> Result<Option<i64>, Bailed> {
             let id = self.packs[usize::from(index)];
-            event.set_fd(id);
+            event.set_event(ServerEvent::Task, id);
             // The script's -1 is a failed pack.
             Ok((id >= 0).then_some(id))
         }
@@ -649,7 +649,7 @@ mod tests {
         let mut result = vec![0u64; EVENT_SIZE / 8];
         let mut tasks = waiting(script, &counters, &mut result);
         let mut task = TaskBuffer::default();
-        task.set_fd(7);
+        task.set_event(ServerEvent::Task, 7);
         // Another task's result arrives first; this one never does.
         let done = tasks.task_sync(task.packed(), None, 1.0);
         assert_eq!(done.ok(), Some(false));

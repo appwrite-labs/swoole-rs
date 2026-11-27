@@ -221,18 +221,14 @@ impl TaskBuffer {
     }
 
     /// Identify the synchronous batch sharing a result slot.
-    pub fn set_batch_id(&mut self, id: u64) {
+    pub(super) fn set_batch_id(&mut self, id: u64) {
         self.head.msg_id = id;
     }
 
-    /// `info.type = kind`.
-    pub fn set_kind(&mut self, kind: u8) {
-        self.head.kind = kind;
-    }
-
-    /// `info.fd = fd`.
-    pub fn set_fd(&mut self, fd: std::ffi::c_long) {
-        self.head.fd = fd;
+    /// Set the event and the ID its receiver uses to match it.
+    pub fn set_event(&mut self, event: ServerEvent, id: std::ffi::c_long) {
+        self.head.kind = event.code();
+        self.head.fd = id;
     }
 
     /// `info.server_fd = server_fd`.

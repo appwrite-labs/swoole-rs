@@ -189,8 +189,7 @@ pub(crate) fn send(
         if !buf.pack(message) {
             return false;
         }
-        buf.set_kind(ServerEvent::CommandRequest.code());
-        buf.set_fd(request_id);
+        buf.set_event(ServerEvent::CommandRequest, request_id);
         buf.set_server_fd(command_id.c_cast::<u16>());
         let task = buf.packed();
         let (gs, pool) = (serv.counters(), serv.task_pool_ref());

@@ -67,35 +67,6 @@ pub fn signal_kqueue_clear(kq: c_int, available: bool) {
     crate::process::signal::signal_reset();
 }
 
-/// `ReactorKqueue::wait`'s signal entry for `signo`: its registration is read before
-/// its handler, which may register another, runs.
-pub(crate) fn signal_kqueue_dispatch(signo: c_int) {
-    dispatch(signo, crate::process::signal::signal_activated(signo));
-}
-
-/// An activated signal (`Some` handler) runs its handler unless that is `SIG_IGN`,
-/// and warns when it has none.
-fn dispatch(signo: c_int, activated: Option<Handler>) {
-    let Some(handler) = activated else {
-        return;
-    };
-    match handler {
-        Handler::NONE => {
-            let name = crate::process::signal::signal_name(signo);
-            crate::log::error_log(
-                crate::log::LogLevel::SW_LOG_WARNING,
-                swoole_rs_error::ErrorCode::SW_ERROR_UNREGISTERED_SIGNAL as c_int,
-                c"ReactorKqueue::wait",
-                format_args!(
-                    "Unable to find callback function for signal {}",
-                    name.as_cstr().to_string_lossy()
-                ),
-            );
-        }
-        handler => handler.call(signo),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -116,7 +87,7 @@ mod tests {
             (Some(handler), libc::SIGUSR1),
         ] {
             SEEN.store(0, std::sync::atomic::Ordering::SeqCst);
-            dispatch(libc::SIGUSR1, activated);
+            crate::process::signal::dispatch_kqueue(libc::SIGUSR1, activated);
             assert_eq!(SEEN.load(std::sync::atomic::Ordering::SeqCst), seen);
         }
     }

@@ -314,7 +314,7 @@ pub fn send_pipe_message(
     worker_id: u32,
     msg: &mut swoole_rs_corebase::process::task_file::TaskBuffer,
 ) -> bool {
-    msg.set_kind(ServerEvent::PipeMessage.code());
+    msg.set_event(ServerEvent::PipeMessage, msg.head().fd);
     hybrid().pipe_to_worker(serv, worker_id, msg)
 }
 

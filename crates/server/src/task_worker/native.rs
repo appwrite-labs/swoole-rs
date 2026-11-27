@@ -287,8 +287,7 @@ pub fn finish(
     let flags = flags.c_cast::<u16>();
     let reply = |buf: &mut TaskBuffer, flags| {
         buf.add_flags(flags);
-        buf.set_kind(ServerEvent::Finish.code());
-        buf.set_fd(task.fd);
+        buf.set_event(ServerEvent::Finish, task.fd);
     };
     let mut buf = TaskBuffer::default();
     let sent = if TaskFlag::from_bits(task.ext_flags).contains(TaskFlag::SW_TASK_NONBLOCK) {

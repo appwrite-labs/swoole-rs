@@ -218,8 +218,38 @@ pub(crate) fn register_with_reactor() {
             target_os = "netbsd",
             target_os = "dragonfly"
         ))]
-        kqueue: crate::process::signal_kqueue::signal_kqueue_dispatch,
+        kqueue: |signo| dispatch_kqueue(signo, signal_activated(signo)),
     });
+}
+
+#[cfg(any(
+    target_os = "macos",
+    target_os = "freebsd",
+    target_os = "openbsd",
+    target_os = "netbsd",
+    target_os = "dragonfly"
+))]
+/// An activated signal (`Some` handler) runs its handler unless that is `SIG_IGN`,
+/// and warns when it has none.
+pub(super) fn dispatch_kqueue(signo: c_int, activated: Option<Handler>) {
+    let Some(handler) = activated else {
+        return;
+    };
+    match handler {
+        Handler::NONE => {
+            let name = signal_name(signo);
+            crate::log::error_log(
+                crate::log::LogLevel::SW_LOG_WARNING,
+                swoole_rs_error::ErrorCode::SW_ERROR_UNREGISTERED_SIGNAL as c_int,
+                c"ReactorKqueue::wait",
+                format_args!(
+                    "Unable to find callback function for signal {}",
+                    name.as_cstr().to_string_lossy()
+                ),
+            );
+        }
+        handler => handler.call(signo),
+    }
 }
 
 /// `signal_handler_safety`: marks the signal for the next dispatch.
