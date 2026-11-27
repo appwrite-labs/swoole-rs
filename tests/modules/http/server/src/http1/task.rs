@@ -781,12 +781,15 @@ fn task_worker4_on_worker_start(serv: view::Server<'_>, worker: Worker<'_>) {
         serv.dispatch(&mut buf, &mut dst_worker_id);
         sleep(1.0);
 
-        // `memset(serv.get_task_result(), 0, 1)`.
-        serv.get_task_result().store(&[0]);
-        let mut buf = EventData::raw(PACKET, 0, reactor_id);
-        serv.tasking_num().fetch_add(1, Ordering::SeqCst);
-        serv.dispatch(&mut buf, &mut dst_worker_id);
-        serv.tasking_num().fetch_add(0, Ordering::SeqCst);
+        // The synchronous finish requires a live result slot for this task.
+        let buf = EventData::raw(PACKET, 0, reactor_id);
+        check(
+            matches!(
+                waiting(serv).task_sync(packed(&buf), Some(0), 5.0),
+                Ok(true)
+            ),
+            "the second task finished before shutdown",
+        );
         kill_pid(serv.get_master_pid());
     }
 }
