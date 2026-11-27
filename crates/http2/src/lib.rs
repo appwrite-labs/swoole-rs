@@ -874,34 +874,42 @@ mod tests {
     /// `TEST(http2, pack_setting_frame)`.
     #[test]
     fn http2_pack_setting_frame() {
-        let _defaults = DEFAULTS
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        // SW_HTTP2_SETTING_FRAME_SIZE + SW_HTTP2_FRAME_HEADER_SIZE
-        let mut frame = [0u8; 45 + 9];
-        let settings_1 = sw_rs_http2_default_settings();
-        let n = sw_rs_http2_pack_settings(&mut frame, &settings_1, false);
+        let settings = Http2Settings {
+            header_table_size: 1024,
+            enable_push: 1,
+            max_concurrent_streams: 17,
+            init_window_size: 65535,
+            max_frame_size: 32768,
+            max_header_list_size: u32::MAX,
+        };
+        for server in [false, true] {
+            let mut frame = [0; SETTINGS_FRAME_SIZE];
+            let size = sw_rs_http2_pack_settings(&mut frame, &settings, server);
+            let count = if server { 5 } else { 6 };
+            assert_eq!(size, HEADER_BYTES + count * SETTING_BYTES);
+            assert_eq!(
+                &frame[..HEADER_BYTES],
+                &[0, 0, (count * SETTING_BYTES) as u8, 4, 0, 0, 0, 0, 0]
+            );
 
-        assert!(n > 16);
-
-        // unpack_setting_data over n bytes after the header, stopping at an unknown id.
-        let mut settings_2 = Http2Settings::default();
-        for item in frame[9..].chunks(6).take(n.div_ceil(6)) {
-            let mut padded = [0u8; 6];
-            padded[..item.len()].copy_from_slice(item);
-            let (id, value) = sw_rs_http2_unpack_setting(&padded);
-            match id {
-                1 => settings_2.header_table_size = value,
-                2 => settings_2.enable_push = value,
-                3 => settings_2.max_concurrent_streams = value,
-                4 => settings_2.init_window_size = value,
-                5 => settings_2.max_frame_size = value,
-                6 => settings_2.max_header_list_size = value,
-                _ => break,
-            }
+            let (items, remainder) = frame[HEADER_BYTES..size].as_chunks::<SETTING_BYTES>();
+            assert_eq!(remainder, []);
+            let mut decoded: Vec<_> = items.iter().map(sw_rs_http2_unpack_setting).collect();
+            decoded.sort_unstable();
+            let expected = [
+                (1, 1024),
+                (2, 1),
+                (3, 17),
+                (4, 65535),
+                (5, 32768),
+                (6, u32::MAX),
+            ];
+            let expected: Vec<_> = expected
+                .into_iter()
+                .filter(|&(id, _)| !server || id != 2)
+                .collect();
+            assert_eq!(decoded, expected);
         }
-
-        assert_eq!(settings_1, settings_2);
     }
 
     /// `TEST(http2, get_type)`.
