@@ -255,7 +255,7 @@ impl Headers {
 
     /// HPACK-encode the set into the frame after its nine header bytes, which
     /// `seal` fills in, with the session's encoder, made on first use.
-    fn deflate(mut self, session: &Session) -> Self {
+    fn deflate(mut self, session: &Session) -> Option<Self> {
         let Buffers {
             bytes,
             slots,
@@ -273,7 +273,18 @@ impl Headers {
                 frame,
             );
         });
-        self
+        let length = frame.len() - FRAME_HEADER;
+        let limit = session.remote[MAX_FRAME_SIZE].get();
+        if length > limit as usize {
+            warn(
+                c"http2_server_deflate_header_block",
+                &format!(
+                    "encoded HTTP/2 header block size {length} exceeds peer max frame size {limit}"
+                ),
+            );
+            return None;
+        }
+        Some(self)
     }
 
     /// The frame `deflate` built, its header filled in.
@@ -346,7 +357,7 @@ fn build_trailer(ctx: Ctx, session: &Session) -> Option<Headers> {
         let value = string_of(value)?;
         headers.add_folded(key, value.bytes());
     }
-    Some(headers.deflate(session))
+    headers.deflate(session)
 }
 
 /// The body a response header announces: its bytes (none for a file sent
@@ -475,7 +486,7 @@ fn build_header(mut ctx: Ctx, session: &Session, body: Option<Body<'_>>) -> Opti
             decimal(&mut [0; 20], i64::try_from(length).unwrap_or(i64::MAX)),
         );
     }
-    let headers = headers.deflate(session);
+    let headers = headers.deflate(session)?;
     set(ctx, Field::SendHeader, 1);
     Some(headers)
 }
