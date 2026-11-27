@@ -86,11 +86,29 @@ pub extern "C" fn swr_v1_ssh2_bound(session: Session<'_>) -> *const Ops {
     &raw const OPS
 }
 
-/// `ssh2_set_socket_timeout`: whole seconds of `timeout_ms` for every kind.
+/// Wait for a channel operation with its stream-local timeout in seconds.
 #[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_ssh2_set_socket_timeout(session: Session<'_>, timeout_ms: c_int) {
-    session.socket().set_timeout(
-        f64::from(timeout_ms / 1000),
-        swoole_rs_corebase::reactor::TimeoutKind::ALL,
-    );
+pub extern "C" fn swr_v1_ssh2_channel_wait(
+    session: Session<'_>,
+    outbound: bool,
+    timeout: f64,
+    timed_out: &mut bool,
+) -> bool {
+    let socket = session.socket();
+    let event = if outbound {
+        Events::WRITE
+    } else {
+        Events::READ
+    };
+    let ready = socket.poll(event, timeout);
+    *timed_out = !ready && socket.err_code() == libc::ETIMEDOUT;
+    ready
+}
+
+/// Apply the session default used by channel waits without a stream override.
+#[unsafe(no_mangle)]
+pub extern "C" fn swr_v1_ssh2_session_timeout(session: Session<'_>, seconds: f64) {
+    session
+        .socket()
+        .set_timeout(seconds, swoole_rs_corebase::reactor::TimeoutKind::RDWR);
 }

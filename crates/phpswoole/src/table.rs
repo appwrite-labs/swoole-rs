@@ -80,6 +80,7 @@ method_table! {
 unsafe extern "C" {
     safe fn zif_ssh2_connect(frame: Entered<'_>, value: Returned<'_>);
     safe fn zif_ssh2_disconnect(frame: Entered<'_>, value: Returned<'_>);
+    safe fn zif_ssh2_set_timeout(frame: Entered<'_>, value: Returned<'_>);
     safe fn zif_ssh2_methods_negotiated(frame: Entered<'_>, value: Returned<'_>);
     safe fn zif_ssh2_keepalive_config(frame: Entered<'_>, value: Returned<'_>);
     safe fn zif_ssh2_keepalive_send(frame: Entered<'_>, value: Returned<'_>);
@@ -123,6 +124,7 @@ method_table! {
     static SSH2_FUNCTIONS = [
         c"ssh2_connect" => zif_ssh2_connect, &swoole_rs_phpstubs::ssh2::arginfo_ssh2_connect, 0;
         c"ssh2_disconnect" => zif_ssh2_disconnect, &swoole_rs_phpstubs::ssh2::arginfo_ssh2_disconnect, 0;
+        c"ssh2_set_timeout" => zif_ssh2_set_timeout, &swoole_rs_phpstubs::ssh2::arginfo_ssh2_set_timeout, 0;
         c"ssh2_methods_negotiated" => zif_ssh2_methods_negotiated, &swoole_rs_phpstubs::ssh2::arginfo_ssh2_methods_negotiated, 0;
         c"ssh2_keepalive_config" => zif_ssh2_keepalive_config, &swoole_rs_phpstubs::ssh2::arginfo_ssh2_keepalive_config, 0;
         c"ssh2_keepalive_send" => zif_ssh2_keepalive_send, &swoole_rs_phpstubs::ssh2::arginfo_ssh2_keepalive_send, 0;

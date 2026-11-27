@@ -54,6 +54,8 @@ unsafe extern "C" {
     /// `ssh2_bound` (crates/hooks): the wait for the session's socket, once no
     /// other coroutine is bound to it.
     safe fn swr_v1_ssh2_bound(session: Session) -> &'static Ops;
+    /// The read and write timeout on the live session socket.
+    safe fn swr_v1_ssh2_session_timeout(session: Session, seconds: f64);
     /// The password `ssh2.cc`'s keyboard-interactive callback answers with,
     /// which must stay live until the authentication returns.
     safe fn swr_ssh2_kbd_password(password: Text<'_>);
@@ -435,6 +437,7 @@ enum Nothing {}
 swoole_rs_zend::handlers! {
     zif_ssh2_connect => connect;
     zif_ssh2_disconnect => disconnect;
+    zif_ssh2_set_timeout => set_timeout;
     zif_ssh2_sftp => sftp_init;
     zif_ssh2_send_eof => send_eof;
     zif_ssh2_fetch_stream => fetch_stream;
@@ -517,6 +520,21 @@ fn warn(message: &str) {
 fn warn_bytes(parts: &[&[u8]]) {
     if let Ok(message) = CString::new(parts.concat()) {
         bailout::defer(report(E_WARNING, &message));
+    }
+}
+
+fn set_timeout(call: &Call<'_>) {
+    if call.arity(2, 3).is_err() {
+        return;
+    }
+    let Ok(resource) = call.resource(1) else {
+        return;
+    };
+    let Ok(seconds) = call.long(2, 0) else { return };
+    let Ok(micros) = call.long(3, 0) else { return };
+    if let Some(session) = session(call, resource) {
+        let timeout = seconds.c_cast::<f64>() + (micros.c_cast::<f64>() / 1000.0).ceil() / 1000.0;
+        swr_v1_ssh2_session_timeout(session, if timeout == 0.0 { -1.0 } else { timeout });
     }
 }
 

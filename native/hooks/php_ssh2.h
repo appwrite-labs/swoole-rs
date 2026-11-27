@@ -101,7 +101,7 @@ typedef struct _php_ssh2_channel_data {
     unsigned int streamid;
     char is_blocking;
     bool timed_out;
-    long timeout;
+    double timeout;
 
     /* Resource */
     zend_resource *session_rsrc;
@@ -112,6 +112,8 @@ typedef struct _php_ssh2_channel_data {
 } php_ssh2_channel_data;
 
 /* Rust (crates/ssh2/src/php.rs): ssh2_connect's session, for the wrappers too. */
+extern "C" void swr_ssh2_forward_enter(LIBSSH2_SESSION *session);
+extern "C" void swr_ssh2_forward_leave(LIBSSH2_SESSION *session);
 extern "C" LIBSSH2_SESSION *php_ssh2_session_connect(const char *host, int port, zval *methods, zval *callbacks);
 /* Rust (crates/ssh2/src/php.rs): ssh2_shell's channel, for the ssh2.shell:// wrapper too. */
 extern "C" LIBSSH2_CHANNEL *swr_ssh2_shell_channel(
