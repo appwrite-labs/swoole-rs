@@ -21,6 +21,8 @@
 
 #include "php_swoole_ssh2.h"
 
+#ifdef SW_HAVE_SSH2LIB
+
 #include "ext/standard/url.h"
 #include "main/php_network.h"
 
@@ -216,6 +218,7 @@ static void release_ssh_resource(zend_resource *resource, double timeout, Operat
     swr_ssh2_forward_leave(session);
 }
 
+#endif /* SW_HAVE_SSH2LIB */
 #endif /* PHP_SSH2_H */
 
 /*
