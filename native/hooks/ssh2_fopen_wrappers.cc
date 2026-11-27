@@ -213,6 +213,33 @@ php_stream_ops php_ssh2_channel_stream_ops = {
  * Magic Path Helper *
  ********************* */
 
+/* PHP resources stringify as "Resource id #N". Only the authority needs normalization. */
+php_url *php_ssh2_parse_url(const char *url) {
+    const char *scheme = strstr(url, "://");
+    if (!scheme) {
+        return nullptr;
+    }
+    const char *authority = scheme + 3;
+    const char *path = strchr(authority, '/');
+    php_url *resource;
+    constexpr char prefix[] = "Resource id #";
+    if (strncmp(authority, prefix, sizeof(prefix) - 1) == 0) {
+        char *normalized = estrdup(url);
+        const char *id = authority + sizeof(prefix) - 1;
+        memcpy(normalized + (authority - url), id, strlen(id) + 1);
+        resource = php_url_parse(normalized);
+        efree(normalized);
+    } else {
+        resource = php_url_parse(url);
+    }
+    // SFTP treats query and fragment delimiters in a filename as literal bytes.
+    if (resource && resource->path && path && strpbrk(path, "?#")) {
+        zend_string_release(resource->path);
+        resource->path = zend_string_init(path, strlen(path), 0);
+    }
+    return resource;
+}
+
 /* {{{ php_ssh2_fopen_wraper_parse_path
  * Parse an ssh2.*:// path
  */
@@ -228,21 +255,10 @@ php_url *php_ssh2_fopen_wraper_parse_path(const char *path,
     php_url *resource;
     zval *methods = NULL, *callbacks = NULL, zsession, *tmpzval;
     zend_long resource_id;
-    const char *h;
     char *username = NULL, *password = NULL, *pubkey_file = NULL, *privkey_file = NULL;
     int username_len = 0, password_len = 0;
 
-    h = strstr(path, "Resource id #");
-    if (h) {
-        /* Starting with 5.6.28, 7.0.13 need to be clean, else php_url_parse will fail */
-        char *tmp = estrdup(path);
-
-        strncpy(tmp + (h - path), h + sizeof("Resource id #") - 1, strlen(tmp) - sizeof("Resource id #"));
-        resource = php_url_parse(tmp);
-        efree(tmp);
-    } else {
-        resource = php_url_parse(path);
-    }
+    resource = php_ssh2_parse_url(path);
     if (!resource || !resource->path) {
         if (resource) {
             php_url_free(resource);
@@ -266,11 +282,6 @@ php_url *php_ssh2_fopen_wraper_parse_path(const char *path,
         php_url_free(resource);
         return NULL;
     }
-
-    /*
-     * Find resource->path in the path string, then copy the entire string from the original path.
-     * This includes ?query#fragment in the path string
-     */
 
     /* Look for a resource ID to reuse a session */
     if (is_numeric_string(ZSTR_VAL(resource->host), ZSTR_LEN(resource->host), &resource_id, NULL, 0) == IS_LONG) {

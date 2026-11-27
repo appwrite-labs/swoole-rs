@@ -133,6 +133,7 @@ extern "C" LIBSSH2_CHANNEL *swr_ssh2_exec_channel(LIBSSH2_SESSION *session,
                                                   long height,
                                                   long unit);
 void php_ssh2_sftp_dtor(zend_resource *rsrc);
+php_url *php_ssh2_parse_url(const char *url);
 php_url *php_ssh2_fopen_wraper_parse_path(const char *path,
                                           const char *type,
                                           php_stream_context *context,

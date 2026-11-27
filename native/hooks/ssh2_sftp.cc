@@ -463,7 +463,7 @@ static int php_ssh2_sftp_rename(
         return 0;
     }
 
-    resource_to = php_url_parse(url_to);
+    resource_to = php_ssh2_parse_url(url_to);
     if (!resource_to || !resource_to->path) {
         if (resource_to) {
             php_url_free(resource_to);
