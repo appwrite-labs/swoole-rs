@@ -320,6 +320,31 @@ fn not_null(props: Props<'_>, name: &CStr) -> Option<Owned> {
         .filter(|value| !matches!(value.kind(), z::IS_NULL | z::IS_UNDEF))
 }
 
+/// Multipart uploads cannot share a request with a stream body.
+fn allows_multipart(body: &Value) -> bool {
+    if body.referred().kind() == z::IS_RESOURCE {
+        swoole_rs_zend::value_error(
+            c"A request body stream cannot be combined with addFile() or addData()",
+        );
+        return false;
+    }
+    true
+}
+
+fn set_request_body(props: Props<'_>, data: &Value) -> bool {
+    let data = data.dereferenced();
+    if data.kind() == z::IS_RESOURCE
+        && property(props, c"uploadFiles")
+            .referred()
+            .array()
+            .is_some_and(|files| files.count() > 0)
+    {
+        return allows_multipart(&data);
+    }
+    props.value(c"requestBody", &data);
+    true
+}
+
 /// Keep the original upload across coroutine yields and 502/503 retries.
 struct MultipartBody {
     fields: Option<Owned>,
@@ -327,16 +352,21 @@ struct MultipartBody {
 }
 
 impl MultipartBody {
-    fn capture(props: Props) -> Option<Self> {
+    fn capture(props: Props) -> Result<Option<Self>, ()> {
         let value = property(props, c"uploadFiles");
         let files = value.dereferenced();
-        files.array().filter(|files| files.count() > 0)?;
+        if files.array().is_none_or(|files| files.count() == 0) {
+            return Ok(None);
+        }
         let fields = property(props, c"requestBody");
         let fields = fields.dereferenced();
-        Some(Self {
+        if !allows_multipart(&fields) {
+            return Err(());
+        }
+        Ok(Some(Self {
             fields: (!fields.is_null()).then(|| fields.into_owned()),
             files: files.into_owned(),
-        })
+        }))
     }
 }
 
@@ -769,7 +799,10 @@ impl Client {
         let headers_value = property(props, c"requestHeaders");
         let headers = headers_value.array();
         if multipart.is_none() {
-            *multipart = MultipartBody::capture(props);
+            let Ok(current) = MultipartBody::capture(props) else {
+                return false;
+            };
+            *multipart = current;
         }
         let ordinary_body;
         let (body, files) = if let Some(multipart) = multipart {
@@ -1075,7 +1108,9 @@ impl Client {
                 self.stats_begin.set(microtime());
                 self.props().null(c"stats");
             }
-            let mut multipart = MultipartBody::capture(self.props());
+            let Ok(mut multipart) = MultipartBody::capture(self.props()) else {
+                return false;
+            };
             let mut attempt = 0;
             while attempt < u32::from(self.max_retries.get()) + 1 {
                 if !self.send_request(path, &mut multipart) {
@@ -2196,10 +2231,7 @@ fn set_data(call: &Call) {
     let Some(data) = call.arity(1, 1).ok().and(call.value(1)) else {
         return call.set_bool(false);
     };
-    if let Some(props) = props::this(call) {
-        props.value(c"requestBody", data);
-    }
-    call.set_bool(true);
+    call.set_bool(props::this(call).is_some_and(|props| set_request_body(props, data)));
 }
 
 /// The upload entry `addFile` and `addData` append.
@@ -2249,6 +2281,9 @@ fn add_file(call: &Call) {
     let Ok((path, name, mut kind, filename, offset, mut length)) = parsed else {
         return call.set_bool(false);
     };
+    if props::this(call).is_some_and(|props| !allows_multipart(&property(props, c"requestBody"))) {
+        return;
+    }
     if !nonnegative_file_argument("offset", offset) || !nonnegative_file_argument("length", length)
     {
         return call.set_bool(false);
@@ -2319,6 +2354,9 @@ fn add_data(call: &Call) {
     let Ok((Some(data), name, kind, filename)) = parsed else {
         return call.set_bool(false);
     };
+    if props::this(call).is_some_and(|props| !allows_multipart(&property(props, c"requestBody"))) {
+        return;
+    }
     let kind = if kind.is_empty() {
         &b"application/octet-stream"[..]
     } else {
@@ -2398,8 +2436,10 @@ fn post(call: &Call) {
         return;
     };
     client.props().bytes(c"requestMethod", b"POST");
-    if let Some(data) = call.value(2) {
-        client.props().value(c"requestBody", data);
+    if let Some(data) = call.value(2)
+        && !set_request_body(client.props(), data)
+    {
+        return;
     }
     let result = client.exec(path);
     settle(finish(client, call, result));
