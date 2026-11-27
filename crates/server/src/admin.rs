@@ -82,14 +82,13 @@ const MANAGER_PROCESS: c_int = 1 << 5;
 /// `get_connections` and `get_connection_info` run where connections live.
 const CONNECTION_OWNER: c_int = -1;
 
-/// Upstream's registrations, in order; `get_thread_info` twice, as upstream adds it.
-const COMMAND_TABLE: [(&str, c_int); 11] = [
+/// Upstream's admin commands in registration order.
+const COMMAND_TABLE: [(&str, c_int); 10] = [
     ("get_all_sockets", ALL_PROCESS),
     ("get_all_commands", ALL_PROCESS),
     ("get_socket_info", ALL_PROCESS),
-    ("get_thread_info", ALL_PROCESS),
+    ("get_thread_info", REACTOR_THREAD),
     ("get_manager_info", MANAGER_PROCESS),
-    ("get_thread_info", ALL_PROCESS),
     ("get_memory_info", ALL_PROCESS),
     ("get_all_unix_sockets", ALL_PROCESS),
     ("get_all_ports", MASTER),
@@ -521,14 +520,15 @@ mod tests {
     #[test]
     fn registers_upstreams_commands_in_order() {
         let names: Vec<_> = commands(true).collect();
-        assert_eq!(names.len(), 11, "get_thread_info is registered twice");
+        assert_eq!(names.len(), 10);
+        assert_eq!(names[3], ("get_thread_info", 4), "owner reactor only");
         assert_eq!(names[4], ("get_manager_info", 32), "manager only");
         assert_eq!(
-            names[9],
+            names[8],
             ("get_connections", 8 | 2),
             "event worker and master"
         );
-        let types = commands(false).nth(10).map(|(_, types)| types);
+        let types = commands(false).nth(9).map(|(_, types)| types);
         assert_eq!(
             types,
             Some(4),
