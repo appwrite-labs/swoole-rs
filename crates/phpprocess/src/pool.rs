@@ -939,9 +939,8 @@ fn get_process(call: &Call) {
         call.set_bool(false);
         return;
     }
-    let current_id = i64::from(methods::swoole_get_worker_id());
     if id < 0 {
-        id = current_id;
+        id = i64::from(methods::swoole_get_worker_id());
     }
     // `$this`, of the registered class.
     let Some(props) = call.props(Some(&POOL)) else {
@@ -967,7 +966,7 @@ fn get_process(call: &Call) {
                 let index = usize::try_from(id).unwrap_or(usize::MAX);
                 let pipe = worker_record::copy_for_process(view, index, &mut copy);
                 if let Some(props) = object.props(Some(class)) {
-                    props.long(c"id", current_id);
+                    props.long(c"id", i64::from(copy.id()));
                     props.long(c"pid", i64::from(copy.pid()));
                     if view.ipc_mode() == IpcMode::UnixSock {
                         props.long(c"pipe", pipe.map_or(-1, |pipe| i64::from(pipe.fd())));
