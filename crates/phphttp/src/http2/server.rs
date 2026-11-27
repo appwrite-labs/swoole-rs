@@ -545,11 +545,28 @@ fn send_header_then(
     }
     let frame = headers.seal(FrameType::Headers, flags, stream.id);
     then(frame);
-    if !send(ctx, frame) {
+    if !send_header_frame(ctx, session, stream, frame) {
         set(ctx, Field::SendHeader, 0);
         return false;
     }
     true
+}
+
+// An encoded block must retain its queue position if its request is reset.
+fn send_header_frame(ctx: Ctx, session: &Session, stream: &Stream, frame: &[u8]) -> bool {
+    let previous = if stream.request_cid.get() != 0 {
+        stream
+            .header_sender
+            .replace(swoole_rs_phpcoroutines::Coroutine::current())
+    } else {
+        None
+    };
+    let sent = send(ctx, frame);
+    stream.header_sender.set(previous);
+    if !sent && swoole_rs_corebase::log::last_error() == CO_TIMEDOUT {
+        write_timed_out(session);
+    }
+    sent
 }
 
 /// `Stream::send_body`: DATA frames within the peer's flow-control window.
@@ -704,16 +721,18 @@ fn append_body(
 }
 
 /// `Stream::send_trailer`: HEADERS with `END_STREAM`, even an empty block.
-fn send_trailer(ctx: Ctx, session: &Session, stream_id: u32) -> bool {
+fn send_trailer(ctx: Ctx, session: &Session, stream: &Stream) -> bool {
     let Some(mut headers) = build_trailer(ctx, session) else {
         return false;
     };
-    send(
+    send_header_frame(
         ctx,
+        session,
+        stream,
         headers.seal(
             FrameType::Headers,
             FLAG_END_HEADERS | FLAG_END_STREAM,
-            stream_id,
+            stream.id,
         ),
     )
 }
@@ -808,7 +827,7 @@ pub(crate) fn respond_with_length(ctx: Ctx, data: &[u8], length: usize) -> bool 
                 action = next(action, sent, &facts);
             }
             Respond::Trailer => {
-                let sent = send_trailer(ctx, &session, stream.id);
+                let sent = send_trailer(ctx, &session, &stream);
                 action = next(action, sent, &facts);
             }
             Respond::ErrorClose | Respond::Remove => {
@@ -883,7 +902,9 @@ pub(crate) fn finish_file(ctx: Ctx, trailer: bool, error: bool) -> bool {
     loop {
         match action {
             FileCompletion::Trailer => {
-                let sent = send_trailer(ctx, &session, stream_id);
+                let sent = session
+                    .stream(stream_id, false)
+                    .is_some_and(|stream| send_trailer(ctx, &session, &stream));
                 action = sw_rs_http2_file_complete(sent, false);
             }
             FileCompletion::Close => {
@@ -1033,11 +1054,31 @@ fn parse(session: &Session, frame: &[u8]) -> bool {
                 }
             }
         }
-        FrameAction::Reset if payload.len() == size_of::<u32>() => {
-            return session.remove(stream_id);
+        FrameAction::Reset => {
+            let Ok(code) = payload.try_into() else {
+                close(session.default_ctx());
+                return false;
+            };
+            if let Some(stream) = session.take_stream(stream_id) {
+                set(stream.ctx(), Field::End, 1);
+                let cid = stream.request_cid.get();
+                if cid > 0 {
+                    let mut reason = swoole_rs_zend::OwnedArray::default();
+                    reason.insert_long(b"session_id", stream.ctx().state().fd);
+                    reason.insert_long(b"stream_id", i64::from(stream_id));
+                    reason.insert_long(b"code", i64::from(u32::from_be_bytes(code)));
+                    reason.insert_bytes(b"message", Some(b"HTTP2 Stream Reset"));
+                    let wake = stream.header_sender.get().is_none_or(|co| co.cid() != cid);
+                    bailout::defer(swoole_rs_zend::contain_with(|| {
+                        swoole_rs_phpcoroutines::cancel_callback(cid, &reason, wake);
+                    }));
+                }
+                return stream.wake();
+            }
+            return true;
         }
         FrameAction::Goaway if payload.len() >= GOAWAY_SIZE => {}
-        FrameAction::Reset | FrameAction::Goaway => {
+        FrameAction::Goaway => {
             close(session.default_ctx());
             return false;
         }

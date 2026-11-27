@@ -411,6 +411,12 @@ fn options(s: &Settings, this: ServerObject<'_>) -> Result<bool, Stop> {
         Some(value) => s.set(f::ENABLE_COROUTINE, Settings::truth(value)),
         None => s.set(f::ENABLE_COROUTINE, s.fact(f::GLOBAL_ENABLE_COROUTINE)),
     }
+    if let Some(value) = s.get(c"http2_cancel_on_stream_reset") {
+        s.server()
+            .config()
+            .http2_cancel_on_stream_reset
+            .set(value.truthy());
+    }
     if let Some(value) = s.get(c"send_timeout") {
         let v = value.double();
         checked()?;

@@ -103,6 +103,8 @@ pub(crate) struct StreamState {
     /// back from `$header` once it is complete.
     pub(crate) negotiates: Cell<bool>,
     /// The coroutine waiting for the peer to open the window.
+    pub(crate) request_cid: Cell<i64>,
+    pub(crate) header_sender: Cell<Option<swoole_rs_phpcoroutines::Coroutine>>,
     waiting: swoole_rs_phpcoroutines::Waiter,
 }
 
@@ -197,6 +199,8 @@ impl SessionState {
             bad_length: Cell::new(false),
             cookie_header: Cell::default(),
             negotiates: Cell::new(false),
+            request_cid: Cell::default(),
+            header_sender: Cell::default(),
             waiting: swoole_rs_phpcoroutines::Waiter::default(),
         });
         let replaced = self
@@ -209,8 +213,12 @@ impl SessionState {
     /// `remove_stream`: the stream is released once nothing holds it, and a
     /// response waiting on its window resumes to find it gone.
     pub(crate) fn remove(&self, id: u32) -> bool {
-        let removed = self.streams.with_taken(|streams| streams.remove(&id));
+        let removed = self.take_stream(id);
         removed.is_none_or(|stream| stream.wake())
+    }
+
+    pub(crate) fn take_stream(&self, id: u32) -> Option<Stream> {
+        self.streams.with_taken(|streams| streams.remove(&id))
     }
 
     /// Keep streams alive and release the registry before waking any coroutine.

@@ -395,6 +395,45 @@ pub(crate) fn call_handler(
     })
 }
 
+/// Start a cancellable HTTP/2 handler only while its stream is live.
+fn call_request(mut ctx: Ctx, coroutine: bool, then: Then) -> Result<bool, bailout::Bailout> {
+    let state = ctx.state();
+    let Some(callback) = state.callback.clone() else {
+        return Ok(false);
+    };
+    let stream = if state.http2
+        && context::server(state)
+            .config()
+            .http2_cancel_on_stream_reset
+            .get()
+    {
+        let Some((_, stream)) = crate::http2::of(ctx).filter(|(_, stream)| stream.ctx() == ctx)
+        else {
+            return Ok(true);
+        };
+        Some(stream)
+    } else {
+        None
+    };
+    let state = ctx.state();
+    swoole_rs_zend::Zvals::with(
+        [
+            state.request.zobject.value(),
+            state.response.zobject.value(),
+        ],
+        |args| {
+            if let Some(stream) = stream {
+                stream.request_cid.set(-1);
+                let cid = swoole_rs_phpcoroutines::CREATOR.call(callback.cache(), args, then)?;
+                stream.request_cid.set(cid);
+                Ok(cid >= 0)
+            } else {
+                call_handler(&callback, args, coroutine, then)
+            }
+        },
+    )
+}
+
 /// The port callback `kind` with `args`: `None` when it is unset, otherwise
 /// whether it was called.
 /// # Errors
@@ -414,21 +453,9 @@ pub(crate) fn call_port(
 /// `http_server_process_request`: the handler with the request's objects,
 /// then the context's references to them released; in a coroutine, inside
 /// the call's own trap.
-fn call(mut ctx: Ctx, coroutine: bool) -> Result<(), bailout::Bailout> {
-    let state = ctx.state();
-    // Its own reference: the handler may replace the server's.
-    let callback = state.callback.clone();
+fn call(ctx: Ctx, coroutine: bool) -> Result<(), bailout::Bailout> {
     let mut release = context::Release::new(ctx);
-    let state = ctx.state();
-    let called = callback.map_or(Ok(false), |callback| {
-        swoole_rs_zend::Zvals::with(
-            [
-                state.request.zobject.value(),
-                state.response.zobject.value(),
-            ],
-            |args| call_handler(&callback, args, coroutine, release.then()),
-        )
-    });
+    let called = call_request(ctx, coroutine, release.then());
     match called {
         // The objects stay held, as upstream's jump skipped their release.
         Err(bailout) if !release.begun() => return Err(bailout),
@@ -659,19 +686,8 @@ pub fn http2_request(mut ctx: Ctx) -> Result<(), bailout::Bailout> {
             return Ok(());
         }
     }
-    let state = ctx.state();
-    let callback = state.callback.clone();
     let mut release = context::Release::new(ctx);
-    let state = ctx.state();
-    let called = callback.map_or(Ok(false), |callback| {
-        swoole_rs_zend::Zvals::with(
-            [
-                state.request.zobject.value(),
-                state.response.zobject.value(),
-            ],
-            |args| call_handler(&callback, args, facts.coroutine, release.then()),
-        )
-    });
+    let called = call_request(ctx, facts.coroutine, release.then());
     match called {
         // As in `call`.
         Err(bailout) if !release.begun() => return Err(bailout),

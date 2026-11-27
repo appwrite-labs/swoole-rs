@@ -227,6 +227,7 @@ pub(crate) struct Context {
     /// The coroutine's own fiber, which `fiber` names while it lives.
     mock: Option<Mock>,
     fiber_init_notified: bool,
+    callback_running: bool,
     enable_scheduler: bool,
     /// The defer tasks, each kept by `defer()` until it runs or the context
     /// closes; none until the first.
@@ -261,6 +262,7 @@ impl Context {
             fiber: None,
             mock: None,
             fiber_init_notified: false,
+            callback_running: false,
             enable_scheduler: false,
             defer: None,
             join: None,
@@ -320,6 +322,7 @@ macro_rules! fields {
 }
 
 fields! {
+    callback_running, set_callback_running: bool;
     co, set_co: Option<host::Co>;
     fiber, set_fiber: Option<Fiber>;
     fiber_init_notified, set_fiber_init_notified: bool;
@@ -670,11 +673,13 @@ pub(crate) extern "C" fn enter(ctx: Ctx) -> Option<Call> {
     if ctx.fiber().is_some() {
         notify_entry(ctx);
     }
+    ctx.set_callback_running(true);
     NonNull::new(ctx.call()).map(Call)
 }
 
 /// Only enter the defer loop when this coroutine registered a task.
 pub(crate) extern "C" fn run_defers(ctx: Ctx) {
+    ctx.set_callback_running(false);
     if ctx.with(|context| context.defer.is_some()) {
         host::run_defers(ctx);
     }

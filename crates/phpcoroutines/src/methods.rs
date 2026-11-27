@@ -316,6 +316,7 @@ fn throw_exception(
     throw: bool,
     class: Option<ExceptionClass>,
     reason: Option<&Value>,
+    wake: bool,
 ) -> bool {
     if !throw {
         let Some(co) = host::by_cid(cid) else {
@@ -351,8 +352,17 @@ fn throw_exception(
     }
     task.set_exception(exception, class);
     // Even an irrevocable wait ends: the exception terminates the coroutine.
-    host::cancel(co);
+    if wake {
+        host::cancel(co);
+    }
     true
+}
+
+/// Cancel the callback while it is running. Its deferred cleanup is independent.
+pub fn cancel_callback(cid: c_long, reason: &Value, wake: bool) {
+    if context::by_cid(cid).is_some_and(context::Ctx::callback_running) {
+        throw_exception(cid, true, classes::canceled(), Some(reason), wake);
+    }
 }
 
 /// `Co::cancel(int $cid, bool $throw_exception = false, mixed $reason = null)`.
@@ -375,7 +385,13 @@ fn cancel(call: &Call) {
         );
         return;
     }
-    call.set_bool(throw_exception(cid, throw, classes::canceled(), reason));
+    call.set_bool(throw_exception(
+        cid,
+        throw,
+        classes::canceled(),
+        reason,
+        true,
+    ));
 }
 
 /// `Co::setTimeLimit(float $timeout)`.
@@ -415,7 +431,7 @@ fn time_limit(cid: c_long) {
     if let Some(ctx) = context::by_cid(cid) {
         // Its timer has fired.
         let _fired = context::swap_time_limit(ctx, cid, None);
-        throw_exception(cid, true, classes::timeout(), None);
+        throw_exception(cid, true, classes::timeout(), None, true);
     }
 }
 

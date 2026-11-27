@@ -242,28 +242,41 @@ pub fn function_call(
 ) -> Result<bool, bailout::Bailout> {
     // Upstream never ran past a pending bailout: no coroutine starts, as no call runs.
     bailout::outcome(())?;
-    let mut ran = false;
-    let success = if coroutine {
+    if coroutine {
         if let Some(retval) = retval {
             // The caller's return slot, whose type alone this writes:
             // coroutines publish null before creation and have no return value.
             retval.retype_null();
         }
-        let (trapped, result) = coroutine_call(cache, args, None, creator, then, &mut ran);
-        bailed(trapped);
-        result >= 0
-    } else {
-        direct_call(cache, args, retval)
-    };
-    // `then` ran with no exception pending, as this check would have found it.
-    if !ran && !bailout::pending() {
-        // Callbacks outside the VM must report an exception immediately.
+        return creator.call(cache, args, then).map(|cid| cid >= 0);
+    }
+    let success = direct_call(cache, args, retval);
+    if !bailout::pending() {
         fatal_exception();
     }
-    if bailout::pending() {
-        Err(bailout::Bailout)
-    } else {
-        Ok(success)
+    bailout::outcome(success)
+}
+
+impl Creator {
+    /// Start a callback coroutine and return its ID, or a negative creation error.
+    /// # Errors
+    /// PHP bailed out while starting the coroutine or releasing the caller's objects.
+    pub fn call(
+        self,
+        cache: Callee<'_>,
+        args: crate::Zvals<'_>,
+        then: Then,
+    ) -> Result<c_long, bailout::Bailout> {
+        bailout::outcome(())?;
+        let mut ran = false;
+        let (trapped, result) = coroutine_call(cache, args, None, self, then, &mut ran);
+        bailed(trapped);
+        // `then` ran with no exception pending, as this check would have found it.
+        if !ran && !bailout::pending() {
+            // Callbacks outside the VM must report an exception immediately.
+            fatal_exception();
+        }
+        bailout::outcome(result)
     }
 }
 

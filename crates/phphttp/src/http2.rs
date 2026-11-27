@@ -7,7 +7,7 @@ mod session;
 use crate::{context, header, parse};
 pub(crate) use files::{send_file, static_file};
 pub use server::{entries, server_on_close};
-pub(crate) use server::{goaway, on_receive, ping, reset, respond, session_receive, write};
+pub(crate) use server::{goaway, of, on_receive, ping, reset, respond, session_receive, write};
 pub use session::IdMap;
 pub(crate) use session::{session_free, session_new};
 use std::{cell::Cell, ffi::CStr};

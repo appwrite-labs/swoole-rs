@@ -1298,6 +1298,15 @@ fn before_start(object: ServerObject<'_>, serv: view::Server<'_>) -> Result<(), 
                 c"server dispatch mode should be FDMOD(2) or IPMOD(4) if open_http2_protocol is true",
             );
         }
+        if port.protocols.http2
+            && serv.config().http2_cancel_on_stream_reset.get()
+            && !fact(serv, Fact::EnableCoroutine)
+        {
+            crate::settings::invalid_setting(
+                c"'http2_cancel_on_stream_reset' requires 'enable_coroutine'",
+            );
+            return Err(Stop);
+        }
         let mut http = port.protocols.http;
         if !http && (port.protocols.websocket || port.protocols.http2) {
             protocols(port.port, HTTP, false);
