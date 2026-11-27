@@ -331,8 +331,25 @@ fn allows_multipart(body: &Value) -> bool {
     true
 }
 
+fn readable_body(data: &Value) -> bool {
+    let data = data.referred();
+    if data.kind() != z::IS_RESOURCE {
+        return true;
+    }
+    match data.stream_readable() {
+        Some(false) => {
+            swoole_rs_zend::value_error(c"Request body stream must be readable");
+            false
+        }
+        result => result.unwrap_or(false),
+    }
+}
+
 fn set_request_body(props: Props<'_>, data: &Value) -> bool {
     let data = data.dereferenced();
+    if !readable_body(&data) {
+        return false;
+    }
     if data.kind() == z::IS_RESOURCE
         && property(props, c"uploadFiles")
             .referred()
@@ -1107,6 +1124,9 @@ impl Client {
             if self.collect_stats.get() {
                 self.stats_begin.set(microtime());
                 self.props().null(c"stats");
+            }
+            if !readable_body(&property(self.props(), c"requestBody")) {
+                return false;
             }
             let Ok(mut multipart) = MultipartBody::capture(self.props()) else {
                 return false;
@@ -2226,11 +2246,19 @@ fn set_basic_auth(call: &Call) {
     client.set_basic_auth(username, password);
 }
 
-/// `setData(array|string $data): bool`.
+/// Set the request body after checking its PHP type.
 fn set_data(call: &Call) {
     let Some(data) = call.arity(1, 1).ok().and(call.value(1)) else {
         return call.set_bool(false);
     };
+    let data = data.referred();
+    if !matches!(data.kind(), z::IS_ARRAY | z::IS_STRING | z::IS_RESOURCE) {
+        let message = format!(
+            "must be of type array|string|resource, {} given",
+            data.type_name().to_string_lossy()
+        );
+        return call.argument_type_error(1, &CString::new(message).unwrap_or_default());
+    }
     call.set_bool(props::this(call).is_some_and(|props| set_request_body(props, data)));
 }
 
