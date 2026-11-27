@@ -17,7 +17,7 @@ use swoole_rs_http2::{
     FileCompletion, FrameAction, FrameType, GOAWAY_SIZE, HeaderKind, HeaderRole, Http2HeaderPlan,
     Http2RespondFacts, Media, PING_PAYLOAD, Respond, decode_packet,
     hpack::{Encoder, Error},
-    send_frame_size, sw_rs_http2_chunk, sw_rs_http2_file_complete, sw_rs_http2_header_defaults,
+    send_frame_size, sw_rs_http2_file_complete, sw_rs_http2_header_defaults,
     sw_rs_http2_header_plan, sw_rs_http2_headers_flags, sw_rs_http2_inflate_step,
     sw_rs_http2_media_kind, sw_rs_http2_pack_frame_header, sw_rs_http2_respond_next,
     sw_rs_http2_response_status, sw_rs_http2_setting_plan, valid_content_length,
@@ -569,6 +569,18 @@ fn send_header_frame(ctx: Ctx, session: &Session, stream: &Stream, frame: &[u8])
     sent
 }
 
+/// Process workers send complete frames to the reactor over IPC.
+fn send_limit(mut ctx: Ctx) -> usize {
+    let state = ctx.state();
+    if !crate::context::co_socket(state) {
+        let config = crate::context::server(state).config();
+        if config.mode_ == swoole_rs_server::Mode::Process {
+            return config.output_buffer_size.get() as usize;
+        }
+    }
+    usize::MAX
+}
+
 /// `Stream::send_body`: DATA frames within the peer's flow-control window.
 pub(crate) fn send_body(
     ctx: Ctx,
@@ -581,15 +593,19 @@ pub(crate) fn send_body(
         return false;
     }
     let flags = if end_stream { FLAG_END_STREAM } else { 0 };
+    let max_payload = send_limit(ctx).saturating_sub(FRAME_HEADER);
+    if max_payload == 0 {
+        swoole_rs_corebase::log::set_last_error(
+            swoole_rs_error::ErrorCode::SW_ERROR_DATA_LENGTH_TOO_LARGE as c_int,
+        );
+        return false;
+    }
+    let co_socket = get(ctx, Field::CoSocket) != 0;
     let page = swoole_rs_corebase::swr_v1_core_pagesize() as usize;
     let mut rest = data;
     // Set on the first flow-control wait, so a send that never waits reads no clock.
     let mut deadline = None;
     while !rest.is_empty() {
-        // Re-read after a flow-control wait: the peer may have changed it.
-        let max_frame_size = send_frame_size(session.remote[MAX_FRAME_SIZE].get());
-        let chunk = sw_rs_http2_chunk(rest.len(), max_frame_size, flags);
-        let (mut send_n, mut send_flags) = (chunk.length, chunk.flags);
         let window = send_credit(session, stream);
         if window == 0 {
             if !swoole_rs_phpcoroutines::in_coroutine() {
@@ -614,14 +630,12 @@ pub(crate) fn send_body(
             }
             continue;
         }
-        if send_n > window {
-            send_n = window;
-            send_flags = 0;
-        }
+        let peer_limit = send_frame_size(session.remote[MAX_FRAME_SIZE].get()) as usize;
+        let send_n = rest.len().min(window).min(peer_limit).min(max_payload);
+        let send_flags = if send_n == rest.len() { flags } else { 0 };
         let header = frame_header(FrameType::Data, send_n, send_flags, stream.id);
         let (part, tail) = rest.split_at(send_n);
         consume_window(session, stream, send_n);
-        let co_socket = get(ctx, Field::CoSocket) != 0;
         let sent = if !co_socket || send_n < page {
             // A yielding async send must enqueue the entire frame together.
             send(ctx, &[header.as_slice(), part].concat())
@@ -710,6 +724,7 @@ fn append_body(
     if data.is_empty()
         || data.len() > max_frame_size.min(page - 1)
         || data.len() > send_credit(session, stream)
+        || frame.len() + FRAME_HEADER + data.len() > send_limit(stream.ctx())
     {
         return 0;
     }
