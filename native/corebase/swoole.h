@@ -154,7 +154,10 @@ struct DataHead {
     uint8_t flags;
     uint16_t server_fd;
     uint16_t ext_flags;
-    uint32_t reserved;
+    union {
+        uint32_t reserved;
+        uint32_t task_source_pid;
+    };
     double time;
 };
 

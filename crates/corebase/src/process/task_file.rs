@@ -17,7 +17,7 @@ use crate::buffer::string::StringBuffer;
 use crate::ossupport::fd_write_all;
 
 use crate::constants::SW_IPC_BUFFER_SIZE as IPC_PAYLOAD;
-use crate::process::methods::swoole_get_worker_id;
+use crate::process::methods::{swoole_get_worker_id, swoole_get_worker_pid};
 
 /// Why reading a task's temporary file failed.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -263,6 +263,15 @@ impl TaskBuffer {
         self.pack_event(data, ServerEvent::Task, id)
     }
 
+    /// Finish a task, retaining the originating worker's PID on asynchronous replies.
+    pub fn pack_result(&mut self, data: &[u8], task: &DataHead) -> bool {
+        let packed = self.pack_event(data, ServerEvent::Finish, task.fd);
+        if TaskFlag::from_bits(task.ext_flags).contains(TaskFlag::SW_TASK_NONBLOCK) {
+            self.head.reserved = task.reserved;
+        }
+        packed
+    }
+
     /// Pack an event with the ID that its receiver will match.
     pub fn pack_event(&mut self, data: &[u8], event: ServerEvent, id: std::ffi::c_long) -> bool {
         let reactor_id = swoole_get_worker_id().c_cast::<i16>();
@@ -275,7 +284,7 @@ impl TaskBuffer {
             flags: 0,
             server_fd: 0,
             ext_flags: 0,
-            reserved: 0,
+            reserved: swoole_get_worker_pid().cast_unsigned(),
             time: microtime(),
         };
         let packed = pack_payload(&mut self.data, data, task_tmpfile);
@@ -681,7 +690,14 @@ mod tests {
             assert_eq!(data.len(), 5);
             assert_eq!(data.as_ptr(), task.data.as_ptr().cast());
             assert!(string.as_ptr().is_null());
-            assert!(task.pack_event(b"done", ServerEvent::Finish, 41));
+            let mut request = *task.head();
+            request.ext_flags = TaskFlag::SW_TASK_NONBLOCK.bits();
+            request.reserved = 12345;
+            assert!(task.pack_result(b"done", &request));
+            assert_eq!(
+                DataHead::from_bytes(&task.head().to_bytes()).reserved,
+                12345
+            );
             assert_eq!(task.head().fd, 41);
             assert_eq!(task.head().event(), Some(ServerEvent::Finish));
             assert_eq!(swr_v1_core_current_task_id(), 42);

@@ -286,7 +286,7 @@ pub fn finish(
     };
     let flags = flags.c_cast::<u16>();
     let reply = |buf: &mut TaskBuffer, flags| {
-        let packed = buf.pack_event(data, ServerEvent::Finish, task.fd);
+        let packed = buf.pack_result(data, task);
         buf.add_flags(flags);
         packed
     };

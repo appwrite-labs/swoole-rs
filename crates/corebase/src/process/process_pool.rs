@@ -1114,7 +1114,6 @@ const EVENT_DATA: usize = size_of::<DataHead>();
 #[must_use]
 #[inline]
 pub fn head_view(head: &DataHead) -> [u8; EVENT_DATA] {
-    use core::mem::offset_of;
     // Every byte of a `DataHead` is a field's: its fields end where the next begins.
     const _: () = assert!(
         core::mem::offset_of!(DataHead, time) + size_of::<f64>() == EVENT_DATA
@@ -1129,34 +1128,7 @@ pub fn head_view(head: &DataHead) -> [u8; EVENT_DATA] {
             && core::mem::offset_of!(DataHead, time) == 32,
         "DataHead has no padding"
     );
-    let fields: [(usize, &[u8]); 10] = [
-        (offset_of!(DataHead, fd), &head.fd.to_ne_bytes()),
-        (offset_of!(DataHead, msg_id), &head.msg_id.to_ne_bytes()),
-        (offset_of!(DataHead, len), &head.len.to_ne_bytes()),
-        (
-            offset_of!(DataHead, reactor_id),
-            &head.reactor_id.to_ne_bytes(),
-        ),
-        (offset_of!(DataHead, kind), &[head.kind]),
-        (offset_of!(DataHead, flags), &[head.flags]),
-        (
-            offset_of!(DataHead, server_fd),
-            &head.server_fd.to_ne_bytes(),
-        ),
-        (
-            offset_of!(DataHead, ext_flags),
-            &head.ext_flags.to_ne_bytes(),
-        ),
-        (offset_of!(DataHead, reserved), &head.reserved.to_ne_bytes()),
-        (offset_of!(DataHead, time), &head.time.to_ne_bytes()),
-    ];
-    let mut bytes = [0; EVENT_DATA];
-    for (at, field) in fields {
-        if let Some(to) = bytes.get_mut(at..at + field.len()) {
-            to.copy_from_slice(field);
-        }
-    }
-    bytes
+    head.to_bytes()
 }
 
 /// A pool effect, which `crates/server/src/pool_native.rs` answers; the process-wide
