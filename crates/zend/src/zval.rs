@@ -161,6 +161,11 @@ unsafe extern "C" {
         arg1: Option<&Value>,
         arg2: Option<&Value>,
     ) -> std::ffi::c_int;
+    /// Run a cleanup method on the live object while preserving a pending exception.
+    safe fn swr_lent_call_cleanup(
+        object: crate::ObjectRef<'_>,
+        name: IoSlice<'_>,
+    ) -> std::ffi::c_int;
     /// `php_format_date(format, timestamp, local)` of the lent format: a new
     /// string; no PHP code runs.
     safe fn php_format_date<'a>(
@@ -766,6 +771,19 @@ impl Value {
             &rv,
         ))?;
         Ok(Some(rv))
+    }
+
+    /// Call a zero-argument cleanup method, preserving an earlier PHP exception.
+    /// A non-object needs no cleanup.
+    ///
+    /// # Errors
+    /// The cleanup bailed out or a bailout was already pending.
+    pub fn call_cleanup(&self, method: &[u8]) -> Result<(), bailout::Bailout> {
+        bailout::outcome(())?;
+        if let Some(object) = self.object_ref() {
+            bailout::trapped(swr_lent_call_cleanup(object, IoSlice::new(method)))?;
+        }
+        Ok(())
     }
 
     /// `zend_call_method(object, scope, NULL, method, &result, args)` on the
