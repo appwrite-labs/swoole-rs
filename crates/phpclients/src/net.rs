@@ -986,7 +986,6 @@ fn recv_length(
     conn: &Conn,
     frame: &mut Frame,
     framing: &Protocol,
-    mut length: i64,
 ) -> Option<(ZBuf, i64)> {
     if frame.size == 0 {
         frame.size = BUFFER_SIZE_STD;
@@ -994,7 +993,7 @@ fn recv_length(
     frame.buffer.clear();
     let header =
         usize::from(framing.package_length_offset) + usize::from(framing.package_length_size);
-    loop {
+    let length = loop {
         let have = frame.buffer.len();
         let want = header.saturating_sub(have);
         frame.buffer.resize(have + want, 0);
@@ -1005,8 +1004,13 @@ fn recv_length(
             return None;
         };
         if read <= 0 {
-            frame.buffer.truncate(have);
-            break;
+            frame.buffer.clear();
+            if read < 0 {
+                recv_failed(call, errno());
+            } else {
+                call.set_empty_string();
+            }
+            return None;
         }
         frame
             .buffer
@@ -1021,22 +1025,18 @@ fn recv_length(
             call.set_bool(false);
             return None;
         }
-        length = measured;
-        if length != 0 {
-            break;
+        if measured != 0 {
+            break measured;
         }
-    }
+        if frame.buffer.len() >= header {
+            call.set_empty_string();
+            return None;
+        }
+    };
     let buffered = frame.buffer.len();
-    let (header_length, have) = (
-        i64::try_from(header).unwrap_or(i64::MAX),
-        i64::try_from(buffered).unwrap_or(i64::MAX),
-    );
+    let have = i64::try_from(buffered).unwrap_or(i64::MAX);
     if length < 0 {
         call.set_empty_string();
-        return None;
-    } else if length == header_length {
-        frame.buffer.resize(header.max(buffered), 0);
-        call.set_zstring(ZString::new(frame.buffer.get(..header).unwrap_or_default()));
         return None;
     } else if length > i64::from(framing.package_max_length) {
         native::package_too_big(length.c_cast::<c_int>());
@@ -1052,7 +1052,7 @@ fn recv_length(
         return None;
     }
     let total = usize::try_from(length).unwrap_or(0);
-    let mut package = ZBuf::with_capacity(total.max(header));
+    let mut package = ZBuf::with_capacity(total);
     package.extend_from_slice(&frame.buffer);
     set_last_error(0);
     let rest = total.saturating_sub(buffered);
@@ -1062,7 +1062,7 @@ fn recv_length(
         return None;
     };
     if read > 0 {
-        read += header_length;
+        read += have;
         if read != length {
             read = 0;
         }
@@ -1099,7 +1099,7 @@ fn recv(call: &Call) {
     } else if length_check {
         let Some(received) = conn
             .frame
-            .with_taken(|frame| recv_length(call, &conn, frame, &framing, length))
+            .with_taken(|frame| recv_length(call, &conn, frame, &framing))
         else {
             return;
         };
