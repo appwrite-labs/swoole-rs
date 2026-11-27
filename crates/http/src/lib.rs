@@ -2,6 +2,12 @@
 #![forbid(unsafe_code)]
 use std::mem::MaybeUninit;
 use swoole_rs_locale::case_prefix;
+fn rtrim_ows(mut bytes: &[u8]) -> &[u8] {
+    while let [rest @ .., b' ' | b'\t'] = bytes {
+        bytes = rest;
+    }
+    bytes
+}
 const INVALID: i32 = -1;
 const OVERFLOW: i32 = -2;
 mod chunked;

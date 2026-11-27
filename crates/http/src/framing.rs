@@ -195,7 +195,7 @@ pub fn header_value(input: &[u8], start: usize, end: usize, name: &[u8]) -> Opti
                 if tail(input, at).starts_with(b"\r\n") {
                     return Some(HttpSpan {
                         offset: buffer,
-                        length: at - buffer,
+                        length: super::rtrim_ows(input.get(buffer..at)?).len(),
                     });
                 }
             }
@@ -295,7 +295,10 @@ mod tests {
                 2 if input[at..].starts_with(b"\r\n") => {
                     return HttpSpan {
                         offset: buffer,
-                        length: at - buffer,
+                        length: input[buffer..at]
+                            .iter()
+                            .rposition(|b| !matches!(b, b' ' | b'\t'))
+                            .map_or(0, |last| last + 1),
                     };
                 }
                 _ => {}

@@ -130,9 +130,7 @@ pub fn header_info(
                             while let [b' ' | b'\t', rest @ ..] = coding {
                                 coding = rest;
                             }
-                            while let [rest @ .., b' ' | b'\t'] = coding {
-                                coding = rest;
-                            }
+                            let coding = super::rtrim_ows(coding);
                             if state.flags & 32 != 0 {
                                 state.flags |= 64;
                             }
@@ -155,7 +153,10 @@ pub fn header_info(
                             let begin = at + 19;
                             return Ok(Some(HttpSpan {
                                 offset: begin,
-                                length: at + count - begin,
+                                length: super::rtrim_ows(
+                                    input.get(begin..at + count).ok_or(MalformedHead)?,
+                                )
+                                .len(),
                             }));
                         }
                         state.clear_form = true;
