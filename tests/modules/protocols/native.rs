@@ -300,7 +300,7 @@ fn rust_parse(wire: &[u8], initial: c_int) -> (Vec<Vec<u8>>, c_int) {
 type Request = (Vec<u8>, bool, Vec<(u32, Vec<u8>)>);
 
 /// The pinned PHP request loop from errno `initial`, with errno after.
-fn pinned_request(wire: &[u8], initial: c_int) -> (Request, c_int) {
+fn pinned_request(wire: &[u8], initial: c_int) -> (Option<Request>, c_int) {
     let buffer = terminated(wire);
     let (mut size, mut error) = (0, 0);
     // SAFETY: the buffer holds the wire and a NUL; the result is the oracle's buffer.
@@ -312,11 +312,14 @@ fn pinned_request(wire: &[u8], initial: c_int) -> (Request, c_int) {
             &raw mut size,
             &raw mut error,
         );
+        if output.is_null() {
+            return (None, error);
+        }
         taken(output, size)
     };
     let mut parameters = items(&bytes, true);
     let (seen, command) = parameters.remove(0);
-    ((command, seen != 0, parameters), error)
+    (Some((command, seen != 0, parameters)), error)
 }
 
 /// `native.cc`'s `rust_php_request` over [`resp_php_next`], from errno `initial`:
@@ -451,13 +454,11 @@ fn parse_replies() {
                             pinned::resp_get_number(line.as_ptr(), initial, &raw mut before)
                         };
                         assert!(!found);
-                        set_errno(initial);
-                        let mut range = false;
-                        assert_eq!(resp_spans(command.as_bytes(), |_| {}, &mut range), None);
-                        if range {
-                            set_errno(libc::ERANGE);
-                        }
-                        assert_eq!(before, errno());
+                        assert_eq!(before, initial);
+                        assert_eq!(
+                            pinned_parse(command.as_bytes(), initial),
+                            rust_parse(command.as_bytes(), initial)
+                        );
                     } else {
                         assert_eq!(
                             pinned_parse(command.as_bytes(), initial),
@@ -624,7 +625,7 @@ fn seeded_requests() {
         );
         let (expected, error) = pinned_request(&wire, libc::EDOM);
         assert_eq!(
-            (Some(expected), error),
+            (expected, error),
             rust_request(&wire, libc::EDOM),
             "PHP request mismatch trial={trial}"
         );
@@ -643,7 +644,7 @@ fn php_next_leaves_state_on_error() {
     let mut range = false;
     let event = resp_php_next(b"$9223372036854775808x\r\n", &mut state, &mut range);
     assert_eq!(event.err(), Some(Malformed));
-    assert_eq!((range, state.cursor.position), (true, 0));
+    assert_eq!((range, state.cursor.position), (false, 0));
 }
 
 /// A scan emits the spans before a malformed one, and reports its overflow.
@@ -657,7 +658,8 @@ fn spans_before_an_error_and_its_range() {
     let wire = b":1\r\n:99999999999999999999999x\r\n";
     let (mut integers, mut range) = (Vec::new(), false);
     let count = resp_spans(wire, |span| integers.push(span.integer), &mut range);
-    assert_eq!((count, integers[0], range), (None, 1, true));
+    assert_eq!(count, Some(integers.len()));
+    assert_eq!((integers[0], range), (1, false));
 }
 
 /// `core-tests/src/protocol/redis.cpp`, `TEST(redis, format)`: `REPLY_STATUS` (2)

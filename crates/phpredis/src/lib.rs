@@ -23,7 +23,7 @@ use std::{
     ffi::{CString, c_int, c_long},
     rc::Rc,
 };
-use swoole_rs_corebase::{CellExt, log::set_last_error, sys::set_errno};
+use swoole_rs_corebase::{CellExt, log::set_last_error};
 use swoole_rs_phpserver::REDIS_SERVER as SERVER;
 use swoole_rs_phpstubs::redis_server as stubs;
 use swoole_rs_protocols::{
@@ -180,11 +180,7 @@ fn receive(
     let mut state = RespPhpState::default();
     let mut command: &[u8] = &[];
     let result = loop {
-        let mut range = false;
-        let next = resp_php_next(data, &mut state, &mut range);
-        if range {
-            set_errno(libc::ERANGE);
-        }
+        let next = resp_php_next(data, &mut state, &mut false);
         let Ok(Some(span)) = next else {
             break next.map(|_| ());
         };

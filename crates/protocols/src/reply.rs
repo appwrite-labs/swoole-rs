@@ -90,7 +90,7 @@ pub fn resp_format(kind: u8, value: &[u8], integer: i64, output: Option<&mut [u8
     let reply = match kind {
         0 => Reply::Error(text),
         2 => Reply::Status(text),
-        4 if !value.is_empty() => Reply::Bulk(value),
+        4 => Reply::Bulk(value),
         7 => Reply::Nil,
         8 => Reply::Integer(integer),
         _ => return 0,

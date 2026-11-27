@@ -1,9 +1,9 @@
 //! `swoole::redis::recv_packet`: reads a connection until a whole RESP command is
 //! buffered, then hands it to `onPackage`. [`recv_packet`] is the loop over a
 //! [`RespConnection`], which crates/ports runs over the server's own records.
-use swoole_rs_corebase::{log, set_errno};
+use swoole_rs_corebase::log;
 pub use swoole_rs_protocols::RespRequest;
-use swoole_rs_protocols::{RespAction, resp_extend_size, resp_receive_range};
+use swoole_rs_protocols::{RespAction, resp_extend_size, resp_receive};
 
 pub const ORIGIN: &core::ffi::CStr = c"redis::recv_packet";
 
@@ -58,15 +58,11 @@ pub fn recv_packet(c: &mut impl RespConnection, maximum: u32, page: usize) -> bo
             Received::Done => return true,
             Received::Bytes(_) => {}
         }
-        let mut range = false;
         let (length, size, (action, set_offset)) = {
             let (bytes, size, state) = c.view();
-            let decision = resp_receive_range(bytes, size, maximum, state, &mut range);
+            let decision = resp_receive(bytes, size, maximum, state);
             (bytes.len(), size, decision)
         };
-        if range {
-            set_errno(libc::ERANGE);
-        }
         if set_offset {
             c.set_offset(i64::try_from(length).unwrap_or(i64::MAX));
         }
@@ -195,6 +191,8 @@ mod tests {
         let (results, _) = run(&[command], 16, 32);
         assert_eq!(results, [false]);
         let (results, _) = run(&[b"?bad\r\n"], 16, 32);
+        assert_eq!(results, [true]);
+        let (results, _) = run(&[b"*bad\r\n"], 16, 32);
         assert_eq!(results, [false]);
     }
 }

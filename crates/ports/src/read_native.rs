@@ -248,13 +248,7 @@ impl Connection for Read<'_> {
                 let buffer = self.buffer();
                 // A redis port's `onPackage` is `dispatch_task`.
                 let dispatch = |data: swoole_rs_server::SendData<'_>| session.task(data);
-                crate::resp_recv::recv_packet(
-                    max_length,
-                    session.conn,
-                    session.socket,
-                    buffer,
-                    dispatch,
-                )
+                crate::resp_recv::recv_packet(max_length, session.socket, buffer, dispatch)
             }
         }
     }

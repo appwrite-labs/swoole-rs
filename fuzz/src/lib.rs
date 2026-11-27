@@ -664,17 +664,20 @@ type RespOracle =
 /// Upstream's packed items and, on glibc, whether errno is ERANGE. macOS strtol
 /// also sets EINVAL when it converts nothing, which can overwrite an earlier
 /// ERANGE; glibc leaves errno alone there, and callers only test ERANGE.
-fn resp_upstream(data: &[u8], parse: RespOracle) -> (Vec<u8>, bool) {
+fn resp_upstream(data: &[u8], parse: RespOracle) -> Option<(Vec<u8>, bool)> {
     let buffer = terminated(data);
     let (mut size, mut error) = (0, 0);
     // SAFETY: the caller's bounds model admits this loop; the wire has a NUL
     // terminator and both output pointers name writable locals.
     let output = unsafe { parse(buffer.as_ptr(), data.len(), 0, &mut size, &mut error) };
+    if output.is_null() {
+        return None;
+    }
     // SAFETY: the oracle returns a malloc'd buffer of `size` initialized bytes.
     let items = unsafe { std::slice::from_raw_parts(output.cast::<u8>(), size) }.to_vec();
     // SAFETY: the oracle allocated `output`, and its bytes have been copied.
     unsafe { protocols::free(output) };
-    (items, cfg!(target_os = "linux") && error == libc::ERANGE)
+    Some((items, cfg!(target_os = "linux") && error == libc::ERANGE))
 }
 
 /// Upstream `redis::parse` and `redis::parse` over Rust's spans, over the same bytes:
@@ -688,7 +691,7 @@ pub fn resp_parse(bytes: &[u8]) {
         return;
     }
     assert_eq!(
-        got,
+        Some(got),
         resp_upstream(bytes, protocols::resp_parse),
         "resp parse for {bytes:?}"
     );
@@ -752,7 +755,7 @@ pub fn resp_server(bytes: &[u8]) {
     if compared {
         assert_eq!(
             got,
-            Some(resp_upstream(bytes, protocols::resp_php_request)),
+            resp_upstream(bytes, protocols::resp_php_request),
             "resp request for {bytes:?}"
         );
     }
