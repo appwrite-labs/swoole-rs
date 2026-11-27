@@ -180,6 +180,7 @@ pub mod error_code {
     pub const INTERNAL_ERROR: u32 = 2;
     pub const FLOW_CONTROL_ERROR: u32 = 3;
     pub const FRAME_SIZE_ERROR: u32 = 6;
+    pub const REFUSED_STREAM: u32 = 7;
 }
 
 /// The frame types this side sends (`SW_HTTP2_TYPE_*`).

@@ -225,8 +225,8 @@ impl SessionState {
         removed.is_none_or(|stream| stream.wake())
     }
 
-    pub(crate) fn idle(&self) -> bool {
-        self.streams.with_taken(|streams| streams.is_empty())
+    pub(crate) fn stream_count(&self) -> usize {
+        self.streams.with_taken(|streams| streams.len())
     }
 
     /// `handle(session, stream)`: onRequest; a bailout waits for `finish`.

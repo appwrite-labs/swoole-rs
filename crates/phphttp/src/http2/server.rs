@@ -35,6 +35,7 @@ const MISSING_DATE: u32 = 16;
 const MISSING_CONTENT_TYPE: u32 = 32;
 use swoole_rs_http2::setting_id;
 /// `swoole::http2::Settings` field indexes.
+const MAX_CONCURRENT_STREAMS: usize = 2;
 const INIT_WINDOW_SIZE: usize = 3;
 const MAX_FRAME_SIZE: usize = 4;
 /// Swoole error codes and log levels.
@@ -792,7 +793,7 @@ pub(crate) fn respond_with_length(ctx: Ctx, data: &[u8], length: usize) -> bool 
                     return false;
                 }
                 facts.shutting_down = session.shutting_down.get();
-                facts.streams_empty = facts.shutting_down && session.idle();
+                facts.streams_empty = facts.shutting_down && session.stream_count() == 0;
                 action = next(action, true, &facts);
             }
             Respond::ErrorShutdown | Respond::SuccessShutdown => {
@@ -1046,7 +1047,10 @@ fn headers(
         return false;
     };
     let mut remaining = Ok(swoole_rs_http2::max_headers());
-    if stream.headers_received.get() {
+    if new_stream && session.stream_count() > session.local(MAX_CONCURRENT_STREAMS) as usize {
+        // Decode refused streams through END_HEADERS to preserve the connection's HPACK table.
+        remaining = Err(swoole_rs_http2::error_code::REFUSED_STREAM);
+    } else if stream.headers_received.get() {
         crate::parse::init_property(
             &mut stream.ctx().state().request,
             crate::parse::Property::Trailer,
