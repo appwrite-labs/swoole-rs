@@ -201,6 +201,40 @@ fn missing_session(info: &DataHead) {
 /// [`send_to_connection`] of the event `info` with its `data`, where `first` is what
 /// [`send_now`] already sent, short of all of it.
 fn to_connection(serv: Server<'_>, info: &DataHead, data: &[u8], first: Option<i64>) -> bool {
+    send_with_file(serv, info, data, first, |sock, delete| {
+        send_file(sock, data, delete)
+    })
+}
+
+/// Static ranges already have an open file on this reactor.
+pub(crate) fn send_static_range(
+    serv: Server<'_>,
+    session: core::ffi::c_long,
+    file: &std::sync::Arc<swoole_rs_corebase::ossupport::FileRecord>,
+    part: &swoole_rs_http::HttpStaticTask,
+) -> bool {
+    let info = DataHead {
+        fd: session,
+        kind: ServerEvent::SendFile.code(),
+        ..Default::default()
+    };
+    send_with_file(serv, &info, &[], None, |sock, _| {
+        swoole_rs_corebase::tls::upstream::socket_sendfile_opened(
+            sock,
+            file,
+            part.offset,
+            part.length,
+        )
+    })
+}
+
+fn send_with_file(
+    serv: Server<'_>,
+    info: &DataHead,
+    data: &[u8],
+    first: Option<i64>,
+    queue_file: impl FnOnce(Socket<'_>, bool) -> bool,
+) -> bool {
     let state = serv.state();
     let (kind, session) = (info.event(), info.fd);
     let cleanup = file_cleanup(info, data);
@@ -286,7 +320,7 @@ fn to_connection(serv: Server<'_>, info: &DataHead, data: &[u8], first: Option<i
             reactor.interest(sock, Interest::RemoveRead);
         }
     } else if file {
-        if !send_file(*sock, data, core::mem::DropGuard::dismiss(cleanup)) {
+        if !queue_file(*sock, core::mem::DropGuard::dismiss(cleanup)) {
             return false;
         }
     } else {

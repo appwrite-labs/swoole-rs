@@ -989,6 +989,22 @@ pub fn socket_sendfile_async(
     let Some(request) = file_request(filename, offset, length, delete_file) else {
         return false;
     };
+    queue_file(socket, request)
+}
+
+/// Queue a range of the shared static file on the owning reactor.
+#[must_use]
+pub fn socket_sendfile_opened(
+    socket: Socket<'_>,
+    file: &std::sync::Arc<crate::ossupport::FileRecord>,
+    offset: libc::off_t,
+    length: usize,
+) -> bool {
+    SocketFileRequest::from_opened(file, offset, length)
+        .is_some_and(|request| queue_file(socket, request))
+}
+
+fn queue_file(socket: Socket<'_>, request: Box<SocketFileRequest>) -> bool {
     socket.edit(|record| record.open_output_queue(65536));
     // A refused request is dropped with its file.
     let status = socket.with_output_queue(|queue| {
