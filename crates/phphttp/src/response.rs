@@ -264,13 +264,8 @@ fn send_file(call: &Call) {
             host::notice("file name is empty");
             return None;
         }
-        for (parameter, value) in [("offset", offset), ("length", requested)] {
-            if value < 0 {
-                host::notice(&format!(
-                    "parameter ${parameter}[{value}] must be greater than or equal to 0"
-                ));
-                return None;
-            }
+        if !swoole_rs_phpswoole::valid_sendfile_range(offset, requested) {
+            return None;
         }
         let stat = stat(file).ok()?;
         if stat.st_mode & libc::S_IFMT != libc::S_IFREG {

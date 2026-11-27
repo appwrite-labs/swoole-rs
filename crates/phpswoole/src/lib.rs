@@ -35,6 +35,7 @@ mod optional;
 mod options;
 pub mod reactor;
 mod sendfile;
+pub use sendfile::valid_sendfile_range;
 mod serialize;
 mod table;
 mod vm;

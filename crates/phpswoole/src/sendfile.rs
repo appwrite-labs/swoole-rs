@@ -68,3 +68,26 @@ fn construct(call: &Call) {
 }
 
 handlers! { zim_swoole_sendfile___construct => construct; }
+
+/// Warn before either PHP sendfile method dispatches a negative file range.
+#[must_use]
+pub fn valid_sendfile_range(offset: i64, length: i64) -> bool {
+    for (parameter, value) in [("offset", offset), ("length", length)] {
+        if value < 0 {
+            swoole_rs_corebase::log::set_last_error(
+                swoole_rs_error::ErrorCode::SW_ERROR_PHP_RUNTIME_NOTICE as i32,
+            );
+            if crate::display_errors() {
+                let warning = swoole_rs_zend::message!(
+                    "parameter ${parameter}[{value}] must be greater than or equal to 0"
+                );
+                swoole_rs_zend::bailout::defer(swoole_rs_zend::report(
+                    swoole_rs_zend::E_WARNING,
+                    warning.as_cstr(),
+                ));
+            }
+            return false;
+        }
+    }
+    true
+}
