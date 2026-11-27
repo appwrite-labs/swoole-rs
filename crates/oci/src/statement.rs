@@ -77,6 +77,8 @@ const SQLT_INTERVAL_DS: u16 = 190;
 const SQLT_TIMESTAMP_LTZ: u16 = 232;
 
 unsafe extern "C" {
+    /// Discard PDO's cached column descriptions before replacing the OCI defines.
+    safe fn php_pdo_stmt_set_column_count(stmt: &PdoStmt, columns: i32);
     /// The statement's OCI handle (`S->stmt`), live while the statement is.
     pub(crate) safe fn swr_oci_stmt_handle(stmt: &PdoStmt) -> Live<Stmt>;
     /// `S->stmt_type`: the statement's `OCI_ATTR_STMT_TYPE`, 0 until read.
@@ -327,6 +329,7 @@ extern "C" fn swr_oci_execute(stmt: &PdoStmt, dbh: &Dbh) -> bool {
         if call(c"OCIAttrGet: \"ATTR_PARAM_COUNT\"", status, 165) {
             return false;
         }
+        php_pdo_stmt_set_column_count(stmt, 0);
         stmt.set_result_counts(count.c_cast(), stmt.row_count());
         crate::columns::reset(stmt, count);
     }
@@ -336,6 +339,17 @@ extern "C" fn swr_oci_execute(stmt: &PdoStmt, dbh: &Dbh) -> bool {
     }
     stmt.set_row_count(rows.into());
     true
+}
+
+/// Cancel a SELECT without draining the rows. DML statements have no cursor.
+#[unsafe(no_mangle)]
+extern "C" fn swr_oci_close_cursor(stmt: &PdoStmt, dbh: &Dbh) -> bool {
+    if swr_oci_stmt_type(stmt) != OCI_STMT_SELECT {
+        return true;
+    }
+    let err = swr_oci_stmt_err(stmt);
+    let status = swoole_oci_stmt_fetch(swr_oci_stmt_handle(stmt), err, 0, OCI_FETCH_NEXT, 0);
+    stmt_call(dbh, stmt, err, c"OCIStmtFetch", status, (UPSTREAM_STATEMENT, 1116)) == 0
 }
 
 /// `oci_stmt_dtor`'s statement handles: the cursor cancelled if rows were left,

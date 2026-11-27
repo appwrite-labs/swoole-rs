@@ -42,6 +42,7 @@ extern void swr_oci_columns_free(pdo_stmt_t *stmt, pdo_dbh_t *dbh, bool usable);
 extern bool swr_oci_describe(pdo_stmt_t *stmt, pdo_dbh_t *dbh, uint32_t colno, struct pdo_column_data *desc);
 extern bool swr_oci_column_value(pdo_stmt_t *stmt, uint32_t colno, zval *result);
 extern bool swr_oci_execute(pdo_stmt_t *stmt, pdo_dbh_t *dbh);
+extern bool swr_oci_close_cursor(pdo_stmt_t *stmt, pdo_dbh_t *dbh);
 extern void swr_oci_stmt_close(pdo_stmt_t *stmt);
 
 /* What Rust reads of the statement record (crates/oci/src/statement.rs). */
@@ -422,6 +423,10 @@ static int oci_stmt_col_meta(pdo_stmt_t *stmt, zend_long colno, zval *return_val
     return SUCCESS;
 } /* }}} */
 
+static int oci_stmt_close_cursor(pdo_stmt_t *stmt) {
+    return swr_oci_close_cursor(stmt, stmt->dbh);
+}
+
 const struct pdo_stmt_methods swoole_oci_stmt_methods = {oci_stmt_dtor,
                                                          oci_stmt_execute,
                                                          oci_stmt_fetch,
@@ -432,6 +437,6 @@ const struct pdo_stmt_methods swoole_oci_stmt_methods = {oci_stmt_dtor,
                                                          NULL, /* get_attr */
                                                          oci_stmt_col_meta,
                                                          NULL,
-                                                         NULL};
+                                                         oci_stmt_close_cursor};
 
 #endif /* SW_USE_ORACLE */

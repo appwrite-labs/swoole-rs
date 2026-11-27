@@ -10,6 +10,7 @@
   "crates/odbc/src/driver.rs:php_odbc_connstr_quote": "php_odbc_utils.c: writes escaped bytes into the caller-owned buffer of the supplied capacity.",
   "crates/odbc/src/driver.rs:php_odbc_connstr_should_quote": "php_odbc_utils.c: scans the credential for ODBC special characters.",
   "crates/oci/src/handle.rs:swr_zend_pdo_driver_data": "shim_pdo.c: reads pdo_dbh_t.driver_data; no callbacks.",
+  "crates/oci/src/statement.rs:php_pdo_stmt_set_column_count": "Releases the cached column names and descriptor array before OCI replaces its defines. No PHP callback or user destructor runs.",
   "crates/pgsql/src/driver.rs:swr_zend_pdo_driver_data": "shim_pdo.c: reads pdo_dbh_t.driver_data; no callbacks.",
   "crates/pgsql/src/pdo.rs:swr_zend_pdo_forget_persistent": "shim_pdo.c: nulls the resource pointer before deleting its persistent-list entry, so PDO cannot close the handle again.",
   "crates/phpcoroutines/src/classes.rs:swr_zend_autoload_forget": "shim_coroutine.c: deletes the recursion-guard marker from EG(in_autoload), not a user value.",
