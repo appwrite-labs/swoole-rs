@@ -369,11 +369,11 @@ impl<E: Effects> Recv<'_, E> {
         if self.flag(FLAG_SKIP) {
             self.op(Op::ClearSkip, 0);
             if self.effects.protocol().split_by_eof && self.length() >= self.eof_len() {
-                return if self.split_by_eof() == Status::Close {
-                    Status::Err
-                } else {
-                    Status::Ok
-                };
+                match self.split_by_eof() {
+                    Status::Continue => {}
+                    Status::Close => return Status::Err,
+                    Status::Err | Status::Ok => return Status::Ok,
+                }
             }
         }
         let mut again = false;
@@ -820,6 +820,21 @@ mod tests {
             (native.buffer.length, native.buffer.offset),
             (0, 0),
             "cleared"
+        );
+    }
+
+    #[test]
+    fn resumed_tls_split_drains_decrypted_packets() {
+        let mut native = Native::new(Mode::Eof, 16, vec![b"b\r\n"]);
+        native.flags = FLAG_SKIP | FLAG_TLS;
+        native.gone = FLAG_TLS;
+        native.protocol.split_by_eof = true;
+        native.storage[..3].copy_from_slice(b"a\r\n");
+        native.buffer.length = 3;
+        assert_eq!(run(&mut native), Status::Ok);
+        assert_eq!(
+            native.events,
+            ["package:a\r\n", "recv:16", "package:b\r\n", "recv:16"]
         );
     }
 
