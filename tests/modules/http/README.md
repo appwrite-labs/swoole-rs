@@ -431,6 +431,10 @@ Upstream PHPTs for this module run in the merge tier's PHPT gate (the `phpt-*` j
   for more than 2 MiB from a randomly smaller file).
 - Mixed Rust/native ASan linking fails on macOS.
 
+The v6.3.0 `http_proxy.parse_response` case maps to `proxy::tests::parse_response` in
+`crates/http/src/proxy.rs`. It checks the three parser outcomes and the exact length
+of the header when tunnel data arrives in the same read.
+
 The v6.3.0 `core-tests/src/protocol/http.cpp` suite `http_url` maps to
 same-named Rust tests in `helpers.rs` for the seven byte and boundary cases,
 and in `url_length.rs` for `impossible_lengths_fail_before_reading_input`.
