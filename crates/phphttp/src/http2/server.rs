@@ -900,9 +900,6 @@ fn parse(session: &Session, frame: &[u8]) -> bool {
     };
     let stream_id = facts.stream_id;
     let new_stream = facts.publish_last_id;
-    if facts.action == FrameAction::Headers && new_stream {
-        session.last_stream_id.set(stream_id);
-    }
     // A header block continues only in CONTINUATION frames of its own stream.
     let pending = session.header_stream_id.get();
     if (facts.action == FrameAction::Continuation) != (pending != 0)
@@ -999,24 +996,27 @@ fn headers(
     payload: &[u8],
     new_stream: bool,
 ) -> bool {
-    let stream = match session.stream(stream_id, false) {
-        Some(stream) => stream,
-        // A completed stream is never recreated from a late trailer block.
-        None if new_stream => match session.stream(stream_id, true) {
-            Some(stream) => stream,
-            None => return false,
-        },
-        None => return false,
+    if stream_id & 1 == 0 {
+        close(session.default_ctx());
+        return false;
+    }
+    let Some(stream) = session.stream(stream_id, new_stream) else {
+        return false;
     };
+    if new_stream {
+        session.last_stream_id.set(stream_id);
+    }
     session.header_end_stream.set(flags & FLAG_END_STREAM != 0);
     let mut block = payload;
     if flags & FLAG_PADDED != 0 {
         // The pad length, the block, then that much padding.
         let Some((&pad, rest)) = payload.split_first() else {
+            close(session.default_ctx());
             return false;
         };
         let kept = rest.len().checked_sub(usize::from(pad));
         let Some(kept) = kept.and_then(|kept| rest.get(..kept)) else {
+            close(session.default_ctx());
             return false;
         };
         block = kept;
@@ -1140,6 +1140,16 @@ fn settings(session: &Session, payload: &[u8]) -> bool {
     };
     for entry in entries {
         let (id, value) = swoole_rs_http2::sw_rs_http2_unpack_setting(entry);
+        if id == setting_id::INIT_WINDOW_SIZE && value > i32::MAX.cast_unsigned() {
+            let ctx = session.default_ctx();
+            goaway(
+                ctx,
+                i64::from(swoole_rs_http2::error_code::FLOW_CONTROL_ERROR),
+                b"invalid initial window",
+            );
+            close(ctx);
+            return false;
+        }
         if id == setting_id::MAX_FRAME_SIZE && send_frame_size(value) != value {
             warn(
                 c"swoole_http2_server_parse",
