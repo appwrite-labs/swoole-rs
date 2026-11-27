@@ -112,8 +112,6 @@ pub(crate) trait Connection {
     fn reduce(&mut self, offset: u64);
     /// `buffer->extend(size)`.
     fn extend(&mut self, size: u64);
-    /// The buffer holds `\r\n\r\n`.
-    fn header_end(&mut self) -> bool;
     /// Creates the request when missing and makes it current, and with it the buffer
     /// it receives into: its multipart body's, if any, else the receive buffer.
     fn init_request(&mut self);
@@ -424,9 +422,6 @@ fn preface(n: &mut impl Connection) -> Step {
 
 /// A multipart upload streamed to disk.
 fn form(n: &mut impl Connection) -> Option<Step> {
-    if !n.request().multipart_header_parsed && !n.header_end() {
-        return Some(Step::Done);
-    }
     if !n.parse(Request::parse_multipart_data) {
         return Some(Step::Reply(Reply::BadRequest));
     }
@@ -438,7 +433,11 @@ fn form(n: &mut impl Connection) -> Option<Step> {
         return Some(Step::Reply(Reply::Unavailable));
     }
     if !request.tried_to_dispatch {
-        return Some(Step::Done);
+        return Some(if request.multipart_body_exhausted() {
+            Step::Reply(Reply::BadRequest)
+        } else {
+            Step::Done
+        });
     }
     None
 }
@@ -715,9 +714,6 @@ pub(crate) mod tests {
         }
         fn extend(&mut self, size: u64) {
             self.buf.extend(usize::try_from(size).unwrap());
-        }
-        fn header_end(&mut self) -> bool {
-            self.buffer().view().windows(4).any(|w| w == b"\r\n\r\n")
         }
         fn init_request(&mut self) {
             self.request = true;

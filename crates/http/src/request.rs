@@ -62,6 +62,7 @@ pub struct HttpForm {
     /// The part header's name, copied: it may arrive split across reads.
     header: MultipartHeader,
     disposition_seen: bool,
+    received: u64,
     upload_size: usize,
     upload_max: usize,
 }
@@ -83,7 +84,6 @@ pub struct HttpRequest {
     pub unavailable: bool,
     pub header_parsed: bool,
     pub tried_to_dispatch: bool,
-    pub multipart_header_parsed: bool,
     pub known_length: bool,
     pub keep_alive: bool,
     pub chunked: bool,
@@ -115,7 +115,6 @@ impl Default for HttpRequest {
             unavailable: false,
             header_parsed: false,
             tried_to_dispatch: false,
-            multipart_header_parsed: false,
             known_length: false,
             keep_alive: false,
             chunked: false,
@@ -236,6 +235,7 @@ impl HttpRequest {
                 template: Vec::new(),
                 header: MultipartHeader::new(0),
                 disposition_seen: false,
+                received: 0,
                 upload_size: 0,
                 upload_max: 0,
             }));
@@ -349,6 +349,14 @@ impl HttpRequest {
         true
     }
 
+    /// The parser consumed the declared body length while waiting for a final boundary.
+    #[must_use]
+    pub fn multipart_body_exhausted(&self) -> bool {
+        self.form
+            .as_ref()
+            .is_some_and(|form| form.received >= self.content_length)
+    }
+
     /// Free the parser and unfinished upload. The caller owns the completed files
     /// until the rewritten request has been dispatched.
     pub fn destroy_multipart_parser(&mut self) -> Vec<TempFile<()>> {
@@ -383,10 +391,11 @@ impl HttpRequest {
         );
         let reason = parser.error_message();
         let result = crate::multipart_result(processed, length, self.excepted);
+        let form = form_of(self);
         if result.is_ok() {
+            form.received = form.received.saturating_add(length as u64);
             body.clear();
         }
-        let form = form_of(self);
         (form.parser, form.body) = (Some(parser), Some(body));
         match result {
             Err(MultipartError::Parser) => {
@@ -559,12 +568,10 @@ impl Parts<'_> for Rewrite<'_> {
         if self.saved.append_bounded(parts, limit).is_err() {
             return self.too_large();
         }
-        self.request.multipart_header_parsed = true;
         Flow::Go
     }
 
     fn on_part_data_end(&mut self) -> Flow {
-        self.request.multipart_header_parsed = false;
         let form = form_of(self.request);
         form.disposition_seen = false;
         if let Some(upload) = form.fp.take() {
@@ -1048,9 +1055,15 @@ mod tests {
         );
         std::fs::remove_file(name).unwrap();
         assert_eq!(r.content_length, expected.len() as u64, "body length");
+        assert!(r.tried_to_dispatch, "ready to dispatch");
         assert!(
-            r.tried_to_dispatch && !r.multipart_header_parsed,
-            "ready to dispatch"
+            r.form
+                .as_ref()
+                .unwrap()
+                .parser
+                .as_ref()
+                .unwrap()
+                .is_complete()
         );
         r.destroy_multipart_parser();
         assert!(r.form.is_none(), "the form is gone");
