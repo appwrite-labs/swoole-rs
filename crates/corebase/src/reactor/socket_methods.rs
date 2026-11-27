@@ -424,7 +424,7 @@ impl SocketFields {
     #[inline(always)]
     fn count_sent(&mut self, bytes: usize, now: SteadyMs) {
         self.total_send_bytes += bytes;
-        if self.send_timer().is_some() {
+        if self.send_timer().is_some() || self.recv_timer.is_some() {
             self.last_sent_time = now();
         }
     }
@@ -453,12 +453,12 @@ impl SocketFields {
         }
     }
 
-    /// Whether the socket received and sent within the `idle` milliseconds before
+    /// Whether the socket received or sent within the `idle` milliseconds before
     /// `now`.
     #[inline]
     #[must_use]
     pub fn active_within(&self, now: f64, idle: f64) -> bool {
-        now - self.last_received_time < idle && now - self.last_sent_time < idle
+        now - self.last_received_time < idle || now - self.last_sent_time < idle
     }
 }
 
@@ -497,6 +497,7 @@ impl SocketFields {
     #[inline]
     pub fn watch_recv_idle(&mut self, idle: f64, timer: Option<crate::timer_key::Held>) {
         self.set_timeout(idle, crate::reactor::TimeoutKind::READ);
+        self.last_received_time = steady_ms();
         self.recv_timer = timer;
     }
 

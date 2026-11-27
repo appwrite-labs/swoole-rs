@@ -366,16 +366,15 @@ pub(crate) fn idle_timer(
 ) -> Option<swoole_rs_corebase::timer::Held> {
     // sec2msec's (long) cast.
     let msec = (idle * 1000.0).c_cast::<c_long>();
-    let fd = c_long::from(conn.fd());
+    let session = conn.session_id();
     swoole_rs_corebase::timer::add_fn(msec, true, move || {
         // The server of the reactor that armed the timer: this thread's.
         let Some(reactor) = Reactor::current() else {
             return;
         };
-        // A session socket's connection is its fd's slot, which deletes this timer
-        // before it goes.
+        // Only the session that armed the timer can expire.
         if let Some(serv) = reactor.server()
-            && let Some(conn) = serv.state().connection(fd, Lookup::ByFd)
+            && let Some(conn) = serv.state().connection(session, Lookup::Verified)
         {
             idle_timeout(serv, reactor, conn);
         }
@@ -393,7 +392,7 @@ pub(crate) fn idle_timeout(serv: view::Server<'_>, reactor: Reactor, conn: Conne
     let now = swoole_rs_corebase::reactor::steady_ms();
     let active = conn
         .socket()
-        .map_or_default(|s| s.read(|s| s.active_within(now, idle)));
+        .map_or_default(|s| s.read(|s| s.active_within(now, idle * 1000.0)));
     if active {
         return;
     }
@@ -640,8 +639,7 @@ mod tests {
     #[test]
     fn idle_timeout_closes_only_idle_connections() {
         let live = LiveServer::new();
-        // `idle_timeout` compares it with milliseconds; a second outlasts Miri's slowdown.
-        live.port().max_idle_time.set(1000.0);
+        live.port().max_idle_time.set(1.0);
         let _client = live.connect();
         live.server().config().single_thread.set(true);
         accept_on(&live);
@@ -666,6 +664,12 @@ mod tests {
         assert!(!conn.close_force(), "protected");
 
         conn.set_protect(false);
+        idle_timeout(live.server(), live.reactor(), conn);
+        assert!(
+            !conn.close_force(),
+            "recent output keeps the connection active"
+        );
+        sock.edit(|s| s.last_sent_time = 0.0);
         idle_timeout(live.server(), live.reactor(), conn);
         assert!(conn.close_force(), "idle receive closes with notify");
     }
