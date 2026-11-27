@@ -109,3 +109,66 @@ bool Request::has_expect_header() const {
     }
     return false;
 }
+
+// Swoole v6.3.0, include/swoole_http.h (e0d606594), unchanged.
+static inline size_t rtrim_ows(const char *str, size_t len) {
+    while (len > 0 && (str[len - 1] == ' ' || str[len - 1] == '\t')) {
+        len--;
+    }
+    return len;
+}
+
+// Swoole v6.3.0, src/protocol/http.cc (e0d606594), unchanged.
+std::string Request::get_header(const char *name) const {
+    size_t name_len = strlen(name);
+    char *p = buffer_->str + url_offset_ + url_length_ + 10;
+    char *pe = buffer_->str + header_length_;
+
+    const char *buffer = nullptr;
+    char *colon = nullptr;
+
+    int state = 0;
+    int i = 0;
+
+    bool is_error_header_name = false;
+
+    for (; p < pe; p++) {
+        switch (state) {
+        case 0:
+            if (SW_STR_ISTARTS_WITH(p, pe - p, "\r\n")) {
+                i = 0;
+                is_error_header_name = false;
+                break;
+            }
+
+            if (!is_error_header_name && swoole_str_istarts_with(p, pe - p, name, name_len)) {
+                colon = p + name_len;
+                if (colon[0] != ':' || i > 1) {
+                    is_error_header_name = true;
+                    break;
+                }
+
+                p += name_len;
+                state = 1;
+            }
+
+            i++;
+            break;
+        case 1:
+            if (!isspace(*p)) {
+                buffer = p;
+                state = 2;
+            }
+            break;
+        case 2:
+            if (SW_STR_ISTARTS_WITH(p, pe - p, "\r\n")) {
+                return {buffer, rtrim_ows(buffer, static_cast<size_t>(p - buffer))};
+            }
+            break;
+        default:
+            break;
+        }
+    }
+
+    return {};
+}

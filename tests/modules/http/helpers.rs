@@ -615,3 +615,37 @@ fn expect_scan_matches_the_native_loop() {
         b"GET / HTTP/1.1\r\nExpect: 100-continue\r\n\r\n"
     ));
 }
+
+#[test]
+fn header_lookup_matches_upstream_whitespace() {
+    for (name, value, expected) in [
+        (c"Range", &b"bytes=0-15\t "[..], &b"bytes=0-15"[..]),
+        (c"X-Whitespace", b"\talpha \t beta \t ", b"alpha \t beta"),
+        (c"X-Whitespace", b"a\x0b \t", b"a\x0b"),
+    ] {
+        let mut input = b"GET / HTTP/1.1\r\n".to_vec();
+        input.extend_from_slice(name.to_bytes());
+        input.push(b':');
+        input.extend_from_slice(value);
+        input.extend_from_slice(b"\r\n\r\n");
+        let length = input.len();
+        let header_length = u32::try_from(length).unwrap();
+        let span = swoole_rs_http::header_value(&input, 15, length, name.to_bytes()).unwrap();
+        assert_eq!(&input[span.offset..span.offset + span.length], expected);
+        input.push(0);
+        let mut output = vec![0; length];
+        // SAFETY: the request is NUL-terminated with its URL at 4..5, and output holds length bytes.
+        let written = unsafe {
+            (swoole_rs_oracle::http_frame::UPSTREAM.header)(
+                input.as_mut_ptr().cast(),
+                length,
+                4,
+                1,
+                header_length,
+                name.as_ptr(),
+                output.as_mut_ptr().cast(),
+            )
+        };
+        assert_eq!(&output[..written], expected);
+    }
+}

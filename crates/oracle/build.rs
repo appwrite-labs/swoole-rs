@@ -179,7 +179,6 @@ fn http_frame() {
         "static bool is_http_quoted_pair_char(",
         "static ChunkSizeResult parse_chunk_size(",
         "int Request::get_chunked_body_length(",
-        "std::string Request::get_header(",
         "const char *get_method_string(",
     ] {
         parts.push(definition(&text, signature));
