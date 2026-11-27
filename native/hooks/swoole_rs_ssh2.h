@@ -77,7 +77,7 @@ int swoole_libssh2_userauth_keyboard_interactive(const struct swr_v1_ssh2_ops *o
 /* What the bundled ext/ssh2 and crates/phpswoole share: its PHP
  * functions, in crates/phpstubs' order, and its module hooks. */
 #define SWR_SSH2_FUNCTIONS(X) \
-    X(ssh2_connect) X(ssh2_disconnect) X(ssh2_methods_negotiated) X(ssh2_fingerprint) \
+    X(ssh2_connect) X(ssh2_disconnect) X(ssh2_methods_negotiated) X(ssh2_fingerprint) X(ssh2_hostkey) \
     X(ssh2_auth_none) X(ssh2_auth_password) X(ssh2_auth_pubkey_file) X(ssh2_auth_pubkey) \
     X(ssh2_auth_hostbased_file) X(ssh2_forward_listen) X(ssh2_forward_accept) X(ssh2_shell) \
     X(ssh2_shell_resize) X(ssh2_exec) X(ssh2_tunnel) X(ssh2_scp_recv) \

@@ -37,12 +37,14 @@ const METHOD_COMP_CS: c_int = 6;
 const METHOD_COMP_SC: c_int = 7;
 const METHOD_LANG_CS: c_int = 8;
 const METHOD_LANG_SC: c_int = 9;
-/// `LIBSSH2_HOSTKEY_HASH_MD5` and `LIBSSH2_HOSTKEY_HASH_SHA1`.
+/// libssh2 host key hash selectors.
 const HASH_MD5: c_int = 1;
 const HASH_SHA1: c_int = 2;
-/// `PHP_SSH2_FINGERPRINT_SHA1` and `PHP_SSH2_FINGERPRINT_RAW`.
+const HASH_SHA256: c_int = 3;
+/// PHP fingerprint algorithm and output flags.
 const FINGERPRINT_SHA1: i64 = 0x0001;
 const FINGERPRINT_RAW: i64 = 0x0002;
+const FINGERPRINT_SHA256: i64 = 0x0004;
 
 unsafe extern "C" {
     #[link_name = "libssh2_keepalive_send"]
@@ -382,18 +384,12 @@ unsafe extern "C" {
     /// libssh2's own declaration: the negotiated method of `kind`, which the
     /// session keeps, or null.
     safe fn libssh2_session_methods<'a>(session: Session, kind: c_int) -> Option<Text<'a>>;
-    /// libssh2's own declaration for the MD5 hostkey hash: the session's 16
-    /// bytes, or null.
-    #[link_name = "libssh2_hostkey_hash"]
-    safe fn hostkey_md5<'a>(session: Session, kind: c_int) -> Option<&'a [u8; 16]>;
-    /// libssh2's own declaration for the SHA1 hostkey hash: the session's 20
-    /// bytes, or null.
-    #[expect(
-        clashing_extern_declarations,
-        reason = "libssh2_hostkey_hash returns a char *: each declaration types the hash it asks for"
-    )]
-    #[link_name = "libssh2_hostkey_hash"]
-    safe fn hostkey_sha1<'a>(session: Session, kind: c_int) -> Option<&'a [u8; 20]>;
+    safe fn libssh2_hostkey_hash(session: Session, kind: c_int) -> Option<NonNull<u8>>;
+    safe fn libssh2_session_hostkey(
+        session: Session,
+        len: &mut usize,
+        kind: &mut c_int,
+    ) -> *const u8;
 }
 
 /// A session's ssh-agent handle (`LIBSSH2_AGENT *`), live until freed.
@@ -461,6 +457,7 @@ swoole_rs_zend::handlers! {
     zif_ssh2_keepalive_config => keepalive_config;
     zif_ssh2_keepalive_send => keepalive_send;
     zif_ssh2_fingerprint => fingerprint;
+    zif_ssh2_hostkey => hostkey;
     zif_ssh2_auth_none => auth_none;
     zif_ssh2_auth_password => auth_password;
     zif_ssh2_auth_pubkey_file => auth_pubkey_file;
@@ -609,8 +606,34 @@ fn methods_negotiated(call: &Call<'_>) {
     call.set_owned(methods.into_owned());
 }
 
+/// Copy the negotiated server host key and its libssh2 algorithm identifier.
+fn hostkey(call: &Call<'_>) {
+    if call.arity(1, 1).is_err() {
+        return;
+    }
+    let Ok(resource) = call.resource(1) else {
+        return;
+    };
+    let Some(session) = session(call, resource) else {
+        return;
+    };
+    let (mut len, mut kind) = (0, 0);
+    let key = libssh2_session_hostkey(session, &mut len, &mut kind);
+    if key.is_null() {
+        call.set_bool(false);
+        return;
+    }
+    // SAFETY: libssh2 owns these len bytes for the lifetime of the live session.
+    // Copy them into the PHP array before returning to user code.
+    let bytes = unsafe { std::slice::from_raw_parts(key, len) };
+    let mut result = OwnedArray::default();
+    result.insert_bytes(b"key", Some(bytes));
+    result.insert_long(b"type", kind.into());
+    call.set_owned(result.into_owned());
+}
+
 /// `ssh2_fingerprint(resource $session, int $flags = 0): string|false|null`:
-/// the server's hostkey hash, MD5 unless `SSH2_FINGERPRINT_SHA1`, as uppercase
+/// the selected server host key hash (MD5 by default), as uppercase
 /// hex unless `SSH2_FINGERPRINT_RAW`; null, with a warning, when it is all zero.
 fn fingerprint(call: &Call<'_>) {
     // The arguments in order, as `zend_parse_parameters("r|l")` checks them.
@@ -626,16 +649,20 @@ fn fingerprint(call: &Call<'_>) {
     let Some(session) = session(call, resource) else {
         return;
     };
-    let hash: Option<&[u8]> = if flags & FINGERPRINT_SHA1 != 0 {
-        hostkey_sha1(session, HASH_SHA1).map(<[u8; 20]>::as_slice)
+    let (algorithm, length) = if flags & FINGERPRINT_SHA256 != 0 {
+        (HASH_SHA256, 32)
+    } else if flags & FINGERPRINT_SHA1 != 0 {
+        (HASH_SHA1, 20)
     } else {
-        hostkey_md5(session, HASH_MD5).map(<[u8; 16]>::as_slice)
+        (HASH_MD5, 16)
     };
-    let Some(hash) = hash else {
+    let Some(hash) = libssh2_hostkey_hash(session, algorithm) else {
         warn("Unable to retrieve fingerprint from specified session");
         call.set_bool(false);
         return;
     };
+    // SAFETY: the live session owns the digest, with the byte count of its algorithm.
+    let hash = unsafe { std::slice::from_raw_parts(hash.as_ptr(), length) };
     if hash.iter().all(|&byte| byte == 0) {
         warn("No fingerprint available using specified hash");
         call.set_null();
