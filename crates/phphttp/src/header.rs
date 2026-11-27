@@ -257,7 +257,7 @@ fn build(
     if let Some(reason) = &state.response.reason {
         out.extend_from_slice(decimal(&mut [0; 20], state.response.status.into()));
         out.push(b' ');
-        out.extend_from_slice(reason.as_bytes());
+        out.extend_from_slice(reason.bytes());
     } else {
         out.extend_from_slice(&swoole_rs_http::status_message(state.response.status));
     }
