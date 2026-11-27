@@ -135,6 +135,8 @@ helpers' in `helpers.rs` and the others beside the Rust each one calls:
 | `static_handler.cpp`: `range_errors_discard_complete_and_partial_plans`, `range_boundaries_and_cost_limits` | `crates/http/src/static_context/range.rs`: same names |
 | `has_expect_header`, `get_protocol`, `all_method`, `header_value_whitespace` | `crates/http/src/request.rs`: same names |
 | `websocket_encode`, `websocket_compressed_control_frame` | `crates/ports/src/frame_api.rs`: same names (`print_frame` to a temp file instead of `/tmp/swoole.log`) |
+| `http_server.cpp`: `duplicate_content_type`, `invalid_multipart_boundary` | `crates/http/src/request.rs`: same names |
+| `http_server.cpp`: `upload_flush_failure` | `crates/http/src/multipart.rs`: same name (requires Linux /dev/full; closing consumes the writer) |
 | `http_server.cpp`: `collect_upload_paths_without_metadata` | `multipart_parser.rs`: same name |
 | `http_upload_provenance.cpp`: `reject_client_upload_marker`, `header_name_split_across_reads_is_assembled`, `overwritten_read_buffer_cannot_forge_upload_marker` | `crates/http/src/request.rs`: same names, over the multipart parser (#1938) |
 

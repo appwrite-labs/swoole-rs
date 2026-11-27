@@ -202,7 +202,7 @@ impl HttpRequest {
                 | (u32::from(self.keep_alive) << 1)
                 | (u32::from(self.chunked) << 2)
                 | (u32::from(self.header_parsed) << 4),
-            number_errors: 0,
+            ..Default::default()
         };
         loop {
             let end = self.header_length.wrapping_sub(4) as usize;
@@ -214,6 +214,9 @@ impl HttpRequest {
             self.header_parsed = state.flags & 16 != 0;
             if state.number_errors != 0 {
                 Self::number_errors(state.number_errors.into());
+            }
+            if state.clear_form {
+                self.form = None;
             }
             let Ok(boundary) = status else {
                 self.excepted = true;
@@ -320,7 +323,7 @@ impl HttpRequest {
         upload_max: usize,
     ) -> bool {
         let header = self.header_length as usize;
-        let Some(form) = self.form.as_deref_mut() else {
+        let Some(mut form) = self.form.take() else {
             return false;
         };
         // The header buffer the boundary was found in.
@@ -346,6 +349,7 @@ impl HttpRequest {
         form.body = Some(body);
         form.template = [tmp_dir, b"/swoole.upfile.XXXXXX\0"].concat();
         form.upload_max = upload_max;
+        self.form = Some(form);
         true
     }
 
@@ -800,6 +804,22 @@ mod tests {
         assert!(!r.has_expect_header(i.bytes()), "no Expect");
         let i = input(b"POST /submit HTTP/1.1\r\nHost: www.example.com\r\nContent-Type: application/json\r\nContent-Length: 1000000\r\nExpect: 100-continue\r\n\r\n");
         assert!(r.has_expect_header(i.bytes()), "Expect: 100-continue");
+    }
+
+    #[test]
+    fn duplicate_content_type() {
+        let (_, request) = parsed(b"POST / HTTP/1.1\r\nHost: localhost\r\nContent-Type: multipart/form-data; boundary=test\r\nContent-Type: text/plain\r\nContent-Length: 0\r\n\r\n");
+        assert!(request.form.is_none());
+        let (_, request) = parsed(b"POST / HTTP/1.1\r\nHost: localhost\r\nContent-Type: text/plain\r\nContent-Type: multipart/form-data; boundary=test\r\nContent-Length: 0\r\n\r\n");
+        assert!(request.form.is_some());
+    }
+
+    #[test]
+    fn invalid_multipart_boundary() {
+        let (mut input, mut request) = parsed(b"POST / HTTP/1.1\r\nHost: localhost\r\nContent-Type: multipart/form-data\r\nContent-Length: 1\r\n\r\nx");
+        assert!(request.form.is_some());
+        assert!(!request.init_multipart_parser(input.get_mut(), b"/tmp", 0));
+        assert!(request.form.is_none());
     }
 
     #[test]

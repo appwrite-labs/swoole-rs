@@ -387,8 +387,6 @@ fn head(n: &mut impl Connection) -> Option<Step> {
             } {
                 let send_continue = continues(n);
                 if !n.init_multipart() {
-                    // `delete form_data_`: nothing was made for it.
-                    n.request().form = None;
                     return Some(Step::Reply(Reply::BadRequest));
                 }
                 if send_continue {

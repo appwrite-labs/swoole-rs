@@ -83,6 +83,17 @@ pub fn multipart_filename(data: &mut [u8]) -> Result<bool, i32> {
 mod tests {
     use super::*;
     use crate::INVALID;
+
+    #[test]
+    #[cfg_attr(not(target_os = "linux"), ignore = "requires /dev/full")]
+    #[cfg_attr(miri, ignore = "requires /dev/full")]
+    fn upload_flush_failure() {
+        let file = File::options().write(true).open("/dev/full").unwrap();
+        let mut upload = BufWriter::with_capacity(1024, file);
+        assert_eq!(upload.write(b"x").unwrap(), 1);
+        assert!(!close_upload_file(upload, None));
+    }
+
     #[test]
     fn filename_stops_with_identical_destructive_cookie_state() {
         for input in [
