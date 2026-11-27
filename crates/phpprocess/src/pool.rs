@@ -242,17 +242,28 @@ method_table! {
 /// inside the trap and return deferred escapes to their owners.
 struct Bailouts;
 
+// Only a live PHP Pool::start frame on this thread may inspect EG(exception).
+fn pool_unwind_exit() -> bool {
+    OWNER.get().is_some() && swoole_rs_zend::host::unwind_exit_pending()
+}
+
 impl process::pool::Bailouts for Bailouts {
     fn contain(&self, body: &mut dyn FnMut()) -> bool {
-        swoole_rs_zend::contain_with(body).is_err()
+        if let Err(bailout) = swoole_rs_zend::contain_with(body) {
+            bailout.defer();
+            return true;
+        }
+        pool_unwind_exit()
     }
 
     fn defer(&self) {
-        swoole_rs_zend::bailout::Bailout.defer();
+        if !pool_unwind_exit() {
+            swoole_rs_zend::bailout::Bailout.defer();
+        }
     }
 
     fn pending(&self) -> bool {
-        swoole_rs_zend::bailout::pending()
+        swoole_rs_zend::bailout::pending() || pool_unwind_exit()
     }
 }
 

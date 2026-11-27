@@ -6,6 +6,7 @@
 #include "shim_values.h"
 /* Individual Zend property effects, each containing possible PHP magic-method bailouts. */
 zend_object *swr_zend_facade_exception(void);
+bool swr_zend_unwind_exit_pending(void);
 /* Keep UnwindExit in EG(exception) for the VM. Report other exceptions inside zend_try. */
 int swr_zend_try_uncaught_exception(bool *unwind_exit);
 /* call_user_function(EG(function_table), NULL, name, retval, args) inside zend_try:

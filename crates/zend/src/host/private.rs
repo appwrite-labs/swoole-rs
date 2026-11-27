@@ -21,6 +21,8 @@ unsafe extern "C" {
     ) -> c_int;
     /// `EG(exception)`: one pointer of the executor's is read; null for none.
     safe fn swr_zend_facade_exception() -> *mut zend_object;
+    /// Read the current executor's exception class without running PHP.
+    safe fn swr_zend_unwind_exit_pending() -> bool;
     /// Inspect the pending exception. Leave `UnwindExit` in the executor and
     /// report other exceptions inside `zend_try`.
     safe fn swr_zend_try_uncaught_exception(unwind_exit: &mut bool) -> c_int;
@@ -73,6 +75,12 @@ fn discard(value: Owned) {
 #[must_use]
 pub fn exception() -> *mut zend_object {
     swr_zend_facade_exception()
+}
+
+/// Whether this PHP thread needs to return to the VM to complete exit().
+#[must_use]
+pub fn unwind_exit_pending() -> bool {
+    swr_zend_unwind_exit_pending()
 }
 
 /// `EG(exception)` with a reference of its own: the exception pending on this

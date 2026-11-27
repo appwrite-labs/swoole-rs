@@ -2190,16 +2190,18 @@ impl<H: PoolHost> Pool<'_, H> {
     /// `ProcessPool::wait`: reap and restart workers until the pool stops, then
     /// stop them all.
     pub(crate) fn wait(&mut self) -> Result<(), Bailed> {
-        reaper::run(self)?;
-
+        let result = reaper::run(self);
+        if result.is_err() && getpid() != self.master_pid() {
+            return result;
+        }
         self.set_running(false);
         self.drop_reload_task();
-        if self.on_shutdown().is_some() {
+        if result.is_ok() && self.on_shutdown().is_some() {
             self.h.callback(Callback::Shutdown, ptr::null_mut())?;
         }
         for index in 0..self.worker_num() {
             let pid = self.worker_at(index).pid();
-            if kill(pid, libc::SIGTERM).is_err() {
+            if pid > 0 && kill(pid, libc::SIGTERM).is_err() {
                 self.op(Op::Log(Log::KillFailed), u64::from(pid.cast_unsigned()));
             }
         }
@@ -2209,12 +2211,12 @@ impl<H: PoolHost> Pool<'_, H> {
         // Upstream waits for the first worker only.
         if self.worker_num() > 0 {
             let pid = self.worker_at(0).pid();
-            if !self.h.waitpid(pid) {
+            if pid > 0 && !self.h.waitpid(pid) {
                 self.op(Op::Log(Log::WaitpidFailed), u64::from(pid.cast_unsigned()));
             }
         }
         self.set_started(false);
-        Ok(())
+        result
     }
 
     /// `ProcessPool::push_message(msg)`: the `EventData` with `head` and `data` into
