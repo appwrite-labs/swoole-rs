@@ -148,7 +148,7 @@ impl Timer {
         persistent: bool,
         token: impl FnOnce() -> *mut c_void,
     ) -> Result<TimerView, Status> {
-        self.add_marked(now, delay, persistent, false, None, token)
+        self.add_marked(now, delay, persistent, false, self.round, token)
     }
 
     /// [`Self::add`] of a node whose view says whether it is a PHP callable's.
@@ -160,7 +160,7 @@ impl Timer {
         delay: i64,
         persistent: bool,
         php: bool,
-        reactor_round: Option<u64>,
+        birth_round: u64,
         token: impl FnOnce() -> *mut c_void,
     ) -> Result<TimerView, Status> {
         if now < 0 || delay <= 0 {
@@ -192,7 +192,7 @@ impl Timer {
             id,
             deadline,
             interval: if persistent { delay } else { 0 },
-            birth_round: reactor_round.unwrap_or(self.round),
+            birth_round,
             php,
             token,
             ..TimerView::default()
@@ -306,7 +306,7 @@ impl Timer {
     /// `Status::Empty` [`Self::select_next`] and [`Self::end`], with `end`'s delay. `None`, and
     /// nothing changed, when a node is due or `begin` would refuse.
     pub fn select_idle(&mut self, now: i64) -> Option<i64> {
-        self.select_idle_at(now, None)
+        self.select_idle_at(now, Some(self.round))
     }
 
     /// Select against the attached reactor's poll round when it owns the clock.
@@ -315,7 +315,8 @@ impl Timer {
             self.round = round;
         }
         let head = self.heap.first();
-        let due = head.is_some_and(|head| head.deadline <= now && head.birth_round != self.round);
+        let due = head
+            .is_some_and(|head| head.deadline <= now && Some(head.birth_round) != reactor_round);
         if due
             || self.closing
             || self.selecting
@@ -358,6 +359,10 @@ impl Timer {
 
     /// The selection's next due node, which becomes the active one.
     pub fn select_next(&mut self) -> (Status, TimerView) {
+        self.select_next_at(Some(self.round))
+    }
+
+    fn select_next_at(&mut self, reactor_round: Option<u64>) -> (Status, TimerView) {
         let none = TimerView::default();
         if !self.selecting {
             return (Status::Invalid, none);
@@ -371,7 +376,7 @@ impl Timer {
         let Some(view) = self.heap.first().copied() else {
             return (Status::Empty, none);
         };
-        if view.deadline > self.captured || view.birth_round == self.round {
+        if view.deadline > self.captured || Some(view.birth_round) == reactor_round {
             return (Status::Empty, none);
         }
         self.active_id = view.id;
