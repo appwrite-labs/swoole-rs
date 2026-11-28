@@ -1,7 +1,7 @@
 //! Reactor threads' worker-pipe write path (`src/server/reactor_thread.cc`).
 use core::ffi::c_int;
 
-use swoole_rs_corebase::reactor::Event;
+use swoole_rs_corebase::reactor::{Event, Heap, SocketFields};
 use swoole_rs_corebase::{DataHead, ServerEvent, log, microtime};
 use swoole_rs_error::ErrorCode as E;
 
@@ -16,6 +16,20 @@ pub(crate) fn pipe_write(serv: view::Server<'_>, reactor: Reactor, event: &Event
     let Some(sock) = event.socket() else {
         return false;
     };
+    if !flush_pipe(serv, sock) {
+        return false;
+    }
+    if !sock.read(SocketFields::output_drained) {
+        return true;
+    }
+    if !reactor.interest(sock, swoole_rs_corebase::reactor::Interest::RemoveWrite) {
+        let m = format_args!("reactor->set({}) failed", event.fd());
+        log::sys_warning(c"ReactorThread_onPipeWrite", m);
+    }
+    true
+}
+
+fn flush_pipe(serv: view::Server<'_>, sock: Heap<'_>) -> bool {
     // The front message, sent (or discarded) and popped while the queue is lent;
     // `Err(errno)` when the send failed.
     let flush_front = |queue: Option<&mut swoole_rs_corebase::buffer::Buffer>| {
@@ -37,11 +51,42 @@ pub(crate) fn pipe_write(serv: view::Server<'_>, reactor: Reactor, event: &Event
             }
         }
     }
-    if !reactor.interest(sock, swoole_rs_corebase::reactor::Interest::RemoveWrite) {
-        let m = format_args!("reactor->set({}) failed", event.fd());
-        log::sys_warning(c"ReactorThread_onPipeWrite", m);
-    }
     true
+}
+
+/// After PHP request shutdown, service only the worker's native pipe queues
+/// until they drain or the original worker exit deadline expires.
+pub(crate) fn finish_worker_output(serv: view::Server<'_>, bus: crate::objects::Bus<'_>) {
+    let mut pending: Vec<_> = bus
+        .rust()
+        .pipes()
+        .filter(|pipe| !pipe.read(SocketFields::output_drained))
+        .map(|pipe| libc::pollfd {
+            fd: pipe.fd(),
+            events: libc::POLLOUT,
+            revents: 0,
+        })
+        .collect();
+    while !pending.is_empty() {
+        let timeout = crate::event_worker::native::exit_timeout(serv.config().max_wait_time.get());
+        if timeout == 0 {
+            break;
+        }
+        match swoole_rs_corebase::sys::poll(&mut pending, timeout) {
+            Ok(0) => break,
+            Ok(_) => pending.retain(|fd| {
+                fd.revents == 0
+                    || bus.rust().pipe(fd.fd).is_some_and(|pipe| {
+                        flush_pipe(serv, pipe) && !pipe.read(SocketFields::output_drained)
+                    })
+            }),
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
+            Err(_) => break,
+        }
+    }
+    for pipe in bus.rust().pipes() {
+        pipe.with_output_queue(discard_queue);
+    }
 }
 
 /// Discard packets for missing sessions when configured. Workers apply close ordering

@@ -4,6 +4,7 @@
 use crate::{DispatchMode, Mode};
 use core::ffi::{c_int, c_long};
 use core::sync::atomic::Ordering::Relaxed;
+use swoole_rs_corebase::CCast;
 use swoole_rs_corebase::ServerEvent;
 use swoole_rs_corebase::process;
 use swoole_rs_corebase::process::pool::PIPE_MASTER;
@@ -430,7 +431,7 @@ pub fn stop_async_worker(serv: view::Server<'_>, worker: Worker<'_>) {
         swoole_rs_corebase::reactor::Priority::TryExit,
         try_to_exit,
     );
-    let now = swoole_rs_corebase::time_now();
+    let now = swoole_rs_corebase::reactor::steady_ms().c_cast::<i64>();
     with_globals(|globals| globals.exit_time.store(now, Relaxed));
     try_exit(serv, reactor);
 }
@@ -441,6 +442,21 @@ fn try_to_exit() {
     if let Some(serv) = reactor.server() {
         try_exit(serv, reactor);
     }
+}
+
+/// Time left since the worker started stopping. A request which exited directly
+/// starts its budget on the first drain.
+pub(crate) fn exit_timeout(max_wait: u32) -> i32 {
+    let now = swoole_rs_corebase::reactor::steady_ms().c_cast::<i64>();
+    let start = with_globals(|globals| {
+        globals
+            .exit_time
+            .compare_exchange(0, now, Relaxed, Relaxed)
+            .map_or_else(|start| start, |_| now)
+    });
+    (start + i64::from(max_wait) * 1000 - now)
+        .clamp(0, i64::from(i32::MAX))
+        .c_cast()
 }
 
 /// Once the reactor can exit, stop it; meanwhile call `onWorkerExit` once, then wait
@@ -459,11 +475,9 @@ fn try_exit(serv: view::Server<'_>, reactor: Reactor) {
                 _ = with_current(|&worker| callbacks.worker(WorkerSlot::Exit, serv, worker));
                 continue;
             }
-            let exit_time = with_globals(|globals| globals.exit_time.load(Relaxed));
-            let now = swoole_rs_corebase::time_now();
             let max_wait = serv.config().max_wait_time.get();
             let handle = reactor.handle();
-            match super::exit_wait(now, exit_time, max_wait, handle.timeout_msec()) {
+            match super::exit_wait(exit_timeout(max_wait), handle.timeout_msec()) {
                 Wait::Stop => {
                     log::error_log(
                         WARNING,

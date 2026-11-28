@@ -150,6 +150,18 @@ impl SocketFields {
         }
     }
 
+    /// Queue one vectored pipe write without registering a reactor event.
+    pub fn queue_pipe_write(&mut self, vectors: &[IoSlice<'_>]) -> Option<usize> {
+        let payload = WritePayload::Vectors(vectors);
+        let bytes = payload.length();
+        if bytes > self.output_limit().saturating_sub(self.queued_bytes()) as usize {
+            return None;
+        }
+        self.open_chunked_output_queue();
+        self.queue_payload(payload, 0);
+        Some(bytes)
+    }
+
     /// `typed_close()`: queues a close behind the output, when the socket has a queue.
     #[inline]
     pub fn queue_close(&self) {

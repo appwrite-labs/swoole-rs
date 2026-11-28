@@ -213,7 +213,13 @@ fn body(share: &SharedServer, id: u32, kind: WorkerType, fresh: swoole_rs_coreba
         }
         None => run_main(serv, slot, kind),
     }
-    if own {
+    if kind == WorkerType::Event
+        && !serv.state().running()
+        && let Some(record) = serv.state().tables_ref().reactor_thread(usize::from(slot))
+    {
+        crate::reactor_io::finish_worker_output(serv, record.message_bus());
+    }
+    if own || kind == WorkerType::Event {
         crate::objects::set_thread_bus(None);
     }
     if worker.is_some() {

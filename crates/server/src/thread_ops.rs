@@ -111,6 +111,7 @@ fn init_thread(ctx: &mut ReactorContext<'_>, state: &ServerState, id: u16) -> Op
         .and_then(|pipe| Some(pipe.worker_end()?.fd()));
     methods::init_pipe_sockets(server, bus, command);
     if config.mode_ == Mode::Thread {
+        bus.rust().set_defer_write();
         let worker = worker(server, id)?;
         crate::worker_methods::init_event_worker(server, worker);
         if let Some(sock) = pipe_socket(&bus, worker_pipe(worker, false)) {

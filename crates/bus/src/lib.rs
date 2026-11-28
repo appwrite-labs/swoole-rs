@@ -169,6 +169,7 @@ pub struct Bus {
     buffer_generation: Cell<usize>,
     buffer_size: Cell<usize>,
     always_chunked: Cell<bool>,
+    defer_write: Cell<bool>,
     packets: Cell<Option<Box<Packets>>>,
     /// `pipe_sockets_`: by descriptor, this bus's own records of the pipes, which
     /// `init_pipe_sockets` made and only the bus's drop frees.
@@ -217,6 +218,7 @@ impl Bus {
             buffer_generation: Cell::new(0),
             buffer_size: Cell::new(buffer_size),
             always_chunked: Cell::new(false),
+            defer_write: Cell::new(false),
             packets: Cell::new(None),
             pipe_sockets: OnceCell::new(),
             next_id: Cell::new(None),
@@ -741,6 +743,11 @@ impl Bus {
         self.always_chunked.set(true);
     }
 
+    /// Event worker pipe queues survive until the replacement reactor can drain them.
+    pub fn set_defer_write(&self) {
+        self.defer_write.set(true);
+    }
+
     /// `MessageBus::alloc_buffer()`: replace the receive buffer with `size` bytes
     /// from `allocator`, initialized once for safe reads. False, leaving no buffer,
     /// on failure.
@@ -863,7 +870,7 @@ impl Bus {
     /// `MessageBus::write` of a message its caller holds as a `SendData`: a head and,
     /// unless it has none, the payload its `len` counts (at most `data`'s bytes are
     /// sent). Numbers the message, then writes it through the event loop while one is
-    /// available, else synchronously. False if the pipe failed. (What the event loop
+    /// available, else through the persistent pipe queue or synchronously. False if the pipe failed. (What the event loop
     /// cannot send at once it queues, and watches `socket` until it drains: a [`Heap`]
     /// socket may be.)
     pub fn send(&self, socket: Heap<'_>, head: &mut BusHead, data: Option<&[u8]>) -> bool {
@@ -871,6 +878,23 @@ impl Bus {
         let send = |vectors: &[IoSlice<'_>]| {
             if event_api::swoole_event_is_available() {
                 event_api::swoole_event_writev(socket, vectors)
+            } else if self.defer_write.get() {
+                let queued = socket.edit(|fields| fields.queue_pipe_write(vectors));
+                if queued.is_none() {
+                    let (used, limit) =
+                        socket.read(|fields| (fields.queued_bytes(), fields.output_limit()));
+                    log::error_log(
+                        log::LogLevel::SW_LOG_WARNING,
+                        swoole_rs_error::ErrorCode::SW_ERROR_OUTPUT_BUFFER_OVERFLOW as c_int,
+                        c"MessageBus::enqueue_write",
+                        format_args!(
+                            "pipe#{} output buffer overflow: ({used}/{limit})",
+                            socket.fd()
+                        ),
+                    );
+                    sys::set_errno(libc::ENOSPC);
+                }
+                queued
             } else {
                 writev_sync(*socket, vectors)
             }
@@ -987,14 +1011,25 @@ mod tests {
         let fd = pipe.fds[1];
         pipe.bus.init_pipe_sockets([fd]);
         let record = pipe.bus.pipe_socket(fd);
-        pipe.bus.pipe(fd).unwrap().edit(|f| {
-            f.open_output_queue(0);
-            f.queue_output(b"pending");
-        });
+        let socket = pipe.bus.pipe(fd).unwrap();
+        pipe.bus.set_defer_write();
+        let mut head = BusHead {
+            len: 7,
+            ..BusHead::default()
+        };
+        let size = u32::try_from(HEAD + 7).unwrap();
+        socket.edit(|fields| fields.limit_output(size));
+        assert!(pipe.bus.send(socket, &mut head, Some(b"pending")));
+        assert!(!pipe.bus.send(socket, &mut head, Some(b"pending")));
+        assert_eq!(sys::errno(), libc::ENOSPC);
+        assert_eq!(socket.read(SocketFields::queued_bytes), size);
         pipe.bus.init_pipe_sockets([fd]);
         assert_eq!(pipe.bus.pipe_socket(fd), record, "the same record");
         pipe.bus.pipe(fd).unwrap().with_output_queue(|queue| {
-            assert_eq!(queue.unwrap().front_data(), b"pending");
+            assert_eq!(
+                queue.unwrap().front_data().get(HEAD..),
+                Some(b"pending".as_slice())
+            );
         });
         assert!(pipe.bus.pipe(pipe.fds[0]).is_none());
     }
