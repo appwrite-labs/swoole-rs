@@ -35,6 +35,9 @@ opaque!(
     libssh2_agent_publickey
 );
 
+/// Signature of the optional `libssh2_channel_signal_ex` in the installed SDK.
+pub type ChannelSignal = unsafe extern "C" fn(*mut LIBSSH2_CHANNEL, *const c_char, usize) -> c_int;
+
 /// `LIBSSH2_ERROR_SOCKET_NONE` and `LIBSSH2_ERROR_EAGAIN`.
 pub const LIBSSH2_ERROR_SOCKET_NONE: c_int = -1;
 pub const LIBSSH2_ERROR_EAGAIN: c_int = -37;
@@ -122,7 +125,10 @@ unsafe extern "C" {
     pub fn libssh2_channel_eof(channel: *mut LIBSSH2_CHANNEL) -> c_int;
     pub fn libssh2_channel_close(channel: *mut LIBSSH2_CHANNEL) -> c_int;
     pub fn libssh2_channel_send_eof(channel: *mut LIBSSH2_CHANNEL) -> c_int;
-    pub fn libssh2_channel_get_exit_status(channel: *mut LIBSSH2_CHANNEL) -> c_int;
+    pub fn libssh2_keepalive_send(
+        session: *mut LIBSSH2_SESSION,
+        seconds_to_next: *mut c_int,
+    ) -> c_int;
     pub fn libssh2_channel_request_pty_size_ex(
         channel: *mut LIBSSH2_CHANNEL,
         width: c_int,

@@ -46,8 +46,8 @@ pub(crate) enum Kind {
 #[derive(Debug)]
 pub(crate) enum Value {
     /// No payload (null, true, false, undef, or the object a failed socket
-    /// conversion leaves): upstream's zeroed union, which `incr` still adds to.
-    Bare(i64),
+    /// conversion leaves).
+    Bare,
     Long(i64),
     Double(f64),
     Str(Box<[u8]>),
@@ -86,7 +86,7 @@ impl Drop for Item {
 fn bare(kind: Kind) -> Item {
     Item {
         kind,
-        value: Value::Bare(0),
+        value: Value::Bare,
     }
 }
 
@@ -184,7 +184,7 @@ impl Item {
     }
 
     /// The default branch: `php_swoole_serialize`, or undef if it failed.
-    fn serialize(value: &ZValue) -> Self {
+    pub(crate) fn serialize(value: &ZValue) -> Self {
         // A bailout of `__serialize` is deferred.
         let Some(data) = host::serialize(value) else {
             return bare(Kind::Undef);
@@ -205,10 +205,10 @@ impl Item {
         Some(match &self.value {
             Value::Long(value) => Owned::long(*value),
             Value::Double(value) => Owned::double(*value),
-            Value::Bare(_) if matches!(self.kind, Kind::True | Kind::False) => {
+            Value::Bare if matches!(self.kind, Kind::True | Kind::False) => {
                 Owned::bool(self.kind == Kind::True)
             }
-            Value::Bare(_) => return None,
+            Value::Bare => return None,
             Value::Str(text) => Owned::string(ZString::new(text)),
             Value::Array(array) => classes::array_object(self.kind, array),
             Value::Queue(queue) => classes::queue_object(queue),
@@ -245,7 +245,7 @@ impl Item {
         match &self.value {
             Value::Long(value) => search.as_long() == Some(*value),
             Value::Double(value) => search.as_double() == Some(*value),
-            Value::Bare(_) => matches!(self.kind, Kind::True | Kind::False | Kind::Null),
+            Value::Bare => matches!(self.kind, Kind::True | Kind::False | Kind::Null),
             Value::Str(text) => search.bytes() == Some(&**text),
             _ => false,
         }
@@ -255,7 +255,8 @@ impl Item {
     /// when two types' `TYPE_PAIR`s collide.
     fn raw(&self) -> u64 {
         match &self.value {
-            Value::Bare(value) | Value::Long(value) => value.cast_unsigned(),
+            Value::Bare => 0,
+            Value::Long(value) => value.cast_unsigned(),
             Value::Double(value) => value.to_bits(),
             Value::Socket { fd, kind } => {
                 (u64::from(kind.cast_unsigned()) << 32) | u64::from(fd.cast_unsigned())
@@ -287,9 +288,7 @@ impl Item {
         }
     }
 
-    /// `incr_update`: add to a float or, as upstream's union does, to the int
-    /// view of anything else; the type never changes. The sum goes to the
-    /// return slot of `call`, a Thread method call.
+    /// `incr_update`: add to a numeric item, preserving its type.
     pub(crate) fn add(&mut self, delta: &ZValue, call: &Call) {
         match &mut self.value {
             Value::Double(value) => {
@@ -300,7 +299,7 @@ impl Item {
                 *value += delta;
                 call.set_owned(Owned::double(*value));
             }
-            Value::Long(value) | Value::Bare(value) => {
+            Value::Long(value) => {
                 let delta = delta.long();
                 if bailout::pending() {
                     return;
@@ -308,8 +307,7 @@ impl Item {
                 *value = value.wrapping_add(delta);
                 call.set_long(*value);
             }
-            // Upstream adds to a pointer here; leave the value alone.
-            _ => call.set_long(delta.long()),
+            _ => call.set_bool(false),
         }
     }
 

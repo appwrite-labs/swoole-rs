@@ -65,11 +65,8 @@ const FORCE_UNLOCK_MS: u128 = 2000;
 const SPINLOCK_LOOP_N: u32 = crate::constants::SW_SPINLOCK_LOOP_N;
 const SW_ERROR_MALLOC_FAIL: c_int = swoole_rs_error::ErrorCode::SW_ERROR_MALLOC_FAIL as c_int;
 
-/// The host's hash of a key as the caller passed it, whose row compares its
-/// first `compared` bytes: upstream's `hash_func(key, keylen)`, which
-/// `swoole_hash_php` reads `compared` bytes of and `Swoole\Table`'s hook the
-/// whole PHP string.
-pub type Hash = fn(key: &[u8], compared: usize) -> u64;
+/// The host's hash of a validated key, with its byte length.
+pub type Hash = fn(key: &[u8], length: usize) -> u64;
 /// Logs one whole warning line, as `swoole_warning` does.
 pub type Warning = fn(message: &[u8]);
 /// `swoole_set_last_error`.
@@ -253,19 +250,16 @@ pub struct Column {
 }
 
 impl Column {
+    /// The column's packed field in a row snapshot.
+    #[must_use]
+    pub fn field<'a>(&self, row: &'a [u8]) -> &'a [u8] {
+        field(row, self).unwrap_or_default()
+    }
+
     #[must_use]
     pub fn name(&self) -> &[u8] {
         &self.name
     }
-}
-
-/// Every declaration in order, repeats included (upstream's `column_list`),
-/// and where the first declaration of each name sits (upstream's `column_map`).
-/// Tables have a handful of columns, so a scan beats hashing the name.
-#[derive(Default)]
-struct Columns {
-    list: Vec<Column>,
-    first: Vec<usize>,
 }
 
 /// The iterator's position and its private copy of the current row.
@@ -315,11 +309,8 @@ pub struct Table {
 
 /// The arena of a table about to be created.
 struct Plan {
-    /// `calc_memory_size()`: upstream's byte count, rows unpadded.
-    logical: usize,
     /// The arena, rows padded to `stride`.
     physical: usize,
-    row_size: usize,
     stride: usize,
     slices: usize,
 }
@@ -351,13 +342,6 @@ fn c_str(bytes: &[u8]) -> &[u8] {
 
 fn warn(warning: Warning, message: &[u8]) {
     warning(message);
-}
-
-/// The bytes of a key a row holds: its `uint16_t` length (as upstream's
-/// `Table` takes it), then `check_key_length`'s 63 bytes.
-fn clamp(key: &[u8]) -> &[u8] {
-    let length = usize::from(key.len().c_cast::<u16>());
-    key.get(..length.min(KEY_SIZE - 1)).unwrap_or(key)
 }
 
 impl Table {
@@ -425,17 +409,19 @@ impl Table {
         let slices = rows.checked_sub(self.size)?;
         let row_size = ROW.checked_add(self.item_size)?;
         let stride = row_size.checked_next_multiple_of(8)?;
-        let bytes = |row: usize| {
-            let pool = row.checked_add(size_of::<Slice>())?.checked_mul(slices)?;
-            row.checked_add(size_of::<*mut Row>())?
-                .checked_mul(self.size)?
-                .checked_add(pool)?
-                .checked_add(HEADER)
-        };
+        let pool = stride
+            .checked_add(size_of::<Slice>())?
+            .checked_mul(slices)?;
+        let physical = stride
+            .checked_add(size_of::<*mut Row>())?
+            .checked_mul(self.size)?
+            .checked_add(pool)?
+            .checked_add(HEADER)?;
+        if u32::try_from(stride).is_err() || isize::try_from(physical).is_err() {
+            return None;
+        }
         Some(Plan {
-            logical: bytes(row_size)?,
-            physical: bytes(stride).filter(|&n| isize::try_from(n).is_ok())?,
-            row_size,
+            physical,
             stride,
             slices,
         })
@@ -444,7 +430,7 @@ impl Table {
     /// `calc_memory_size()`: the arena's size as upstream counts it.
     #[must_use]
     pub fn memory_total(&self) -> usize {
-        self.plan().map_or(0, |plan| plan.logical)
+        self.plan().map_or(0, |plan| plan.physical)
     }
 
     /// Bytes `create` needs, or 0 if the table is created or too large.
@@ -505,7 +491,7 @@ impl Table {
         self.first = first;
         self.stride = plan.stride;
         self.pool = Some(pool);
-        self.memory_size = plan.logical - self.size * (plan.row_size + size_of::<*mut Row>());
+        self.memory_size = plan.physical;
         self.memory = std::mem::take(arena);
         self.created = true;
         true
@@ -532,7 +518,7 @@ impl Table {
         self.conflict_proportion
     }
 
-    /// `get_memory_size()`: the collision pool's bytes, as upstream reports them.
+    /// `get_memory_size()`: the allocated table arena's bytes.
     #[must_use]
     pub fn memory_size(&self) -> usize {
         self.memory_size
@@ -590,13 +576,13 @@ impl Table {
         if row.active() { row.0 } else { ptr::null_mut() }
     }
 
-    /// The bucket `key` hashes to, and the bytes its row compares ([`clamp`]).
-    fn bucket<'k>(&self, key: &'k [u8]) -> (Live, &'k [u8]) {
-        let compared = clamp(key);
-        let hash = (self.hash)(key, compared.len());
-        // Masked below the row count, a usize.
-        let row = self.bucket_row((hash & (self.size as u64 - 1)).c_cast::<usize>());
-        (row, compared)
+    /// A valid key's bucket in a created table.
+    fn bucket(&self, key: &[u8]) -> Option<Live> {
+        if !self.ready() || !(1..KEY_SIZE).contains(&key.len()) {
+            return None;
+        }
+        let hash = (self.hash)(key, key.len());
+        Some(self.bucket_row((hash & (self.size as u64 - 1)).c_cast::<usize>()))
     }
 
     fn claim(&self, row: Live, key: &[u8]) {
@@ -608,10 +594,20 @@ impl Table {
     /// the bucket's row, which stays locked even when no row could be made.
     /// `flags` gets `NEW_ROW` and `CONFLICT` unless that happens.
     pub fn set(&self, key: &[u8], lock: &mut *mut Row, flags: Option<&mut i32>) -> *mut Row {
-        if !self.ready() {
+        self.prepare_write(key, lock, flags, false)
+    }
+
+    fn prepare_write(
+        &self,
+        key: &[u8],
+        lock: &mut *mut Row,
+        flags: Option<&mut i32>,
+        insert_only: bool,
+    ) -> *mut Row {
+        let Some(root) = self.bucket(key) else {
+            *lock = ptr::null_mut();
             return ptr::null_mut();
-        }
-        let (root, key) = self.bucket(key);
+        };
         *lock = root.0;
         root.lock(self.warning);
         let mut found = 0;
@@ -641,6 +637,11 @@ impl Table {
             self.claim(root, key);
             found |= NEW_ROW;
         }
+        if insert_only && found & NEW_ROW == 0 {
+            root.unlock();
+            *lock = ptr::null_mut();
+            return ptr::null_mut();
+        }
         if let Some(flags) = flags {
             *flags = found;
         }
@@ -656,19 +657,27 @@ impl Table {
     /// `Table::get`: the active row for `key` or null, with `lock` set to the
     /// bucket's row, which is locked either way.
     pub fn get(&self, key: &[u8], lock: &mut *mut Row) -> *mut Row {
-        if !self.ready() {
+        let Some(root) = self.bucket(key) else {
+            *lock = ptr::null_mut();
             return ptr::null_mut();
+        };
+        *lock = root.0;
+        root.lock(self.warning);
+        Self::find(root, key).map_or(ptr::null_mut(), |(row, _)| row.0)
+    }
+
+    /// Find a row and its predecessor under the bucket lock.
+    fn find(root: Live, key: &[u8]) -> Option<(Live, Option<Live>)> {
+        if !root.active() {
+            return None;
         }
-        let (mut row, key) = self.bucket(key);
-        *lock = row.0;
-        row.lock(self.warning);
+        let mut row = root;
+        let mut previous = None;
         while !row.key_is(key) {
-            match row.next() {
-                Some(next) => row = next,
-                None => return ptr::null_mut(),
-            }
+            previous = Some(row);
+            row = row.next()?;
         }
-        if row.active() { row.0 } else { ptr::null_mut() }
+        Some((row, previous))
     }
 
     /// `Table::exists`.
@@ -684,48 +693,47 @@ impl Table {
 
     /// `Table::del`. Deleting a bucket's own row moves its first collision row in.
     pub fn del(&self, key: &[u8]) -> bool {
-        if !self.ready() {
-            return false;
-        }
-        let (root, key) = self.bucket(key);
-        if !root.active() {
-            return false;
-        }
-        root.lock(self.warning);
-        let deleted = self.unlink(root, key);
-        if deleted {
-            self.delete_count.fetch_add(1, Ordering::Relaxed);
-            self.row_num.fetch_sub(1, Ordering::Relaxed);
-        }
-        root.unlock();
-        deleted
+        self.delete_if(key, |_| true)
     }
 
-    /// Delete `key` from a locked bucket.
-    fn unlink(&self, root: Live, key: &[u8]) -> bool {
-        let Some(mut next) = root.next() else {
-            if !root.key_is(key) {
-                return false;
-            }
-            root.clear();
-            return true;
+    /// Test the packed row and delete it under one bucket lock. The predicate
+    /// must only inspect the row and must never reenter the table.
+    pub fn delete_if(&self, key: &[u8], matches: impl FnOnce(&[u8]) -> bool) -> bool {
+        self.remove(key, |data| matches(data).then_some(()))
+            .is_some()
+    }
+
+    /// Copy the requested column or whole row and delete it under the same bucket lock.
+    #[must_use]
+    pub fn getdel(&self, key: &[u8], column: Option<&Column>) -> Option<Vec<u8>> {
+        self.remove(key, |data| {
+            Some(column.map_or(data, |c| c.field(data)).to_vec())
+        })
+    }
+
+    fn remove<T>(&self, key: &[u8], snapshot: impl FnOnce(&[u8]) -> Option<T>) -> Option<T> {
+        let root = self.bucket(key)?;
+        root.lock(self.warning);
+        let Some((row, previous)) = Self::find(root, key) else {
+            root.unlock();
+            return None;
         };
-        if root.key_is(key) {
+        let mut locked = self.locked(Some(root), Some(row), 0)?;
+        let (_, data) = locked.row.take()?;
+        let value = snapshot(data)?;
+        if let Some(previous) = previous {
+            previous.set_next(row.next());
+            self.free_row(row);
+        } else if let Some(next) = row.next() {
             root.set_next(next.next());
             root.take(next, self.item_size);
+            self.free_row(next);
         } else {
-            let mut previous = root;
-            while !next.key_is(key) {
-                previous = next;
-                let Some(after) = next.next() else {
-                    return false;
-                };
-                next = after;
-            }
-            previous.set_next(next.next());
+            root.clear();
         }
-        self.free_row(next);
-        true
+        self.delete_count.fetch_add(1, Ordering::Relaxed);
+        self.row_num.fetch_sub(1, Ordering::Relaxed);
+        Some(value)
     }
 
     fn alloc_row(&self) -> Option<Live> {
@@ -819,9 +827,41 @@ impl Table {
     /// when no row could be made.
     #[must_use]
     pub fn lock_set(&self, key: &[u8]) -> Option<Locked<'_>> {
+        self.lock_write(key, false)
+    }
+
+    /// Insert a fresh row, or return None when the key already exists.
+    /// A guard without a row signals insufficient space.
+    #[must_use]
+    pub fn lock_add(&self, key: &[u8]) -> Option<Locked<'_>> {
+        self.lock_write(key, true)
+    }
+
+    fn lock_write(&self, key: &[u8], insert_only: bool) -> Option<Locked<'_>> {
         let (mut lock, mut flags) = (ptr::null_mut(), 0);
-        let row = self.set(key, &mut lock, Some(&mut flags));
+        let row = self.prepare_write(key, &mut lock, Some(&mut flags), insert_only);
         self.locked(Live::of(lock), Live::of(row), flags)
+    }
+
+    /// Lock an existing row for a counted update.
+    #[must_use]
+    pub fn lock_update(&self, key: &[u8]) -> Option<Locked<'_>> {
+        self.lock_update_if(key, |_| true)
+    }
+
+    /// Keep the row locked for a counted update only if it matches. The
+    /// predicate must only inspect the packed row without reentering the table.
+    #[must_use]
+    pub fn lock_update_if(
+        &self,
+        key: &[u8],
+        matches: impl FnOnce(&[u8]) -> bool,
+    ) -> Option<Locked<'_>> {
+        let row = self
+            .lock_get(key)
+            .filter(|row| row.found() && matches(row.data()))?;
+        self.update_count.fetch_add(1, Ordering::Relaxed);
+        Some(row)
     }
 
     /// [`Table::get`] as a guard: None before `create`; a guard without a row
@@ -857,7 +897,7 @@ impl Table {
 /// copies the handle with the rest of the heap, so each process reads its own.
 pub struct Handle {
     table: &'static mut Table,
-    columns: Columns,
+    columns: Vec<Column>,
     /// The iterator, from `create` until `destroy`.
     cursor: Cell<Option<Cursor>>,
 }
@@ -868,7 +908,7 @@ impl Handle {
     pub fn new(table: &'static mut Table) -> Self {
         Self {
             table,
-            columns: Columns::default(),
+            columns: Vec::new(),
             cursor: Cell::new(None),
         }
     }
@@ -888,45 +928,63 @@ impl Handle {
         if table.created {
             return false;
         }
+        if self.columns.iter().any(|column| column.name() == name) {
+            let message = [
+                b"Table::add_column(): column[".as_slice(),
+                c_str(name),
+                b"] already exists",
+            ]
+            .concat();
+            warn(table.warning, &message);
+            return false;
+        }
         let width = if kind == ColumnType::String {
-            size.wrapping_add(4).c_cast::<u32>()
+            let Some(width) = u32::try_from(size).ok().and_then(|n| n.checked_add(4)) else {
+                let message = [
+                    b"Table::add_column(): column[".as_slice(),
+                    c_str(name),
+                    b"] size is too large",
+                ]
+                .concat();
+                warn(table.warning, &message);
+                return false;
+            };
+            width
         } else {
             8
         };
-        let columns = &mut self.columns;
-        if columns.list.iter().all(|column| *column.name != *name) {
-            columns.first.push(columns.list.len());
-        }
-        columns.list.push(Column {
+        let Some(item_size) = table.item_size.checked_add(width as usize) else {
+            warn(
+                table.warning,
+                b"Table::add_column(): table row size overflow",
+            );
+            return false;
+        };
+        self.columns.push(Column {
             kind,
             width,
             index: table.item_size,
             name: name.into(),
         });
-        table.item_size = table.item_size.wrapping_add(width as usize);
+        table.item_size = item_size;
         true
     }
 
-    /// `Table::get_column`: the first column declared with this name.
+    /// `Table::get_column`: the column declared with this name.
     #[must_use]
     pub fn column(&self, name: &[u8]) -> Option<&Column> {
-        let columns = &self.columns;
-        columns
-            .first
-            .iter()
-            .filter_map(|&at| columns.list.get(at))
-            .find(|column| *column.name == *name)
+        self.columns.iter().find(|column| column.name() == name)
     }
 
-    /// Every declaration, repeats included (`column_list`).
+    /// Every column in declaration order.
     pub fn columns(&self) -> impl ExactSizeIterator<Item = &Column> {
-        self.columns.list.iter()
+        self.columns.iter()
     }
 
     /// `get_column_size()`: distinct names.
     #[must_use]
     pub fn column_size(&self) -> usize {
-        self.columns.first.len()
+        self.columns.len()
     }
 
     /// `Table::create` in `arena` (see [`Table`]'s), with this process's iterator.
@@ -1016,15 +1074,16 @@ fn field_mut<'d>(data: &'d mut [u8], column: &Column) -> Option<&'d mut [u8]> {
 }
 
 /// A number column's 8 bytes.
-fn number(data: &[u8], column: &Column) -> u64 {
-    field(data, column)
-        .and_then(<[u8]>::first_chunk)
+#[must_use]
+pub fn field_number(data: &[u8]) -> u64 {
+    data.first_chunk()
         .map_or(0, |bytes| u64::from_ne_bytes(*bytes))
 }
 
 /// A string column's bytes: as many as its length word counts, at most its capacity.
-fn bytes<'d>(data: &'d [u8], column: &Column) -> &'d [u8] {
-    let Some((length, text)) = field(data, column).and_then(<[u8]>::split_first_chunk) else {
+#[must_use]
+pub fn field_bytes(data: &[u8]) -> &[u8] {
+    let Some((length, text)) = data.split_first_chunk() else {
         return &[];
     };
     let length = u32::from_ne_bytes(*length) as usize;
@@ -1096,20 +1155,22 @@ impl Locked<'_> {
         self.flags & NEW_ROW != 0
     }
 
-    fn data(&self) -> &[u8] {
+    /// The row's packed column data.
+    #[must_use]
+    pub fn data(&self) -> &[u8] {
         self.row.as_ref().map_or(&[], |(_, data)| &**data)
     }
 
     /// A number column's 8 bytes (0 without a row).
     #[must_use]
     pub fn number(&self, column: &Column) -> u64 {
-        number(self.data(), column)
+        field_number(column.field(self.data()))
     }
 
     /// A string column's bytes (empty without a row).
     #[must_use]
     pub fn bytes(&self, column: &Column) -> &[u8] {
-        bytes(self.data(), column)
+        field_bytes(column.field(self.data()))
     }
 
     /// `TableRow::set_value` of a number column's 8 bytes.
@@ -1160,7 +1221,9 @@ pub struct Current {
 }
 
 impl Current {
-    fn data(&self) -> &[u8] {
+    /// The row's packed column data.
+    #[must_use]
+    pub fn data(&self) -> &[u8] {
         self.row.get(ROW..ROW + self.size).unwrap_or_default()
     }
 
@@ -1176,13 +1239,13 @@ impl Current {
     /// A number column's 8 bytes.
     #[must_use]
     pub fn number(&self, column: &Column) -> u64 {
-        number(self.data(), column)
+        field_number(column.field(self.data()))
     }
 
     /// A string column's bytes.
     #[must_use]
     pub fn bytes(&self, column: &Column) -> &[u8] {
-        bytes(self.data(), column)
+        field_bytes(column.field(self.data()))
     }
 }
 

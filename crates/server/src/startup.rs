@@ -49,6 +49,8 @@ pub(crate) fn start(serv: view::Server<'_>) -> bool {
     if config.daemonize.get() && !hybrid().step(serv, Step::Daemon) {
         return false;
     }
+    gs.master_pid
+        .store(std::process::id().cast_signed(), Relaxed);
     gs.start_time.store(swoole_rs_corebase::time_now(), Relaxed);
     crate::shared::workers_start(serv);
     state.set_running(true);
@@ -70,11 +72,7 @@ pub(crate) fn start(serv: view::Server<'_>) -> bool {
     let started = match config.mode_ {
         Mode::Base => crate::reactor_process::start_reactor_processes(serv),
         Mode::Process => hybrid().step(serv, Step::StartProcess),
-        Mode::Thread => {
-            // Before the worker threads start, which read it in onWorkerStart.
-            set_master_pid(gs);
-            hybrid().start_worker_threads(serv)
-        }
+        Mode::Thread => hybrid().start_worker_threads(serv),
     };
     if !started || swoole_rs_corebase::process::pool::bailout_pending() {
         return false;
@@ -84,11 +82,6 @@ pub(crate) fn start(serv: view::Server<'_>) -> bool {
     }
     state.unlink_pid();
     true
-}
-
-fn set_master_pid(gs: &crate::shared::ServerCounters) {
-    gs.master_pid
-        .store(std::process::id().cast_signed(), Relaxed);
 }
 
 /// `Server::create` after the global before-create hook: shared memory, bounded
@@ -161,9 +154,6 @@ fn create_on(serv: view::Server<'_>, cpu: u32) -> bool {
             return false;
         };
         tables.task_results.fill(results);
-        if !hybrid().task_workers(serv) {
-            return false;
-        }
     }
     serv.call_hook(view::ServerHook::AfterCreate);
     true
@@ -243,7 +233,7 @@ fn bound_workers(config: &crate::ServerConfig, cpu: u32) {
     }
 }
 
-/// `Server::create_task_workers` up to `init_task_workers`: the task pool's memory, not
+/// `Server::create_task_workers` including `init_task_workers`: the task pool's memory, not
 /// its processes, and the task results it returns and notify pipes for `Server::task_sync()`.
 fn create_task_workers(serv: view::Server<'_>) -> Option<Table<crate::records::ResultWords>> {
     let state = serv.state();
@@ -253,11 +243,11 @@ fn create_task_workers(serv: view::Server<'_>) -> Option<Table<crate::records::R
         Some(TaskIpcMode::Stream) => IpcMode::Socket,
         _ => IpcMode::UnixSock,
     };
-    let master = crate::shared::server_counters(state).map_or(0, |gs| gs.master_pid.load(Relaxed));
-    let socket = format!("/tmp/swoole.task.{master}.sock");
-    let socket = std::ffi::CString::new(socket).unwrap_or_default();
-    let socket = matches!(ipc, IpcMode::Socket).then_some(socket.as_c_str());
-    if !hybrid().task_pool(serv, ipc, socket) {
+    let socket = matches!(ipc, IpcMode::Socket).then(|| {
+        std::ffi::CString::new(format!("/tmp/swoole.task.{}.sock", std::process::id()))
+            .unwrap_or_default()
+    });
+    if !hybrid().task_pool(serv, ipc, socket.as_deref()) {
         log::warning(
             c"Server::create_task_workers",
             format_args!("[Master] create task_workers failed"),
@@ -270,13 +260,14 @@ fn create_task_workers(serv: view::Server<'_>) -> Option<Table<crate::records::R
     if results.is_null() {
         let m = format_args!("sw_shm_calloc({workers}, {size}) for task_result failed");
         log::warning(c"Server::create_task_workers", m);
-        return None;
-    }
-    if !state.open_task_pipes(workers) {
+    } else if state.open_task_pipes(workers, || hybrid().task_workers(serv)) {
+        return Some(results);
+    } else {
         results.free();
-        return None;
     }
-    Some(results)
+    hybrid().step(serv, Step::DestroyTaskPool);
+    serv.task_pool_ref().reset();
+    None
 }
 
 /// `Server::start_check`: settings the mode cannot honour, required callbacks, and
@@ -423,11 +414,6 @@ pub(crate) fn start_master_thread(serv: view::Server<'_>, reactor: Reactor) -> b
     if mode == Mode::Process {
         hybrid().step(serv, Step::ManagerBarrier);
     }
-    if mode != Mode::Thread
-        && let Some(gs) = crate::shared::server_counters(state)
-    {
-        set_master_pid(gs);
-    }
     state.callbacks.call_server(ServerSlot::Start, serv);
     if swoole_rs_corebase::process::pool::bailout_pending() {
         return false;
@@ -489,6 +475,9 @@ pub(crate) fn destroy(serv: view::Server<'_>) {
     let gs = crate::shared::server_counters(state);
     if gs.is_some_and(|gs| gs.start.load(Relaxed)) {
         hybrid().step(serv, Step::FactoryShutdown);
+        if mode != Mode::Base {
+            crate::reactor_io::discard_shutdown_files(serv);
+        }
     }
     for id in 0..config.worker_num.get() {
         if let Some(worker) = serv.worker_record(u16::try_from(id).unwrap_or(u16::MAX)) {
@@ -590,9 +579,9 @@ mod tests {
             assert!(live.state().running(), "running");
             assert!(live.counters().start.load(Relaxed), "claimed");
             assert_eq!(
-                live.counters().master_pid.load(Relaxed) != 0,
-                mode == Mode::Thread,
-                "only thread mode sets the master pid before its workers"
+                live.counters().master_pid.load(Relaxed),
+                std::process::id().cast_signed(),
+                "workers inherit the master pid in every mode"
             );
         }
     }
@@ -769,6 +758,16 @@ mod tests {
     }
 
     #[test]
+    fn failed_task_init_does_not_publish_notify_pipes() {
+        let live = LiveServer::new();
+        assert!(!live.state().open_task_pipes(2, || false));
+        assert!(live.server().task_notify_pipe(0).is_none());
+        assert!(live.state().open_task_pipes(1, || true));
+        assert!(live.server().task_notify_pipe(0).is_some());
+        assert!(live.server().task_notify_pipe(1).is_none());
+    }
+
+    #[test]
     fn task_workers_by_ipc_mode() {
         let live = LiveServer::new();
         config(&live).worker_num.set(2);
@@ -783,7 +782,7 @@ mod tests {
             let mut results = create_task_workers(live.server()).unwrap();
             assert_eq!(
                 calls(),
-                [Call::TaskPool(ipc.code(), socket)],
+                [Call::TaskPool(ipc.code(), socket), Call::TaskWorkers],
                 "only stream mode listens, mode {mode:?}"
             );
             assert!(!results.is_null(), "results");
@@ -961,7 +960,6 @@ mod tests {
             swoole_rs_corebase::process::methods::worker_type(),
             Some(WorkerType::Master)
         );
-        assert_ne!(live.counters().master_pid.load(Relaxed), 0, "master pid");
         assert_eq!(
             master(Mode::Base),
             (

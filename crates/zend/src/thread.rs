@@ -103,11 +103,26 @@ impl Opening {
 /// The steps of a thread's request around its script, inside the script's
 /// `zend_first_try` (the thread's script scope).
 pub trait Steps {
-    /// Before the script, with the proof that it hasn't started.
-    fn prologue(&mut self, prologue: Prologue<'_>);
+    /// Prepare the request and fill the argument slot when invoking an internal function.
+    fn prologue(&mut self, prologue: Prologue<'_>, params: Option<&mut Owned>);
+    /// Whether the caller transfers the result out of this request.
+    fn wants_result(&self) -> bool;
+    /// Copy the successful result before the request shuts down.
+    fn capture(&mut self, result: &Value);
     /// After the script: `exited` if an `exit()` the thread's reactor has not seen
     /// is pending. The thread-exit mark is cleared after this returns.
     fn epilogue(&mut self, exited: bool);
+}
+
+impl crate::local::Php<'_> {
+    /// Resolve a lowercase function or public static internal method without autoloading.
+    #[must_use]
+    pub fn internal_thread_entry(self, name: &crate::ZStr) -> bool {
+        unsafe extern "C" {
+            safe fn swr_zend_thread_is_internal(name: &crate::ZStr) -> bool;
+        }
+        swr_zend_thread_is_internal(name)
+    }
 }
 
 /// A thread's request before its script runs, for the prologue's call: only
@@ -171,11 +186,17 @@ struct Context<'a>(&'a mut dyn Steps);
 type Step = unsafe extern "C" fn(&mut Context<'_>);
 
 crate::exports! {
-extern "C" fn prologue(context: &mut Context<'_>) {
+extern "C" fn prologue(context: &mut Context<'_>, params: Option<&mut Owned>) {
     context.0.prologue(Prologue {
         argv: false,
         _call: PhantomData,
-    });
+    }, params);
+}
+}
+
+crate::exports! {
+extern "C" fn capture(context: &mut Context<'_>, value: &Value) {
+    context.0.capture(value);
 }
 }
 
@@ -204,6 +225,7 @@ impl Entered {
     pub fn request(
         &self,
         file: &CStr,
+        internal: bool,
         path: Option<&CStr>,
         argc: c_int,
         steps: &mut dyn Steps,
@@ -217,18 +239,22 @@ impl Entered {
             /// keeps none of its arguments past its return.
             safe fn swr_zend_thread_request(
                 file: Text<'_>,
+                internal: bool,
                 path_translated: Option<Text<'_>>,
                 argc: c_int,
-                prologue: Step,
+                prologue: unsafe extern "C" fn(&mut Context<'_>, Option<&mut Owned>),
+                capture: Option<unsafe extern "C" fn(&mut Context<'_>, &Value)>,
                 epilogue: Step,
                 context: &mut Context<'_>,
             ) -> c_int;
         }
         ExitStatus(swr_zend_thread_request(
             file.into(),
+            internal,
             path.map(Text::from),
             argc,
             prologue,
+            (crate::sys::PHP_VERSION_ID >= 80400 && steps.wants_result()).then_some(capture),
             epilogue,
             &mut Context(steps),
         ))

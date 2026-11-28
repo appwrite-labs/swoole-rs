@@ -11,11 +11,11 @@ function redis(Swoole\ConnectionPool $pool, string ...$args): ?string {
     }
     $conn = $pool->get();
     try {
-        fwrite($conn, $command);
-        $line = rtrim(fgets($conn), "\r\n");
+        fwrite($conn->stream, $command);
+        $line = rtrim(fgets($conn->stream), "\r\n");
         return match ($line[0]) {
             '+', ':' => substr($line, 1),
-            '$' => $line === '$-1' ? null : substr(stream_get_contents($conn, (int) substr($line, 1) + 2), 0, -2),
+            '$' => $line === '$-1' ? null : substr(stream_get_contents($conn->stream, (int) substr($line, 1) + 2), 0, -2),
             default => throw new RuntimeException("redis: $line"),
         };
     } finally {
@@ -69,8 +69,9 @@ $server->on('request', static function ($request, $response) use ($routes, &$poo
     // serves requests before it returns (#2235).
     if ($pool === null) {
         $address = 'tcp://' . (getenv('REDIS_HOST') ?: '127.0.0.1') . ':' . (getenv('REDIS_PORT') ?: '6379');
-        $connections = new Swoole\ConnectionPool(static fn() => stream_socket_client($address, $code, $message, 5)
-            ?: throw new RuntimeException("redis: $message"), 4);
+        $connections = new Swoole\ConnectionPool(static fn() => (object) [
+            'stream' => stream_socket_client($address, $code, $message, 5) ?: throw new RuntimeException("redis: $message"),
+        ], 4);
         redis($connections, 'SET', 'stock:A-1', '17');
         $pool = $connections;
     }

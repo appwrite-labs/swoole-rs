@@ -87,3 +87,62 @@ pub fn proxy_accept(input: &[u8]) -> bool {
     }
     status == Handshake::Accepted
 }
+
+/// Why the CONNECT response could not be read.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ProxyReadError {
+    Socket,
+    BadResponse(&'static str),
+}
+
+impl ProxyReadError {
+    /// The synchronous, asynchronous or coroutine client's socket error.
+    #[must_use]
+    pub const fn code(self, socket_error: swoole_rs_error::ErrorCode) -> i32 {
+        match self {
+            Self::Socket => socket_error as i32,
+            Self::BadResponse(_) => {
+                swoole_rs_error::ErrorCode::SW_ERROR_HTTP_PROXY_BAD_RESPONSE as i32
+            }
+        }
+    }
+}
+
+/// Peek at the next proxy response fragment, consuming only bytes belonging to the header.
+/// Returns false if a further read is needed.
+///
+/// # Errors
+/// Socket I/O failed or the bounded response is invalid.
+pub fn http_proxy_fragment(
+    input: &mut swoole_rs_corebase::buffer::string::StringBuffer,
+    mut read: impl FnMut(
+        &mut swoole_rs_corebase::lent::Spare<'_>,
+        bool,
+    ) -> Result<Option<usize>, ProxyReadError>,
+) -> Result<bool, ProxyReadError> {
+    let start = input.len();
+    if start == input.size() {
+        return Err(ProxyReadError::BadResponse(
+            "HTTP proxy response header is too large",
+        ));
+    }
+    let Some(peeked) = input.fill(|room| read(room, true))? else {
+        return Ok(false);
+    };
+    if peeked == 0 {
+        return Err(ProxyReadError::BadResponse(
+            "connection closed before the HTTP proxy response was complete",
+        ));
+    }
+    let end = crate::proxy::proxy_response_length(input.view())
+        .map_err(|_| ProxyReadError::BadResponse("invalid HTTP proxy response"))?;
+    let consume = end
+        .unwrap_or(input.len())
+        .checked_sub(start)
+        .ok_or(ProxyReadError::Socket)?;
+    input.truncate(start);
+    if input.fill_within(consume, |room| read(room, false))? != Some(consume) {
+        return Err(ProxyReadError::Socket);
+    }
+    Ok(end.is_some())
+}

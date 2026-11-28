@@ -289,8 +289,11 @@ fn socket_for_connect(call: &Call, port: i64) -> Option<Co> {
     }
     let socket = create_socket(call, data, kind)?;
     let settings = setting(call);
-    if let Some(settings) = settings.as_ref().and_then(|value| value.array()) {
-        crate::socket_options::apply(socket, settings, swoole_rs_phpswoole::SocketSettings::All);
+    if let Some(settings) = settings.as_ref().and_then(|value| value.array())
+        && !crate::socket_options::socket_set(socket.handle(), settings)
+    {
+        socket.close();
+        return None;
     }
     Some(socket)
 }
@@ -328,20 +331,16 @@ fn set(call: &Call) {
     let Ok(array) = client_coro::parse_class_swoole_coroutine_client_set(call) else {
         return call.set_bool(false);
     };
-    if array.count() == 0 {
-        return call.set_bool(false);
+    if let Some(socket) = client_socket(call)
+        && !crate::socket_options::socket_set(socket.handle(), array)
+    {
+        swoole_rs_phpswoole::invalid_setting(c"failed to apply coroutine client settings");
+        return;
     }
     if let Some(settings) = call.value(1) {
         crate::net::merge_setting(call, &CLIENT, settings);
     }
-    let Some(socket) = client_socket(call) else {
-        return call.set_bool(true);
-    };
-    call.set_bool(crate::socket_options::apply(
-        socket,
-        array,
-        swoole_rs_phpswoole::SocketSettings::All,
-    ));
+    call.set_bool(true);
 }
 
 /// `connect(string $host, int $port = 0, float $timeout = 0, int $sock_flag = 0): bool`.
@@ -458,16 +457,9 @@ fn recvfrom(call: &mut Call) {
 
 /// `sendfile(string $filename, int $offset = 0, int $length = 0): bool`.
 fn sendfile(call: &Call) {
-    let parsed = call
-        .arity(1, 3)
-        .and_then(|()| Ok((call.string(1, b"")?, call.long(2, 0)?, call.long(3, 0)?)));
-    let Ok((file, offset, length)) = parsed else {
+    let Some((file, offset, length)) = crate::net::sendfile_args(call) else {
         return call.set_bool(false);
     };
-    if file.is_empty() {
-        warn(true, "file to send is empty");
-        return call.set_bool(false);
-    }
     let Some((socket, _hold)) = connected(call) else {
         return;
     };
@@ -534,8 +526,15 @@ fn peek(call: &Call) {
         return;
     };
     let length = usize::try_from(length).unwrap_or(0);
+    if length == 0 {
+        warn(true, "length must be greater than 0");
+        return call.set_bool(false);
+    }
     let mut buffer = ZBuf::with_capacity(length);
-    if socket.receive(Transfer::Peek, &mut buffer, 0.0).is_none() {
+    if socket
+        .receive(Transfer::Peek(0), &mut buffer, 0.0)
+        .is_none()
+    {
         report_socket(call, socket);
         return call.set_bool(false);
     }
@@ -582,11 +581,11 @@ fn getpeername(call: &Call) {
     set_endpoint(call, &address, port);
 }
 
-/// `exportSocket(): Socket|null`: the client's `Coroutine\Socket`, shared.
+/// `exportSocket(): Socket|false`: the client's `Coroutine\Socket`, shared.
 fn export_socket(call: &Call) {
     match this(call).and_then(Data::zsocket) {
         Some(zsocket) => call.set_owned(zsocket),
-        None => call.set_null(),
+        None => call.set_bool(false),
     }
 }
 

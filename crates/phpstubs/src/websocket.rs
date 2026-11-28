@@ -66,7 +66,7 @@ pub static arginfo_class_Swoole_WebSocket_Server_pack: a::ArgInfo<4> = a::ArgInf
     ),
 ]);
 pub static arginfo_class_Swoole_WebSocket_Server_unpack: a::ArgInfo<2> = a::ArgInfo::new([
-    a::begin_class(1, 0, c"Swoole\\WebSocket\\Frame", false),
+    a::begin_class_mask(1, 0, c"Swoole\\WebSocket\\Frame", z::MAY_BE_FALSE),
     a::arg_type(c"data", 0, false, z::IS_STRING, false, None),
 ]);
 pub static arginfo_class_Swoole_WebSocket_Server_disconnect: a::ArgInfo<4> = a::ArgInfo::new([
@@ -89,5 +89,34 @@ pub static arginfo_class_Swoole_WebSocket_Server_ping: a::ArgInfo<3> = a::ArgInf
 ]);
 pub static arginfo_class_Swoole_WebSocket_Frame___toString: a::ArgInfo<1> =
     a::ArgInfo::new([a::begin_type(0, 0, z::IS_STRING, false)]);
-pub use self::arginfo_class_Swoole_WebSocket_Server_pack as arginfo_class_Swoole_WebSocket_Frame_pack;
-pub use self::arginfo_class_Swoole_WebSocket_Server_unpack as arginfo_class_Swoole_WebSocket_Frame_unpack;
+pub static arginfo_class_Swoole_WebSocket_Frame_pack: a::ArgInfo<4> = a::ArgInfo::new([
+    a::begin_type(1, 0, z::IS_STRING, false),
+    a::arg_class_mask(
+        c"data",
+        0,
+        false,
+        c"Swoole\\WebSocket\\Frame",
+        z::MAY_BE_STRING,
+        None,
+    ),
+    a::arg_type(
+        c"opcode",
+        0,
+        false,
+        z::IS_LONG,
+        false,
+        Some(c"WEBSOCKET_OPCODE_TEXT"),
+    ),
+    a::arg_type(
+        c"flags",
+        0,
+        false,
+        z::IS_LONG,
+        false,
+        Some(c"SWOOLE_WEBSOCKET_FLAG_FIN"),
+    ),
+]);
+pub static arginfo_class_Swoole_WebSocket_Frame_unpack: a::ArgInfo<2> = a::ArgInfo::new([
+    a::begin_class_mask(1, 0, c"Swoole\\WebSocket\\Frame", z::MAY_BE_FALSE),
+    a::arg_type(c"data", 0, false, z::IS_STRING, false, None),
+]);

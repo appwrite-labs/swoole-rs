@@ -172,13 +172,14 @@ fn arm(pool: Pool<'_>, which: PoolTimer) {
         let pool = unsafe { PoolRef::new(raw) };
         match which {
             PoolTimer::Reload => {
-                pool.with_reload_task(|task| task.kill_all(libc::SIGKILL, reload_warn));
+                pool.with_reload_task(|task| task.timeout(reload_warn));
             }
             PoolTimer::Kill => kill_all_workers(crate::process_pool_native(), pool, libc::SIGKILL),
         }
     };
-    let armed = || {
-        let held = swoole_rs_corebase::timer::add_fn(max_wait_ms(pool), false, fire)?;
+    let timeout = max_wait_ms(pool);
+    let armed = move || {
+        let held = swoole_rs_corebase::timer::add_fn(timeout, false, fire)?;
         Some(ArmedTimer::new(
             u64::from(held.generation()),
             held.id(),
@@ -186,7 +187,7 @@ fn arm(pool: Pool<'_>, which: PoolTimer) {
         ))
     };
     match which {
-        PoolTimer::Reload => pool.arm_reload_timer(armed),
+        PoolTimer::Reload => pool.configure_reload_timeout(armed),
         PoolTimer::Kill => pool.set_kill_timer(armed()),
     }
 }

@@ -6,6 +6,7 @@
 use crate::{
     callable::Callable,
     server::{SERVER, fatal, running, server},
+    settings::{Stop, invalid_setting},
 };
 use std::{
     cell::{Cell, OnceCell},
@@ -175,7 +176,9 @@ fn kind(object: ServerObject<'_>) -> Kind {
 /// may bail out.
 fn start_server(serv: view::Server<'_>) -> Result<bool, bailout::Bailout> {
     let mut started = false;
-    swoole_rs_zend::contain_with(|| started = server_methods::start(serv))?;
+    swoole_rs_phpprocess::with_php_server_loop(|| {
+        swoole_rs_zend::contain_with(|| started = server_methods::start(serv))
+    })?;
     Ok(started)
 }
 
@@ -232,8 +235,8 @@ const fn no_callbacks() -> Callbacks {
 
 /// What upstream's `ServerProperty` held, but for the callbacks.
 pub(crate) struct Property {
-    /// The Port objects, each held by a reference of its own.
-    ports: Vec<Owned>,
+    /// The identity of each Port object published in the PHP ports array.
+    ports: Vec<crate::port::PortRef>,
     /// `addCommand`'s callables.
     commands: Vec<Callable>,
     send_waiters: SendWaiters,
@@ -473,13 +476,18 @@ impl<'a> ServerObject<'a> {
     /// The Port object at `index` (`property->ports.at(index)`), with a
     /// reference of its own; undefined for none.
     pub(crate) fn port(self, index: usize) -> Owned {
-        self.property(|p| p.ports.get(index).map(|port| port.copy()))
+        self.property(|p| p.ports.get(index).and_then(crate::port::PortRef::get))
             .unwrap_or_default()
     }
 
     /// The Port objects, each with a reference of its own.
     fn ports(self) -> Vec<Owned> {
-        self.property(|p| p.ports.iter().map(|port| port.copy()).collect())
+        self.property(|p| {
+            p.ports
+                .iter()
+                .map(|port| port.get().unwrap_or_default())
+                .collect()
+        })
     }
 
     /// The user process at `index`, with a reference of its own.
@@ -529,7 +537,7 @@ impl ServerData {
         let processes = self.property(|p| std::mem::take(&mut p.user_processes));
         drop(processes);
         let ports = self.property(|p| std::mem::take(&mut p.ports));
-        for port in ports {
+        for port in ports.iter().filter_map(crate::port::PortRef::get) {
             crate::port::release(&port);
         }
         let commands = self.property(|p| std::mem::take(&mut p.commands));
@@ -549,7 +557,7 @@ impl Drop for ServerData {
             return;
         };
         let server = share.view();
-        if fact(server, Fact::Master) {
+        if fact(server, Fact::Master) || server.config().factory_.get().is_null() {
             crate::thread::free_setting(server);
             // Its shutdown callbacks run now, as they did before the delete. The
             // server is deleted with its last share: when Zend releases this
@@ -557,21 +565,15 @@ impl Drop for ServerData {
             // iterator or a task that names it.
             server_methods::destroy_running(server);
         } else if owns_shared() {
-            // Never started, or a base-mode start returned: upstream keeps it to the
-            // exit, so MSHUTDOWN deletes it. Any other is kept as upstream keeps it.
-            let orphan =
-                !fact(server, Fact::ThreadMode) && server.config().factory_.get().is_null();
-            kept().push((share, orphan));
+            kept().push(share);
         }
         // A worker thread's share in the master's server just goes.
     }
 }
 
-/// The shares a freed Server object leaves to [`php_swoole_server_mshutdown`], and those a failed
-/// `__construct` never bound: upstream keeps their servers, as `SwooleG.server` too.
-/// Each is true when MSHUTDOWN deletes its server.
-fn kept() -> std::sync::MutexGuard<'static, Vec<(SharedServer, bool)>> {
-    static KEPT: std::sync::Mutex<Vec<(SharedServer, bool)>> = std::sync::Mutex::new(Vec::new());
+/// Created servers still owned by another process when their PHP object is freed.
+fn kept() -> std::sync::MutexGuard<'static, Vec<SharedServer>> {
+    static KEPT: std::sync::Mutex<Vec<SharedServer>> = std::sync::Mutex::new(Vec::new());
     KEPT.lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
@@ -583,9 +585,8 @@ fn kept() -> std::sync::MutexGuard<'static, Vec<(SharedServer, bool)>> {
 pub extern "C" fn php_swoole_server_mshutdown() {
     // Taken out first, so the deletes below run without `kept`'s lock held.
     let shares = std::mem::take(&mut *kept());
-    for (share, orphan) in shares {
-        let delete = orphan || swoole_rs_server::reactor_process::release_abandoned(share.view());
-        if !delete {
+    for share in shares {
+        if !swoole_rs_server::reactor_process::release_abandoned(share.view()) {
             #[expect(
                 clippy::mem_forget,
                 reason = "a started server another process runs stays to the exit"
@@ -713,8 +714,10 @@ pub(crate) fn add_port(object: ServerObject<'_>, port: view::Port<'_>) -> Owned 
         return Owned::default();
     }
     let zport = crate::port::new_object(serv.clone(), port);
-    let kept = zport.copy();
-    object.property(|p| p.ports.push(kept));
+    let Some(reference) = crate::port::PortRef::of(&zport) else {
+        return zport;
+    };
+    object.property(|p| p.ports.push(reference));
     let info = PortInfo::of(port);
     if let Some(props) = Props::of_value(&zport) {
         props.port_info(&info, Some(info.fd));
@@ -762,10 +765,6 @@ pub(crate) fn class(object: ServerObject<'_>) -> String {
 
 fn construct(call: &Call) {
     let object = ServerObject::this(call);
-    if object.server().is_some() {
-        call.throw_constructed_twice();
-        return call.set_bool(false);
-    }
     if !swoole_rs_phpswoole::globals().cli.get() {
         let text = message!("{} can only be used in CLI mode", class(object));
         exception(call, text.as_cstr(), -1);
@@ -785,6 +784,10 @@ fn construct(call: &Call) {
     let Ok((address, port, mode, kind)) = parsed else {
         return call.set_bool(false);
     };
+    if object.server().is_some() {
+        call.throw_constructed_twice();
+        return call.set_bool(false);
+    }
     let thread = crate::server::THREAD.load(Ordering::Relaxed);
     let Some(server_mode) = Mode::from_code(mode).filter(|&m| thread || m != Mode::Thread) else {
         set_last_error(SW_ERROR_INVALID_PARAMS);
@@ -821,7 +824,6 @@ fn construct(call: &Call) {
     if port == 0 && address.eq_ignore_ascii_case(b"SYSTEMD") {
         if server_methods::add_systemd_socket(server) == 0 {
             call.throw_error(c"failed to add systemd socket");
-            kept().push((share, true));
             return call.set_bool(false);
         }
     } else if {
@@ -846,7 +848,6 @@ fn construct(call: &Call) {
         text.push(reason.to_bytes());
         text.push(format!("[{code}]").as_bytes());
         exception(call, text.as_cstr(), code.into());
-        kept().push((share, true));
         return call.set_bool(false);
     }
     bind(call, &share);
@@ -1008,6 +1009,13 @@ fn command(call: &Call) {
     let Ok((name, process_id, process_type, json_decode)) = parsed else {
         return call.set_bool(false);
     };
+    let Ok(process_id) = u32::try_from(process_id) else {
+        fatal(
+            E_WARNING,
+            message!("invalid process_id[{process_id}]").as_cstr(),
+        );
+        return call.set_bool(false);
+    };
     let encoded = match call.value(4).map(Value::json_encode) {
         Some(Ok(Some(encoded))) => encoded,
         Some(Err(bailout)) => return bailout.defer(),
@@ -1031,14 +1039,7 @@ fn command(call: &Call) {
     )]
     let callback: swoole_rs_server::CommandCallback =
         std::sync::Arc::new(command_done(Rc::clone(&wait)));
-    // Upstream's `(uint16_t) process_id` and `(ProcessType) process_type`.
-    let [low, high, ..] = process_id.to_le_bytes();
-    let process_id = u32::from(u16::from_le_bytes([low, high]));
-    let process_type = c_int::from_le_bytes(
-        process_type.to_le_bytes()[..4]
-            .try_into()
-            .unwrap_or_default(),
-    );
+    let process_type = process_type.c_cast::<c_int>();
     let sent = swr_v1_server_command(serv, process_id, process_type, name, data, callback.clone());
     drop(encoded);
     if !sent {
@@ -1070,14 +1071,6 @@ pub(crate) fn runtime_warning(text: &CStr) {
     if crate::server::display_errors() {
         bailout::defer(report(E_WARNING, text));
     }
-}
-
-/// Stop: an `E_ERROR` or a trapped bailout is pending.
-struct Stop;
-
-fn stop<T>(level: i32, text: &CStr) -> Result<T, Stop> {
-    fatal(level, text);
-    Err(Stop)
 }
 
 fn trapped(bailed: bool) -> Result<(), Stop> {
@@ -1156,7 +1149,7 @@ fn before_start(object: ServerObject<'_>, serv: view::Server<'_>) -> Result<(), 
         let mut text = Message::new();
         text.push(b"failed to create the server. Error: ");
         text.push(reason.to_bytes());
-        return stop(E_ERROR, text.as_cstr());
+        return Err(invalid_setting(text.as_cstr()));
     }
     if fact(serv, Fact::EnableCoroutine) {
         crate::settings::set_reload_async(serv);
@@ -1210,10 +1203,10 @@ fn before_start(object: ServerObject<'_>, serv: view::Server<'_>) -> Result<(), 
             } else if http_server {
                 if kind == Kind::WebSocket {
                     if !isset(serv, primary.port, PortCallback::Message) {
-                        return stop(E_ERROR, c"require onMessage callback");
+                        return Err(invalid_setting(c"require onMessage callback"));
                     }
                 } else if !isset(serv, primary.port, PortCallback::Request) {
-                    return stop(E_ERROR, c"require onRequest callback");
+                    return Err(invalid_setting(c"require onRequest callback"));
                 }
                 settings.insert_bool(b"open_http_protocol", true);
                 settings.insert_bool(b"open_mqtt_protocol", false);
@@ -1236,12 +1229,12 @@ fn before_start(object: ServerObject<'_>, serv: view::Server<'_>) -> Result<(), 
             } else {
                 if primary.dgram && !primary.ssl && !isset(serv, primary.port, PortCallback::Packet)
                 {
-                    return stop(E_ERROR, c"require onPacket callback");
+                    return Err(invalid_setting(c"require onPacket callback"));
                 }
                 if ((primary.dgram && primary.ssl) || primary.stream)
                     && !isset(serv, primary.port, PortCallback::Receive)
                 {
-                    return stop(E_ERROR, c"require onReceive callback");
+                    return Err(invalid_setting(c"require onReceive callback"));
                 }
                 put(serv, Install::Receive);
             }
@@ -1253,7 +1246,8 @@ fn before_start(object: ServerObject<'_>, serv: view::Server<'_>) -> Result<(), 
         if bailout::pending() {
             return Err(Stop);
         }
-        return stop(E_ERROR, c"Swoole\\Server::$setting must be an array");
+        fatal(E_ERROR, c"Swoole\\Server::$setting must be an array");
+        return Err(Stop);
     };
     if !edited? {
         return Ok(());
@@ -1271,25 +1265,48 @@ fn before_start(object: ServerObject<'_>, serv: view::Server<'_>) -> Result<(), 
         {
             // `$port->set($setting)`, Port's own method.
             let set = zport.call_method(Some(&crate::PORT), b"set", &[setting]);
-            trapped(set.is_err())?;
+            let result = set.map_err(|bailed| {
+                bailed.defer();
+                Stop
+            })?;
+            if !swoole_rs_zend::host::exception().is_null() {
+                return Err(Stop);
+            }
+            if !result.truthy() {
+                let port = PortInfo::of(crate::port::bound_port(zport).ok_or(Stop)?);
+                let text = message!(
+                    "failed to set the options of port[{}:{}]",
+                    String::from_utf8_lossy(&port.host),
+                    port.port
+                );
+                return Err(invalid_setting(text.as_cstr()));
+            }
+            if let Some(primary) = serv.port_at(0) {
+                crate::port::bound_port(zport)
+                    .ok_or(Stop)?
+                    .config()
+                    .inherit_length_owner(primary.config());
+            }
         }
     }
     for zport in &ports {
         let port = port_facts(zport)?;
         if port.dgram && !port.ssl && !isset(serv, port.port, PortCallback::Packet) {
-            return stop(E_ERROR, c"require onPacket callback");
+            return Err(invalid_setting(c"require onPacket callback"));
         }
         if port.ssl_verify_without_ca {
-            return stop(
-                E_ERROR,
-                c"server open verify peer require `ssl_client_cert_file` or `ssl_capath` or `ssl_cafile` config",
-            );
+            return Err(invalid_setting(c"server open verify peer require `ssl_client_cert_file` or `ssl_capath` or `ssl_cafile` config"));
         }
         if port.protocols.http2 && !fact(serv, Fact::HashDispatch) {
-            return stop(
-                E_ERROR,
-                c"server dispatch mode should be FDMOD(2) or IPMOD(4) if open_http2_protocol is true",
-            );
+            return Err(invalid_setting(c"server dispatch mode should be FDMOD(2) or IPMOD(4) if open_http2_protocol is true"));
+        }
+        if port.protocols.http2
+            && serv.config().http2_cancel_on_stream_reset.get()
+            && !fact(serv, Fact::EnableCoroutine)
+        {
+            return Err(invalid_setting(
+                c"'http2_cancel_on_stream_reset' requires 'enable_coroutine'",
+            ));
         }
         let mut http = port.protocols.http;
         if !http && (port.protocols.websocket || port.protocols.http2) {
@@ -1301,10 +1318,10 @@ fn before_start(object: ServerObject<'_>, serv: view::Server<'_>) -> Result<(), 
             let receive = isset(serv, port.port, PortCallback::Receive);
             if port.protocols.websocket {
                 if !isset(serv, port.port, PortCallback::Message) && !receive {
-                    return stop(E_ERROR, c"require onMessage callback");
+                    return Err(invalid_setting(c"require onMessage callback"));
                 }
             } else if !isset(serv, port.port, PortCallback::Request) && !receive {
-                return stop(E_ERROR, c"require onRequest callback");
+                return Err(invalid_setting(c"require onRequest callback"));
             }
             if !http_server && isset(serv, port.port, PortCallback::Request) {
                 let text = message!(
@@ -1320,7 +1337,7 @@ fn before_start(object: ServerObject<'_>, serv: view::Server<'_>) -> Result<(), 
             && port.stream
             && !isset(serv, port.port, PortCallback::Receive)
         {
-            return stop(E_ERROR, c"require onReceive callback");
+            return Err(invalid_setting(c"require onReceive callback"));
         }
     }
     if find_http_port {
@@ -1364,28 +1381,29 @@ fn start(call: &Call) {
         fatal(E_WARNING, text.as_cstr());
         return call.set_bool(false);
     }
-    if let Err(bailout) = crate::thread::prepare(object, serv) {
-        return bailout.defer();
-    }
+    bailout::defer(crate::thread::with_start(object, serv, || {
+        start_prepared(call, object, serv);
+    }));
+}
+
+fn start_prepared(call: &Call, object: ServerObject<'_>, serv: view::Server<'_>) {
     register_callback(object, serv);
     if before_start(object, serv).is_err() {
         return;
     }
     match start_server(serv) {
         Err(bailout) => return bailout.defer(),
+        Ok(false) if swoole_rs_zend::host::unwind_exit_pending() => return,
         Ok(false) => {
             let reason = server_methods::get_startup_error_message();
             let mut text = Message::new();
             text.push(b"failed to start server. Error: ");
             text.push(reason.to_bytes());
-            fatal(E_ERROR, text.as_cstr());
-            if bailout::pending() {
-                return;
-            }
+            swoole_rs_phpswoole::invalid_setting(text.as_cstr());
+            return;
         }
         _ => {}
     }
-    crate::thread::release();
     call.set_bool(true);
 }
 

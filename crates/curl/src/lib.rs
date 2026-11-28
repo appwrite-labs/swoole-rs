@@ -34,11 +34,10 @@ use swoole_rs_corebase::reactor::Events;
 use swoole_rs_corebase::timer::Deadline;
 use swoole_rs_curl_sys::{
     CURL, CURL_POLL_IN, CURL_POLL_INOUT, CURL_POLL_OUT, CURL_POLL_REMOVE, CURL_SOCKET_TIMEOUT,
-    CURLE_ABORTED_BY_CALLBACK, CURLE_FAILED_INIT, CURLE_OK, CURLINFO_PRIVATE, CURLM, CURLM_OK,
-    CURLMOPT_SOCKETDATA, CURLMOPT_SOCKETFUNCTION, CURLMOPT_TIMERDATA, CURLMOPT_TIMERFUNCTION,
-    CURLMSG_DONE, CURLMcode, CURLOPT_PRIVATE, CURLcode, LiveMulti, MultiHandle, curl_easy_getinfo,
-    curl_easy_setopt, curl_multi_cleanup, curl_multi_info_read, curl_multi_init, curl_multi_setopt,
-    curl_multi_timeout, curl_socket_t,
+    CURLE_ABORTED_BY_CALLBACK, CURLE_FAILED_INIT, CURLE_OK, CURLM, CURLM_OK, CURLMOPT_SOCKETDATA,
+    CURLMOPT_SOCKETFUNCTION, CURLMOPT_TIMERDATA, CURLMOPT_TIMERFUNCTION, CURLMSG_DONE, CURLMcode,
+    CURLcode, LiveMulti, MultiHandle, curl_multi_cleanup, curl_multi_info_read, curl_multi_init,
+    curl_multi_setopt, curl_multi_timeout, curl_socket_t,
 };
 #[cfg(any(feature = "php", test))]
 use swoole_rs_curl_sys::{
@@ -61,52 +60,26 @@ pub const EXEC_NEEDS_COROUTINE: CURLcode = -1;
 #[derive(Clone, Copy)]
 pub struct Easy<'a>(*mut CURL, PhantomData<&'a CURL>);
 
-impl<'a> Easy<'a> {
-    /// The easy handle's Swoole handle, which lives until the unsafe
-    /// [`swr_v1_curl_destroy_handle`], whose caller promises nothing uses it
-    /// afterwards: within `'a`, no export frees it.
-    fn handle(self) -> Option<&'a Handle> {
-        // SAFETY: null or the live handle create_handle made, as above.
-        unsafe { self.handle_ptr().as_ref() }
-    }
-
-    /// `CURLINFO_PRIVATE`: the easy handle's Swoole handle, or null without one.
-    fn handle_ptr(self) -> *mut Handle {
-        let mut handle: *mut Handle = ptr::null_mut();
-        // SAFETY: the live easy handle; CURLINFO_PRIVATE writes a pointer.
-        if unsafe { curl_easy_getinfo(self.0, CURLINFO_PRIVATE, &raw mut handle) } == CURLE_OK {
-            handle
-        } else {
-            ptr::null_mut()
-        }
-    }
-
-    /// What `CURLINFO_PRIVATE` holds now, to set back with [`Easy::set_private`].
-    fn private(self) -> Private {
-        Private(self.handle_ptr())
-    }
-
-    /// Sets `CURLINFO_PRIVATE`, which [`Easy::handle`] reads back.
-    fn set_private(self, handle: Private) {
-        // SAFETY: the live easy handle; CURLOPT_PRIVATE stores a pointer and reads nothing.
-        unsafe { curl_easy_setopt(self.0, CURLOPT_PRIVATE, handle.0.cast::<c_void>()) };
-    }
+// PHP's native easy handles can reach our Zend destructor too. Each thread
+// owns only its registered handles, sorted by address for binary lookup.
+thread_local! {
+    static HANDLES: Cell<Vec<Rc<Handle>>> = const { Cell::new(Vec::new()) };
 }
 
-/// What an easy handle's `CURLINFO_PRIVATE` may hold: null, or a Swoole handle
-/// [`swr_v1_curl_create_handle`] made for it that [`swr_v1_curl_destroy_handle`]
-/// has not freed. Only [`Private::NONE`], [`Private::new`] and [`Easy::private`]
-/// make one.
-#[derive(Clone, Copy)]
-struct Private(*mut Handle);
+fn with_handles<T>(
+    easy: Easy<'_>,
+    f: impl FnOnce(&mut Vec<Rc<Handle>>, Result<usize, usize>) -> T,
+) -> T {
+    HANDLES.with(|cell| {
+        cell.with_taken(|handles| {
+            let index = handles.binary_search_by_key(&easy.0, |handle| handle.cp);
+            f(handles, index)
+        })
+    })
+}
 
-impl Private {
-    const NONE: Self = Self(ptr::null_mut());
-
-    /// A new Swoole handle, which only [`swr_v1_curl_destroy_handle`] frees.
-    fn new(handle: Handle) -> Self {
-        Self(Box::into_raw(Box::new(handle)))
-    }
+fn owner(easy: Easy<'_>) -> Option<Rc<Handle>> {
+    with_handles(easy, |handles, index| handles.get(index.ok()?).cloned())
 }
 
 /// `struct swr_v1_curl_handle`: the easy handle's multi while it is in one,
@@ -128,19 +101,29 @@ const _: () = assert!(
     "C's `void *multi` and `void *easy_multi`"
 );
 
-impl Handle {
-    /// A handle for `cp`, in `multi`'s set if any, which only
-    /// [`swr_v1_curl_destroy_handle`] frees.
-    fn create(cp: Easy<'_>, multi: Option<Weak<Multi>>) -> *mut Self {
-        let handle = Private::new(Self {
-            cp: cp.0,
-            multi: Cell::new(multi),
-            easy_multi: Cell::new(None),
-        });
-        cp.set_private(handle);
-        handle.0
-    }
+fn create_handle(cp: Easy<'_>, multi: Option<Weak<Multi>>) -> *mut Handle {
+    with_handles(cp, |handles, index| {
+        let slot = match index {
+            Ok(slot) => slot,
+            Err(slot) => {
+                handles.insert(
+                    slot,
+                    Rc::new(Handle {
+                        cp: cp.0,
+                        multi: Cell::new(multi),
+                        easy_multi: Cell::new(None),
+                    }),
+                );
+                slot
+            }
+        };
+        handles
+            .get(slot)
+            .map_or(ptr::null_mut(), |owner| Rc::as_ptr(owner).cast_mut())
+    })
+}
 
+impl Handle {
     /// The multi the easy handle is in, while that multi lives.
     fn multi(&self) -> Option<Rc<Multi>> {
         self.multi
@@ -476,10 +459,11 @@ impl Multi {
         if self.add_handle(handle) != CURLM_OK {
             return CURLE_FAILED_INIT;
         }
+        self.timer_callback.set(true);
         let mut canceled = false;
         loop {
             self.selector_prepare();
-            if self.wait_event() {
+            if !self.timer_callback.get() && !self.has_active() && self.wait_event() {
                 let co = (self.host.current)();
                 let Some(waiter) = Waiter::running(co, (self.host.current_cid)())
                     .filter(|_| self.co.get().is_none())
@@ -820,19 +804,19 @@ fn socket_event(socket: &Socket, bitmask: c_int) {
 /// `swoole::curl::get_handle`.
 #[unsafe(no_mangle)]
 pub extern "C" fn swr_v1_curl_get_handle(cp: Easy<'_>) -> *mut Handle {
-    cp.handle_ptr()
+    owner(cp).map_or(ptr::null_mut(), |owner| Rc::as_ptr(&owner).cast_mut())
 }
 
 /// `swoole::curl::create_handle`.
 #[unsafe(no_mangle)]
 pub extern "C" fn swr_v1_curl_create_handle(cp: Easy<'_>) -> *mut Handle {
-    Handle::create(cp, None)
+    create_handle(cp, None)
 }
 
 /// `if (handle->multi) multi->remove_handle(handle)`: the handle leaves the multi
 /// it is in, while that multi lives.
 #[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_curl_handle_leave_multi(handle: &mut Handle) {
+pub extern "C" fn swr_v1_curl_handle_leave_multi(handle: &Handle) {
     if let Some(multi) = handle.multi() {
         multi.remove_handle(handle);
     }
@@ -860,25 +844,17 @@ unsafe extern "C" {
 #[unsafe(no_mangle)]
 pub extern "C" fn swr_v1_curl_destroy_handle(cp: Retired<'_>) {
     let Retired(cp) = cp;
-    let handle = cp.handle_ptr();
-    if handle.is_null() {
-        return;
-    }
-    // SAFETY: the handle create_handle made, which only this frees.
-    let handle = unsafe { Box::from_raw(handle) };
-    if let Some(multi) = handle.easy_multi.take() {
+    if let Some(handle) = with_handles(cp, |handles, index| index.ok().map(|i| handles.remove(i)))
+        && let Some(multi) = handle.easy_multi.take()
+    {
         release(multi);
     }
-    cp.set_private(Private::NONE);
 }
 
 /// `swoole_curl_easy_reset`: `curl_easy_reset`, keeping the handle.
 #[unsafe(no_mangle)]
 pub extern "C" fn swoole_curl_easy_reset(cp: Idle<'_>) {
-    let handle = cp.0.private();
     curl_easy_reset(cp);
-    // The easy handle keeps the Swoole handle it held.
-    cp.0.set_private(handle);
 }
 
 mod host;

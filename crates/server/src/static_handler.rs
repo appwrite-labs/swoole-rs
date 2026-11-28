@@ -47,7 +47,7 @@ impl StaticEffects for Native {
         swoole_rs_corebase::swoole_random_string(out.get_mut(..=count).unwrap_or_default());
     }
     fn modified_range(&self, if_range: &[u8], mtime: i64) -> bool {
-        swoole_rs_http::conditional(if_range, swoole_rs_http::Conditional::Range, mtime, 0, self)
+        swoole_rs_http::conditional(if_range, swoole_rs_http::Conditional::Range, mtime, self)
     }
     fn overflow(&self) {
         swoole_rs_corebase::sys::set_errno(libc::EOVERFLOW);
@@ -62,6 +62,7 @@ pub struct StaticHandler<'a, E: Effects = Native> {
     /// Owned: the methods that change it take the handler as `&mut`.
     context: HttpStaticContext,
     effects: E,
+    opened: Option<std::sync::Arc<swoole_rs_corebase::ossupport::FileRecord>>,
 }
 
 impl<'a> StaticHandler<'a> {
@@ -80,6 +81,7 @@ impl<'a, E: Effects> StaticHandler<'a, E> {
             context: HttpStaticContext::new(url, PATH_MAX)?,
             server,
             effects,
+            opened: None,
         })
     }
 
@@ -138,16 +140,41 @@ impl<'a, E: Effects> StaticHandler<'a, E> {
         http_date(Some(self.context.mtime()))
     }
 
+    #[must_use]
+    pub fn directory_redirect(&self) -> Option<Vec<u8>> {
+        self.context.directory_redirect()
+    }
+
+    #[must_use]
+    pub fn etag(&self) -> String {
+        self.context.observe().etag()
+    }
+
+    #[must_use]
+    pub fn preconditions(
+        &self,
+        if_match: &[u8],
+        unmodified: &[u8],
+        none_match: &[u8],
+        modified: &[u8],
+    ) -> swoole_rs_http::PreconditionStatus {
+        self.context.observe().preconditions(
+            if_match,
+            unmodified,
+            none_match,
+            modified,
+            &self.effects,
+        )
+    }
+
     /// The file changed since `date` (an `If-Modified-Since`).
     #[must_use]
     pub fn is_modified(&self, date: &[u8]) -> bool {
-        let timezone = self.server.config().timezone_;
         let mtime = self.context.mtime();
         swoole_rs_http::conditional(
             date,
             swoole_rs_http::Conditional::ModifiedSince,
             mtime,
-            timezone,
             &self.effects,
         )
     }
@@ -185,6 +212,20 @@ impl<'a, E: Effects> StaticHandler<'a, E> {
                     &self.effects,
                 )
             })
+    }
+
+    pub(crate) fn open_file(&mut self) -> bool {
+        if self.context.observe().kind == StaticFileKind::Directory {
+            return true;
+        }
+        self.opened = self.context.open_file();
+        self.opened.is_some()
+    }
+
+    pub(crate) fn file(
+        &self,
+    ) -> Option<&std::sync::Arc<swoole_rs_corebase::ossupport::FileRecord>> {
+        self.opened.as_ref()
     }
 
     /// The directory's listing page.

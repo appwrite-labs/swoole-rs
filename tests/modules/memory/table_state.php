@@ -1,4 +1,5 @@
 <?php
+require dirname(__DIR__, 3) . '/tests/support/duplicate_column.php';
 // New module witness, separate from unchanged original PHPT assertions.
 function require_state(bool $condition, string $message): void {
     if (!$condition) {
@@ -20,7 +21,7 @@ foreach ([64, 65, 128] as $requested) {
 }
 $table = new Swoole\Table(64, 0.2);
 require_state($table->column('same', Swoole\Table::TYPE_INT), 'first duplicate declaration');
-require_state($table->column('same', Swoole\Table::TYPE_STRING, 5), 'second duplicate declaration');
+require_state(!add_duplicate_column($table, 'same', Swoole\Table::TYPE_STRING, 5), 'duplicate column rejected');
 $binary_name = "bin\0name";
 require_state($table->column($binary_name, Swoole\Table::TYPE_STRING, 5), 'binary column declaration');
 require_state($table->create(), 'duplicate table create');

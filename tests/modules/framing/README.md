@@ -25,15 +25,19 @@ Swoole leaves it unread and the peer sees a reset.
 
 `core-tests/src/protocol/mime_type.cpp` no longer builds. Its TESTs are Rust
 tests over the table in `crates/framing/src/mime.rs` (`cargo test -p
-swoole-rs-framing`), with the same inputs and expected values:
+swoole-rs-framing`), with the same inputs and expected values.
 
-| Upstream TEST | Rust test |
-| --- | --- |
-| `mime_type.get` | `mime::tests::get` |
-| `mime_type.exists` | `mime::tests::exists` |
-| `mime_type.set` | `mime::tests::set` |
-| `mime_type.add` | `mime::tests::add` |
-| `mime_type.del` | `mime::tests::del` |
+Each v6.3 `MimeTypeTest` fixture case maps to the same name in `mime::tests`:
+
+- `get`
+- `exists`
+- `set`
+- `add`
+- `del`
+- `filename_suffix_is_case_insensitive`
+- `unknown_or_empty_suffix_uses_default_without_registering_it`
+- `list_reflects_add_replace_and_remove`
+- `replacing_builtin_mapping_does_not_add_an_entry`
 
 `core-tests/src/protocol/base.cpp` no longer builds either. Its server TESTs are
 cases in [protocol.rs](protocol.rs), built into the http server case binary

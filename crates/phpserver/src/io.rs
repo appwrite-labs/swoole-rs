@@ -262,29 +262,44 @@ fn sendto(call: &Call) {
 
 fn sendfile(call: &Call) {
     let Some(serv) = running(call) else { return };
-    let parsed = call.arity(2, 4).and_then(|()| {
-        Ok((
-            call.long(1, 0)?,
-            call.string(2, b"")?,
-            call.long(3, 0)?,
-            call.long(4, 0)?,
-        ))
-    });
-    let Ok((fd, filename, offset, length)) = parsed else {
+    if call.arity(2, 5).is_err() {
+        return call.set_bool(false);
+    }
+    let Ok(fd) = call.long(1, 0) else {
         return call.set_bool(false);
     };
+    let Some(options) = swoole_rs_phpswoole::SendFile::parse(call, 2) else {
+        return call.set_bool(false);
+    };
+    let filename = options.filename.bytes();
+    let (offset, length) = (options.offset, options.length);
     if crate::server::worker_type() == Some(crate::server::WorkerType::Master) {
-        // `%s`: the name up to its first NUL.
-        let shown = filename.split(|&b| b == 0).next().unwrap_or_default();
         let text = message!(
             "can't sendfile[{}] to the connections in master process",
-            String::from_utf8_lossy(shown)
+            String::from_utf8_lossy(filename)
         );
         fatal(E_WARNING, text.as_cstr());
         return call.set_bool(false);
     }
-    let size = length.c_cast::<usize>();
-    call.set_bool(server_methods::sendfile(serv, fd, filename, offset, size));
+    if !swoole_rs_phpswoole::valid_sendfile_range(offset, length) {
+        return call.set_bool(false);
+    }
+    if !options.acquire() {
+        return call.set_bool(false);
+    }
+    let mut delete_file = options.delete;
+    let sent = server_methods::sendfile_with_cleanup(
+        serv,
+        fd,
+        filename,
+        offset,
+        length.c_cast::<usize>(),
+        &mut delete_file,
+    );
+    if delete_file {
+        options.release();
+    }
+    call.set_bool(sent);
 }
 
 fn send_message(call: &Call) {

@@ -140,6 +140,7 @@ unsafe extern "C" {
     safe fn PQfinish(conn: OwnedConn);
     /// A new connection, or null: libpq copies what it needs of `conninfo`, which it
     /// only reads, and runs no callback.
+    safe fn PQconnectdb(conninfo: Text<'_>) -> *mut PGconn;
     safe fn PQconnectStart(conninfo: Text<'_>) -> *mut PGconn;
     /// Queue `query`, which libpq copies into the connection's output buffer. It
     /// parses no input, so it runs no notice callback.
@@ -474,11 +475,12 @@ pub extern "C" fn swoole_pgsql_close_prepared(conn: Conn, stmt_name: Text<'_>) -
     get_result(conn)
 }
 
-/// `swoole_pgsql_connectdb`: `PQconnectStart`, then poll the handshake to its
-/// end or its `connect_timeout`. `PQconnectdb`'s whole contract is the string the
-/// type carries.
+/// Let libpq handle blocking failover. In a hooked coroutine, poll the handshake.
 #[unsafe(no_mangle)]
 pub extern "C" fn swoole_pgsql_connectdb(conninfo: Text<'_>) -> *mut PGconn {
+    if blocking() || swoole_rs_corebase::coroutine::current().is_null() {
+        return PQconnectdb(conninfo);
+    }
     let started = PQconnectStart(conninfo);
     if started.is_null() {
         return started;
@@ -488,7 +490,7 @@ pub extern "C" fn swoole_pgsql_connectdb(conninfo: Text<'_>) -> *mut PGconn {
     if PQsocket(conn) < 0 {
         return started;
     }
-    conn.set_nonblocking(!blocking() && !swoole_rs_corebase::coroutine::current().is_null());
+    conn.set_nonblocking(true);
     wait_connect(conn, Conn::connect_poll);
     started
 }

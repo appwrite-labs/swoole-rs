@@ -8,7 +8,7 @@
 //! which crates/phpclients and crates/phphttp link by name.
 use crate::buffered::{recv_buffered, recv_line};
 use crate::co_io::{
-    Message, Timer, available, borrowed_err, check, default_err, errno, ops, owned_err, set_err,
+    Message, Timer, available, borrowed_err, default_err, errno, ops, owned_err, set_err,
 };
 use crate::co_socket::{Co, OwnedCo, peer_name};
 use crate::sendfile::{SendFailure, send_range};
@@ -40,7 +40,7 @@ pub enum Receive {
     All,
     Line,
     Buffered,
-    Peek,
+    Peek(c_int),
     Peer,
 }
 
@@ -445,7 +445,7 @@ impl Co {
             Receive::All => self.recv_all(out),
             Receive::Line => self.recv_line(out),
             Receive::Buffered => self.recv_with_buffer(out),
-            Receive::Peek => self.peek(out),
+            Receive::Peek(flags) => self.peek(out, flags),
             Receive::Peer => self.recvfrom_peer(out),
         }
     }
@@ -691,13 +691,16 @@ impl Co {
         io()
     }
 
-    /// `Socket::peek(buf, n)` into `out`'s room: one `network::Socket` peek, then
-    /// `check_return_value`; the count it wrote there, or -1. The socket is open.
-    pub fn peek(self, out: &mut Spare<'_>) -> Option<usize> {
-        let result = self
-            .with_network(|socket| peek_spare(socket, out, 0))
-            .flatten();
-        check(self, result);
+    /// Peek without consuming bytes. A blocking peek waits under the read timeout.
+    pub fn peek(self, out: &mut Spare<'_>, flags: c_int) -> Option<usize> {
+        if flags & libc::MSG_DONTWAIT == 0 {
+            return self.receive(0, out, |s, out| peek_spare(s, out, flags));
+        }
+        if !available(self, Events::READ) {
+            return None;
+        }
+        let result = self.with_network(|s| peek_spare(s, out, flags)).flatten();
+        set_err(self, if result.is_some() { 0 } else { errno() });
         result
     }
 

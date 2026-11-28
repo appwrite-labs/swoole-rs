@@ -5,7 +5,7 @@
 //! crates/ports', reached under their upstream symbols.
 use crate::Mode;
 use crate::factory::CLOSE_ACTIVELY;
-use crate::reactor_thread::{HEARTBEAT, each_connection, send_event};
+use crate::reactor_thread::{each_connection, send_event};
 use crate::records::{Connection, Lookup};
 use core::ffi::{c_int, c_long};
 use swoole_rs_corebase::ServerEvent;
@@ -111,6 +111,7 @@ fn init_thread(ctx: &mut ReactorContext<'_>, state: &ServerState, id: u16) -> Op
         .and_then(|pipe| Some(pipe.worker_end()?.fd()));
     methods::init_pipe_sockets(server, bus, command);
     if config.mode_ == Mode::Thread {
+        bus.rust().set_defer_write();
         let worker = worker(server, id)?;
         crate::worker_methods::init_event_worker(server, worker);
         if let Some(sock) = pipe_socket(&bus, worker_pipe(worker, false)) {
@@ -140,6 +141,14 @@ fn init_thread(ctx: &mut ReactorContext<'_>, state: &ServerState, id: u16) -> Op
         if thread.notify_worker.get().is_none() && worker_pipe(worker, false).is_some() {
             thread.notify_worker.set(u16::try_from(w).ok());
         }
+    }
+    if config.mode_ == Mode::Thread
+        && !bus.rust().pipes().all(|pipe| {
+            pipe.read(SocketFields::output_drained)
+                || handle.interest(pipe, swoole_rs_corebase::reactor::Interest::AddWrite)
+        })
+    {
+        return Some(-1);
     }
     Some(0)
 }
@@ -234,7 +243,7 @@ pub(crate) fn start_reactor_threads(serv: view::Server<'_>) -> bool {
             config.heartbeat_timer.store(timer);
         } else {
             let share = SharedServer::of(serv);
-            ServerState::start_thread(serv, HEARTBEAT, move || heartbeat_main(share.view()));
+            ServerState::start_heartbeat(serv, move || heartbeat_main(share.view()));
         }
     }
     methods::start_master_thread(serv, reactor)
@@ -256,20 +265,23 @@ pub(crate) fn main_loop(serv: view::Server<'_>, id: u16) {
     }
     ctx.reactor = Some(Reactor::thread());
     let mode = state.config_ref().mode_;
+    if mode != Mode::Thread {
+        swoole_rs_corebase::set_thread(crate::THREAD_REACTOR, id);
+    }
+    if init_thread(&mut ctx, state, id).unwrap_or(-1) < 0 {
+        swoole_rs_corebase::reactor::swoole_event_free();
+        return;
+    }
     let worker = || worker(serv, id);
     if mode == Mode::Thread {
         let Some(worker) = worker() else {
             return;
         };
+        // WorkerStart can immediately send through another worker's reactor pipe.
         call_worker_start_callback(serv, worker);
         if swoole_rs_corebase::process::pool::bailout_pending() {
             return;
         }
-    } else {
-        swoole_rs_corebase::set_thread(crate::THREAD_REACTOR, id);
-    }
-    if init_thread(&mut ctx, state, id).unwrap_or(-1) < 0 {
-        return;
     }
     // Every reactor thread is ready before the master runs.
     if mode == Mode::Process {
@@ -295,16 +307,18 @@ pub(crate) fn main_loop(serv: view::Server<'_>, id: u16) {
 /// connections idle past their port's heartbeat time.
 fn heartbeat_thread(serv: view::Server<'_>) {
     let state = serv.state();
-    while state.running() {
+    while state.heartbeat_running() {
         let now = swoole_rs_corebase::microtime();
         each_connection(state, |conn| {
             let session = conn.session_id();
-            if session > 0 && !serv.healthy(now, conn) {
+            if session > 0 && state.heartbeat_running() && !serv.healthy(now, conn) {
                 send_close_force(serv, conn, session);
             }
         });
         let interval = state.config_ref().heartbeat_check_interval.get();
-        std::thread::sleep(core::time::Duration::from_secs(u64::from(interval)));
+        if state.heartbeat_running() {
+            std::thread::park_timeout(core::time::Duration::from_secs(u64::from(interval)));
+        }
     }
 }
 
@@ -423,6 +437,9 @@ pub(crate) fn shutdown(ctx: &ReactorContext<'_>) -> Option<()> {
         }
     }
     let thread = ctx.thread_record()?;
+    if let Some(timer) = thread.close_timer.take() {
+        swoole_rs_corebase::timer::del_id(timer);
+    }
     if let Some(timer) = thread.heartbeat_timer.take() {
         swoole_rs_corebase::timer::del_id(timer);
     }

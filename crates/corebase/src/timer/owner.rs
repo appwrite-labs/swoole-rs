@@ -187,7 +187,14 @@ impl Owner {
 
     /// `Timer::get_round()`.
     pub(crate) fn round(&self) -> u64 {
-        self.lend(|queue| queue.round)
+        self.reactor_round().unwrap_or(0)
+    }
+
+    fn reactor_round(&self) -> Option<u64> {
+        if self.reactor.get().is_null() {
+            return None;
+        }
+        event_api::field(|fields| fields.round)
     }
 
     /// `Timer::get_ids()`, in heap order.
@@ -224,7 +231,7 @@ impl Owner {
                 |status| (status, TimerView::default()),
                 |view| (Status::Ok, view),
             ),
-            None => queue.select_next(),
+            None => queue.select_next_at(self.reactor_round()),
         });
         if status != Status::Ok {
             return (status, view, None);
@@ -236,8 +243,7 @@ impl Owner {
         (status, view, node)
     }
 
-    /// Picks the manual, reactor or system backend. Another backend keeps a
-    /// previous reactor, as upstream's `reactor_` did.
+    /// Picks the manual, reactor or system backend.
     fn init(&self, manually_trigger: bool) {
         let reactor = thread_reactor();
         let backend =
@@ -268,6 +274,7 @@ impl Owner {
 
     fn reinit(&self, manually_trigger: bool) {
         self.set(-1);
+        self.reactor.set(std::ptr::null_mut());
         self.init(manually_trigger);
         self.set(self.next_msec.get());
     }
@@ -296,7 +303,7 @@ impl Owner {
         // The queue boxes the node only once it has room for it, so a refused node
         // drops here with the closure.
         let added = self.lend(|queue| {
-            queue.add_marked(now, msec, persistent, php, || {
+            queue.add_marked(now, msec, persistent, php, self.round(), || {
                 Box::into_raw(Box::new(node)).cast()
             })
         });
@@ -396,7 +403,7 @@ impl Owner {
         }
         let now = self.relative_msec();
         // Most loop turns find no timer due.
-        let idle = self.lend(|queue| queue.select_idle(now));
+        let idle = self.lend(|queue| queue.select_idle_at(now, self.reactor_round()));
         if let Some(delay) = idle {
             self.next_msec.set(delay);
             self.set(delay);
@@ -692,28 +699,16 @@ mod tests {
         assert_eq!(probe.destructors(), 2);
     }
 
-    /// The common tail: two selections (the first is the creation-round barrier),
-    /// then `(after_second, events, count_after_second, destructors, a_present,
-    /// b_present)` once the timer is freed.
-    fn finish(
-        probe: &Probe,
-        a: c_long,
-        b: c_long,
-        select_again: bool,
-    ) -> (String, String, usize, u32, bool, bool) {
+    /// Snapshot the manual timer after one selection and again after freeing it.
+    fn finish(probe: &Probe, a: c_long, b: c_long) -> (String, String, usize, u32, bool, bool) {
         let timer = probe.timer();
-        timer.select();
-        assert_eq!(probe.events(), "", "after_first");
         timer.select();
         let count = timer.count();
         let (a_present, b_present) = (probe.present(a), probe.present(b));
-        let after_second = probe.events();
-        if select_again {
-            timer.select();
-        }
+        let selected = probe.events();
         probe.free();
         (
-            after_second,
+            selected,
             probe.events(),
             count,
             probe.destructors(),
@@ -749,7 +744,7 @@ mod tests {
         for label in ['A', 'B', 'C'] {
             p.add(label, false, p.record(label));
         }
-        expect(&finish(&p, 0, 0, false), "AaCcBb", "AaCcBb", 0, 3, false);
+        expect(&finish(&p, 0, 0), "AaCcBb", "AaCcBb", 0, 3, false);
     }
 
     #[test]
@@ -770,7 +765,7 @@ mod tests {
                     log.events.push(if viewed { 'V' } else { 'X' });
                 }),
             );
-            expect(&finish(&p, 0, 0, false), "AYNVa", "AYNVa", 0, 1, false);
+            expect(&finish(&p, 0, 0), "AYNVa", "AYNVa", 0, 1, false);
         }
     }
 
@@ -796,7 +791,7 @@ mod tests {
                 timer.remove(target.get());
             });
         }
-        finish(&p, 0, 0, false)
+        finish(&p, 0, 0)
     }
 
     #[test]
@@ -831,7 +826,7 @@ mod tests {
         );
         let b = p.add('B', false, p.record('B'));
         let (a, b) = (a.id, b.id);
-        let got = finish(&p, a, b, false);
+        let got = finish(&p, a, b);
         assert!(updated.get(), "the callback updated its node");
         got
     }
@@ -858,7 +853,7 @@ mod tests {
             probe.add('C', false, probe.record('C'));
         });
         p.add('B', false, p.record('B'));
-        expect(&finish(&p, 0, 0, true), "AaBb", "AaBbCc", 1, 3, false);
+        expect(&finish(&p, 0, 0), "AaBbCc", "AaBbCc", 0, 3, false);
     }
 
     #[test]
@@ -875,7 +870,7 @@ mod tests {
                 }
             }),
         );
-        expect(&finish(&p, 0, 0, false), "Aa", "Aa", 0, 1, false);
+        expect(&finish(&p, 0, 0), "Aa", "Aa", 0, 1, false);
     }
 
     /// Waits for `child`; its exit status.

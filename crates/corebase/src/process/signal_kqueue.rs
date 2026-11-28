@@ -52,11 +52,11 @@ pub fn signal_kqueue_set(kq: c_int, signo: c_int, handler: Handler, failed: &mut
     Handler(origin)
 }
 
-/// `swoole_signal_kqueue_clear`: when the event loop is `available`, removes every
+/// `swoole_signal_kqueue_clear`: removes every
 /// registered signal from `kq` (as [`signal_kqueue_set`]'s); then empties the table.
-pub fn signal_kqueue_clear(kq: c_int, available: bool) {
+pub fn signal_kqueue_clear(kq: c_int) {
     for slot in &SIGNALS {
-        if slot.activated.load(Relaxed) && available {
+        if slot.activated.load(Relaxed) {
             slot.activated.store(false, Relaxed);
             slot.handler.store(0, Relaxed);
             let mut failed = false;
@@ -65,35 +65,6 @@ pub fn signal_kqueue_clear(kq: c_int, available: bool) {
         }
     }
     crate::process::signal::signal_reset();
-}
-
-/// `ReactorKqueue::wait`'s signal entry for `signo`: its registration is read before
-/// its handler, which may register another, runs.
-pub(crate) fn signal_kqueue_dispatch(signo: c_int) {
-    dispatch(signo, crate::process::signal::signal_activated(signo));
-}
-
-/// An activated signal (`Some` handler) runs its handler unless that is `SIG_IGN`,
-/// and warns when it has none.
-fn dispatch(signo: c_int, activated: Option<Handler>) {
-    let Some(handler) = activated else {
-        return;
-    };
-    match handler {
-        Handler::NONE => {
-            let name = crate::process::signal::signal_name(signo);
-            crate::log::error_log(
-                crate::log::LogLevel::SW_LOG_WARNING,
-                swoole_rs_error::ErrorCode::SW_ERROR_UNREGISTERED_SIGNAL as c_int,
-                c"ReactorKqueue::wait",
-                format_args!(
-                    "Unable to find callback function for signal {}",
-                    name.as_cstr().to_string_lossy()
-                ),
-            );
-        }
-        handler => handler.call(signo),
-    }
 }
 
 #[cfg(test)]
@@ -116,7 +87,7 @@ mod tests {
             (Some(handler), libc::SIGUSR1),
         ] {
             SEEN.store(0, std::sync::atomic::Ordering::SeqCst);
-            dispatch(libc::SIGUSR1, activated);
+            crate::process::signal::dispatch_kqueue(libc::SIGUSR1, activated);
             assert_eq!(SEEN.load(std::sync::atomic::Ordering::SeqCst), seen);
         }
     }
@@ -133,7 +104,7 @@ mod tests {
         let slot = &SIGNALS[libc::SIGUSR2 as usize];
         assert_eq!(slot.handler.load(Relaxed), 0x1234);
         assert!(slot.activated.load(Relaxed));
-        signal_kqueue_clear(kq, true);
+        signal_kqueue_clear(kq);
         assert!(!slot.activated.load(Relaxed));
         assert_eq!(slot.handler.load(Relaxed), 0);
         // SAFETY: the test's kqueue.

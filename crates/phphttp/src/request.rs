@@ -73,6 +73,7 @@ pub fn request_minit(args: &MinitArgs) {
     }
     for name in [
         c"header",
+        c"trailer",
         c"server",
         c"cookie",
         c"get",
@@ -134,6 +135,7 @@ fn create_request(call: &Call) {
     state.parse_cookie = true;
     state.parse_body = true;
     state.parse_files = true;
+    state.upload_tmp_dir = Some(swoole_rs_phpswoole::temporary_directory().into());
     if parse::enabled_codecs() != 0 {
         state.enable_compression = true;
         state.compression_level = SW_Z_BEST_SPEED.c_cast::<i8>();

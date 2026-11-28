@@ -1,6 +1,6 @@
 # native/swoole-src
 
-What is left of swoole-src v6.2.6 (13d2f33) at the paths it has there:
+What is left of swoole-src v6.3.0 (e0d6065) at the paths it has there:
 
 - `php_swoole.h` and `php_swoole_library.h`, which the C in `native/hooks` and `native/phphelpers` includes.
 - `thirdparty/LICENSE`: the PHP License 3.01, for what `native/hooks` keeps of PHP's

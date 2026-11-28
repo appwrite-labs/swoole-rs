@@ -149,6 +149,18 @@ fn close(call: &Call<'_>) {
     bailout::defer(contain_with(|| detach(handle, &mut handles, false)));
 }
 
+fn remove_easy(multi: &Multi, easy: crate::Easy<'_>) -> swoole_rs_curl_sys::CURLMcode {
+    if let Some(transfer) = crate::owner(easy)
+        && transfer
+            .multi()
+            .as_deref()
+            .is_some_and(|owner| std::ptr::eq(owner, multi))
+    {
+        return multi.remove_handle(&transfer);
+    }
+    crate::curl_multi_remove_handle(multi.live(), easy)
+}
+
 // Keep the easy objects alive until every transfer is detached, including while
 // destruction releases the multi engine. Dropping a handle can reenter PHP.
 fn detach(handle: PhpMulti<'_>, handles: &mut swoole_rs_zend::Owned, destroying: bool) {
@@ -168,11 +180,7 @@ fn detach(handle: PhpMulti<'_>, handles: &mut swoole_rs_zend::Owned, destroying:
         }
         crate::callbacks::verify(easy, false);
         if let Some(multi) = multi {
-            if let Some(transfer) = cp.handle() {
-                multi.remove_handle(transfer);
-            } else {
-                crate::curl_multi_remove_handle(multi.live(), cp);
-            }
+            remove_easy(multi, cp);
         } else {
             swoole_curl_multi_detach_native(handle, easy);
         }
@@ -215,8 +223,7 @@ fn remove(call: &Call<'_>) {
 
 fn membership(call: &Call<'_>, add: bool) {
     use crate::php_handle::{checked, object_argument, swoole_curl_easy};
-    use swoole_rs_corebase::CellExt;
-    use swoole_rs_curl_sys::{CURLM_BAD_EASY_HANDLE, CURLM_BAD_HANDLE};
+    use swoole_rs_curl_sys::CURLM_BAD_EASY_HANDLE;
 
     if call.arity(2, 2).is_err() {
         return;
@@ -226,7 +233,8 @@ fn membership(call: &Call<'_>, add: bool) {
         return;
     };
     if add && !checked(easy, true) {
-        call.set_bool(false);
+        swoole_curl_multi_set_error(handle, CURLM_BAD_EASY_HANDLE);
+        call.set_long(i64::from(CURLM_BAD_EASY_HANDLE));
         return;
     }
     let Some(multi) = engine(handle) else { return };
@@ -234,15 +242,9 @@ fn membership(call: &Call<'_>, add: bool) {
         if !crate::callbacks::prepare_transfer(easy) {
             return;
         }
-        swoole_curl_easy(easy)
-            .handle()
-            .map_or(CURLM_BAD_EASY_HANDLE, |h| multi.add_handle(h))
+        crate::owner(swoole_curl_easy(easy)).map_or(CURLM_BAD_EASY_HANDLE, |h| multi.add_handle(&h))
     } else {
-        // A handle outside a multi returns CURLM_BAD_HANDLE, including a second removal.
-        swoole_curl_easy(easy)
-            .handle()
-            .filter(|h| h.multi.with_taken(|owner| owner.is_some()))
-            .map_or(CURLM_BAD_HANDLE, |h| multi.remove_handle(h))
+        remove_easy(multi, swoole_curl_easy(easy))
     };
     bailout::defer(contain_with(|| {
         swoole_curl_multi_membership(handle, easy, result, add);

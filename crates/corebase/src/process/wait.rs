@@ -275,7 +275,43 @@ pub(crate) mod tests {
         );
     }
 
+    // The live child keeps WNOHANG from returning ECHILD. Queue a thread-directed
+    // signal inside the predicate, between the child poll and sigsuspend.
+    fn manager_wakes_for_pending_signal() {
+        use std::process::{Command, Stdio};
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        static DELIVERED: AtomicBool = AtomicBool::new(false);
+        extern "C" fn wake_manager(_: c_int) {
+            DELIVERED.store(true, Ordering::Relaxed);
+        }
+        let mut child = Command::new("cat").stdin(Stdio::piped()).spawn().unwrap();
+        let previous = unsafe {
+            libc::signal(
+                libc::SIGUSR1,
+                wake_manager as *const () as libc::sighandler_t,
+            )
+        };
+        assert_ne!(previous, libc::SIG_ERR);
+        // A lost wakeup terminates only this isolated test binary.
+        unsafe { libc::alarm(5) };
+        let result = crate::process::reaper::wait_manager_child(|| {
+            assert_eq!(unsafe { libc::raise(libc::SIGUSR1) }, 0);
+            assert!(!DELIVERED.load(Ordering::Relaxed));
+            true
+        });
+        unsafe { libc::alarm(0) };
+        assert_eq!(result.pid.unwrap(), None);
+        assert!(DELIVERED.load(Ordering::Relaxed));
+        DELIVERED.store(false, Ordering::Relaxed);
+        assert_eq!(unsafe { libc::raise(libc::SIGUSR1) }, 0);
+        assert!(DELIVERED.load(Ordering::Relaxed), "original mask restored");
+        unsafe { libc::signal(libc::SIGUSR1, previous) };
+        assert!(child.wait().unwrap().success());
+    }
+
     fn waits_of_this_process_alone() {
+        manager_wakes_for_pending_signal();
         let child = spawn(3);
         let mut status = 0;
         let waited = wait_pid(

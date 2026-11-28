@@ -162,7 +162,7 @@ pub enum RangeError {
 
 /// `check_sendfile_parameters`: fstat(2) the open `file_fd` and resolve the range
 /// `[begin, *end)` to send, where a zero `length` means to the end of the file.
-/// `*end` is set for a range, inside the file or not.
+/// Stores the exclusive end after validating the range.
 /// # Errors
 /// [`RangeError::Stat`], [`RangeError::Empty`] or [`RangeError::Outside`].
 pub fn sendfile_range(
@@ -175,17 +175,15 @@ pub fn sendfile_range(
     if status.st_size == 0 {
         return Err(RangeError::Empty);
     }
-    let stop = if length == 0 {
+    if begin < 0 || begin > status.st_size || length > (status.st_size - begin).c_cast::<usize>() {
+        return Err(RangeError::Outside);
+    }
+    *end = if length == 0 {
         status.st_size
     } else {
-        begin.wrapping_add(length.c_cast::<libc::off_t>())
+        begin + length.c_cast::<libc::off_t>()
     };
-    *end = stop;
-    if begin < 0 || stop > status.st_size {
-        Err(RangeError::Outside)
-    } else {
-        Ok(())
-    }
+    Ok(())
 }
 
 /// `get_sendfile_chunk_size`: what is left of `[begin, end)`, at most
@@ -306,15 +304,18 @@ mod tests {
         };
         let fd = file.as_raw_fd();
         assert_eq!(range(fd, 0, 0), (Ok(()), 10), "whole file");
+        assert_eq!(range(fd, 10, 0), (Ok(()), 10), "empty tail");
+        assert_eq!(range(fd, 11, 0), (Err(RangeError::Outside), -1));
+        assert_eq!(range(fd, 4, usize::MAX), (Err(RangeError::Outside), -1));
         assert_eq!(range(fd, 4, 6), (Ok(()), 10), "tail");
         assert_eq!(
             range(fd, 4, 7),
-            (Err(RangeError::Outside), 11),
+            (Err(RangeError::Outside), -1),
             "past the end"
         );
         assert_eq!(
             range(fd, -1, 1),
-            (Err(RangeError::Outside), 0),
+            (Err(RangeError::Outside), -1),
             "negative offset"
         );
         assert_eq!(

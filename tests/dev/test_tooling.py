@@ -140,7 +140,19 @@ Path(sys.argv[1]).write_text('PASSED ' + sys.argv[2] + '\n')
             tree = Path(directory)
             source = tree / 'source'
             source.mkdir()
-            remote = "// Run default remote object server\nswoole_library_set_option('default_remote_object_server_worker_num', 2);\nswoole_init_default_remote_object_server();\n"
+            remote = """// Run default remote object server
+if (!is_win()) {
+    $remoteObjectDirectory = __DIR__ . '/tmp';
+    if (!is_dir($remoteObjectDirectory)
+        && !@mkdir($remoteObjectDirectory, 0755, true)
+        && !is_dir($remoteObjectDirectory)) {
+        throw new RuntimeException("Unable to create remote object server directory: $remoteObjectDirectory");
+    }
+    swoole_library_set_option('default_remote_object_server_worker_num', 2);
+    swoole_library_set_option('default_remote_object_server_dir', $remoteObjectDirectory);
+    swoole_init_default_remote_object_server();
+}
+"""
             files = {'.gitattributes': b'examples/binary.bin export-ignore\n', 'LICENSE': b'fixture', 'tools/bootstrap.php': b'<?php',
                      'tests/include/bootstrap.php': remote.encode(),
                      'tests/original.phpt': b'--TEST--\noriginal\n--FILE--\n<?php echo "ok";\n--EXPECT--\nok',
@@ -214,6 +226,9 @@ Path(sys.argv[1]).write_text('PASSED ' + sys.argv[2] + '\n')
             def run(command, **kwargs):
                 self.assertEqual(command[len(phpt.ipc_namespace() or [])], str(executable))
                 self.assertEqual(os.environ.get('PATH'), original_path)
+                selected = subprocess.check_output(['php'], env=kwargs['env'], text=True)
+                self.assertEqual(json.loads(selected), ['-d', 'user_agent=fixture child'])
+                kwargs['env'].pop('TEST_PHP_EXTRA_ARGS')
                 result = subprocess.run(['php', '-r', "echo 'literal $value';"], env=kwargs['env'],
                                         capture_output=True, text=True)
                 self.assertEqual(result.returncode, 0, result.stderr)
@@ -222,7 +237,8 @@ Path(sys.argv[1]).write_text('PASSED ' + sys.argv[2] + '\n')
                                                         '-d', 'zend.assertions=1', '-r', "echo 'literal $value';"])
                 (artifacts / 'status.txt').write_text('PASSED ' + str(root / 'original.phpt') + '\n')
                 return subprocess.CompletedProcess(command, 0, '', '')
-            with patch.object(phpt, 'run_isolated', run):
+            with patch.dict(os.environ, TEST_PHP_EXTRA_ARGS="-d 'user_agent=fixture child'"), \
+                 patch.object(phpt, 'run_isolated', run):
                 rows, receipt = phpt.run_cases(engine, [{'path': 'original.phpt'}], root, artifacts, 1, 1,
                                                runner_ini=settings, match_child_php=True)
             self.assertEqual(rows['original.phpt']['status'], 'passed')
@@ -374,7 +390,8 @@ Path(sys.argv[1]).write_text('PASSED ' + sys.argv[2] + '\n')
             sandbox = Path(directory)
             artifacts = sandbox / 'artifacts'
             (artifacts / 'one').mkdir(parents=True)
-            (artifacts / 'one/one.sh').write_text('previous run')
+            for suffix in ('sh', 'out', 'exp', 'diff', 'log', 'php'):
+                (artifacts / f'one/one.{suffix}').write_text('previous run')
             def fail(command, *, env, **kwargs):
                 self.assertNotIn('UNRELATED_SETTING', env)
                 self.assertEqual(env['TEST_SSH2_HOSTNAME'], 'fixture')
@@ -389,7 +406,7 @@ Path(sys.argv[1]).write_text('PASSED ' + sys.argv[2] + '\n')
                                          sandbox, artifacts, 1, 1)
             self.assertEqual(rows['one.phpt']['status'], 'failed')
             self.assertEqual((artifacts / 'one/one.diff').read_text(), 'mismatch')
-            self.assertFalse((artifacts / 'one/one.sh').exists())
+            self.assertEqual([p.name for p in (artifacts / 'one').iterdir()], ['one.diff'])
 
     def test_only_audited_cases_batch(self):
         safe = {'path': next(iter(phpt.PARALLEL_SAFE))}
@@ -603,7 +620,7 @@ class Lanes(unittest.TestCase):
         for explicit, compiled_in, expected in [([], '', 1), (['curl'], '', 1), ([], 'Core\ncurl\n', 0)]:
             args = SimpleNamespace(lane='integrate', module=['phpcollections', 'base64', 'phphelpers'], all_modules=False,
                                    php='php', php_extension=explicit, jobs=2, test=None, case=None,
-                                   benchmark=False, compare=False, fix_halfclose=False, stdext=True)
+                                   benchmark=False, compare=False, fix_halfclose=False)
             with patch.object(dev.sys, 'platform', 'linux'), patch.object(dev.shutil, 'which', return_value='/php'), \
                     patch.object(dev.subprocess, 'run', return_value=SimpleNamespace(stdout=compiled_in)):
                 commands = dict(dev.plan(args, ROOT / 'target/reports/collections'))
@@ -637,8 +654,6 @@ class Lanes(unittest.TestCase):
                                jobs=2, test=None, case=None, benchmark=False, compare=False, fix_halfclose=False)
         with patch.object(dev.subprocess, 'check_output', return_value='/openssl'):
             commands = dict(dev.plan(args, ROOT / 'target/reports/all-registered'))
-            # phphelpers' runtime fixtures call stdext helpers, so only stdext plans run them.
-            stdext = dict(dev.plan(SimpleNamespace(**vars(args), stdext=True), ROOT / 'target/reports/all-registered-stdext'))
         self.assertNotIn('phphelpers-runtime', commands)
         self.assertNotIn('corebase-native', commands)  # Its cases run in corebase-unit.
         self.assertNotIn('ossupport-unit', commands)  # Its cases moved with corebase::ossupport.
@@ -684,8 +699,6 @@ class Lanes(unittest.TestCase):
         self.assertNotIn('ports-php', commands)
         self.assertNotIn('ports-callback-php', commands)
         self.assertNotIn('--case', commands['ports-configuration'])
-        self.assertIn('--build-manifest', stdext['phphelpers-runtime'])
-        self.assertEqual(stdext['phphelpers-runtime'].count('--engine'), 2)
         self.assertNotIn('phphelpers-policy', commands)
         self.assertNotIn('phphelpers-async', commands)
         self.assertNotIn('clients-http-format', commands)  # Its cases run in clients-unit.
@@ -702,15 +715,6 @@ class Lanes(unittest.TestCase):
         self.assertIn('timer-bailout',commands)
         self.assertFalse(any(name.startswith('halfclose-') for name in commands))
 
-    def test_stdext_changes_actual_configure(self):
-        args = SimpleNamespace(jobs=2, php_config='php-config', openssl_dir='/fixture/openssl', stdext=False)
-        with patch.object(build_upstream.subprocess, 'check_output', return_value='-I/fixture/pcre'):
-            disabled, _ = build_upstream.extension_configuration(args)
-            args.stdext = True
-            enabled, _ = build_upstream.extension_configuration(args)
-        self.assertNotIn('--enable-swoole-stdext', disabled)
-        self.assertIn('--enable-swoole-stdext', enabled)
-
     def test_php_sockets_configuration_is_explicit_and_not_inherited(self):
         args = SimpleNamespace(jobs=2, php_config='php-config', openssl_dir='/fixture/openssl')
         with patch.dict(os.environ, {'PHP_SOCKETS': 'yes'}), patch.object(
@@ -723,18 +727,16 @@ class Lanes(unittest.TestCase):
         self.assertIn('--enable-sockets', enabled)
 
     def test_php_sockets_selects_both_profiles_without_enabling_storage_in_native(self):
-        from itertools import product
-        for sockets, stdext in product([False, True], repeat=2):
+        for sockets in (False, True):
             args = SimpleNamespace(lane='integrate', all_modules=True, module=None, php='php',
                                    php_extension=[], jobs=2, test=None, case=None, benchmark=False,
-                                   compare=False, fix_halfclose=False, php_sockets=sockets,
-                                   stdext=stdext)
+                                   compare=False, fix_halfclose=False, php_sockets=sockets)
             commands = dict(dev.plan(args, ROOT / 'target/reports/php-sockets'))
-            native = commands['stdext-reference-build' if stdext else 'reference-build']
+            native = commands['reference-build']
             for command in [commands['cargo-build'], native]:
                 self.assertEqual('--php-sockets' in command, sockets)
             self.assertNotIn('--module', native)
-            suffix = ('-php-sockets' if sockets else '') + ('-stdext' if stdext else '')
+            suffix = ('-php-sockets' if sockets else '')
             tree = ROOT / ('target/upstream-builds/' + suffix[1:] + '/src' if suffix else 'target/upstream/src')
             self.assertIn('upstream=' + str(tree / 'modules/swoole.so'),
                           commands['api-surface'])
@@ -744,23 +746,6 @@ class Lanes(unittest.TestCase):
                 self.assertIn('tests/swoole_server/sendfile_02.phpt', original)
                 self.assertIn('--require-all', original)
                 self.assertIn('--isolate-cases', original)
-
-    def test_stdext_uses_separate_real_native_and_rust_profiles(self):
-        args = SimpleNamespace(lane='integrate', module=['phphelpers'], stdext=True, php='php',
-                               php_extension=[], jobs=2, test=None, case=None, benchmark=False,
-                               compare=False, fix_halfclose=False)
-        commands = dict(dev.plan(args, ROOT / 'target/reports/stdext-profiles'))
-        self.assertIn('--stdext', commands['cargo-build'])
-        native = commands['stdext-reference-build']
-        self.assertIn('tools/build_upstream.py', native)
-        self.assertIn('--stdext', native)
-        self.assertNotIn('--module', native)
-        self.assertLess(list(commands).index('stdext-reference-build'), list(commands).index('cargo-build'))
-        engines = [command for command in commands.values() if any(str(a).startswith('upstream=') for a in command)]
-        self.assertTrue(engines)
-        # Upstream engines come from the stdext reference build.
-        for command in engines:
-            self.assertIn('upstream=' + str(ROOT / 'target/upstream-builds/stdext/src/modules/swoole.so'), map(str, command))
 
     def test_halfclose_repair_is_separate_from_rust_features_and_aliases(self):
         args = SimpleNamespace(lane='integrate', module=['error'], php='php', php_extension=[],
@@ -942,7 +927,7 @@ class FocusedPhases(unittest.TestCase):
                 self.assertEqual(report['phases'][-1]['returncode'], codes[-1])
 
     def test_failed_ownership_or_producer_stops_before_using_old_aliases(self):
-        for phase in ['ownership', 'cargo-build', 'reference-build', 'stdext-reference-build']:
+        for phase in ['ownership', 'cargo-build', 'reference-build']:
             with self.subTest(phase=phase), tempfile.TemporaryDirectory() as directory:
                 root = Path(directory)
                 planned = [(phase, ['failed-prerequisite']), ('api', ['stale-alias']), ('originals', ['old-engine'])]

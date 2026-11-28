@@ -178,6 +178,8 @@ fn wait<T, F: Effects>(
             Error::Timeout
         } else if c.closed && (role == Role::Producer || c.data.is_empty()) {
             Error::Closed
+        } else if role == Role::Producer && c.is_full() {
+            Error::Timeout
         } else {
             return Ok(());
         };
@@ -206,11 +208,11 @@ pub fn pop<T, F: Effects>(
     if wait_first && wait(ch, fx, Role::Consumer, deadline).is_err() {
         return None;
     }
-    let (data, producer) = with(ch, |c| (c.pop_data(), c.producers.pop_front()));
+    let (data, producer) = with(ch, |c| Some((c.pop_data()?, c.producers.pop_front())))?;
     if let Some(co) = producer {
         fx.resume(co);
     }
-    data
+    Some(data)
 }
 
 /// `Channel::push`, waiting until `deadline` for room: `data` back, with the

@@ -14,6 +14,65 @@ use swoole_rs_corebase::DataHead;
 
 use crate::state::ServerState;
 
+fn effective_owner() -> (libc::uid_t, libc::gid_t) {
+    // The kernel returns the calling process's effective credentials by value.
+    unsafe extern "C" {
+        safe fn geteuid() -> libc::uid_t;
+        safe fn getegid() -> libc::gid_t;
+    }
+    (geteuid(), getegid())
+}
+
+fn task_worker_owner(serv: crate::view::Server<'_>) -> (libc::uid_t, libc::gid_t) {
+    use crate::state::ServerText;
+    use swoole_rs_corebase::sys;
+    let (uid, gid) = effective_owner();
+    if uid != 0 {
+        return (uid, gid);
+    }
+    let text = |kind| std::ffi::CString::new(&*serv.state().text(kind)).unwrap_or_default();
+    (
+        sys::user_id(&text(ServerText::User)).unwrap_or(uid),
+        sys::group_id(&text(ServerText::Group)).unwrap_or(gid),
+    )
+}
+
+/// Create the task endpoint before workers start. Its permissions apply from bind onward.
+fn listen_task_socket(serv: crate::view::Server<'_>, file: &core::ffi::CStr) -> bool {
+    use std::os::unix::ffi::OsStrExt;
+    // umask exchanges a mode value and accesses no caller memory.
+    unsafe extern "C" {
+        safe fn umask(mask: libc::mode_t) -> libc::mode_t;
+    }
+    struct Mask(libc::mode_t);
+    impl Drop for Mask {
+        fn drop(&mut self) {
+            umask(self.0);
+        }
+    }
+    let listening = {
+        // Restore the caller's mask when listen returns or unwinds.
+        let _restore = Mask(umask(0o177));
+        process::methods::listen_unix(serv.task_pool_ref(), file, 2048)
+    };
+    if !listening {
+        return false;
+    }
+    let (uid, gid) = task_worker_owner(serv);
+    if (uid, gid) == effective_owner() {
+        return true;
+    }
+    let path = std::path::Path::new(std::ffi::OsStr::from_bytes(file.to_bytes()));
+    if let Err(error) = std::os::unix::fs::lchown(path, Some(uid), Some(gid)) {
+        swoole_rs_corebase::log::warning(
+            c"Server::create_task_workers",
+            format_args!("chown({}) failed: {error}", path.display()),
+        );
+        return false;
+    }
+    true
+}
+
 /// Flags passed to the server factory's close operation (`Server::CloseFlag`).
 pub(crate) const CLOSE_RESET: c_int = 1 << 1;
 pub(crate) const CLOSE_ACTIVELY: c_int = 1 << 2;
@@ -229,7 +288,7 @@ pub(crate) fn shutdown(serv: crate::view::Server<'_>) -> bool {
         (_, Mode::Process) => crate::process_factory::native::shutdown(serv),
         (_, Mode::Thread) => {
             if let Some(manager) = manager(serv.state()) {
-                manager.join_all();
+                crate::thread_mode::native::stop_worker_threads(serv, &manager);
             }
             true
         }
@@ -249,7 +308,11 @@ pub(crate) fn dispatch(serv: crate::view::Server<'_>, task: &mut SendData) -> bo
 /// `factory_->finish(data)`.
 pub(crate) fn finish(serv: crate::view::Server<'_>, send: &SendData) -> bool {
     if serv.config().mode_ == Mode::Process {
-        crate::process_factory::finish(serv, send)
+        let accepted = crate::process_factory::finish(serv, send);
+        if !accepted {
+            crate::send::discard_file(send.info(), send.payload());
+        }
+        accepted
     } else {
         crate::base_factory::finish(serv, send)
     }
@@ -324,20 +387,24 @@ impl crate::hybrid::Hybrid for Linked {
         let config = serv.state().config_ref();
         // The server's task pool, reset to `{}` (no member has an initializer).
         serv.task_pool_ref().reset();
-        let key = if matches!(ipc, IpcMode::MsgQueue) {
-            swoole_rs_corebase::CCast::c_cast::<c_int>(config.message_queue_key.get())
-        } else {
-            0
-        };
         let pool_ref = serv.task_pool_ref();
-        let ipc = c_int::from(ipc.code());
-        if !pool::create(
-            crate::process_pool_native(),
-            pool_ref,
-            config.task_worker_num.get(),
-            key,
-            ipc,
-        ) {
+        let native = crate::process_pool_native();
+        let workers = config.task_worker_num.get();
+        let created = if matches!(ipc, IpcMode::MsgQueue) {
+            let key = swoole_rs_corebase::CCast::c_cast::<c_int>(config.message_queue_key.get());
+            process::process_pool::create_task_queue(
+                native,
+                pool_ref,
+                workers,
+                key,
+                task_worker_owner(serv),
+            )
+        } else {
+            pool::create(native, pool_ref, workers, 0, ipc.code().into())
+        };
+        if !created {
+            pool::destroy(native, pool_ref);
+            pool_ref.reset();
             return false;
         }
         let (max, grace) = (
@@ -351,7 +418,12 @@ impl crate::hybrid::Hybrid for Linked {
             config.worker_num.get().cast_signed(),
         );
         pool::set_type(crate::process_pool_native(), pool_ref, WorkerType::Task);
-        socket.is_none_or(|file| pool::listen_unix(pool_ref, file, 2048))
+        if socket.is_some_and(|file| !listen_task_socket(serv, file)) {
+            pool::destroy(crate::process_pool_native(), pool_ref);
+            pool_ref.reset();
+            return false;
+        }
+        true
     }
 
     fn task_workers(&self, serv: crate::view::Server<'_>) -> bool {
@@ -396,7 +468,7 @@ impl crate::hybrid::Hybrid for Linked {
         let sent = process::methods::send_pipe_message(
             crate::process_pool_native(),
             worker,
-            message.bytes(),
+            message.packed().bytes(),
             PIPE_MASTER | PIPE_NONBLOCK,
         );
         sent.is_some_and(|sent| sent > 0)
@@ -408,10 +480,6 @@ impl crate::hybrid::Hybrid for Linked {
 
     fn start_worker_threads(&self, serv: crate::view::Server<'_>) -> bool {
         crate::thread_mode::native::start_worker_threads(serv)
-    }
-
-    fn stop_worker_threads(&self, serv: crate::view::Server<'_>) {
-        crate::thread_mode::native::stop_worker_threads(serv);
     }
 
     fn stop_single_worker(&self, serv: crate::view::Server<'_>) {

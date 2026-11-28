@@ -25,7 +25,7 @@ pub(super) fn check_handle(cp: Easy<'_>, exclusive: bool, required: bool) -> boo
     if !exclusive || shut_down || host::current().is_null() {
         return true;
     }
-    let Some(handle) = cp.handle() else {
+    let Some(handle) = crate::owner(cp) else {
         if required {
             swoole_rs_corebase::log::set_last_error(PHP_FATAL_ERROR);
             bailout::defer(swoole_rs_zend::report(
@@ -39,6 +39,7 @@ pub(super) fn check_handle(cp: Easy<'_>, exclusive: bool, required: bool) -> boo
     let Some(multi) = handle.multi() else {
         return true;
     };
+    drop(handle);
     let mut buffer = [0; 128];
     let bound = host::bound_co(&multi, &mut buffer);
     drop(multi);

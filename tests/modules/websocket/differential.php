@@ -116,14 +116,24 @@ foreach ([1, 123, 125] as $length) {
                         if ($opcode === 8) $input->reason = $payload;
                         else $input->data = $payload;
                     }
-                    $packed = Frame::pack($input, $opcode, $flags);
-                    // Since v6.2.4 (c3e746b09) the encoder rejects control payloads over
-                    // 125 bytes; a close frame adds a 2-byte code to its reason.
                     if ($opcode === 8 && $length > 123) {
-                        if ($packed !== '') throw new RuntimeException('Oversized close frame was packed');
-                        $cases[$id] = ['rejected' => true];
+                        $warnings = [];
+                        set_error_handler(static function (int $severity, string $message) use (&$warnings): bool {
+                            $warnings[] = [$severity, $message];
+                            return true;
+                        });
+                        try {
+                            $packed = Frame::pack($input, $opcode, $flags);
+                        } finally {
+                            restore_error_handler();
+                        }
+                        if ($packed !== '' || $warnings !== [[E_WARNING, 'Swoole\WebSocket\Frame::pack(): the max length of close reason is 123']]) {
+                            throw new RuntimeException('Incorrect oversized close frame result or warning');
+                        }
+                        $cases[$id] = ['rejected' => true, 'warnings' => $warnings];
                         continue;
                     }
+                    $packed = Frame::pack($input, $opcode, $flags);
                     if (ord($packed[0]) !== (0xc0 | $opcode) ||
                         (bool) (ord($packed[1]) & 128) !== (bool) ($flags & 32)) {
                         throw new RuntimeException('Pinned control RSV1/mask/FIN policy changed');

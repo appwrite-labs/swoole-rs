@@ -1,7 +1,7 @@
 # Original upstream Swoole tests
 
-The default selection (`manifest.json`) runs original PHPT tests from Swoole **v6.2.6**, commit
-`13d2f33664d60b72aaa9f102ff0ef4085c028513`. The manifest records each source path,
+The default selection (`manifest.json`) runs original PHPT tests from Swoole **v6.3.0**, commit
+`e0d606594e13cecd7790baafc5f1e1ead816b77c`. The manifest records each source path,
 SHA-256, subsystem, and required PHP APIs. The PHPT files are extracted with
 `git archive` from the pinned Git object and checked against these hashes before
 execution. Local checkout edits cannot silently change the selected tests.

@@ -15,7 +15,7 @@ use swoole_rs_corebase::lent::{Count, In, lend_in};
 use swoole_rs_corebase::log;
 use swoole_rs_corebase::sys::Text;
 use swoole_rs_http::llhttp::{self, Callbacks, Flow as Step, Parser};
-use swoole_rs_http::multipart_parser::{Flow, MultipartParser};
+use swoole_rs_http::multipart_parser::{Flow, MultipartHeader, MultipartParser};
 use swoole_rs_httpbindings::{
     FormSource, RequestHeader, body_prefix, compression, form_source, request_header, request_url,
     token_list_contains, token_list_fast, trim_quotes,
@@ -28,6 +28,9 @@ use swoole_rs_zend::{
 /// A request's multipart parser and the upload it is writing.
 pub(crate) struct Multipart {
     parser: MultipartParser,
+    uploads_collected: bool,
+    header: MultipartHeader,
+    content_type: Option<Vec<u8>>,
     field: BoundedBytes,
     fp: Option<Upload>,
 }
@@ -35,15 +38,12 @@ pub(crate) struct Multipart {
 /// The upload file being written, buffered as upstream's `fdopen` stream was.
 type Upload = BufWriter<File>;
 
-/// The multipart parser's callbacks: the context, the current upload's stream,
-/// and the current part header's name and the last unclaimed `Content-Type`,
-/// both spans of the call's input.
-struct Parts<'a, 'i> {
+struct Parts<'a> {
     state: &'a mut State,
     fp: &'a mut Option<Upload>,
     field: &'a mut BoundedBytes,
-    name: &'i [u8],
-    content_type: Option<&'i [u8]>,
+    header: &'a mut MultipartHeader,
+    content_type: &'a mut Option<Vec<u8>>,
 }
 
 unsafe extern "C" {
@@ -73,12 +73,10 @@ const SESSION_CLOSED: c_int = swoole_rs_error::ErrorCode::SW_ERROR_SESSION_CLOSE
 const SERVER_INVALID_REQUEST: c_int =
     swoole_rs_error::ErrorCode::SW_ERROR_SERVER_INVALID_REQUEST as c_int;
 /// `SW_STACK_BUFFER_SIZE` (also `sw_tg_buffer()`'s size), `SW_BUFFER_SIZE_STD`,
-/// `SW_HTTP_FORM_KEYLEN`, `SW_HTTP_UPLOAD_TMPDIR_SIZE`, `HT_MIN_SIZE`.
+/// `SW_HTTP_FORM_KEYLEN`, `HT_MIN_SIZE`.
 const STACK_BUFFER_SIZE: usize = swoole_rs_corebase::constants::SW_STACK_BUFFER_SIZE as usize;
 const BUFFER_SIZE_STD: usize = swoole_rs_corebase::constants::SW_BUFFER_SIZE_STD as usize;
 const FORM_KEYLEN: usize = swoole_rs_corebase::constants::SW_HTTP_FORM_KEYLEN as usize;
-const UPLOAD_TMPDIR_SIZE: usize =
-    swoole_rs_corebase::constants::SW_HTTP_UPLOAD_TMPDIR_SIZE as usize;
 const HT_MIN_SIZE: u32 = 8;
 /// `http_upload_errno`.
 const UPLOAD_OK: i64 = 0;
@@ -165,19 +163,21 @@ impl Callbacks<'_> for Pieces<'_, '_> {
     }
 }
 
-impl<'i> swoole_rs_http::multipart_parser::Parts<'i> for Parts<'_, 'i> {
+impl<'i> swoole_rs_http::multipart_parser::Parts<'i> for Parts<'_> {
     fn on_header_field(&mut self, data: &'i [u8]) -> Flow {
-        self.name = data;
         self.state.parse.header_value_len = 0;
-        Flow::Go
+        self.header.append_name(data)
     }
 
     fn on_header_value(&mut self, data: &'i [u8]) -> Flow {
-        if part_header_value(self, data) {
-            Flow::Go
-        } else {
-            Flow::Fail
-        }
+        self.header.append_value(data)
+    }
+
+    fn on_header_value_complete(&mut self) -> Flow {
+        let (name, value) = self.header.parts();
+        let ok = part_header_value(self.state, name, value, self.content_type);
+        self.header.clear();
+        if ok { Flow::Go } else { Flow::Fail }
     }
 
     fn on_part_data(&mut self, data: &[u8]) -> Flow {
@@ -198,6 +198,7 @@ impl<'i> swoole_rs_http::multipart_parser::Parts<'i> for Parts<'_, 'i> {
     }
 
     fn on_part_data_end(&mut self) -> Flow {
+        *self.content_type = None;
         part_data_end(self.state, self.fp, self.field);
         Flow::Go
     }
@@ -276,9 +277,8 @@ const HEADER_KEYS: [Key; 8] = [
 static KEYS: [Interned; 25] = [const { Interned::new() }; 25];
 static METHODS: [Interned; llhttp::METHODS.len()] =
     [const { Interned::new() }; llhttp::METHODS.len()];
-/// `Swoole\Http\Request`'s `get`, `post`, `cookie`, `files` and `tmpfiles` slots.
-/// ... and `server` and `header`.
-static PROPERTIES: [Declared; 7] = [const { Declared::new() }; 7];
+/// Declared array slots on `Swoole\Http\Request`, in [`Property`] order.
+static PROPERTIES: [Declared; 8] = [const { Declared::new() }; 8];
 /// `Swoole\Http\Request`'s declared `fd` slot.
 pub(crate) static REQUEST_FD: Declared = Declared::new();
 static CODECS: AtomicU32 = AtomicU32::new(0);
@@ -303,6 +303,7 @@ pub(crate) enum Property {
     TmpFiles,
     Server,
     Header,
+    Trailer,
 }
 
 /// MINIT: intern the keys and find the array properties' slots.
@@ -323,6 +324,7 @@ pub(crate) fn minit(minit: &Minit, codecs: u32) {
         c"tmpfiles",
         c"server",
         c"header",
+        c"trailer",
     ]) {
         property.resolve(&crate::request::REQUEST, name);
     }
@@ -688,7 +690,10 @@ fn websocket_connection(state: &State) -> bool {
     true
 }
 
-fn header_value(state: &mut State, name: &[u8], value_: &[u8], limit: usize) -> Step {
+fn header_value(state: &mut State, name: &[u8], mut value_: &[u8], limit: usize) -> Step {
+    while let [rest @ .., b' ' | b'\t'] = value_ {
+        value_ = rest;
+    }
     let length = value_.len();
     let (action, known) =
         request_header(name, value_, state.parser.method, state.parse_cookie, true);
@@ -697,7 +702,6 @@ fn header_value(state: &mut State, name: &[u8], value_: &[u8], limit: usize) -> 
             edit(&mut state.request, Property::Cookie, |array| {
                 parse_cookie(array.separate(), value_);
             });
-            return Step::Go;
         }
         RequestHeader::Upgrade => {
             const MAX_LENGTH: usize = STACK_BUFFER_SIZE - 1;
@@ -728,9 +732,10 @@ fn header_value(state: &mut State, name: &[u8], value_: &[u8], limit: usize) -> 
                 Some(false) => {}
             }
         }
-        RequestHeader::Form => state.request.post_form_urlencoded = true,
-        RequestHeader::Multipart => {
-            if !multipart_start(state, value_, limit) {
+        RequestHeader::Form | RequestHeader::Multipart | RequestHeader::OtherContentType => {
+            state.request.post_form_urlencoded = action == RequestHeader::Form;
+            state.mt_parser = None;
+            if action == RequestHeader::Multipart && !multipart_start(state, value_, limit) {
                 return Step::Fail;
             }
         }
@@ -842,10 +847,7 @@ fn on_message_complete(state: &mut State, input: &[u8]) -> Step {
     if state.mt_parser.is_some()
         && let Some(body) = state.parse.chunked_body.take()
     {
-        // The bundled multipart parser rejects calls that end inside a part header. llhttp body spans can end at
-        // receive boundaries, so parse the dechunked body in one pass here instead of parsing each span. The body
-        // is out of the state while the parser's callbacks take it, as `http2::Ctx::multipart`'s, then back for
-        // `getContent()`.
+        // Parse the dechunked body in one pass, then restore it for getContent().
         let bytes: &[u8] = (*body).as_ref();
         let prefix = body_prefix(bytes, true);
         let parsed = multipart_parse(state, bytes.get(prefix..).unwrap_or_default());
@@ -853,6 +855,14 @@ fn on_message_complete(state: &mut State, input: &[u8]) -> Step {
         if !parsed {
             return Step::Fail;
         }
+    }
+    let body_length = state
+        .parse
+        .chunked_body
+        .as_deref()
+        .map_or(state.request.body_length, |body| body.as_ref().len());
+    if body_length > 0 && !multipart_complete(state) {
+        return Step::Fail;
     }
     let source = form_source(
         u32::from(chunked)
@@ -907,10 +917,20 @@ pub(crate) fn multipart_start(state: &mut State, content_type: &[u8], limit: usi
     };
     state.mt_parser = Some(Box::new(Multipart {
         parser,
+        uploads_collected: false,
+        header: MultipartHeader::new(limit),
+        content_type: None,
         field: BoundedBytes::new(limit, 0),
         fp: None,
     }));
     true
+}
+
+pub(crate) fn multipart_complete(state: &State) -> bool {
+    state
+        .mt_parser
+        .as_ref()
+        .is_none_or(|parts| parts.parser.is_complete())
 }
 
 /// `Context::parse_multipart_data`.
@@ -919,13 +939,29 @@ pub(crate) fn multipart_parse(state: &mut State, data: &[u8]) -> bool {
     let Some(mut multipart) = state.mt_parser.take() else {
         return false;
     };
-    let Multipart { parser, fp, field } = &mut *multipart;
+    if state.upload_preprocessed && !multipart.uploads_collected {
+        multipart.uploads_collected = true;
+        if !multipart.parser.visit_uploads(data, |path| {
+            add_upload(state, path);
+        }) {
+            state.mt_parser = Some(multipart);
+            return false;
+        }
+    }
+    let Multipart {
+        uploads_collected: _,
+        parser,
+        fp,
+        field,
+        header,
+        content_type,
+    } = &mut *multipart;
     let mut parts = Parts {
         state,
         fp,
         field,
-        name: &[],
-        content_type: None,
+        header,
+        content_type,
     };
     let parsed = parser.execute(&mut parts, data);
     let mut reason = parser.error_message();
@@ -982,8 +1018,12 @@ fn c_copy(bytes: &[u8]) -> Box<[u8]> {
     copy.into_boxed_slice()
 }
 
-fn part_header_value<'i>(parts: &mut Parts<'_, 'i>, value_: &'i [u8]) -> bool {
-    let (state, name) = (&mut *parts.state, parts.name);
+fn part_header_value(
+    state: &mut State,
+    name: &[u8],
+    value_: &[u8],
+    content_type: &mut Option<Vec<u8>>,
+) -> bool {
     let func = c"multipart_body_on_header_value";
     // Hash collision attack
     let max_input_vars = max_input_vars();
@@ -1050,8 +1090,8 @@ fn part_header_value<'i>(parts: &mut Parts<'_, 'i>, value_: &'i [u8]) -> bool {
             }
             state.parse.input_name = Some(c_copy(&form_name));
             let mut header = OwnedArray::default();
-            let content_type = parts.content_type.take();
-            header.insert_bytes(b"type", Some(content_type.unwrap_or_default()));
+            let content_type = content_type.take();
+            header.insert_bytes(b"type", Some(content_type.as_deref().unwrap_or_default()));
             header.insert_bytes(b"tmp_name", Some(b""));
             header.insert_long(b"size", 0);
             let filename = trimmed(filename, filename_len);
@@ -1075,19 +1115,23 @@ fn part_header_value<'i>(parts: &mut Parts<'_, 'i>, value_: &'i [u8]) -> bool {
                 upload_bytes(state, b"type", value_);
             }
         } else {
-            parts.content_type = Some(value_);
+            *content_type = Some(value_.to_vec());
         }
     } else if name.eq_ignore_ascii_case(b"swoole-upload-file") && state.upload_preprocessed {
-        // When the "SW_HTTP_UPLOAD_FILE" header appears in the request, it indicates that the uploaded file has been
-        // saved in a temporary file. The binary content in the message body will be replaced with the temporary
-        // filename. However, the Content-Length still reflects the original message size, causing llhttp to believe
-        // there is still data to be received. As a result, llhttp fails to trigger the message callback. Therefore, we
-        // need to set `ctx->completed = 1` to indicate that the message processing is complete.
+        // The preliminary pass already adopted this file, even without metadata.
+        if state.parse.multipart_header.array().is_none() {
+            host::log(
+                swoole_rs_corebase::log::LogLevel::SW_LOG_WARNING,
+                0,
+                func,
+                "upload file marker has no matching multipart file metadata",
+            );
+            return true;
+        }
         state.completed = true;
         upload_bytes(state, b"tmp_name", value_);
         upload_long(state, b"error", UPLOAD_FILE_READY);
         upload_long(state, b"size", path_size(value_));
-        add_upload(state, value_);
     }
     true
 }
@@ -1117,16 +1161,6 @@ fn path_size(path: &[u8]) -> i64 {
     std::fs::metadata(path).map_or(-1, |meta| i64::try_from(meta.len()).unwrap_or(-1))
 }
 
-/// `swoole::file_get_size(fp)`: flushed, and only for a regular file.
-fn file_size(upload: &mut Upload) -> i64 {
-    // Upstream ignores fflush's result: a failure leaves the size what reached the file.
-    upload.flush().unwrap_or_default();
-    match upload.get_ref().metadata() {
-        Ok(meta) if meta.is_file() => i64::try_from(meta.len()).unwrap_or(-1),
-        _ => -1,
-    }
-}
-
 fn part_data(state: &mut State, upload: &mut Option<Upload>, data: &[u8]) {
     let Some(file) = upload else {
         return;
@@ -1150,10 +1184,11 @@ fn part_headers_complete(state: &mut State, upload: &mut Option<Upload>) {
     if upload_error(state).is_none_or(|code| code.as_long().is_some_and(|code| code != UPLOAD_OK)) {
         return;
     }
-    let mut path = crate::context::upload_tmp_dir(state).to_bytes().to_vec();
-    path.extend_from_slice(b"/swoole.upfile.XXXXXX");
-    path.truncate(UPLOAD_TMPDIR_SIZE - 1);
-    path.push(0);
+    let mut path = [
+        crate::context::upload_tmp_dir(state).to_bytes(),
+        b"/swoole.upfile.XXXXXX\0",
+    ]
+    .concat();
     let Some(file) = swoole_rs_corebase::ossupport::TempFile::create(&mut path) else {
         upload_long(state, b"error", UPLOAD_NO_TMP_DIR);
         return;
@@ -1187,8 +1222,12 @@ fn part_data_end(state: &mut State, upload: &mut Option<Upload>, data: &mut Boun
     let Some(input_name) = state.parse.input_name.take() else {
         return;
     };
-    if let Some(mut file) = upload.take() {
-        upload_long(state, b"size", file_size(&mut file));
+    if let Some(file) = upload.take() {
+        let mut size = 0;
+        if !swoole_rs_http::close_upload_file(file, Some(&mut size)) {
+            upload_long(state, b"error", UPLOAD_CANT_WRITE);
+        }
+        upload_long(state, b"size", size);
     }
     let Some(code) = upload_error(state).map(Value::long) else {
         state.parse.input_name = Some(input_name);

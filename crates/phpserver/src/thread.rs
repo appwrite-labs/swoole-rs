@@ -24,7 +24,7 @@ struct Start {
     argv: Option<Arguments>,
 }
 
-/// The running thread-mode server's [`Start`], from `prepare` until `release`.
+/// The running thread-mode server's [`Start`], while `with_start` runs.
 static START: Mutex<Option<Arc<Start>>> = Mutex::new(None);
 
 /// The settings `copy_setting` serialized for the worker threads, until `free_setting`.
@@ -96,10 +96,10 @@ pub(crate) fn worker(
     if !serv.is_worker_thread() {
         return None;
     }
-    Some(run_worker(object))
+    Some(run_worker(object, serv))
 }
 
-fn run_worker(object: ServerObject<'_>) -> Result<(), Bailout> {
+fn run_worker(object: ServerObject<'_>, serv: view::Server<'_>) -> Result<(), Bailout> {
     let text = SETTING
         .lock()
         .unwrap_or_else(PoisonError::into_inner)
@@ -112,12 +112,30 @@ fn run_worker(object: ServerObject<'_>) -> Result<(), Bailout> {
     bailed?;
     Props::own(object).set(c"setting", &setting);
     // The coroutine options are thread-local: each worker thread sets them once.
-    if let Some(options) = setting.array() {
-        swoole_rs_phpcoroutines::set_coroutine_option(options);
+    if let Some(options) = setting.array()
+        && !swoole_rs_phpcoroutines::set_coroutine_option(options)
+    {
+        return bailout::outcome(());
     }
     // A conversion's bailout ends the start here, as upstream's did.
     if bailout::pending() {
         return Err(Bailout);
+    }
+    let php_length: swoole_rs_clients::protocol::GetPackageLength =
+        swoole_rs_phpswoole::length::length::<crate::dispatch::Length>;
+    if serv.ports().iter().any(|port| {
+        let config = port.config();
+        config
+            .protocol
+            .get()
+            .get_package_length
+            .is_some_and(|get| std::ptr::fn_addr_eq(get, php_length))
+            && config.length_owner().is_none()
+    }) {
+        swoole_rs_phpswoole::invalid_setting(
+            c"package_length_func must be registered in each worker thread",
+        );
+        return bailout::outcome(());
     }
     let main = MAIN.with(|slot| slot.with_taken(|main| main.clone()));
     let Some(main) = main else {
@@ -131,8 +149,13 @@ fn run_worker(object: ServerObject<'_>) -> Result<(), Bailout> {
 /// `start()` in thread mode, before the server starts: the bootstrap script,
 /// the `init_arguments` result, and the thread starter; the runtime hooks are
 /// enabled before any thread is created.
-pub(crate) fn prepare(object: ServerObject<'_>, serv: view::Server<'_>) -> Result<(), Bailout> {
+pub(crate) fn with_start(
+    object: ServerObject<'_>,
+    serv: view::Server<'_>,
+    start: impl FnOnce(),
+) -> Result<(), Bailout> {
     if !thread_mode(serv) {
+        start();
         return Ok(());
     }
     let this = object.value();
@@ -150,12 +173,18 @@ pub(crate) fn prepare(object: ServerObject<'_>, serv: view::Server<'_>) -> Resul
     }
     let bootstrap = bootstrap();
     let argv = init_arguments(object)?;
-    set_start(Some(Start { bootstrap, argv }));
-    set_worker_thread_start(Some(start_thread));
+    if !swoole_rs_phpswoole::setting_ok() {
+        return Ok(());
+    }
     let flags = swoole_rs_phpcoroutines::hook_flags();
     if flags > 0 {
         swoole_rs_phpruntime::enable_hook(flags)?;
     }
+    set_start(Some(Start { bootstrap, argv }));
+    set_worker_thread_start(Some(start_thread));
+    start();
+    set_worker_thread_start(None);
+    set_start(None);
     Ok(())
 }
 
@@ -190,12 +219,6 @@ fn start_thread(fresh: swoole_rs_corebase::Fresh, thread: &Thread, run: Rc<dyn F
         |status| thread.exit(status),
     );
     MAIN.set(None);
-}
-
-/// After `start()`: the bootstrap script and arguments go.
-pub(crate) fn release() {
-    set_worker_thread_start(None);
-    set_start(None);
 }
 
 /// `copy_setting`: the serializable settings, serialized for the worker

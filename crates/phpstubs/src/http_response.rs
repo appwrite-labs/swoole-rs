@@ -14,11 +14,19 @@ pub static arginfo_class_Swoole_Http_Response_end: a::ArgInfo<2> = a::ArgInfo::n
     a::begin_type(0, 0, z::_IS_BOOL, false),
     a::arg_type(c"content", 0, false, z::IS_STRING, true, Some(c"null")),
 ]);
-pub static arginfo_class_Swoole_Http_Response_sendfile: a::ArgInfo<4> = a::ArgInfo::new([
+pub static arginfo_class_Swoole_Http_Response_sendfile: a::ArgInfo<5> = a::ArgInfo::new([
     a::begin_type(1, 0, z::_IS_BOOL, false),
-    a::arg_type(c"filename", 0, false, z::IS_STRING, false, None),
+    a::arg_class_mask(
+        c"filename",
+        0,
+        false,
+        c"Swoole\\SendFile",
+        z::MAY_BE_STRING,
+        None,
+    ),
     a::arg_type(c"offset", 0, false, z::IS_LONG, false, Some(c"0")),
     a::arg_type(c"length", 0, false, z::IS_LONG, false, Some(c"0")),
+    a::arg_type(c"delete_file", 0, false, z::_IS_BOOL, false, Some(c"false")),
 ]);
 pub static arginfo_class_Swoole_Http_Response_redirect: a::ArgInfo<3> = a::ArgInfo::new([
     a::begin_type(1, 0, z::_IS_BOOL, false),
@@ -154,6 +162,20 @@ pub static arginfo_class_Swoole_Http_Response_disconnect: a::ArgInfo<3> = a::Arg
         Some(c"SWOOLE_WEBSOCKET_CLOSE_NORMAL"),
     ),
     a::arg_type(c"reason", 0, false, z::IS_STRING, false, Some(c"\"\"")),
+]);
+pub static arginfo_class_Swoole_Http_Response_sendStaticFile: a::ArgInfo<2> = a::ArgInfo::new([
+    a::begin_type(1, 0, z::IS_VOID, false),
+    a::arg_class(c"request", 0, false, c"Swoole\\Http\\Request", false, None),
+]);
+pub static arginfo_class_Swoole_Http_Response_sendHttp2Response: a::ArgInfo<2> = a::ArgInfo::new([
+    a::begin_type(1, 0, z::IS_VOID, false),
+    a::arg_type(c"content", 0, false, z::IS_STRING, false, None),
+]);
+pub static arginfo_class_Swoole_Http_Response_sendHttp2File: a::ArgInfo<4> = a::ArgInfo::new([
+    a::begin_type(3, 0, z::IS_VOID, false),
+    a::arg_type(c"file", 0, false, z::IS_STRING, false, None),
+    a::arg_type(c"offset", 0, false, z::IS_LONG, false, None),
+    a::arg_type(c"length", 0, false, z::IS_LONG, false, None),
 ]);
 pub static arginfo_class_Swoole_Http_Response___destruct: a::ArgInfo<1> =
     a::ArgInfo::new([a::begin(0, 0)]);

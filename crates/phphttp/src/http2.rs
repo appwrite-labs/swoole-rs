@@ -3,13 +3,16 @@
 mod files;
 mod server;
 mod session;
+mod writer;
 
 use crate::{context, header, parse};
 pub(crate) use files::{send_file, static_file};
 pub use server::{entries, server_on_close};
-pub(crate) use server::{goaway, on_receive, ping, reset, respond, session_receive, write};
+pub(crate) use server::{
+    goaway, of, on_receive, ping, reset, respond, schedule, session_receive, write,
+};
 pub use session::IdMap;
-pub(crate) use session::{session_free, session_new};
+pub(crate) use session::{flush_pending, release_sessions, session_free, session_new};
 use std::{cell::Cell, ffi::CStr};
 use swoole_rs_corebase::{CCast, buffer::BoundedBytes};
 use swoole_rs_server::view;
@@ -17,6 +20,8 @@ use swoole_rs_zend::{
     ArrayMut, HeldArray, Owned, ZString,
     bailout::{self, Bailout},
 };
+
+const CO_TIMEDOUT: i32 = swoole_rs_error::ErrorCode::SW_ERROR_CO_TIMEDOUT as i32;
 
 /// The HTTP/2 server's contexts: a connection's settings context
 /// ([`Ctx::server_context`]) or a stream's ([`Ctx::stream_context`]), and the
@@ -210,8 +215,8 @@ impl Ctx<'_> {
         let state = self.state();
         let data = state.request.h2_data.take();
         let parsed = parse::multipart_parse(state, data.as_deref().map_or(&[], AsRef::as_ref));
-        self.state().request.h2_data = data;
-        parsed
+        state.request.h2_data = data;
+        parsed && parse::multipart_complete(state)
     }
 
     /// The context's `field` (0 for a compression field without compression).
@@ -257,14 +262,12 @@ impl Ctx<'_> {
         context::send(self, data)
     }
 
-    /// How long a send may wait on the peer (upstream 6.3's
-    /// `http2_server_send_timeout`): a server context's `send_timeout`, else upstream's
-    /// default write timeout. A coroutine socket's context never waits on its window.
+    /// The server or coroutine socket's write deadline for a flow-control wait.
     #[must_use]
     pub fn send_deadline(mut self) -> swoole_rs_corebase::timer::Deadline {
         let state = self.state();
-        let timeout = if context::co_socket(state) {
-            0.0
+        let timeout = if let Some(socket) = context::socket(state) {
+            socket.timeout(swoole_rs_corebase::reactor::TimeoutKind::WRITE)
         } else {
             context::server(state).config().send_timeout.get()
         };
@@ -356,7 +359,13 @@ impl Ctx<'_> {
         }
     }
 
-    /// `ctx->request.path`: the `:path` up to its query.
+    /// Original HTTP/2 request target, including its query.
+    #[must_use]
+    pub fn request_target(mut self) -> Option<Box<[u8]>> {
+        self.state().request.path.clone()
+    }
+
+    /// Store the complete `:path` header.
     pub fn set_path(mut self, path: &[u8]) {
         let state = self.state();
         state.request.path = Some(path.into());

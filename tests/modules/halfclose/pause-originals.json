@@ -1,11 +1,11 @@
 {
   "repository": "https://github.com/swoole/swoole-src",
-  "tag": "v6.2.6",
-  "commit": "13d2f33664d60b72aaa9f102ff0ef4085c028513",
+  "tag": "v6.3.0",
+  "commit": "e0d606594e13cecd7790baafc5f1e1ead816b77c",
   "tests": [
     {
       "path": "tests/swoole_server/client_close_in_writable_event.phpt",
-      "sha256": "2bb18c5a1c0f0e1ce534fc7ffb32278ce2f33ab33cea45e46ceb34d540e0b8c9",
+      "sha256": "6ca20b3b6959512e85c3a64763a5d708b749460abd576e3899429363d5ecee4c",
       "module": "halfclose-pause",
       "requires": [
         "upstream_test_bootstrap",

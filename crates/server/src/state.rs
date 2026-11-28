@@ -11,6 +11,9 @@ use crate::view::Port;
 use std::ffi::CString;
 use swoole_rs_corebase::tls::socket_pair::SocketPair;
 
+/// Reactor threads use their IDs as thread keys.
+pub(crate) const HEARTBEAT: u64 = u64::MAX;
+
 /// Owned by `Server::state_`, from the constructor to the destructor. Reactor threads
 /// share it, so each counter is atomic.
 pub struct ServerState {
@@ -39,6 +42,7 @@ pub struct ServerState {
     local_bounds: crate::shared::FdBounds,
     /// The reactor threads and the heartbeat thread, by `start_thread`'s `arg`.
     threads: std::sync::Mutex<Vec<(u64, std::thread::JoinHandle<()>)>>,
+    heartbeat_stopped: AtomicBool,
     /// The interface addresses `Server::create` first read (`local_addr`); none before.
     pub(crate) local_addrs: std::sync::OnceLock<crate::local_addr::LocalAddrs>,
     /// `gs->pipe_packet_msg_id`, which numbers every bus's messages: the shared
@@ -52,8 +56,6 @@ pub struct ServerState {
     /// the state's drop closes, as `~Server` did.
     #[expect(clippy::vec_box, reason = "a worker holds its pair's address")]
     worker_pipes: std::sync::Mutex<Vec<Box<SocketPair>>>,
-    /// A worker thread asked to shut down: the thread manager respawns no worker.
-    pub(crate) stopping: AtomicBool,
     /// Thread mode's factory's manager, from its factory's creation to its deletion.
     pub(crate) thread_manager:
         std::sync::Mutex<Option<std::sync::Arc<crate::thread_mode::ThreadManager>>>,
@@ -263,11 +265,11 @@ impl ServerState {
             locked: FdLock::default(),
             local_bounds: crate::shared::FdBounds::default(),
             threads: std::sync::Mutex::new(Vec::new()),
+            heartbeat_stopped: AtomicBool::new(false),
             local_addrs: std::sync::OnceLock::new(),
             msg_ids: std::sync::OnceLock::new(),
             task_pipes: OnceLock::new(),
             worker_pipes: std::sync::Mutex::new(Vec::new()),
-            stopping: AtomicBool::new(false),
             thread_manager: std::sync::Mutex::new(None),
             reactor_thread_barrier: swoole_rs_corebase::locks::Barrier::new(),
         }
@@ -301,26 +303,25 @@ impl ServerState {
     }
 
     /// `task_notify_pipes.emplace_back(new Pipe(true))` for each of `count` workers:
-    /// false, closing those it opened, when a pipe isn't ready. Pipes already set stay.
-    pub(crate) fn open_task_pipes(&self, count: u32) -> bool {
+    /// Publish the pipes only once all are open and the task workers initialize.
+    pub(crate) fn open_task_pipes(&self, count: u32, init: impl FnOnce() -> bool) -> bool {
         let mut pipes = Vec::new();
-        for _ in 0..count {
+        let ready = (0..count).all(|_| {
             let pair = swoole_rs_corebase::tls::socket_pair::pipe(true);
             let ready = pair.master_end().is_some() && pair.worker_end().is_some();
             pipes.push(pair);
-            if !ready {
-                for pipe in &mut pipes {
-                    swoole_rs_corebase::tls::socket_pair::drop(pipe);
-                }
-                return false;
-            }
+            ready
+        }) && init();
+        if ready {
+            pipes = match self.task_pipes.set(pipes.into_boxed_slice()) {
+                Ok(()) => return true,
+                Err(existing) => existing.into_vec(),
+            };
         }
-        if let Err(mut pipes) = self.task_pipes.set(pipes.into_boxed_slice()) {
-            for pipe in &mut pipes {
-                swoole_rs_corebase::tls::socket_pair::drop(pipe);
-            }
+        for pipe in &mut pipes {
+            swoole_rs_corebase::tls::socket_pair::drop(pipe);
         }
-        true
+        ready
     }
 
     /// `task_notify_pipes.at(index)`, or `None` past the end.
@@ -406,6 +407,28 @@ impl ServerState {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .push((arg, thread));
+    }
+
+    pub(crate) fn start_heartbeat(
+        serv: crate::view::Server<'_>,
+        body: impl FnOnce() + Send + 'static,
+    ) {
+        serv.state()
+            .heartbeat_stopped
+            .store(false, Ordering::Release);
+        Self::start_thread(serv, HEARTBEAT, body);
+    }
+
+    pub(crate) fn join_heartbeat(&self) {
+        if let Some(heartbeat) = self.take_thread(HEARTBEAT) {
+            self.heartbeat_stopped.store(true, Ordering::Release);
+            heartbeat.thread().unpark();
+            heartbeat.join().unwrap_or_default();
+        }
+    }
+
+    pub(crate) fn heartbeat_running(&self) -> bool {
+        self.running() && !self.heartbeat_stopped.load(Ordering::Acquire)
     }
 
     /// The running thread `start_thread` started with `arg`, if any.

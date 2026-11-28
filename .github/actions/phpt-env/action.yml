@@ -51,7 +51,7 @@ runs:
         printf '[mysql-test]\nDescription = MySQL test database\nDriver = mysql\nSERVER = mysql\nUSER = root\nPASSWORD = root\nPORT = 3306\nDATABASE = test\n' \
           | sudo tee /etc/odbc.ini
     - uses: ./.github/actions/phpt-pin
-    # The ssh2 tests' account on localhost (ssh2_test.inc's defaults), password and key
+    # The ssh2 tests' account on localhost, password and key
     # logins, as upstream's tests/init creates it.
     - shell: bash
       run: |
@@ -59,7 +59,11 @@ runs:
         id -u $user >/dev/null 2>&1 || sudo useradd -m $user
         echo "$user:swoole_ssh2_test_pass" | sudo chpasswd
         sudo install -d -m 700 -o $user -g $user /home/$user/.ssh
-        sudo install -m 600 -o $user -g $user target/upstream/src/tests/swoole_ssh2/testkey_ed25519.pub /home/$user/.ssh/authorized_keys
+        keys=target/upstream/src/tests/swoole_ssh2
+        cat "$keys/testkey_ed25519.pub" "$keys/testkey_ecdsa.pub" | sudo tee /home/$user/.ssh/authorized_keys >/dev/null
+        sudo chown "$user:$user" /home/$user/.ssh/authorized_keys
+        sudo chmod 600 /home/$user/.ssh/authorized_keys
+        printf '%s\n' TEST_SSH2_HOSTNAME=localhost "TEST_SSH2_USER=$user" TEST_SSH2_PASS=swoole_ssh2_test_pass TEST_SSH2_AUTH=password >> "$GITHUB_ENV"
         echo 'PasswordAuthentication yes' | sudo tee /etc/ssh/sshd_config.d/00-swoole-ssh2-test.conf
         sudo systemctl restart ssh
     - if: inputs.services != 'job' && inputs.services != ''
@@ -82,20 +86,16 @@ runs:
       with:
         name: phpt-engines
         path: target/phpt
-    # The httpbin/guzzle/symfony cases require composer libraries the pin ships a
-    # composer.json for but no lock; install them from the committed lock into the
-    # upstream tree, where corpus/upstream/run.py copies the vendor dir into each
-    # sandbox. Reproducible (exact lock) and cached on the lock hash.
+    # The runner copies test dependencies installed from the upstream lock into each sandbox.
     - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
       with:
         path: ~/.cache/composer
-        key: composer-${{ runner.os }}-${{ hashFiles('corpus/upstream/lib-composer.lock') }}
+        key: composer-${{ runner.os }}-${{ hashFiles('target/upstream/src/tests/include/lib/composer.lock') }}
     # A resolve/platform failure drops any partial vendor, so run.py falls back to its
     # stub and the lib-free cases still run. It says so here, and gate.py's summary says
     # the library cases ran without their libraries (#5263).
     - shell: bash
       run: |
-        cp corpus/upstream/lib-composer.lock target/upstream/src/tests/include/lib/composer.lock
         if ! composer install --no-interaction --no-progress \
             --working-dir=target/upstream/src/tests/include/lib; then
           rm -rf target/upstream/src/tests/include/lib/vendor

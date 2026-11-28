@@ -110,7 +110,7 @@ php_stream *swr_zend_stream_factory(const char *proto, size_t protolen, const ch
     php_stream_context *context STREAMS_DC) {
     bool bailed = false;
     php_stream_transport_factory original = NULL;
-    php_stream *stream = factory_body(proto, protolen, name, persistent, context, &bailed, &original);
+    php_stream *stream = factory_body(proto, protolen, name, persistent, context, !(flags & STREAM_XPORT_SERVER), &bailed, &original);
     if (bailed) {
         zend_bailout();
     }
@@ -242,6 +242,14 @@ int swr_zend_try_stream_stat(
 }
 
 /* bailout: trap user code invoked by the stream close. */
+/* bailout: a seek through a PHP stream wrapper can exit nonlocally. */
+int swr_zend_try_stream_seek(php_stream *stream, int64_t offset) {
+    volatile int result = -2;
+    SWR_ZEND_TRY { result = php_stream_seek(stream, offset, SEEK_SET) == 0 ? 0 : -1; }
+    SWR_ZEND_CATCH {} SWR_ZEND_END_TRY();
+    return result;
+}
+
 int swr_zend_try_stream_close(php_stream *stream) {
     volatile int bailed = 0;
     SWR_ZEND_TRY { php_stream_close(stream); }

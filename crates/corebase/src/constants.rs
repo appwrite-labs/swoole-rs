@@ -57,6 +57,7 @@ pub enum FdType {
     SW_FD_DNS_RESOLVER = 10,
     SW_FD_CARES = 11,
     SW_FD_IOURING = 12,
+    SW_FD_TASK_RESULT = 13,
     SW_FD_USER = 16,
     SW_FD_STREAM_CLIENT = 17,
     SW_FD_DGRAM_CLIENT = 18,
@@ -386,7 +387,7 @@ pub const SW_HTTP_POWER_BY: &str = "<footer><i>Powered by Swoole</i></footer>";
 pub const HTTP2_PREFACE: &[u8] = b"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n";
 pub const SW_HTTP2_DATA_BUFFER_SIZE: u32 = 8192;
 pub const SW_HTTP2_DEFAULT_HEADER_TABLE_SIZE: u32 = 4096;
-pub const SW_HTTP2_DEFAULT_MAX_CONCURRENT_STREAMS: u32 = 4_294_967_295_u32;
+pub const SW_HTTP2_DEFAULT_MAX_CONCURRENT_STREAMS: i32 = 128;
 pub const SW_HTTP2_DEFAULT_ENABLE_PUSH: u32 = 0;
 pub const SW_HTTP2_DEFAULT_MAX_FRAME_SIZE: u32 = 16384_u32;
 pub const SW_HTTP2_DEFAULT_INIT_WINDOW_SIZE: u32 = 65535;

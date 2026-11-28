@@ -23,6 +23,7 @@ pub fn compress(input: &[u8], level: i32) -> Result<Vec<u8>, String> {
 
 /// A response's zstd decoder. `out` holds the bytes the last chunk produced.
 pub struct Decoder {
+    finished: bool,
     stream: Stream<'static>,
     out: BoundedBytes,
     limit: usize,
@@ -37,11 +38,18 @@ impl Decoder {
         let stream = Stream::new()
             .map_err(|error| format!("ZSTD_initDStream() failed, Error: [{error}]"))?;
         Ok(Self {
+            finished: false,
             stream,
             out: BoundedBytes::new(limit.saturating_add(1), 0),
             limit,
             remaining: limit,
         })
+    }
+
+    /// Whether the last zstd frame ended on this input boundary.
+    #[must_use]
+    pub fn finished(&self) -> bool {
+        self.finished
     }
 
     /// Decode one body chunk: the bytes it produced, flushed until the decoder
@@ -62,14 +70,14 @@ impl Decoder {
                 .map_err(|_| DecodeError::Limit(self.limit))?;
             let room = prefix.get_mut(filled..).unwrap_or_default();
             let mut sink = OutBuffer::around(room);
-            self.stream.run(&mut source, &mut sink).map_err(|error| {
+            self.finished = self.stream.run(&mut source, &mut sink).map_err(|error| {
                 DecodeError::Codec(format!("ZSTD_decompressStream() failed, Error: [{error}]"))
-            })?;
+            })? == 0;
             filled += sink.pos();
             if filled > self.remaining {
                 return Err(DecodeError::Limit(self.limit));
             }
-            if source.pos() == input.len() && filled < end {
+            if source.pos() == input.len() && (filled < end || self.finished) {
                 self.remaining -= filled;
                 return Ok(self.out.as_ref().get(..filled).unwrap_or_default());
             }

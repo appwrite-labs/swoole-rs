@@ -86,12 +86,11 @@ error position, reason, field and callback to match (`CASES` and `SEED` widen it
 | Upstream file | Rust test file | TESTs |
 | --- | --- | --- |
 | `http_parser.cpp` | `http_parser.rs` | `get_request`, `version`, `incomplete`, `method`, `websocket`, `http2`, `header_field_and_value`, `query_string`, `chunk`, `response`, `request_error_case` (54 protocols and reasons), `response_error_case` (22), `request_success_case` (72), `response_success_case` (45) |
-| `multipart_parser.cpp` | `multipart_parser.rs` | `error_message`, `header_field`, `header_error`, `data` (random part data from upstream's `base64_encode`, as `append_random_bytes(n, true)`) |
+| `multipart_parser.cpp` | `multipart_parser.rs` | `error_message`, `callback_error`, `header_field`, `fragmented_header`, `incomplete_header_value`, `malformed_header`, `data` (random part data from upstream's `base64_encode`, as `append_random_bytes(n, true)`) |
 
 Multipart execution returns `Result<usize, ParseError>`: pauses retain their exact
-consumed offsets, syntax failures carry `MultipartError`, and callback failures
-leave stored parser diagnostics unchanged. The original multipart TESTs convert
-results to integer counts only at their assertion boundary.
+consumed offsets, syntax failures carry `MultipartError`, and failed callbacks
+record the v6.3 diagnostic `callback error`.
 
 `swoole_llhttp_parser_execute` is reproduced in `http_parser.rs` (`Http::execute`).
 The Rust llhttp entry points return `Result<(), i32>`: their error payload keeps
@@ -128,8 +127,17 @@ helpers' in `helpers.rs` and the others beside the Rust each one calls:
 | --- | --- |
 | `EncodeDecodeBasic`, `EncodeDecodeWithSpecialChars` | `helpers.rs`: `encode_decode_basic`, `encode_decode_with_special_chars` |
 | `get_method`, `get_method_str`, `get_status_message`, `parse_multipart_boundary` | `helpers.rs`: `get_method_cases`, `get_method_str`, `get_status_message_cases`, `parse_multipart_boundary_cases` |
-| `has_expect_header`, `get_protocol`, `all_method` | `crates/http/src/request.rs`: same names |
+| `static_handler.cpp`: `queued_ranges_keep_the_opened_file_after_rename` | `crates/http/src/static_context/filesystem.rs`: same name |
+| `static_handler.cpp`: all six `rewrite_*` cases | `crates/http/src/static_context/rewrite_tests.rs`: same names |
+| `static_handler.cpp`: `set_filename_rejects_path_too_long`, `set_filename_accepts_path_with_room_for_null` | `crates/http/src/static_context/filesystem.rs`: same names |
+| `static_handler.cpp`: `preconditions_and_if_range_share_validators` | `crates/server/src/static_handler/tests.rs`: same name |
+| `static_handler.cpp`: `http_dates_are_utc_and_strict` | `crates/http/src/conditional.rs`: same name, with timezone comparisons in the server conditional gate |
+| `static_handler.cpp`: `range_errors_discard_complete_and_partial_plans`, `range_boundaries_and_cost_limits` | `crates/http/src/static_context/range.rs`: same names |
+| `has_expect_header`, `get_protocol`, `all_method`, `header_value_whitespace` | `crates/http/src/request.rs`: same names |
 | `websocket_encode`, `websocket_compressed_control_frame` | `crates/ports/src/frame_api.rs`: same names (`print_frame` to a temp file instead of `/tmp/swoole.log`) |
+| `http_server.cpp`: `duplicate_content_type`, `invalid_multipart_boundary` | `crates/http/src/request.rs`: same names |
+| `http_server.cpp`: `upload_flush_failure` | `crates/http/src/multipart.rs`: same name (requires Linux /dev/full; closing consumes the writer) |
+| `http_server.cpp`: `collect_upload_paths_without_metadata` | `multipart_parser.rs`: same name |
 | `http_upload_provenance.cpp`: `reject_client_upload_marker`, `header_name_split_across_reads_is_assembled`, `overwritten_read_buffer_cannot_forge_upload_marker` | `crates/http/src/request.rs`: same names, over the multipart parser (#1938) |
 
 The TESTs that start a server run in `server/` (the merge tier's `http-server-rust`
@@ -425,12 +433,14 @@ Upstream PHPTs for this module run in the merge tier's PHPT gate (the `phpt-*` j
   for more than 2 MiB from a randomly smaller file).
 - Mixed Rust/native ASan linking fails on macOS.
 
-The v6.2.6 `core-tests/src/protocol/http.cpp` tests in the `http_url` suite
-map to Rust tests of the same names. `url_length.rs` runs
-`impossible_lengths_fail_before_reading_input` on the length check before any
-slice access. `helpers.rs` runs `terminator_stays_within_the_requested_allocation`,
-`unreserved_bytes_and_explicit_length_keep_their_behavior`,
-`all_byte_values_keep_their_encoding_and_round_trip`, and
-`allocation_failure_preserves_errno_and_releases_storage`. The last exercises
-the upstream success branch using caller-owned stack storage for the entire
-encoding. The Rust API has no intermediate allocation to free.
+The v6.3.0 `http_proxy.parse_response` case maps to `proxy::tests::parse_response` in
+`crates/http/src/proxy.rs`. It checks the three parser outcomes and the exact length
+of the header when tunnel data arrives in the same read.
+
+The v6.3.0 `core-tests/src/protocol/http.cpp` suite `http_url` maps to
+same-named Rust tests in `helpers.rs` for the seven byte and boundary cases,
+and in `url_length.rs` for `impossible_lengths_fail_before_reading_input`.
+The native-only `allocation_failure_returns_null` has no Rust allocation site:
+the caller supplies the output slice. The separate caller-owned storage and
+short-buffer tests exercise that interface. The randomized codec comparison
+runs both directions against the compiled v6.3.0 upstream bodies.

@@ -53,6 +53,7 @@ type Sessions = IdMap<i64, Session>;
 /// and put back with nothing in between that yields or runs PHP code.
 pub(crate) struct SessionState {
     fd: i64,
+    writer: Option<super::writer::Writer>,
     streams: Cell<Streams>,
     /// Decodes through a shared reference, so it is never taken out or
     /// borrowed: `request_header`, which gets each field `inflater` emits,
@@ -69,23 +70,19 @@ pub(crate) struct SessionState {
     local: [u32; 6],
     /// `remote_settings`, as the peer's SETTINGS frames set them.
     pub(crate) remote: [Cell<u32>; 6],
-    pub(crate) remote_window_size: Cell<u32>,
+    pub(crate) remote_window_size: Cell<i64>,
     pub(crate) local_window_size: Cell<u32>,
     pub(crate) max_body_size: u32,
     pub(crate) last_stream_id: Cell<u32>,
     /// The stream whose header block awaits CONTINUATION frames (0: none),
     /// and whether that block's HEADERS frame ended the stream.
     pub(crate) header_stream_id: Cell<u32>,
-    // A bounded grace period for DATA already in flight when a stream was reset.
-    pub(crate) recently_reset: Cell<[u32; 16]>,
-    pub(crate) remaining_headers: Cell<Option<u32>>,
+    pub(crate) remaining_headers: Cell<Result<u32, u32>>,
     pub(crate) header_end_stream: Cell<bool>,
     pub(crate) shutting_down: Cell<bool>,
+    pub(crate) terminating: Cell<bool>,
     /// The connection's context: frames that belong to no stream go out on it.
     default_ctx: Hold,
-    /// An async server's settings context, made for this session alone (a
-    /// coroutine server's is its connection's).
-    own: bool,
     handle: Handler,
 }
 
@@ -94,18 +91,20 @@ pub(crate) struct StreamState {
     /// The stream's hold on its context, let go with the stream.
     hold: StreamCtx,
     pub(crate) id: u32,
-    pub(crate) remote_window_size: Cell<u32>,
+    pub(crate) remote_window_size: Cell<i64>,
     pub(crate) local_window_size: Cell<u32>,
     /// The request's header block is complete; later blocks are trailers.
     pub(crate) headers_received: Cell<bool>,
     /// The request is complete: no later frame adds to it.
     pub(crate) request_received: Cell<bool>,
-    /// A Content-Length of the request's header block was malformed or too large.
-    pub(crate) bad_length: Cell<bool>,
+    /// Cookie fields in wire order until the initial header block is complete.
+    pub(crate) cookie_header: Cell<Option<Vec<u8>>>,
     /// The block named a Content-Type or Accept-Encoding, which are read
     /// back from `$header` once it is complete.
     pub(crate) negotiates: Cell<bool>,
     /// The coroutine waiting for the peer to open the window.
+    pub(crate) request_cid: Cell<i64>,
+    pub(crate) header_sender: Cell<Option<swoole_rs_phpcoroutines::Coroutine>>,
     waiting: swoole_rs_phpcoroutines::Waiter,
 }
 
@@ -135,30 +134,63 @@ fn defaults() -> [u32; 6] {
 const INIT_WINDOW_SIZE: usize = 3;
 
 impl SessionState {
-    fn new(fd: i64, default_ctx: Hold, own: bool, max_body_size: u32, handle: Handler) -> Self {
+    fn new(fd: i64, default_ctx: Hold, max_body_size: u32, handle: Handler) -> Self {
         // The peer need not send every setting: start from the defaults.
         let local = defaults();
         Self {
             fd,
+            writer: (default_ctx.ctx().get(super::Field::CoSocket) != 0)
+                .then(super::writer::Writer::new),
             streams: Cell::default(),
             inflater: Decoder::new(MAX_DECODED_STRING),
             field: Cell::default(),
             deflater: Cell::default(),
             local,
             remote: local.map(Cell::new),
-            remote_window_size: Cell::new(local[INIT_WINDOW_SIZE]),
+            remote_window_size: Cell::new(i64::from(swoole_rs_http2::INITIAL_CONNECTION_WINDOW)),
             local_window_size: Cell::new(swoole_rs_http2::INITIAL_CONNECTION_WINDOW),
             max_body_size,
             last_stream_id: Cell::new(0),
             header_stream_id: Cell::new(0),
-            recently_reset: Cell::new([0; 16]),
-            remaining_headers: Cell::new(None),
+            remaining_headers: Cell::new(Ok(0)),
             header_end_stream: Cell::new(false),
             shutting_down: Cell::new(false),
+            terminating: Cell::new(false),
             default_ctx,
-            own,
             handle,
         }
+    }
+
+    pub(super) fn writing(&self, ctx: Ctx, action: impl FnOnce() -> bool) -> bool {
+        if let Some(writer) = &self.writer {
+            writer.run(ctx, action)
+        } else {
+            action()
+        }
+    }
+
+    pub(super) fn send(&self, ctx: Ctx, parts: &[&[u8]]) -> bool {
+        self.writer.as_ref().map_or_else(
+            || parts.iter().all(|bytes| ctx.send(bytes)),
+            |writer| writer.run(ctx, || writer.send(ctx, parts)),
+        )
+    }
+
+    pub(crate) fn needs_flush(&self, socket: swoole_rs_hooks::co_socket::Co) -> bool {
+        self.writer.as_ref().is_some_and(|w| w.needs_flush(socket))
+    }
+
+    pub(super) fn abort_writer(&self, ctx: Ctx, frame: &[u8]) {
+        if let Some(writer) = &self.writer {
+            writer.abort_with_goaway(ctx, frame);
+        }
+    }
+
+    pub(super) fn shutdown(&self, ctx: Ctx) {
+        if let Some(writer) = &self.writer {
+            writer.finish_reader(ctx);
+        }
+        ctx.close();
     }
 
     /// The session of connection `fd`.
@@ -182,11 +214,6 @@ impl SessionState {
         Self::find(ctx.fd())
     }
 
-    /// A coroutine server's session.
-    pub(crate) fn is_coro(&self) -> bool {
-        !self.own
-    }
-
     pub(crate) fn local(&self, field: usize) -> u32 {
         self.local.get(field).copied().unwrap_or(0)
     }
@@ -200,12 +227,14 @@ impl SessionState {
         let stream = Rc::new(StreamState {
             hold,
             id,
-            remote_window_size: Cell::new(self.remote[INIT_WINDOW_SIZE].get()),
+            remote_window_size: Cell::new(i64::from(self.remote[INIT_WINDOW_SIZE].get())),
             local_window_size: Cell::new(self.local[INIT_WINDOW_SIZE]),
             headers_received: Cell::new(false),
             request_received: Cell::new(false),
-            bad_length: Cell::new(false),
+            cookie_header: Cell::default(),
             negotiates: Cell::new(false),
+            request_cid: Cell::default(),
+            header_sender: Cell::default(),
             waiting: swoole_rs_phpcoroutines::Waiter::default(),
         });
         let replaced = self
@@ -218,12 +247,22 @@ impl SessionState {
     /// `remove_stream`: the stream is released once nothing holds it, and a
     /// response waiting on its window resumes to find it gone.
     pub(crate) fn remove(&self, id: u32) -> bool {
-        let removed = self.streams.with_taken(|streams| streams.remove(&id));
+        let removed = self.take_stream(id);
         removed.is_none_or(|stream| stream.wake())
     }
 
-    pub(crate) fn idle(&self) -> bool {
-        self.streams.with_taken(|streams| streams.is_empty())
+    pub(crate) fn take_stream(&self, id: u32) -> Option<Stream> {
+        self.streams.with_taken(|streams| streams.remove(&id))
+    }
+
+    /// Keep streams alive and release the registry before waking any coroutine.
+    pub(crate) fn open_streams(&self) -> Vec<Stream> {
+        self.streams
+            .with_taken(|streams| streams.values().cloned().collect())
+    }
+
+    pub(crate) fn stream_count(&self) -> usize {
+        self.streams.with_taken(|streams| streams.len())
     }
 
     /// `handle(session, stream)`: onRequest; a bailout waits for `finish`.
@@ -254,42 +293,30 @@ impl StreamState {
     }
 }
 
-/// A coroutine server's session for connection `fd`
-/// (`swoole_http2_server_session_new`), unless it has one. `handle` gets each
-/// finished request; the session holds `default_ctx`.
-pub(crate) fn session_new(fd: i64, default_ctx: Hold, max_body_size: u32, handle: Handler) {
-    insert(fd, default_ctx, false, max_body_size, handle);
-}
-
-/// An async server's session for connection `fd`, unless it has one: the
-/// settings context goes with the session.
-pub(crate) fn session_own(fd: i64, own: Hold, max_body_size: u32, handle: Handler) {
-    insert(fd, own, true, max_body_size, handle);
-}
-
-fn insert(fd: i64, default_ctx: Hold, own: bool, max_body_size: u32, handle: Handler) {
-    if with_sessions(|sessions| sessions.contains_key(&fd)) {
-        // The unused context is released here, outside the sessions.
-        drop(default_ctx);
-        return;
+/// Create a connection's session once, retaining its context and request handler.
+pub(crate) fn session_new(
+    fd: i64,
+    default_ctx: Hold,
+    max_body_size: u32,
+    handle: Handler,
+) -> Session {
+    if let Some(session) = SessionState::find(fd) {
+        return session;
     }
-    let session = Rc::new(SessionState::new(
-        fd,
-        default_ctx,
-        own,
-        max_body_size,
-        handle,
-    ));
-    let replaced = with_sessions(|sessions| sessions.insert(fd, session));
-    drop(replaced);
+    let session = Rc::new(SessionState::new(fd, default_ctx, max_body_size, handle));
+    with_sessions(|sessions| sessions.insert(fd, session.clone()));
+    session
 }
 
 /// `swoole_http2_server_session_free`: forget connection `fd`'s session,
 /// removing its streams; each is released once nothing holds it.
 pub(crate) fn session_free(fd: i64) {
-    let Some(session) = SessionState::find(fd) else {
+    let Some(session) = with_sessions(|sessions| sessions.remove(&fd)) else {
         return;
     };
+    if let Some(writer) = &session.writer {
+        writer.close();
+    }
     loop {
         let next = session
             .streams
@@ -299,8 +326,22 @@ pub(crate) fn session_free(fd: i64) {
             return;
         }
     }
-    let removed = with_sessions(|sessions| sessions.remove(&fd));
-    drop(removed);
+}
+
+pub(crate) fn flush_pending(socket: swoole_rs_hooks::co_socket::Co) {
+    if let Some(s) = SessionState::find(i64::from(socket.sock_fd())) {
+        let mut ctx = s.default_ctx();
+        if crate::context::socket(ctx.state()) == Some(socket) {
+            s.writing(ctx, || true);
+        }
+    }
+}
+
+/// Release sessions left by a worker exit while their PHP objects are still live.
+pub(crate) fn release_sessions() {
+    while let Some(fd) = with_sessions(|sessions| sessions.keys().next().copied()) {
+        session_free(fd);
+    }
 }
 
 #[cfg(test)]
@@ -311,7 +352,7 @@ mod tests {
     fn a_session_starts_from_the_default_settings() {
         // header_table_size, enable_push, max_concurrent_streams,
         // init_window_size, max_frame_size, max_header_list_size.
-        assert_eq!(defaults(), [4096, 0, u32::MAX, 65535, 16384, u32::MAX]);
+        assert_eq!(defaults(), [4096, 0, 128, 65535, 16384, u32::MAX]);
         assert_eq!(defaults()[INIT_WINDOW_SIZE], 65535);
     }
 }

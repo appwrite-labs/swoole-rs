@@ -9,7 +9,12 @@ $run = static function () use ($mode, $port, $username, $password): void {
         $settings['socks5_password'] = $password;
     }
     $client->set($settings);
-    $connected = @$client->connect('destination.test', 443, 2);
+    try {
+        $connected = @$client->connect('destination.test', 443, 2);
+    } catch (Swoole\Exception $error) {
+        echo json_encode(['invalid_params' => $error->getCode() === SWOOLE_ERROR_INVALID_PARAMS, 'message' => $error->getMessage()], JSON_THROW_ON_ERROR), "\n";
+        return;
+    }
     $received = null;
     if ($connected) {
         if ($client->send('PING') !== 4) throw new RuntimeException('Payload send failed');

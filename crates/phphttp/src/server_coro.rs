@@ -28,8 +28,8 @@ use swoole_rs_http2::FRAME_HEADER_SIZE as HTTP2_FRAME_HEADER_SIZE;
 use swoole_rs_httpbindings::Setting;
 use swoole_rs_phpclients::{NewSocket, get_socket, is_socket_closed, socket_settings};
 use swoole_rs_phpstubs::http_server_coro;
-use swoole_rs_phpswoole::MinitArgs;
 use swoole_rs_phpswoole::SocketSettings;
+use swoole_rs_phpswoole::{MinitArgs, invalid_setting, nonnegative_setting, setting_ok};
 use swoole_rs_zend::{
     Array, ArrayMut, Call, Custom, CustomClass, Key as ArrayKey, Minit, Owned, OwnedArray, Props,
     Value, ZString, Zvals, bailout, handlers,
@@ -44,12 +44,34 @@ static SERVER: CustomClass<Data> = CustomClass::new();
 struct Data(OnceCell<HttpServer>);
 
 impl Custom for Data {
+    // SAFETY: trace visits the client array and each exclusively held callable once.
+    const TRACE: Option<swoole_rs_zend::GcTrace<Self>> =
+        Some(unsafe { swoole_rs_zend::GcTrace::new(Self::trace) });
+
     fn class() -> &'static CustomClass<Self> {
         &SERVER
     }
 
     fn new() -> Self {
         Self(OnceCell::new())
+    }
+}
+
+impl Data {
+    fn trace(&self, roots: &mut swoole_rs_zend::GcRoots) {
+        if let Some(server) = self.0.get() {
+            server.clients.with_taken(|clients| roots.owned(clients));
+            server.default_handler.with_taken(|handler| {
+                if let Some(handler) = handler {
+                    Callable::trace(handler, roots);
+                }
+            });
+            server.handlers.with_taken(|handlers| {
+                for (_, handler) in handlers {
+                    Callable::trace(handler, roots);
+                }
+            });
+        }
     }
 }
 
@@ -139,48 +161,34 @@ impl HttpServer {
 
     /// `set_handler`: `handle` replaces the pattern's handler, if any.
     fn set_handler(&self, pattern: &[u8], handle: Rc<Callable>) -> Result<(), bailout::Bailout> {
-        let old_default =
-            (pattern == b"/").then(|| self.default_handler.replace(Some(handle.clone())));
-        let old = self.handlers.with_taken(|handlers| {
-            if let Some(entry) = handlers.iter_mut().find(|(known, _)| known == pattern) {
-                Some(std::mem::replace(&mut entry.1, handle))
-            } else {
-                handlers.push((pattern.to_vec(), handle));
-                None
-            }
-        });
-        // The handler this one replaces, released once the handlers are back.
-        drop((old_default, old));
+        if pattern == b"/" {
+            drop(self.default_handler.replace(Some(handle)));
+        } else {
+            let old = self.handlers.with_taken(|handlers| {
+                if let Some(entry) = handlers.iter_mut().find(|(known, _)| known == pattern) {
+                    Some(std::mem::replace(&mut entry.1, handle))
+                } else {
+                    handlers.push((pattern.to_vec(), handle));
+                    None
+                }
+            });
+            // A replaced handler may run PHP as it drops. Restore the list first.
+            drop(old);
+        }
         bailout::outcome(())
     }
 
     /// `get_handler`: the callable for the request's path, if any.
     fn handler(&self, mut context: Ctx) -> Option<Rc<Callable>> {
         let path = crate::parse::request_path(&context.state().request);
-        let default = self.default_handler.with_taken(|handler| handler.clone());
-        let is_default =
-            |handle: &Rc<Callable>| default.as_ref().is_some_and(|d| Rc::ptr_eq(d, handle));
-        let found = self.handlers.with_taken(|handlers| {
-            handlers
-                .iter()
-                .filter(|(_, handle)| !is_default(handle))
-                .find(|(pattern, _)| swoole_rs_httpbindings::handler_matches(path, pattern))
-                .map(|(_, handle)| handle.clone())
-        });
-        found.or(default)
-    }
-
-    /// A flag's or a number's setting.
-    fn apply(&self, kind: Setting, value: i64) {
-        match kind {
-            Setting::Cookie => self.parse_cookie.set(value != 0),
-            Setting::Post => self.parse_post.set(value != 0),
-            Setting::Files => self.parse_files.set(value != 0),
-            Setting::Compression => self.compression.set(value != 0),
-            Setting::Level => self.compression_level.set(value.c_cast::<i8>()),
-            Setting::Minimum => self.compression_min_length.set(value.c_cast::<u32>()),
-            Setting::Types | Setting::Websocket | Setting::Upload => {}
-        }
+        self.handlers
+            .with_taken(|handlers| {
+                handlers
+                    .iter()
+                    .find(|(pattern, _)| swoole_rs_httpbindings::handler_matches(path, pattern))
+                    .map(|(_, handle)| handle.clone())
+            })
+            .or_else(|| self.default_handler.with_taken(|handler| handler.clone()))
     }
 
     /// `create_context`: the settings, the socket and the parser.
@@ -220,26 +228,6 @@ impl Drop for HttpServer {
             bailout::defer(listener.co().free_length_callable());
             bailout::defer(listener.free());
         }
-    }
-}
-
-/// A text setting: `http_compression_types`
-/// (reset by `None`, then one type per call) or `upload_tmp_dir`.
-fn text_setting(server: &HttpServer, kind: Setting, text: Option<&[u8]>) {
-    if kind != Setting::Types {
-        server
-            .upload_tmp_dir
-            .set(context::directory(text.unwrap_or_default()));
-        return;
-    }
-    if let Some(kind) = text {
-        server.compression_types.with_taken(|types| {
-            if let Some(types) = types {
-                Rc::make_mut(types).insert(kind.into());
-            }
-        });
-    } else {
-        server.compression_types.set(Some(Rc::default()));
     }
 }
 
@@ -309,6 +297,7 @@ method_table! {
         c"__construct" => zim_swoole_http_server_coro___construct, &http_server_coro::arginfo_class_Swoole_Coroutine_Http_Server___construct, z::ZEND_ACC_PUBLIC;
         c"set" => zim_swoole_http_server_coro_set, &http_server_coro::arginfo_class_Swoole_Coroutine_Http_Server_set, z::ZEND_ACC_PUBLIC;
         c"handle" => zim_swoole_http_server_coro_handle, &http_server_coro::arginfo_class_Swoole_Coroutine_Http_Server_handle, z::ZEND_ACC_PUBLIC;
+        c"flushHttp2Queue" => zim_swoole_http_server_coro_flushHttp2Queue, &http_server_coro::arginfo_class_Swoole_Coroutine_Http_Server_flushHttp2Queue, z::ZEND_ACC_PRIVATE;
         c"onAccept" => zim_swoole_http_server_coro_onAccept, &http_server_coro::arginfo_class_Swoole_Coroutine_Http_Server_onAccept, z::ZEND_ACC_PRIVATE;
         c"start" => zim_swoole_http_server_coro_start, &http_server_coro::arginfo_class_Swoole_Coroutine_Http_Server_start, z::ZEND_ACC_PUBLIC;
         c"shutdown" => zim_swoole_http_server_coro_shutdown, &http_server_coro::arginfo_class_Swoole_Coroutine_Http_Server_shutdown, z::ZEND_ACC_PUBLIC;
@@ -485,12 +474,13 @@ fn run_start(call: &Call) -> Result<Option<bool>, bailout::Bailout> {
     let Some(settings) = props.edit_array(c"settings", |settings| settings.copy()) else {
         return Ok(None);
     };
-    if !socket_settings(socket, &settings, SocketSettings::Protocol)? {
+    if !socket_settings(socket, &settings, SocketSettings::All)? {
         props.long(c"errCode", EINVAL);
         let message = swoole_rs_phpruntime::strerror(libc::EINVAL);
         props.bytes(c"errMsg", message.to_bytes());
         server.running.set(false);
-        return Ok(Some(false));
+        invalid_setting(c"failed to apply HTTP server socket settings");
+        return Ok(None);
     }
     let Some(table) = settings.array() else {
         return Ok(None);
@@ -498,17 +488,34 @@ fn run_start(call: &Call) -> Result<Option<bool>, bailout::Bailout> {
     for (kind, keys) in swoole_rs_httpbindings::settings(crate::parse::enabled_codecs() != 0) {
         if kind == Setting::Websocket {
             server.apply_websocket(table);
-            continue;
+        } else if let Some(value) = keys.iter().find_map(|key| table.get(key)) {
+            setting(server, kind, value);
         }
-        let Some(value) = keys.iter().find_map(|key| table.get(key)) else {
-            continue;
-        };
-        match setting(server, kind, value)? {
-            Some(value) => server.apply(kind, value),
-            None => return Ok(None),
+        if bailout::pending() {
+            return Err(bailout::Bailout);
+        }
+        if !setting_ok() {
+            return Ok(None);
         }
     }
+    let Some(this) = call.this_value() else {
+        return Ok(None);
+    };
     server.running.set(true);
+    let registration = Owned::default();
+    if table.get(b"service_name").is_some() {
+        let function = Owned::string(ZString::new(
+            br"Swoole\NameResolver\ServiceRegistration::start",
+        ));
+        let result = Zvals::with([this, &settings], |args| {
+            swoole_rs_zend::host::user_call(&function, args, &registration)
+        });
+        if !matches!(result, Ok(0)) || !setting_ok() {
+            server.running.set(false);
+            result?;
+            return Ok(None);
+        }
+    }
     let errors = AcceptErrors {
         per_process: libc::EMFILE,
         system: libc::ENFILE,
@@ -524,78 +531,70 @@ fn run_start(call: &Call) -> Result<Option<bool>, bailout::Bailout> {
         bailed: false,
     };
     let accepted = accept_loop(&mut start, &errors);
+    registration.call_cleanup(b"stop")?;
     if start.bailed {
         return Err(bailout::Bailout);
     }
     Ok(Some(accepted))
 }
 
-/// One `start` setting from its value: a
-/// flag's or a number's value for [`HttpServer::apply`], or `None` (no
-/// return value); an `E_ERROR` bails out.
-fn setting(
-    server: &HttpServer,
-    kind: Setting,
-    value: &Value,
-) -> Result<Option<i64>, bailout::Bailout> {
-    let fatal = |message: String| {
-        host::set_last_error(host::PHP_FATAL_ERROR);
-        let message = CString::new(message).unwrap_or_default();
-        swoole_rs_zend::report(swoole_rs_zend::E_ERROR, &message)
-    };
-    let compression = crate::parse::enabled_codecs() != 0;
-    let result = match kind {
-        Setting::Cookie | Setting::Post | Setting::Files | Setting::Compression => {
-            Some(i64::from(value.truthy()))
+/// Apply one HTTP option before accepting connections.
+fn setting(server: &HttpServer, kind: Setting, value: &Value) {
+    match kind {
+        Setting::Cookie => server.parse_cookie.set(value.truthy()),
+        Setting::Post => server.parse_post.set(value.truthy()),
+        Setting::Files => server.parse_files.set(value.truthy()),
+        Setting::Compression => server.compression.set(value.truthy()),
+        Setting::Level => {
+            let level = value.long();
+            if setting_ok() {
+                let level = swoole_rs_httpbindings::swr_v1_httpbindings_server_level(level);
+                server.compression_level.set(level.c_cast::<i8>());
+            }
         }
-        Setting::Level if compression => Some(i64::from(
-            swoole_rs_httpbindings::swr_v1_httpbindings_server_level(value.long()),
-        )),
-        Setting::Minimum if compression => Some(value.long()),
-        Setting::Types if compression => {
-            text_setting(server, kind, None);
+        Setting::Minimum => {
+            if let Some(length) = nonnegative_setting(c"compression_min_length", value.long()) {
+                server.compression_min_length.set(length);
+            }
+        }
+        Setting::Types => {
+            server.compression_types.set(Some(Rc::default()));
             let Some(types) = value.array() else {
-                fatal("http_compression_types must be array".into())?;
-                return Ok(None);
+                invalid_setting(c"http_compression_types must be array");
+                return;
             };
-            for (_, kind) in types.entries() {
-                let kind = kind.string();
-                if bailout::pending() {
-                    break;
+            for (_, item) in types.entries() {
+                let item = item.string();
+                if !setting_ok() {
+                    return;
                 }
-                if !kind.bytes().is_empty() {
-                    text_setting(server, Setting::Types, Some(kind.bytes()));
+                if !item.bytes().is_empty() {
+                    server.compression_types.with_taken(|types| {
+                        if let Some(types) = types {
+                            Rc::make_mut(types).insert(item.bytes().into());
+                        }
+                    });
                 }
             }
-            Some(0)
         }
         Setting::Upload => {
             let dir = value.string();
-            if bailout::pending() {
-                return Err(bailout::Bailout);
+            if !setting_ok() {
+                return;
             }
             let text = dir.bytes();
-            let created = swoole_rs_phpserver::php_swoole_create_dir(text);
-            if created {
-                text_setting(server, kind, Some(text));
+            if swoole_rs_phpserver::php_swoole_create_dir(text) {
+                server.upload_tmp_dir.set(context::directory(text));
+            } else {
+                let message = swoole_rs_zend::message!(
+                    "Unable to create upload_tmp_dir[{}]",
+                    String::from_utf8_lossy(nul_terminated(text))
+                );
+                invalid_setting(message.as_cstr());
             }
-            let message = format!(
-                "Unable to create upload_tmp_dir[{}]",
-                String::from_utf8_lossy(nul_terminated(text))
-            );
-            drop(dir);
-            if !created {
-                fatal(message)?;
-                return Ok(None);
-            }
-            Some(0)
         }
-        _ => None,
-    };
-    if bailout::pending() {
-        return Err(bailout::Bailout);
+        Setting::Websocket => {}
     }
-    Ok(result)
 }
 
 /// The `start` frame the accept loop drives.
@@ -701,15 +700,10 @@ fn handle(call: &Call) {
 }
 
 fn set(call: &Call) {
-    let Ok(settings) = http_server_coro::parse_class_swoole_coroutine_http_server_set(call) else {
-        call.set_bool(false);
-        return;
+    let Ok(settings) = call.arity(1, 1).and_then(|()| call.array(1)) else {
+        return call.set_bool(false);
     };
-    if settings.count() == 0 {
-        call.set_bool(false);
-        return;
-    }
-    if let (Some(props), Ok(settings)) = (call.props(Some(&SERVER)), call.array(1)) {
+    if let Some(props) = call.props(Some(&SERVER)) {
         props.merge(c"settings", settings);
     }
     call.set_bool(true);
@@ -764,6 +758,7 @@ fn objects<R>(mut context: Ctx, call: impl FnOnce(Zvals<'_>) -> R) -> R {
 struct Connection<'a> {
     /// The server object, whose `onAccept` call holds it.
     this: &'a Value,
+    frame: swoole_rs_zend::CallFrame<'a>,
     server: &'a HttpServer,
     socket: Co,
     /// The connection object, held for the loop.
@@ -780,6 +775,12 @@ impl Connection<'_> {
 enum Step {
     Recv,
     Parse,
+}
+
+fn flush_http2_queue(call: &Call) {
+    if let Some(socket) = call.value(1).and_then(get_socket) {
+        crate::http2::flush_pending(socket.handle());
+    }
 }
 
 fn on_accept(call: &Call) {
@@ -827,6 +828,7 @@ fn on_accept(call: &Call) {
     };
     let mut conn = Connection {
         this,
+        frame: call.call_frame(),
         server,
         socket,
         zconn,
@@ -971,6 +973,11 @@ fn serve(conn: &mut Connection, peer: &Peer) -> Result<(), bailout::Bailout> {
                 }
                 // llhttp pauses at the end of this request, before pipelined bytes.
                 total = usize::try_from(buffer.offset()).unwrap_or(0);
+            } else if error != HPE_PAUSED_H2_UPGRADE
+                && (!context.state().completed || usize::try_from(next).ok() != Some(total))
+            {
+                context.state().response.status = BAD_REQUEST;
+                break;
             }
         }
         add_peer(context, peer);
@@ -1021,12 +1028,16 @@ fn data(buffer: &Buffer, from: usize, to: usize) -> &[u8] {
 /// until the peer goes or a frame fails (or a handler bailed out, which
 /// `onAccept` re-raises).
 fn http2(conn: &mut Connection, mut context: Ctx) -> Result<(), bailout::Bailout> {
+    let name = Owned::string(ZString::new(b"flushHttp2Queue"));
+    let Some(flush) = FrameCallable::resolve(name, conn.frame)? else {
+        return Ok(());
+    };
     http2_begin(conn.socket);
     let fd = context.state().fd;
     let max_body_size = conn.package_max_length().c_cast::<u32>();
     // The session holds the context, and its handler the server object.
     let this = conn.this.copy();
-    crate::http2::session_new(
+    let session = crate::http2::session_new(
         fd,
         context.hold(),
         max_body_size,
@@ -1044,7 +1055,18 @@ fn http2(conn: &mut Connection, mut context: Ctx) -> Result<(), bailout::Bailout
         }
         // Owned, not lent: handling the frame may send, or call PHP that bails out.
         let frame = conn.socket.own_read_buffer();
-        if !crate::http2::session_receive(fd, frame.view()) {
+        let parsed = crate::http2::session_receive(&session, frame.view());
+        if !bailout::pending() && session.needs_flush(conn.socket) {
+            match flush.create_coroutine(Zvals::one(conn.zconn), swoole_rs_phpcoroutines::CREATOR) {
+                Ok(cid) if cid < 0 => break,
+                Err(error) => {
+                    error.defer();
+                    break;
+                }
+                Ok(_) => {}
+            }
+        }
+        if !parsed {
             break;
         }
         if bailout::pending() {
@@ -1071,6 +1093,7 @@ handlers! {
     zim_swoole_http_server_coro_set => set;
     zim_swoole_http_server_coro_handle => handle;
     zim_swoole_http_server_coro_onAccept => on_accept;
+    zim_swoole_http_server_coro_flushHttp2Queue => flush_http2_queue;
     zim_swoole_http_server_coro_shutdown => shutdown;
     zim_swoole_http_server_coro_start => start;
 }
@@ -1107,7 +1130,7 @@ fn http2_request(
                     stream_id,
                     swoole_rs_http2::error_code::INTERNAL_ERROR,
                 );
-                host::notice("Swoole\\Http\\Server->onRequest[v2] handler error");
+                host::notice("Swoole\\Coroutine\\Http\\Server->onRequest[v2] handler error");
             }
             Ok(true) => {}
         }

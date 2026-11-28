@@ -1,7 +1,6 @@
 //! The JSON the admin server's commands read and write, as upstream's `nlohmann::json`
 //! does: objects dump their keys in byte order, compactly, with nlohmann's escapes
-//! and number formats. A request that is not JSON, or whose parameter is not a string,
-//! made upstream throw out of the handler and abort; it aborts here too.
+//! and number formats.
 use std::collections::BTreeMap;
 use std::fmt::Write;
 
@@ -140,17 +139,12 @@ fn float(out: &mut String, value: f64) {
     }
 }
 
-/// The value of top-level key `key` in request `msg`: `None` when `msg` is not an
-/// object or has no such key. Aborts, as upstream's uncaught exceptions did, when
-/// `msg` is not JSON or the value is not a string.
+/// The string at a top-level key in a valid JSON request.
 pub(crate) fn param(msg: &[u8], key: &str) -> Option<String> {
     let mut parser = Parser { text: msg, at: 0 };
     match parser.document(key.as_bytes()) {
         Ok(Found::Text(value)) => Some(value),
-        Ok(Found::Other) | Err(()) => {
-            swoole_rs_corebase::fatal("admin JSON without the expected text field")
-        }
-        Ok(Found::Missing) => None,
+        Ok(Found::Other | Found::Missing) | Err(()) => None,
     }
 }
 

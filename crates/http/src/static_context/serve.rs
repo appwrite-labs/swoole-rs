@@ -25,7 +25,7 @@ pub(super) enum Event<'a> {
 }
 impl HttpStaticContext {
     /// Resume the path policy with the last effect's observation: the next action,
-    /// never [`Action::Directory`] or [`Action::Catch`], which complete here.
+    /// never [`Action::BadRequest`] or [`Action::Catch`], which complete here.
     pub(super) fn serve_step(&mut self, root: &[u8], event: &Event<'_>) -> Result<Action, i32> {
         match *event {
             Event::Begin {
@@ -63,16 +63,16 @@ impl HttpStaticContext {
             }
             _ => return Err(INVALID),
         }
-        let action = loop {
-            match self.path_step(root, self.serve.facts) {
-                // Directory bytes were published by the owned path step.
-                Ok(Action::Directory) => {}
-                Ok(Action::Catch) => {
-                    let found = static_catch(self.path.last, &mut self.facts.status);
-                    break Ok(Action::Done(found));
-                }
-                action => break action,
+        let action = match self.path_step(root, self.serve.facts) {
+            Ok(Action::BadRequest) => {
+                self.facts.status = crate::status::BAD_REQUEST;
+                Ok(Action::Done(true))
             }
+            Ok(Action::Catch) => Ok(Action::Done(static_catch(
+                self.path.last,
+                &mut self.facts.status,
+            ))),
+            action => action,
         };
         self.serve.pending = action.ok();
         action

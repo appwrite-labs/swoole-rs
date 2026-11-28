@@ -61,17 +61,19 @@ unsafe extern "C" {
     safe fn swr_zend_coroutine_restore(to: Suspended);
     /// `save_context(from)`, then a fresh VM stack for the new coroutine,
     /// bounded by its C stack (`stack`, `size`, only compared with the stack
-    /// pointer; null: none), saved into `vm` too, which it writes without
-    /// reading but for `in_silence`.
+    /// pointer; null: none), saved into `vm` too, which it initializes.
     safe fn swr_zend_coroutine_start(
         from: Running,
         vm: &mut swr_zend_coroutine_vm,
         stack: *mut c_void,
         size: usize,
+        fiber: Option<Fiber>,
     );
+    /// Install the running coroutine's fiber state after its entry notification.
+    safe fn swr_zend_coroutine_restore_fiber(vm: Running);
     /// `destroy_context`'s end: frees the finishing context's VM stack, which
     /// its saved state stops naming, then restores `origin`'s.
-    safe fn swr_zend_coroutine_finish(finished: Running, origin: Suspended);
+    safe fn swr_zend_coroutine_finish(finished: Running, origin: Suspended) -> c_int;
     /// Makes the frame the suspended context stopped in Zend's current one, as
     /// its backtraces and exception locations read it; the running one.
     safe fn swr_zend_coroutine_show(vm: Suspended) -> Shown;
@@ -89,6 +91,14 @@ unsafe extern "C" {
     safe fn zend_objects_new(class: ExceptionClass) -> Exception;
     /// Populate a fresh object of this class with its declared property defaults.
     safe fn object_properties_init(object: Lent<'_>, class: ExceptionClass);
+    /// Set the fresh internal exception's declared, untyped property before exposure to PHP.
+    safe fn zend_update_property(
+        scope: ExceptionClass,
+        object: Lent<'_>,
+        name: &[u8; 6],
+        len: usize,
+        value: &Value,
+    );
     /// The exception's file and line, from the frame Zend runs.
     safe fn swr_zend_coroutine_locate(exception: Lent<'_>);
     /// Hands `exception` to Zend as the running frame's pending exception.
@@ -155,9 +165,13 @@ struct Lent<'a>(
 
 impl Exception {
     /// A new object of `class`, with no constructor run.
-    pub(crate) fn new(class: ExceptionClass) -> Self {
+    pub(crate) fn new(class: ExceptionClass, reason: Option<&Value>) -> Self {
         let exception = zend_objects_new(class);
         object_properties_init(exception.lend(), class);
+        if let Some(reason) = reason {
+            let name = b"reason";
+            zend_update_property(class, exception.lend(), name, name.len(), reason);
+        }
         exception
     }
 
@@ -216,6 +230,7 @@ pub(crate) struct Context {
     /// The coroutine's own fiber, which `fiber` names while it lives.
     mock: Option<Mock>,
     fiber_init_notified: bool,
+    callback_running: bool,
     enable_scheduler: bool,
     /// The defer tasks, each kept by `defer()` until it runs or the context
     /// closes; none until the first.
@@ -250,6 +265,7 @@ impl Context {
             fiber: None,
             mock: None,
             fiber_init_notified: false,
+            callback_running: false,
             enable_scheduler: false,
             defer: None,
             join: None,
@@ -309,6 +325,7 @@ macro_rules! fields {
 }
 
 fields! {
+    callback_running, set_callback_running: bool;
     co, set_co: Option<host::Co>;
     fiber, set_fiber: Option<Fiber>;
     fiber_init_notified, set_fiber_init_notified: bool;
@@ -439,16 +456,6 @@ impl Ctx {
         }
     }
 
-    /// `@`'s state: on with the reporting level a switch restores, or off.
-    pub(crate) fn set_silence(self, reporting: Option<c_int>) {
-        self.with_vm(|vm| {
-            vm.in_silence = reporting.is_some();
-            if let Some(reporting) = reporting {
-                vm.ori_error_reporting = reporting;
-            }
-        });
-    }
-
     /// Whether a `Co::join()` waits for this context to close.
     pub(crate) fn joined(self) -> bool {
         self.with(|ctx| ctx.join.is_some())
@@ -491,8 +498,7 @@ per_thread! {
     static TIME_LIMITS: Cell<Vec<(c_long, Held)>> = Cell::new(Vec::new());
 }
 
-/// Coroutine `cid`'s time-limit timer becomes `timer` (none: it fired, or the
-/// coroutine closes); the armed one it replaces, for the caller to delete.
+/// Replace or clear the time limit for coroutine `cid`, returning its previous timer.
 pub(crate) fn swap_time_limit(ctx: Ctx, cid: c_long, timer: Option<Held>) -> Option<Held> {
     let limited = ctx.time_limited();
     ctx.set_time_limited(timer.is_some());
@@ -610,7 +616,7 @@ pub(crate) fn run(args: &Args) -> bool {
         // A destructor failed before normal close restored the origin. Leave
         // no executor pointer into this stack context when its body returns;
         // main relays the escape from the coroutine's native bailout hook.
-        swr_zend_coroutine_finish(ctx.running(), origin(ctx).switched_out());
+        finish(ctx);
     }
     // The context goes with this frame.
     swoole_rs_corebase::coroutine::clear_current_task();
@@ -636,7 +642,8 @@ fn open(args: &Args, context: &mut Context) -> Option<Ctx> {
     // The creator switched to this coroutine without a swap callback: its
     // state is still the executor's, saved here.
     let creator = origin(this).running();
-    this.with_vm(|vm| swr_zend_coroutine_start(creator, vm, stack, size));
+    let fiber = this.fiber();
+    this.with_vm(|vm| swr_zend_coroutine_start(creator, vm, stack, size, fiber));
     record_last_msec(this);
     let retval = this.return_value();
     this.with(|context| {
@@ -670,32 +677,38 @@ pub(crate) extern "C" fn enter(ctx: Ctx) -> Option<Call> {
     if ctx.fiber().is_some() {
         notify_entry(ctx);
     }
+    ctx.set_callback_running(true);
     NonNull::new(ctx.call()).map(Call)
 }
 
 /// Only enter the defer loop when this coroutine registered a task.
 pub(crate) extern "C" fn run_defers(ctx: Ctx) {
-    if ctx.with(|context| context.defer.is_some()) {
+    ctx.set_callback_running(false);
+    if ctx.with(|context| context.defer.is_some()) && !swoole_rs_zend::host::unwind_exit_pending() {
         host::run_defers(ctx);
     }
 }
 }
 
-/// Show the mock fiber's user function to observers during the switch.
+/// Show the entry function to fiber observers, or the caller's frame for an internal entry.
 #[inline(never)]
 fn notify_entry(ctx: Ctx) {
     let (handler, opcodes) =
         ctx.with(|context| (context.call.fcc.function_handler, context.opcodes));
-    if let Some(opcodes) = opcodes {
-        let mut frame: zend_execute_data = swoole_rs_zend::zeroed();
+    let mut frame: zend_execute_data = swoole_rs_zend::zeroed();
+    let caller = origin(ctx);
+    let running = if let Some(opcodes) = opcodes {
         frame.opline = opcodes;
         frame.func = handler;
         // SAFETY: the zend_execute_data and its coroutine function stay live
         // through the notification. unshow restores the previous frame.
-        let running = Shown(unsafe { swr_zend_coroutine_set_frame(&raw mut frame) });
-        fiber_switch_try_notify(origin(ctx), ctx);
-        unshow(running);
-    }
+        Shown(unsafe { swr_zend_coroutine_set_frame(&raw mut frame) })
+    } else {
+        swr_zend_coroutine_show(caller.switched_out())
+    };
+    fiber_switch_try_notify(caller, ctx);
+    unshow(running);
+    swr_zend_coroutine_restore_fiber(ctx.running());
 }
 
 /// The next defer task (last in, first out), and a copy of the coroutine's
@@ -724,10 +737,28 @@ fn release(value: Owned) -> Result<(), bailout::Bailout> {
     }
 }
 
+fn stop_on_exit() {
+    if swoole_rs_zend::host::unwind_exit_pending() {
+        swoole_rs_corebase::coroutine::stop_resumes();
+        swoole_rs_corebase::reactor::event_api::swoole_event_bail_out();
+    }
+}
+
+fn finish(ctx: Ctx) {
+    // Cleanup itself can raise an exit before the origin is restored.
+    stop_on_exit();
+    bailout::defer(bailout::trapped(swr_zend_coroutine_finish(
+        ctx.running(),
+        origin(ctx).switched_out(),
+    )));
+}
+
 /// `destroy_context`, on the running, finishing coroutine, then
 /// `PHPCoroutine::on_close`'s join hook. Native destructors contain their jumps;
 /// a failed close returns to the owner, which restores the origin's executor.
 fn close(ctx: Ctx) -> Result<(), bailout::Bailout> {
+    // Hooks and destructors can yield to an already-ready sibling.
+    stop_on_exit();
     host::coro_hook(true, ctx)?;
     // Output handlers run PHP. Trap their escape before returning through the
     // context owner, which must restore the origin before leaving this stack.
@@ -770,7 +801,7 @@ fn close(ctx: Ctx) -> Result<(), bailout::Bailout> {
     {
         swoole_rs_corebase::timer::del_id(timer);
     }
-    swr_zend_coroutine_finish(ctx.running(), origin(ctx).switched_out());
+    finish(ctx);
     if let Some(join) = ctx.replace_join(None) {
         join.closed(ctx);
     }
@@ -896,6 +927,6 @@ mod tests {
         assert_eq!(context.context.kind(), IS_UNDEF);
         assert_eq!(context.callable.kind(), IS_UNDEF);
         assert_eq!(context.return_value.kind(), IS_UNDEF);
-        assert!(!context.vm.in_silence && context.vm.output_ptr.is_null());
+        assert!(context.vm.output_ptr.is_null());
     }
 }

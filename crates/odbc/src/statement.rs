@@ -24,8 +24,6 @@ unsafe extern "C" {
     safe fn more_results(statement: Statement) -> SQLRETURN;
     #[link_name = "SQLNumResultCols"]
     safe fn result_cols(statement: Statement, count: &mut i16) -> SQLRETURN;
-    #[link_name = "SQLCloseCursor"]
-    safe fn close_cursor(statement: Statement) -> SQLRETURN;
     /// Ends a data-at-execution sequence, discarding the data already sent.
     #[link_name = "SQLCancel"]
     safe fn cancel(statement: Statement) -> SQLRETURN;
@@ -87,7 +85,10 @@ extern "C" fn swr_odbc_next_rowset(stmt: &Stmt) -> bool {
 
 #[unsafe(no_mangle)]
 extern "C" fn swr_odbc_close_cursor(stmt: &Stmt) -> bool {
-    matches!(close_cursor(swr_odbc_statement(stmt)), 0 | 1)
+    matches!(
+        crate::swoole_odbc_SQLCloseCursor(swr_odbc_statement(stmt)),
+        0 | 1
+    )
 }
 
 unsafe extern "C" {
@@ -233,7 +234,7 @@ fn supply_data(
     let mut page = Box::new([0; STREAM_PAGE]);
     loop {
         let mut token = crate::Data(std::ptr::null_mut());
-        let status = param_data(statement, &mut token);
+        let status = crate::offload(|| param_data(statement, &mut token));
         if status != NEED_DATA {
             return Some(status);
         }
@@ -251,7 +252,7 @@ fn supply_data(
         // the sequence completes.
         let mut sent = false;
         loop {
-            let chunk = match value.read_stream(&mut page) {
+            let chunk = match value.read_stream(&mut page[..]) {
                 Ok(Some([])) if sent => break,
                 Ok(Some(chunk)) => chunk,
                 Ok(None) => {
@@ -283,7 +284,7 @@ swoole_rs_zend::exports! {
 extern "C" fn swr_odbc_execute(dbh: &Dbh, stmt: &Stmt, executed: bool, inputs: Option<&swoole_rs_zend::Array>, file: Text<'static>, lines: &[i32; 3]) -> bool {
     let statement = swr_odbc_statement(stmt);
     if executed {
-        close_cursor(statement);
+        crate::swoole_odbc_SQLCloseCursor(statement);
     }
     let mut status = crate::swoole_odbc_SQLExecute(statement);
     let supplying = status == NEED_DATA;
@@ -416,7 +417,7 @@ unsafe extern "C" {
 swoole_rs_zend::exports! {
 #[unsafe(no_mangle)]
 extern "C" fn swr_odbc_prepare(dbh: &Dbh, stmt: &Stmt, sql: &swoole_rs_zend::ZStr, options: Option<&Value>, file: Text<'static>, lines: &[i32; 3]) -> bool {
-    use crate::{Handle, driver::{alloc_handle, free_handle, swr_odbc_connection}};
+    use crate::{Handle, driver::{alloc_handle, swr_odbc_connection}};
     let mut handle = Handle(std::ptr::null_mut());
     let rc = alloc_handle(3, Handle(swr_odbc_connection(dbh).0), &mut handle);
     if matches!(rc, -1 | -2) {
@@ -428,7 +429,7 @@ extern "C" fn swr_odbc_prepare(dbh: &Dbh, stmt: &Stmt, sql: &swoole_rs_zend::ZSt
     let cursor = swoole_rs_zend::pdo::attr_long(options, swoole_rs_zend::sys::pdo_attribute_type_PDO_ATTR_CURSOR, 0);
     if cursor != 0 && !matches!(set_stmt_attr(statement, -1, 1, 0), 0 | 1) {
         pdo_odbc_error(dbh, Some(stmt), statement, c"SQLSetStmtAttr: SQL_ATTR_CURSOR_SCROLLABLE".into(), file, lines[1]);
-        free_handle(3, handle);
+        crate::swoole_odbc_SQLFreeHandle(crate::SQL_HANDLE_STMT, handle);
         swr_odbc_publish_statement(stmt, Statement::NULL);
         return false;
     }
@@ -576,14 +577,14 @@ extern "C" fn swr_odbc_allocate_parameter(
     let mut scale = 0;
     let length = usize::try_from(max_length).ok().filter(|&n| n > 0);
     if !matches!(
-        describe_param(
+        crate::offload(|| describe_param(
             statement,
             index,
             &mut sql_type,
             &mut precision,
             &mut scale,
             &mut 0
-        ),
+        )),
         0 | 1
     ) {
         sql_type = match param_type {

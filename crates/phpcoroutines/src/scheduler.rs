@@ -167,6 +167,11 @@ fn parallel(call: &Call) {
         call.set_bool(false);
         return;
     };
+    if count <= 0 {
+        callable.discard();
+        call.argument_value_error(1, c"must be greater than 0");
+        return;
+    }
     queue(scheduler, callable, count);
 }
 
@@ -180,42 +185,49 @@ fn start(call: &Call) {
         call.set_bool(false);
         return;
     }
-    scheduler.started.set(true);
     if scheduler.list.with_taken(|list| list.is_empty()) {
         host::fatal_error(E_WARNING, c"no coroutine task");
         call.set_bool(false);
         return;
     }
-    // Each step pops before creating, so no frame here owns a task while a
-    // coroutine runs.
-    let next = || scheduler.list.with_taken(Tasks::pop_front);
-    while let Some(task) = next() {
-        for _ in 0..task.count {
-            let (fcc, argc, argv, name) = task.callable.parts();
-            if runtime::create(call.php(), Some(fcc), argc, argv, name).is_err() {
-                Bailout.defer();
-                return;
-            }
-        }
-        bailout::defer(task.callable.release());
-        if bailout::pending() {
-            return;
-        }
+    scheduler.started.set(true);
+    let result = start_tasks(scheduler, call);
+    if result.is_ok() && !bailout::pending() && swoole_rs_zend::host::exception().is_null() {
+        host::event_wait();
     }
-    host::event_wait();
     scheduler.started.set(false);
-    call.set_bool(true);
+    match result {
+        Ok(success) => call.set_bool(success),
+        Err(bailed) => bailed.defer(),
+    }
+}
+
+fn start_tasks(scheduler: &Scheduler, call: &Call) -> Result<bool, Bailout> {
+    while let Some(mut task) = scheduler.list.with_taken(Tasks::pop_front) {
+        while task.count > 0 {
+            let (fcc, argc, argv, name) = task.callable.parts();
+            let created = runtime::create(call.php(), Some(fcc), argc, argv, name);
+            if !matches!(created, Ok(cid) if cid >= 0) {
+                scheduler.list.with_taken(|list| list.push_front(task));
+                return created.map(|_| false);
+            }
+            task.count -= 1;
+        }
+        task.callable.release()?;
+        bailout::outcome(())?;
+    }
+    Ok(true)
 }
 
 /// `php_swoole_set_coroutine_option`. It stops at a deferred bailout, where
 /// upstream's ended the call, so a caller checks [`bailout::pending`] after it.
-pub fn set_coroutine_option(options: &swoole_rs_zend::Array) {
+pub fn set_coroutine_option(options: &swoole_rs_zend::Array) -> bool {
     if let Some(value) = options
         .get(b"max_coro_num")
         .or_else(|| options.get(b"max_coroutine"))
     {
         let Some(max) = value.applied_long() else {
-            return;
+            return false;
         };
         let max = if max <= 0 {
             runtime::DEFAULT_MAX_NUM
@@ -229,7 +241,7 @@ pub fn set_coroutine_option(options: &swoole_rs_zend::Array) {
     }
     if let Some(value) = options.get(b"hook_flags") {
         let Some(flags) = value.applied_long() else {
-            return;
+            return false;
         };
         set_hook_flags(flags.c_cast::<u32>());
     }
@@ -245,10 +257,14 @@ pub fn set_coroutine_option(options: &swoole_rs_zend::Array) {
     if let Some(value) = options.get(b"name_resolver") {
         if let Some(resolvers) = value.array() {
             for (_, resolver) in resolvers.entries() {
-                host::add_name_resolver(resolver);
+                if !host::add_name_resolver(resolver.referred()) {
+                    swoole_rs_phpswoole::invalid_setting(c"failed to register name_resolver");
+                    return false;
+                }
             }
         } else {
-            host::fatal_error(E_WARNING, c"name_resolver must be an array");
+            swoole_rs_phpswoole::invalid_setting(c"name_resolver must be an array");
+            return false;
         }
     }
     // zend_hash_merge(current, options, zval_add_ref, overwrite)
@@ -267,6 +283,7 @@ pub fn set_coroutine_option(options: &swoole_rs_zend::Array) {
             old
         });
     }
+    !bailout::pending() && swoole_rs_zend::host::exception().is_null()
 }
 
 /// Edit this thread's options, an empty array until the first edit. The edit
@@ -307,8 +324,7 @@ fn set(call: &Call) {
     if !swoole_rs_phpswoole::set_global(array) {
         return;
     }
-    set_coroutine_option(array);
-    if bailout::pending() {
+    if !set_coroutine_option(array) {
         return;
     }
     if let Some(value) = array.get(b"dns_cache_expire") {
@@ -328,15 +344,13 @@ fn set(call: &Call) {
     }
 }
 
-/// `php_swoole_coroutine_set_exit_condition`: keep `condition` if it is
-/// callable (warning otherwise) and install or clear the reactor's user exit
-/// condition to match.
+/// Validate the replacement before releasing the active reactor callback.
 fn set_exit_condition(condition: &Value) -> Result<(), Bailout> {
-    release_exit_condition()?;
-    let handle = kept::Callable::new(condition)?;
-    let installed = handle.is_some();
-    drop(EXIT_CONDITION.with(|c| c.replace(handle)));
-    host::set_exit_condition(installed);
+    if let Some(handle) = swoole_rs_phpswoole::setting_callable(condition) {
+        drop(EXIT_CONDITION.with(|slot| slot.replace(Some(handle))));
+        bailout::outcome(())?;
+        host::set_exit_condition(true);
+    }
     Ok(())
 }
 
@@ -373,16 +387,18 @@ fn can_exit() -> Result<bool, Bailout> {
     let Some(handle) = EXIT_CONDITION.with(|c| c.with_taken(|handle| handle.clone())) else {
         return Ok(true);
     };
-    let retval = std::mem::ManuallyDrop::new(swoole_rs_zend::Owned::null());
-    // The result slot is, as upstream's, not released.
+    // A PHP bailout skips the result destructor. On normal return it may run PHP.
+    let retval = ManuallyDrop::new(Owned::null());
     if !handle.call(swoole_rs_zend::Zvals::owned(&[]), Some(&retval), false)? {
         host::try_fatal_error(E_ERROR, c"Coroutine can_exit callback handler error")?;
     }
     swoole_rs_zend::host::uncaught_exception()?;
-    // The last reference once the condition replaced itself: a bailout its
-    // destructor deferred is raised by the reactor's callback.
+    let exit = retval.kind() != IS_FALSE;
+    drop(ManuallyDrop::into_inner(retval));
     drop(handle);
-    bailout::outcome(retval.kind() != IS_FALSE)
+    bailout::outcome(())?;
+    swoole_rs_zend::host::uncaught_exception()?;
+    Ok(exit)
 }
 
 /// RSHUTDOWN: drop the PHP name resolvers and the exit condition.

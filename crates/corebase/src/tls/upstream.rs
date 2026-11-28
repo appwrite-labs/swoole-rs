@@ -202,6 +202,21 @@ pub fn socket_ssl_session(socket: Socket<'_>) -> Option<Session> {
     })
 }
 
+/// A server verifying its peer requires the client to present a certificate.
+#[must_use]
+pub fn require_peer_certificate(socket: Socket<'_>, origin: &CStr) -> bool {
+    if ssl_get_peer_certificate(socket).is_some() {
+        return true;
+    }
+    log::error_log(
+        LOG_NOTICE,
+        ErrorCode::SW_ERROR_SSL_EMPTY_PEER_CERTIFICATE as c_int,
+        origin,
+        format_args!("peer certificate from fd#{} is required", socket.fd()),
+    );
+    false
+}
+
 /// `bool Socket::ssl_verify(bool allow_self_signed) const`: false without an SSL.
 #[must_use]
 pub fn socket_ssl_verify(socket: Socket<'_>, allow_self_signed: bool) -> bool {
@@ -666,10 +681,16 @@ pub fn ssl_get_peer_certificate(socket: Socket<'_>) -> Option<Cert> {
 /// `bool Socket::ssl_check_host(const char *tls_host_name) const`.
 #[must_use]
 pub fn socket_ssl_check_host(socket: Socket<'_>, name: &CStr) -> bool {
+    check_peer_name(socket, name, false)
+}
+
+/// Match the peer certificate against a DNS name or a strict IP identity.
+#[must_use]
+pub fn check_peer_name(socket: Socket<'_>, name: &CStr, strict: bool) -> bool {
     let Some(cert) = ssl_get_peer_certificate(socket) else {
         return false;
     };
-    if cert.get().matches_host(name) {
+    if cert.get().matches_host(name, strict) {
         return true;
     }
     log::warning(
@@ -765,7 +786,12 @@ fn send_chunk(socket: Socket<'_>, request: &mut SocketFileRequest) -> (Option<us
     let fd = request.descriptor();
     let fields = request.fields();
     let chunk = sendfile_chunk(fields.begin, fields.end);
-    (sendfile(socket, fd, &mut fields.begin, chunk), chunk)
+    let sent = if chunk == 0 {
+        Some(0)
+    } else {
+        sendfile(socket, fd, &mut fields.begin, chunk)
+    };
+    (sent, chunk)
 }
 
 /// `check_sendfile_parameters`'s origin.
@@ -777,8 +803,9 @@ fn file_request(
     filename: &CStr,
     offset: libc::off_t,
     length: usize,
+    delete_file: bool,
 ) -> Option<Box<SocketFileRequest>> {
-    let request = SocketFileRequest::open(filename, offset);
+    let request = SocketFileRequest::open(filename, offset, delete_file);
     assert!(request.is_some(), "out of memory for a sendfile request");
     let mut request = request?;
     let Err(error) = request.check(length) else {
@@ -818,7 +845,7 @@ pub fn sendfile_sync(
     offset: libc::off_t,
     length: usize,
 ) -> bool {
-    let Some(mut request) = file_request(filename, offset, length) else {
+    let Some(mut request) = file_request(filename, offset, length, false) else {
         return false;
     };
     let total = request.length();
@@ -888,9 +915,7 @@ pub fn socket_handle_send(record: Socket<'_>) -> bool {
     !output.result.failed
 }
 
-/// `--fix-halfclose` (M15, the `halfclose` feature): `ssl_shutdown` writes the
-/// `close_notify` alert, and `handle_sendfile` retries a sendfile interrupted before any
-/// progress instead of dropping the file.
+/// `--fix-halfclose` enables the TLS shutdown repair.
 const HALFCLOSE_REPAIRS: bool = cfg!(feature = "halfclose");
 
 /// `int Socket::handle_sendfile()`: sends a chunk of the queue's front file, aborting
@@ -911,18 +936,28 @@ pub fn socket_handle_sendfile(socket: Socket<'_>) -> bool {
         };
         request.cork(&hooks);
         let (rv, requested) = send_chunk(socket, request);
-        if rv.is_none() && errno() == libc::EINTR && HALFCLOSE_REPAIRS {
-            return (false, None);
-        }
+        let error = errno();
         let result = request.sent(&hooks, rv, requested);
         socket.edit(|record| result.publish(record));
         if result.warn {
             let at = request.fields().begin;
             let name = String::from_utf8_lossy(request.path());
-            log::sys_warning(
-                c"Socket::handle_sendfile",
-                format_args!("sendfile({name}, {at}, {}) failed", result.requested),
-            );
+            if rv == Some(0) {
+                log::error_log(
+                    LOG_WARNING,
+                    swoole_rs_error::ErrorCode::SW_ERROR_SYSTEM_CALL_FAIL as c_int,
+                    c"Socket::handle_sendfile",
+                    format_args!("sendfile({name}, {at}, {requested}) reached the end of the file"),
+                );
+                set_errno(libc::EIO);
+            } else {
+                set_errno(error);
+                log::sys_warning(
+                    c"Socket::handle_sendfile",
+                    format_args!("sendfile({name}, {at}, {requested}) failed"),
+                );
+                set_errno(error);
+            }
         }
         let detached = if result.pop {
             match queue.pop() {
@@ -949,10 +984,27 @@ pub fn socket_sendfile_async(
     filename: &CStr,
     offset: libc::off_t,
     length: usize,
+    delete_file: bool,
 ) -> bool {
-    let Some(request) = file_request(filename, offset, length) else {
+    let Some(request) = file_request(filename, offset, length, delete_file) else {
         return false;
     };
+    queue_file(socket, request)
+}
+
+/// Queue a range of the shared static file on the owning reactor.
+#[must_use]
+pub fn socket_sendfile_opened(
+    socket: Socket<'_>,
+    file: &std::sync::Arc<crate::ossupport::FileRecord>,
+    offset: libc::off_t,
+    length: usize,
+) -> bool {
+    SocketFileRequest::from_opened(file, offset, length)
+        .is_some_and(|request| queue_file(socket, request))
+}
+
+fn queue_file(socket: Socket<'_>, request: Box<SocketFileRequest>) -> bool {
     socket.edit(|record| record.open_output_queue(65536));
     // A refused request is dropped with its file.
     let status = socket.with_output_queue(|queue| {
@@ -1313,11 +1365,11 @@ mod tests {
         left.open_output_queue(65536);
         let (path, name) = temp_file("swoole-sendfile-async", b"abcdef");
         let handle = unsafe { Socket::from_ptr(&raw mut left) }.unwrap();
-        let request = file_request(&name, 1, 0).unwrap();
+        let request = file_request(&name, 1, 0, false).unwrap();
         let queued = handle.with_output_queue(|queue| queue.unwrap().push_file(request));
         assert_eq!(queued, Ok(()));
         assert!(
-            file_request(c"/nonexistent/x", 0, 0).is_none(),
+            file_request(c"/nonexistent/x", 0, 0, false).is_none(),
             "a file that won't open is refused"
         );
         assert!(socket_handle_sendfile(handle));

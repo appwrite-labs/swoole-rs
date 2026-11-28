@@ -28,20 +28,42 @@ pub(crate) fn import(config: &mut PortConfig, fd: c_int) -> bool {
         log::sys_warning(origin, format_args!("getsockname({fd}) failed"));
         return false;
     }
-    let Some(acceptconn) = get_option(fd, libc::SO_ACCEPTCONN) else {
-        let message = format_args!("getsockopt({fd}, SOL_SOCKET, SO_ACCEPTCONN) failed");
-        log::sys_warning(origin, message);
-        return false;
-    };
-    if acceptconn == 0 {
-        let message = format_args!("the socket[{fd}] is not a listening socket");
-        log::error_log(LOG_WARNING, libc::EINVAL, origin, message);
-        return false;
+    if so_type == libc::SOCK_STREAM {
+        let Some(acceptconn) = get_option(fd, libc::SO_ACCEPTCONN) else {
+            let message = format_args!("getsockopt({fd}, SOL_SOCKET, SO_ACCEPTCONN) failed");
+            log::sys_warning(origin, message);
+            return false;
+        };
+        if acceptconn == 0 {
+            let message = format_args!("the socket[{fd}] is not a listening socket");
+            log::error_log(LOG_WARNING, libc::EINVAL, origin, message);
+            return false;
+        }
     }
     let family = c_int::from(socket.address_family());
     let kind = socket_type(family, so_type);
     socket.listen_as(kind);
     let port = socket.port();
+    if so_type == libc::SOCK_DGRAM {
+        let bound = match family {
+            libc::AF_INET | libc::AF_INET6 => port != 0,
+            libc::AF_UNIX if cfg!(any(target_os = "linux", target_os = "android")) => {
+                socket.address_storage().1 as usize
+                    > core::mem::offset_of!(libc::sockaddr_un, sun_path)
+            }
+            libc::AF_UNIX => socket.with_host(|path| !path.is_empty()),
+            _ => false,
+        };
+        if !bound {
+            log::error_log(
+                LOG_WARNING,
+                libc::EINVAL,
+                origin,
+                format_args!("datagram socket[{fd}] is not bound"),
+            );
+            return false;
+        }
+    }
     let host_set = socket.with_host(|host| config.host.set(host.to_bytes()));
     config.set_listening_socket(OwnedSocket::new(Box::new(socket)));
     config.r#type = kind.raw();

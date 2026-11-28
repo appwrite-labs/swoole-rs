@@ -138,7 +138,7 @@ struct SslMethod {
 /// An `EVP_MD`, one of libcrypto's static method tables.
 // `repr(C)`: OpenSSL's opaque type, named behind references in `extern` blocks.
 #[repr(C)]
-struct EvpMd {
+pub(super) struct EvpMd {
     _opaque: [u8; 0],
 }
 
@@ -206,6 +206,10 @@ static SESSION_ID_CONTEXT: [u8; 32] =
 pub struct SslCtx {
     _opaque: [u8; 0],
     _not_send: PhantomData<(*mut u8, PhantomPinned)>,
+}
+
+pub(super) fn request_client_certificate(ctx: &SslCtx) {
+    SSL_CTX_set_verify(ctx, SSL_VERIFY_PEER, Some(verify_callback));
 }
 
 impl SslCtx {
@@ -511,7 +515,7 @@ impl Method<'_> {
 
     fn set_client_certificate(&self) -> bool {
         let file = self.config.client_cert_file;
-        SSL_CTX_set_verify(self.ctx, SSL_VERIFY_PEER, Some(verify_callback));
+        request_client_certificate(self.ctx);
         SSL_CTX_set_verify_depth(self.ctx, c_int::from(self.config.verify_depth));
         // `configure` calls this for a file that is set, and with no directory.
         if !self.load_verify_locations(file, TlsStr::NONE) {

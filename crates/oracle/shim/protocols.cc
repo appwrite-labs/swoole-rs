@@ -5,6 +5,7 @@
 #include <cinttypes>
 #include <cstdarg>
 #include <cstdint>
+#include <stddef.h>
 #include <cstdlib>
 #include <cstring>
 #include <string>
@@ -119,7 +120,7 @@ char *swr_oracle_resp_parse_upstream(const char *data, size_t length, int initia
 bool swr_oracle_resp_get_number(const char *line, int initial, int *error) {
     int value = 0;
     errno = initial;
-    const bool found = upstream::get_number(line, &value) != nullptr;
+    const bool found = upstream::get_number(line, line + strlen(line), &value) != nullptr;
     *error = errno;
     return found;
 }
@@ -157,7 +158,19 @@ char *swr_oracle_resp_php_request(const char *wire, size_t wire_length, int init
     errno = initial;
 #define Z_STRVAL(unused) wire
 #define Z_STRLEN(unused) wire_length
+    // The PHP close path returns SW_OK. Report it to the comparison as a null result.
+    struct Server { void close(int, bool) {} } server;
+    auto *serv = &server;
+    constexpr int fd = 0;
+    *error = initial;
+    *size = 0;
+#define SW_OK nullptr
+#define ON_SCOPE_EXIT if (false)
+#define zval_ptr_dtor(unused) ((void) 0)
 #include "protocols_php_request.inc"
+#undef zval_ptr_dtor
+#undef ON_SCOPE_EXIT
+#undef SW_OK
 #undef Z_STRVAL
 #undef Z_STRLEN
     *error = errno;

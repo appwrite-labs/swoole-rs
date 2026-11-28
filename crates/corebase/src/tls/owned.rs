@@ -1,7 +1,7 @@
 //! Thread-local TLS configuration builders and immutable runtime snapshots.
 //! [`TlsContext`] retains a builder; sessions use independent [`TlsSettings`].
 use crate::StringSlot;
-use crate::tls::context::create_context;
+use crate::tls::context::{create_context, request_client_certificate};
 use crate::tls::{TlsConfig, Warn};
 use crate::{CCast, CellExt};
 use openssl_sys::SSL_CTX;
@@ -26,6 +26,7 @@ pub struct OwnedTlsFields {
     pub verify_depth: u8,
     pub disable_compress: bool,
     pub verify_peer: bool,
+    pub(crate) verify_host: Option<bool>,
     pub allow_self_signed: bool,
     pub protocols: u32,
     pub create_flag: u8,
@@ -34,6 +35,19 @@ pub struct OwnedTlsFields {
     pub context: Option<crate::tls::SslContext>,
 }
 impl OwnedTlsFields {
+    fn set_value(&mut self, value: Value) {
+        match value {
+            Value::Protocols(value) => self.protocols = value.c_cast::<u32>(),
+            Value::DisableCompress(value) => self.disable_compress = value,
+            Value::VerifyHost(value) => self.verify_host = Some(value),
+            Value::VerifyPeer(value) => self.verify_peer = value,
+            Value::AllowSelfSigned(value) => self.allow_self_signed = value,
+            Value::VerifyDepth(value) => self.verify_depth = value,
+            Value::Grease(value) => self.grease = value,
+            Value::PreferServerCiphers(value) => self.prefer_server_ciphers = value,
+        }
+    }
+
     /// The context, or null without one.
     #[must_use]
     pub fn context_ptr(&self) -> *mut SSL_CTX {
@@ -85,6 +99,10 @@ impl TlsSettings {
     #[must_use]
     pub fn verify_peer(&self) -> bool {
         self.fields.verify_peer
+    }
+    #[must_use]
+    pub fn verify_host(&self) -> Option<bool> {
+        self.fields.verify_host
     }
     #[must_use]
     pub fn allow_self_signed(&self) -> bool {
@@ -245,6 +263,13 @@ impl OwnedTlsContext {
             .unwrap_or_else(|| crate::fatal("cannot retain TLS configuration"))
     }
 
+    /// Whether a connecting client should retain its target for identity verification.
+    #[must_use]
+    pub fn requires_host_name(&self) -> bool {
+        self.borrow_configuration()
+            .edit(|fields| fields.verify_host == Some(true))
+    }
+
     /// Whether `client_cert_file` is set.
     #[must_use]
     pub fn has_client_cert_file(&self) -> bool {
@@ -321,6 +346,19 @@ impl Lent<'_> {
             fields.context.as_deref()?.set_servername_callback(callback);
         }
         Some(TlsSettings { fields, strings })
+    }
+
+    /// Build a listening context that asks verified clients for their certificate.
+    #[must_use]
+    pub fn freeze_server(
+        &self,
+        callback: Option<crate::tls::ServernameCallback>,
+    ) -> Option<TlsSettings> {
+        let settings = self.freeze(callback)?;
+        if settings.verify_peer() {
+            request_client_certificate(settings.fields.context.as_deref()?);
+        }
+        Some(settings)
     }
 }
 /// Views of `strings`, and the scalar `fields` copied.
@@ -438,6 +476,7 @@ pub fn freeze_socket_context(
     socket: crate::reactor::Socket<'_>,
     http2: bool,
     dtls_supported: bool,
+    server: bool,
 ) -> Result<TlsSettings, SocketContextError> {
     let kind = socket.read(crate::reactor::SocketFields::kind);
     let dtls = kind.is_some_and(crate::constants::SocketType::is_dgram);
@@ -457,7 +496,12 @@ pub fn freeze_socket_context(
             record.send_in_dtls_records();
         });
     }
-    let settings = owner.freeze(None).ok_or(SocketContextError::Create)?;
+    let settings = if server {
+        owner.freeze_server(None)
+    } else {
+        owner.freeze(None)
+    }
+    .ok_or(SocketContextError::Create)?;
     socket.edit(crate::reactor::SocketFields::send_through_tls);
     Ok(settings)
 }
@@ -540,6 +584,7 @@ pub enum Value {
     Protocols(i64),
     DisableCompress(bool),
     VerifyPeer(bool),
+    VerifyHost(bool),
     AllowSelfSigned(bool),
     VerifyDepth(u8),
     Grease(u8),
@@ -568,11 +613,11 @@ impl Lent<'_> {
     pub fn set_text(&mut self, which: Text, value: &[u8]) -> bool {
         // The slot, and for a file its setter's log origin and name.
         let (slot, file) = match which {
-            Text::CertFile => (4, Some((c"set_cert_file", "cert"))),
-            Text::KeyFile => (5, Some((c"set_key_file", "key"))),
+            Text::CertFile => (4, Some((c"SSLContext::set_cert_file", "cert"))),
+            Text::KeyFile => (5, Some((c"SSLContext::set_key_file", "key"))),
             Text::ClientCertFile => (
                 CLIENT_CERT_FILE,
-                Some((c"set_client_cert_file", "client cert")),
+                Some((c"SSLContext::set_client_cert_file", "client cert")),
             ),
             Text::Passphrase => (PASSPHRASE, None),
             Text::HostName => (TLS_HOST_NAME, None),
@@ -600,15 +645,7 @@ impl Lent<'_> {
 
     /// Write the scalar setting into the owner.
     pub fn set_value(&mut self, value: Value) {
-        self.edit(|fields| match value {
-            Value::Protocols(value) => fields.protocols = value.c_cast::<u32>(),
-            Value::DisableCompress(value) => fields.disable_compress = value,
-            Value::VerifyPeer(value) => fields.verify_peer = value,
-            Value::AllowSelfSigned(value) => fields.allow_self_signed = value,
-            Value::VerifyDepth(value) => fields.verify_depth = value,
-            Value::Grease(value) => fields.grease = value,
-            Value::PreferServerCiphers(value) => fields.prefer_server_ciphers = value,
-        });
+        self.edit(|fields| fields.set_value(value));
     }
 
     /// Stores `value` in the owner's string slot `index`, as `RustStringView`'s
@@ -797,9 +834,14 @@ mod tests {
                 let socket =
                     crate::reactor::SocketRecord::with_fd(stream.as_raw_fd(), 6).into_raw();
                 let handle = crate::reactor::Socket::from_ptr(socket).unwrap();
-                let settings =
-                    freeze_socket_context(&mut prepared.borrow_configuration(), handle, true, true)
-                        .unwrap();
+                let settings = freeze_socket_context(
+                    &mut prepared.borrow_configuration(),
+                    handle,
+                    true,
+                    true,
+                    false,
+                )
+                .unwrap();
                 assert!((*socket).fields.sends_through_tls());
                 assert!(prepared.fields().http_v2);
                 // Session creation must use the snapshot even after the builder changes

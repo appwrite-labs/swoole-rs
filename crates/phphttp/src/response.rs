@@ -8,7 +8,7 @@ use crate::{
     },
     send, websocket,
 };
-use std::ffi::{CString, c_int};
+use std::ffi::c_int;
 use swoole_rs_corebase::{CCast, HookType, swoole_isset_hook};
 use swoole_rs_http::status::INTERNAL_SERVER_ERROR;
 use swoole_rs_httpbindings::{RangeError, canonical_case, file_range};
@@ -17,7 +17,7 @@ use swoole_rs_phpswoole::MinitArgs;
 use swoole_rs_zend::bailout::Bailout;
 use swoole_rs_zend::{
     Call, Custom, CustomClass, Invalid, Owned, Value, ZStr, ZString, bailout, handlers,
-    sys::{IS_NULL, IS_OBJECT, IS_STRING, ZEND_ACC_PUBLIC, zend_long},
+    sys::{IS_NULL, IS_STRING, ZEND_ACC_PUBLIC, zend_long},
 };
 use swoole_rs_zend::{method_table, sys as z};
 
@@ -98,6 +98,9 @@ method_table! {
         c"goaway" => zim_swoole_http_response_goaway, &http_response::arginfo_class_Swoole_Http_Response_goaway, z::ZEND_ACC_PUBLIC;
         c"write" => zim_swoole_http_response_write, &http_response::arginfo_class_Swoole_Http_Response_write, z::ZEND_ACC_PUBLIC;
         c"end" => zim_swoole_http_response_end, &http_response::arginfo_class_Swoole_Http_Response_end, z::ZEND_ACC_PUBLIC;
+        c"sendHttp2Response" => zim_swoole_http_response_sendHttp2Response, &http_response::arginfo_class_Swoole_Http_Response_sendHttp2Response, z::ZEND_ACC_PRIVATE;
+        c"sendHttp2File" => zim_swoole_http_response_sendHttp2File, &http_response::arginfo_class_Swoole_Http_Response_sendHttp2File, z::ZEND_ACC_PRIVATE;
+        c"sendStaticFile" => zim_swoole_http_response_sendStaticFile, &http_response::arginfo_class_Swoole_Http_Response_sendStaticFile, z::ZEND_ACC_PRIVATE;
         c"sendfile" => zim_swoole_http_response_sendfile, &http_response::arginfo_class_Swoole_Http_Response_sendfile, z::ZEND_ACC_PUBLIC;
         c"redirect" => zim_swoole_http_response_redirect, &http_response::arginfo_class_Swoole_Http_Response_redirect, z::ZEND_ACC_PUBLIC;
         c"detach" => zim_swoole_http_response_detach, &http_response::arginfo_class_Swoole_Http_Response_detach, z::ZEND_ACC_PUBLIC;
@@ -242,6 +245,54 @@ fn stat(file: &ZStr) -> Result<libc::stat, ()> {
     Err(())
 }
 
+fn send_http2_response(call: &Call) {
+    if call.arity(1, 1).is_ok()
+        && let Ok(Some(body)) = call.zstr(1)
+        && let Some(mut ctx) = open(call).filter(|ctx| ctx.flags() & HTTP2 != 0)
+    {
+        let sent = crate::http2::respond(ctx, body.bytes());
+        if !sent {
+            ctx.state().response.scheduled_fields = None;
+        }
+    }
+}
+
+fn send_http2_file(call: &Call) {
+    if call.arity(3, 3).is_ok()
+        && let Ok(Some(file)) = call.zstr(1)
+        && let Ok(offset) = call.long(2, 0)
+        && let Ok(length) = call.long(3, 0)
+        && let Some(mut ctx) = open(call).filter(|ctx| ctx.flags() & HTTP2 != 0)
+    {
+        let sent = usize::try_from(length)
+            .is_ok_and(|len| crate::http2::send_file(ctx, file.bytes(), offset, len));
+        if !sent {
+            ctx.state().response.scheduled_fields = None;
+        }
+    }
+}
+
+fn send_static_file(call: &Call) {
+    if call.arity(1, 1).is_err() {
+        return;
+    }
+    let Some(request) = call.value(1) else { return };
+    if !request.instance_of(&crate::request::REQUEST) {
+        call.wrong_class(1, c"Swoole\\Http\\Request", request);
+        return;
+    }
+    let Some(mut ctx) = checked(call) else { return };
+    if ctx.flags() & (HTTP2 | CO_SOCKET) != HTTP2 {
+        return;
+    }
+    if crate::http2::of(ctx).is_none() {
+        ctx.state().end = true;
+        return;
+    }
+    let server = context::server(ctx.state());
+    bailout::defer(crate::http2::static_file(server, ctx).map(|_| ()));
+}
+
 fn send_file(call: &Call) {
     let run = || -> Option<Result<bool, Bailout>> {
         let ctx = checked(call)?;
@@ -249,15 +300,15 @@ fn send_file(call: &Call) {
             host::fatal("can't use sendfile when HTTP chunk is enabled");
             return None;
         }
-        let parsed = call
-            .arity(1, 3)
-            .and_then(|()| Ok((call.zstr(1)?, call.long(2, 0)?, call.long(3, 0)?)));
-        let (Some(file), offset, requested) = parsed.ok()? else {
-            return None;
-        };
+        let options = swoole_rs_phpswoole::SendFile::parse(call, 1)?;
+        let file = &options.filename;
+        let (offset, requested) = (options.offset, options.length);
         let name = file.bytes();
         if name.is_empty() {
             host::notice("file name is empty");
+            return None;
+        }
+        if !swoole_rs_phpswoole::valid_sendfile_range(offset, requested) {
             return None;
         }
         let stat = stat(file).ok()?;
@@ -284,7 +335,20 @@ fn send_file(call: &Call) {
             }
         };
         let length = usize::try_from(length).unwrap_or_default();
-        Some(after(ctx).and_then(|()| send::send_file(ctx, file, offset, length)))
+        Some(after(ctx).and_then(|()| {
+            if !swoole_rs_zend::host::exception().is_null() {
+                return Ok(false);
+            }
+            if !options.acquire() {
+                return Ok(false);
+            }
+            let mut delete_file = options.delete;
+            let result = send::send_file(ctx, file, offset, length, &mut delete_file);
+            if delete_file {
+                swoole_rs_hooks::stdio::swoole_coroutine_unlink(file.c_str().into());
+            }
+            result
+        }))
     };
     match run() {
         Some(result) => sent(call, &result),
@@ -326,14 +390,9 @@ fn set_cookie(call: &Call, encode: bool) {
     else {
         return call.set_bool(false);
     };
-    let kind = name.kind();
-    if kind != IS_STRING && kind != IS_OBJECT {
-        host::notice("The first argument must be a string or an cookie object");
-        return call.set_bool(false);
-    }
     // The Set-Cookie line (crates/httpbindings), or null after a warning. Upstream builds
     // it before it uses the context, so a bad name warns on any response.
-    let cookie = if kind == IS_STRING {
+    let cookie = if name.kind() == IS_STRING {
         // A string argument, so `Z_PARAM_STR` reads it as it is.
         let name = call.zstr(1).ok().flatten();
         header_line(
@@ -369,17 +428,14 @@ fn status(call: &Call) {
     let run = || -> Option<()> {
         let parsed = call
             .arity(1, 2)
-            .and_then(|()| Ok((call.long(1, 0)?, call.string_opt(2)?)));
+            .and_then(|()| Ok((call.long(1, 0)?, call.zstr(2)?)));
         let (code, reason) = parsed.ok()?;
         let mut ctx = checked(call)?;
-        let reason = reason.unwrap_or_default();
         let response = &mut ctx.state().response;
-        let code = code.c_cast::<i32>();
-        response.status = code;
-        response.reason = (!reason.is_empty()).then(|| {
-            let text = reason.split(|&byte| byte == 0).next().unwrap_or_default();
-            Box::new(CString::new(text).unwrap_or_default())
-        });
+        response.status = code.c_cast::<i32>();
+        response.reason = reason
+            .filter(|text| !text.bytes().is_empty())
+            .map(ZStr::to_owned);
         call.set_bool(true);
         Some(())
     };
@@ -631,7 +687,13 @@ fn refuse(call: &Call, message: &str) {
 /// a response on a server connection or a coroutine socket, sharing the
 /// request's context when one is given.
 fn respond_on(call: &Call, mut object: &Value, mut fd: zend_long) {
-    let mut paired = false;
+    let invalid = |message| {
+        call.throw(
+            swoole_rs_phpswoole::exception(),
+            message,
+            swoole_rs_error::ErrorCode::SW_ERROR_INVALID_PARAMS as i64,
+        );
+    };
     let mut ctx = None;
     // The running server's share, which keeps it while this method reads it.
     let shared;
@@ -652,8 +714,10 @@ fn respond_on(call: &Call, mut object: &Value, mut fd: zend_long) {
             );
         };
         object = first;
-        paired = true;
-        ctx = request.0.get().cloned();
+        let Some(hold) = request.0.get() else {
+            return invalid(c"parameter $1.second has no valid Http\\Request context");
+        };
+        ctx = Some(hold.clone());
     }
     if object.object().is_some() {
         if object.instance_of(swoole_rs_phpserver::server_class_ref()) {
@@ -668,8 +732,6 @@ fn respond_on(call: &Call, mut object: &Value, mut fd: zend_long) {
                 );
             }
         } else if object.instance_of(swoole_rs_phpclients::socket()) {
-            // A socket object whose constructor never ran holds no socket, so
-            // there is nothing to respond on: false, as without a target.
             if let Some(co) = swoole_rs_phpclients::get_socket(object) {
                 socket = Some(object);
                 fd = zend_long::from(co.handle().sock_fd());
@@ -689,9 +751,13 @@ fn respond_on(call: &Call, mut object: &Value, mut fd: zend_long) {
         return refuse(call, "server is not running");
     }
     if server.is_none() && socket.is_none() {
-        call.set_bool(false);
-        return;
+        return invalid(if ctx.is_some() {
+            c"failed to bind Http\\Response to the given context"
+        } else {
+            c"failed to create Http\\Response from the given arguments"
+        });
     }
+    let paired = ctx.is_some();
     let hold = ctx.unwrap_or_else(|| {
         let hold = context::alloc();
         let mut ctx = hold.ctx();
@@ -775,6 +841,9 @@ handlers! {
     zim_swoole_http_response_goaway => goaway;
     zim_swoole_http_response_write => write;
     zim_swoole_http_response_end => end;
+    zim_swoole_http_response_sendHttp2Response => send_http2_response;
+    zim_swoole_http_response_sendHttp2File => send_http2_file;
+    zim_swoole_http_response_sendStaticFile => send_static_file;
     zim_swoole_http_response_sendfile => send_file;
     zim_swoole_http_response_redirect => redirect;
     zim_swoole_http_response_detach => detach;

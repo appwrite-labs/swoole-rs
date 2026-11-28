@@ -134,6 +134,12 @@ method_table! {
     ];
 }
 
+method_table! {
+    static CANCELED_METHODS = [
+        c"getReason" => zim_swoole_canceled_exception_getReason, &coroutine::arginfo_class_Swoole_Coroutine_CanceledException_getReason, z::ZEND_ACC_PUBLIC;
+    ];
+}
+
 /// `php_swoole_coroutine_minit`, after `Swoole\Exception` and SPL's classes.
 /// # Errors
 /// A registration bailed out.
@@ -195,10 +201,11 @@ pub fn php_swoole_coroutine_minit(minit: &Minit) -> Result<(), Bailout> {
     minit.register_child(
         &CANCELED,
         canceled,
-        swoole_rs_zend::arginfo::Table::NONE,
+        CANCELED_METHODS.table(),
         minit.exception(),
         final_class,
     );
+    minit.property_null(&CANCELED, c"reason", ZEND_ACC_PRIVATE);
     let timeout = c"Swoole\\Coroutine\\TimeoutException";
     minit.register_child(
         &TIMEOUT,
@@ -218,24 +225,14 @@ pub fn php_swoole_coroutine_minit(minit: &Minit) -> Result<(), Bailout> {
 /// declared here, where the token proves it.
 fn hook_zend(_minit: &Minit) {
     unsafe extern "C" {
-        /// `zend_set_user_opcode_handler` for `ZEND_EXIT` (before PHP 8.4),
-        /// `ZEND_BEGIN_SILENCE` and `ZEND_END_SILENCE`: Zend calls each with the
-        /// live frame of its opcode.
-        safe fn swr_zend_coroutine_opcodes(
-            exit: Option<swoole_rs_zend::opcode::Entry>,
-            begin_silence: Option<swoole_rs_zend::opcode::Entry>,
-            end_silence: Option<swoole_rs_zend::opcode::Entry>,
-        );
+        /// `zend_set_user_opcode_handler` for `ZEND_EXIT` (before PHP 8.4).
+        safe fn swr_zend_coroutine_opcodes(exit: Option<swoole_rs_zend::opcode::Entry>);
         /// `zend_autoload = handler`; returns the previous one, Zend's (SPL's
         /// `spl_perform_autoload` once registered), which takes two live names.
         safe fn swr_zend_coroutine_set_autoload(handler: Option<Autoload>) -> Option<Autoload>;
     }
     if host::flag(host::CLI) {
-        swr_zend_coroutine_opcodes(
-            Some(handler::<Exit>),
-            Some(handler::<BeginSilence>),
-            Some(handler::<EndSilence>),
-        );
+        swr_zend_coroutine_opcodes(Some(handler::<Exit>));
     }
     // Restored never, as upstream.
     let original = swr_zend_coroutine_set_autoload(Some(autoload));
@@ -306,6 +303,7 @@ impl Handler for Exit {
 }
 
 swoole_rs_zend::handlers! {
+    zim_swoole_canceled_exception_getReason => get_reason;
     zif_swoole_exit => exit;
     zim_swoole_exit_exception_getFlags => get_flags;
     zim_swoole_exit_exception_getStatus => get_status;
@@ -351,6 +349,10 @@ fn property(call: &Call, name: &CStr) {
     }
 }
 
+fn get_reason(call: &Call) {
+    property(call, c"reason");
+}
+
 /// `ExitException::getFlags()`.
 fn get_flags(call: &Call) {
     property(call, c"flags");
@@ -359,29 +361,6 @@ fn get_flags(call: &Call) {
 /// `ExitException::getStatus()`.
 fn get_status(call: &Call) {
     property(call, c"status");
-}
-
-/// `coro_begin_silence_handler`: `@` remembers the reporting level a switch
-/// restores.
-struct BeginSilence;
-
-impl Handler for BeginSilence {
-    const OPCODE: u32 = swoole_rs_zend::sys::ZEND_BEGIN_SILENCE;
-    fn run(frame: Frame<'_>) -> Next {
-        context::current().set_silence(Some(frame.php().error_reporting()));
-        Next::Dispatch
-    }
-}
-
-/// `coro_end_silence_handler`.
-struct EndSilence;
-
-impl Handler for EndSilence {
-    const OPCODE: u32 = swoole_rs_zend::sys::ZEND_END_SILENCE;
-    fn run(_: Frame<'_>) -> Next {
-        context::current().set_silence(None);
-        Next::Dispatch
-    }
 }
 
 /// The autoloader Zend had (`original_zend_autoload`).

@@ -1,7 +1,4 @@
-"""Upstream's own string.cpp assertions, compiled unchanged, on the pinned String. The hybrid
-runs none of them: its String methods are Rust, and the 14 TESTs of those are Rust tests in
-originals.rs (README.md); the other nine test inline helpers and `format` templates that left
-the hybrid's headers."""
+"""Compile and run every upstream String test against the pinned sources."""
 import json
 
 import pytest
@@ -16,11 +13,14 @@ def test_originals(tmp_path, pytestconfig):
         pytest.skip('needs the pinned target/upstream/src')
     tests = pinned_tree(source, tmp_path)
     ids = original_ids(tests)
-    assert len(ids) == 23
+    assert len(ids) == 42
     binary = tmp_path / 'upstream'
     compiled = build(tmp_path, 'originals.cc', binary, sanitize=pytestconfig.getoption('sanitize'), extra=[tests])
     assert compiled.returncode == 0, compiled.stderr
-    result = run_isolated([str(binary)], timeout=30)
-    assert result.returncode == 0, result.stderr
-    outcome = json.loads(result.stdout.splitlines()[-1])
-    assert outcome.get('original_ids') == ids and outcome.get('failed') == 0, outcome
+    report = tmp_path / 'results.json'
+    result = run_isolated([str(binary), f'--gtest_output=json:{report}'], timeout=30)
+    assert result.returncode == 0, result.stdout + result.stderr
+    suites = json.loads(report.read_text())['testsuites']
+    ran = [f"{suite['name']}.{case['name']}" for suite in suites for case in suite['testsuite']
+           if case['status'] == 'RUN' and case['result'] == 'COMPLETED']
+    assert ran == ids

@@ -86,11 +86,71 @@ pub extern "C" fn swr_v1_ssh2_bound(session: Session<'_>) -> *const Ops {
     &raw const OPS
 }
 
-/// `ssh2_set_socket_timeout`: whole seconds of `timeout_ms` for every kind.
+/// Close the SSH transport now. A suspended owner still needs the socket record.
 #[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_ssh2_set_socket_timeout(session: Session<'_>, timeout_ms: c_int) {
-    session.socket().set_timeout(
-        f64::from(timeout_ms / 1000),
-        swoole_rs_corebase::reactor::TimeoutKind::ALL,
-    );
+pub extern "C" fn swr_v1_ssh2_close_socket(socket: Co) -> bool {
+    if socket.close() {
+        return true;
+    }
+    socket.close_fd();
+    !socket.has_bound(Events::READ) && !socket.has_bound(Events::WRITE)
+}
+
+/// Wake the session's readers and writers while teardown holds the native session.
+#[unsafe(no_mangle)]
+pub extern "C" fn swr_v1_ssh2_cancel_waits(session: Session<'_>) {
+    let socket = session.socket();
+    socket.cancel(Events::WRITE);
+    socket.cancel(Events::READ);
+}
+
+/// Whether another coroutine owns either direction of the session socket.
+#[unsafe(no_mangle)]
+pub extern "C" fn swr_v1_ssh2_is_bound(session: Session<'_>) -> bool {
+    let socket = session.socket();
+    socket.has_bound(Events::READ) || socket.has_bound(Events::WRITE)
+}
+
+/// Bound teardown even when the session has disabled its ordinary I/O timeout.
+#[unsafe(no_mangle)]
+pub extern "C" fn swr_v1_ssh2_release_timeout(session: Session<'_>, timeout: f64) -> f64 {
+    let seconds = if timeout > 0.0 {
+        timeout
+    } else {
+        session
+            .socket()
+            .timeout(swoole_rs_corebase::reactor::TimeoutKind::READ)
+    };
+    if seconds.is_finite() && seconds > 0.0 {
+        seconds
+    } else {
+        f64::from(swoole_rs_corebase::constants::SW_SOCKET_DEFAULT_READ_TIMEOUT)
+    }
+}
+
+/// Wait for a channel operation with its stream-local timeout in seconds.
+#[unsafe(no_mangle)]
+pub extern "C" fn swr_v1_ssh2_channel_wait(
+    session: Session<'_>,
+    outbound: bool,
+    timeout: f64,
+    timed_out: &mut bool,
+) -> bool {
+    let socket = session.socket();
+    let event = if outbound {
+        Events::WRITE
+    } else {
+        Events::READ
+    };
+    let ready = socket.poll(event, timeout);
+    *timed_out = !ready && socket.err_code() == libc::ETIMEDOUT;
+    ready
+}
+
+/// Apply the session default used by channel waits without a stream override.
+#[unsafe(no_mangle)]
+pub extern "C" fn swr_v1_ssh2_session_timeout(session: Session<'_>, seconds: f64) {
+    session
+        .socket()
+        .set_timeout(seconds, swoole_rs_corebase::reactor::TimeoutKind::RDWR);
 }

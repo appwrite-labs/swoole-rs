@@ -1,13 +1,12 @@
 //! Base-mode reactor processes (upstream's `src/server/reactor_process.cc`): every
 //! worker accepts, reads and runs its callbacks itself. What only the hybrid links
 //! runs as its steps; the reads from the server's message bus are in `native`.
+use crate::conn_io::peer_close;
 use core::ffi::c_int;
 use core::sync::atomic::Ordering::Relaxed;
-use swoole_rs_corebase::ServerEvent;
 use swoole_rs_corebase::process::worker_record::{Worker, WorkerType};
 use swoole_rs_corebase::reactor::ErrorHandler::ConnectionDefault;
 use swoole_rs_corebase::reactor::Events;
-use swoole_rs_corebase::reactor::SocketFields;
 use swoole_rs_corebase::reactor::{Event, Running};
 
 use crate::callbacks::{CallbackKind, ServerSlot};
@@ -197,30 +196,7 @@ fn on_close(reactor: Running<'_>, event: &mut Event) -> bool {
     let reactor = Reactor::running(reactor);
     reactor
         .server()
-        .is_some_and(|serv| close(serv, reactor, event))
-}
-
-/// The peer closed (or errored) the connection of `event`: closed now when it already
-/// left the reactor or its close is queued, else the worker hears of it.
-pub(crate) fn close(serv: view::Server<'_>, reactor: Reactor, event: &Event) -> bool {
-    let Some(conn) = serv.at(event.fd()).filter(|conn| conn.is_active()) else {
-        return false;
-    };
-    let Some(socket) = event.socket() else {
-        return false;
-    };
-    if socket.read(SocketFields::has_left_reactor) {
-        return crate::conn_io::close_connection(serv, reactor, Some(socket));
-    }
-    if !reactor.del(*socket) {
-        return false;
-    }
-    if conn.close_queued() {
-        return crate::conn_io::close_connection(serv, reactor, Some(socket));
-    }
-    // The client closed the connection: it is no longer usable.
-    conn.set_peer_closed(true);
-    crate::server_methods::notify(serv, conn, ServerEvent::Close)
+        .is_some_and(|serv| peer_close(serv, reactor, event))
 }
 
 /// `ReactorProcess_onTimeout`: close the connections idle past the heartbeat, or
@@ -231,15 +207,10 @@ pub(crate) fn heartbeat(serv: view::Server<'_>, reactor: Reactor) {
         if serv.healthy(now, conn) {
             return;
         }
-        let ssl_pending = conn
-            .socket()
-            .is_some_and(|s| s.read(swoole_rs_corebase::reactor::SocketFields::tls_handshaking));
-        if ssl_pending || serv.config().disable_notify.get() || conn.close_force() {
-            crate::conn_io::close_connection(serv, reactor, conn.socket());
+        if !crate::connection::begin_idle_close(serv, reactor, conn) {
             return;
         }
-        conn.set_close_force(true);
-        close(
+        peer_close(
             serv,
             reactor,
             &conn.event(i16::from(conn.reactor_id()), FD_SESSION),
@@ -396,7 +367,7 @@ mod tests {
         let (serv, reactor) = (live.server(), live.reactor());
         let conn = session(&live, 1);
         let fd = conn.fd();
-        assert!(close(serv, reactor, &conn.event(0, 0)));
+        assert!(peer_close(serv, reactor, &conn.event(0, 0)));
         let listener = u16::try_from(live.listener_fd).unwrap();
         let notify = Call::Notify(c_long::from(fd), 0, 4, listener);
         assert_eq!(calls(), [notify], "the worker hears");
@@ -405,26 +376,45 @@ mod tests {
 
         let conn = session(&live, 2);
         conn.set_close_queued(true);
-        assert!(close(serv, reactor, &conn.event(0, 0)));
+        assert!(peer_close(serv, reactor, &conn.event(0, 0)));
         assert_eq!(calls(), [], "a queued close closes now");
         assert!(closed(conn));
-        assert!(!close(serv, reactor, &conn.event(0, 0)), "gone");
+        assert!(!peer_close(serv, reactor, &conn.event(0, 0)), "gone");
     }
 
     #[test]
-    fn close_closes_a_socket_already_out_of_the_reactor() {
+    fn failed_close_notification_releases_the_transport() {
+        let (live, _clients) = accepted();
+        let conn = session(&live, 1);
+        crate::hybrid::tests::FAIL_NOTIFY.set(true);
+        assert!(peer_close(live.server(), live.reactor(), &conn.event(0, 0)));
+        assert!(closed(conn));
+    }
+
+    #[test]
+    fn close_notifies_once_when_reads_are_paused() {
         let (live, _clients) = accepted();
         let (serv, reactor) = (live.server(), live.reactor());
         let conn = session(&live, 1);
         assert!(reactor.del(*conn.socket().unwrap()));
-        assert!(close(serv, reactor, &conn.event(0, 0)));
-        assert_eq!(calls(), [], "nobody is told");
-        assert!(closed(conn));
+        assert!(peer_close(serv, reactor, &conn.event(0, 0)));
+        let listener = u16::try_from(live.listener_fd).unwrap();
+        assert_eq!(
+            calls(),
+            [Call::Notify(c_long::from(conn.fd()), 0, 4, listener)]
+        );
+        assert!(peer_close(serv, reactor, &conn.event(0, 0)));
+        assert_eq!(calls(), []);
+        assert!(conn.is_active(), "the worker closes it");
     }
 
     #[test]
     fn heartbeat_closes_or_notifies_idle_connections() {
-        let (live, _clients) = accepted();
+        let mut worker = swoole_rs_corebase::process::worker_record::WorkerRecord::boxed();
+        let (mut live, _clients) = accepted();
+        live.config_mut().worker_num.set(1);
+        live.tables_mut().workers =
+            unsafe { crate::records::tests::naming_at(&raw mut *worker, 1) };
         let (serv, reactor) = (live.server(), live.reactor());
         live.port().heartbeat_idle_time.set(1);
         let (idle, forced) = (session(&live, 1), session(&live, 2));
@@ -441,5 +431,18 @@ mod tests {
         idle.set_last_recv_time(swoole_rs_corebase::microtime());
         heartbeat(serv, reactor);
         assert_eq!(calls(), [], "healthy");
+
+        idle.set_last_recv_time(1.0);
+        idle.set_close_worker(Some((0, 123)));
+        let owner = serv.worker_record(0).unwrap();
+        owner.set_pid(123);
+        heartbeat(serv, reactor);
+        assert!(idle.is_active(), "the original worker still owes onClose");
+        owner.set_pid(124);
+        heartbeat(serv, reactor);
+        assert!(
+            closed(idle),
+            "the replacement cannot acknowledge the old close"
+        );
     }
 }

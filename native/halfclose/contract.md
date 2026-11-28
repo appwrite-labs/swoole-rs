@@ -47,8 +47,7 @@ cannot reopen a terminal connection.
 
 A zero-progress sendfile that failed with EINTR was classified as a fatal file
 error, popping the file chunk so the close marker could be reached after only
-the HTTP header. A negative result with errno EINTR now returns to the write loop
-with the same chunk and offset. EAGAIN and fatal handling are unchanged.
+the HTTP header. Both v6.3 builds retry EINTR with the same chunk and offset, wait for writability on EAGAIN, and close the connection on fatal errors.
 
 ## Open issues
 

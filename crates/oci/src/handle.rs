@@ -245,7 +245,8 @@ extern "C" fn swr_oci_connect(
     h.server.set(Live(alloc(OCI_HTYPE_SERVER).1, PhantomData));
     let err = h.err.get();
     let length = dbname.get().to_bytes().len().c_cast();
-    let status = OCIServerAttach(h.server.get(), err, dbname, length, 0);
+    let server = h.server.get();
+    let status = crate::offload(|| OCIServerAttach(server, err, dbname, length, 0));
     if status != OCI_SUCCESS {
         report(dbh, err, c"pdo_oci_handle_factory", status, here!());
         return false;

@@ -20,7 +20,7 @@ python3 tests/modules/memory/witnesses.py --engine upstream=/absolute/reference/
 
 `witnesses.py` (`memory-table-witnesses`) runs four PHP witnesses, not upstream PHPTs, on every engine and requires their observations to match. `--require-memory-bridge ENGINE` rejects an engine that does not advertise memory feature bit 64:
 
-- `table_state.php`: duplicate-column first lookup, binary names/keys, iteration,
+- `table_state.php`: duplicate-column rejection, binary names/keys, iteration,
   increment after delete, memory sizes.
 - `table_fork.php`: fork rounds with create/grow/iterate/delete/destroy cycles and
   column-index teardown in children.

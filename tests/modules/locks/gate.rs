@@ -491,13 +491,24 @@ fn coroutine_policy() {
         Err(ErrorCode::SW_ERROR_CO_CANCELED as i32)
     );
     assert_eq!((word(), SLEEPS.get()), (1, 1));
+    assert_eq!(lock.unlock(), Err(libc::EPERM));
+    assert_eq!(word(), 1);
+    CID.set(7);
+    assert_eq!(lock.unlock(), Ok(()));
+    assert_eq!(word(), 1);
+    CID.set(8);
+    assert_eq!(lock.acquire(None), Err(EBUSY));
     CID.set(7);
     assert_eq!(lock.unlock(), Ok(()));
     assert_eq!(word(), 0);
     assert_eq!(lock.unlock(), Ok(()));
+    CID.set(8);
+    assert_eq!(lock.acquire(None), Ok(()));
+    assert_eq!(word(), 1);
+    assert_eq!(lock.unlock(), Ok(()));
     assert_eq!(word(), 0);
-    // Pinned owner reentrancy precedes CAS even if the shared word is already zero, as
-    // after another process's unlock.
+    // Match the pinned order of the owner check and the shared-word CAS.
+    CID.set(7);
     assert_eq!(lock.acquire(None), Ok(()));
     WORD.store(0, Ordering::Relaxed);
     assert_eq!(lock.acquire(None), Ok(()));

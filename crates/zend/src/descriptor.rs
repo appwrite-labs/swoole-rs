@@ -8,6 +8,7 @@ use crate::{
 };
 use std::ffi::{CStr, CString, c_int, c_void};
 use std::{marker::PhantomData, ptr, ptr::NonNull};
+use swoole_rs_corebase::lent::{Count, Out, lend_out};
 
 unsafe extern "C" {
     /// The trapped cast writes the stream and descriptor to local output slots.
@@ -31,10 +32,10 @@ unsafe extern "C" {
     /// `php_stream_read` into `page` from the stream a resource zval names, inside
     /// `zend_try`: the bytes read, 0 at the end, -1 for an absent or unreadable stream, -2 for a bailout.
     /// It writes at most `size` bytes, which the caller passes as the page's length.
-    safe fn swr_zend_try_stream_zval_read(
+    safe fn swr_zend_try_stream_zval_read<'a>(
         value: &Value,
-        page: &mut [u8; STREAM_PAGE],
-        size: usize,
+        page: Out<'a, u8>,
+        size: Count<'a>,
     ) -> zend_long;
     /// `zend_read_property_ex` of an object zval under its own class, inside
     /// `zend_try` (nonzero for a bailout): `found` set and `out` written when
@@ -205,13 +206,10 @@ impl Value {
     /// Returns `None` if the value is not a stream or the read failed.
     /// # Errors
     /// The stream's wrapper bailed out.
-    pub fn read_stream<'a>(
-        &self,
-        page: &'a mut [u8; STREAM_PAGE],
-    ) -> Result<Option<&'a [u8]>, Bailout> {
-        let count = swr_zend_try_stream_zval_read(self, page, STREAM_PAGE);
+    pub fn read_stream<'a>(&self, page: &'a mut [u8]) -> Result<Option<&'a [u8]>, Bailout> {
+        let count = lend_out(page, |out, n| swr_zend_try_stream_zval_read(self, out, n));
         match usize::try_from(count) {
-            Ok(count) => Ok(Some(page.split_at(count.min(STREAM_PAGE)).0)),
+            Ok(count) => Ok(Some(page.split_at(count.min(page.len())).0)),
             Err(_) if count == -1 => Ok(None),
             Err(_) => Err(Bailout),
         }

@@ -3,10 +3,12 @@
 #include "shim.h"
 #include "shim_private.h"
 zend_object *swr_zend_facade_exception(void) { return EG(exception); }
-void swr_zend_facade_exception_error(void *exception) { zend_exception_error(exception, E_ERROR); }
-int swr_zend_try_uncaught_exception(void) {
+bool swr_zend_unwind_exit_pending(void) { return EG(exception) && zend_is_unwind_exit(EG(exception)); }
+static void report_exception(void *exception) { zend_exception_error(exception, E_ERROR); }
+int swr_zend_try_uncaught_exception(bool *unwind_exit) {
     zend_object *exception = EG(exception);
-    return exception ? swr_zend_try(swr_zend_facade_exception_error, exception) : SWR_ZEND_RETURN;
+    *unwind_exit = swr_zend_unwind_exit_pending();
+    return exception && !*unwind_exit ? swr_zend_try(report_exception, exception) : SWR_ZEND_RETURN;
 }
 int swr_zend_try_facade_user_call(zval *name, swr_zvals args, zval *retval, int *result) {
     volatile int bailed = 0;

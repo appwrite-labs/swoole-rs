@@ -2,6 +2,49 @@
 //! `thirdparty/multipart_parser.c` (node-formidable's, by way of libcat), state for
 //! state: the same callbacks, results, quirks and error messages.
 
+use swoole_rs_corebase::{buffer::BoundedBytes, constants::SW_HTTP_HEADER_MAX_SIZE};
+
+/// A part header assembled across calls, with one shared limit for its name and value.
+#[derive(Debug)]
+pub struct MultipartHeader {
+    bytes: BoundedBytes,
+    name_len: usize,
+}
+
+impl MultipartHeader {
+    #[must_use]
+    pub fn new(limit: usize) -> Self {
+        Self {
+            bytes: BoundedBytes::new(limit.min(SW_HTTP_HEADER_MAX_SIZE as usize), 0),
+            name_len: 0,
+        }
+    }
+
+    pub fn append_name(&mut self, data: &[u8]) -> Flow {
+        let flow = self.append_value(data);
+        self.name_len = self.bytes.as_ref().len();
+        flow
+    }
+
+    pub fn append_value(&mut self, data: &[u8]) -> Flow {
+        if self.bytes.append(data).is_ok() {
+            Flow::Go
+        } else {
+            Flow::Fail
+        }
+    }
+
+    #[must_use]
+    pub fn parts(&self) -> (&[u8], &[u8]) {
+        self.bytes.as_ref().split_at(self.name_len)
+    }
+
+    pub fn clear(&mut self) {
+        self.bytes.clear();
+        self.name_len = 0;
+    }
+}
+
 /// A callback's result: upstream's 0 goes on, `MPPE_PAUSED` stops
 /// [`MultipartParser::execute`] where the parser is, any other value fails the call.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -17,6 +60,7 @@ pub enum Flow {
 pub enum MultipartError {
     Paused,
     Unknown,
+    Callback,
     BoundaryEndNoCrlf,
     BadStartBoundary,
     InvalidHeaderFieldChar,
@@ -26,8 +70,7 @@ pub enum MultipartError {
     HeaderValueIncomplete,
 }
 
-/// Why execution stopped with an error. Callback failures leave the parser's
-/// stored diagnostic unchanged, while syntax errors also update it.
+/// Why execution stopped with an error. The parser also records its diagnostic.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ParseError {
     Parser(MultipartError),
@@ -44,6 +87,9 @@ pub trait Parts<'i> {
         Flow::Go
     }
     fn on_header_value(&mut self, _data: &'i [u8]) -> Flow {
+        Flow::Go
+    }
+    fn on_header_value_complete(&mut self) -> Flow {
         Flow::Go
     }
     fn on_part_data(&mut self, _data: &[u8]) -> Flow {
@@ -130,6 +176,47 @@ impl MultipartParser {
         })
     }
 
+    /// Visit the generated upload paths in a complete reactor-preprocessed body.
+    /// Visit each marker as it is parsed so earlier files can be cleaned up even
+    /// if a later part is invalid. Callers must verify the reactor's dispatch flag.
+    pub fn visit_uploads(&self, body: &[u8], visit: impl FnMut(&[u8])) -> bool {
+        struct Collector<F> {
+            header: MultipartHeader,
+            visit: F,
+        }
+        impl<F: FnMut(&[u8])> Parts<'_> for Collector<F> {
+            fn on_header_field(&mut self, data: &[u8]) -> Flow {
+                self.header.append_name(data)
+            }
+            fn on_header_value(&mut self, data: &[u8]) -> Flow {
+                self.header.append_value(data)
+            }
+            fn on_header_value_complete(&mut self) -> Flow {
+                let (name, value) = self.header.parts();
+                if name.eq_ignore_ascii_case(b"swoole-upload-file") {
+                    (self.visit)(value);
+                }
+                self.header.clear();
+                Flow::Go
+            }
+        }
+
+        let Some(mut parser) = self.boundary().get(2..).and_then(Self::new) else {
+            return false;
+        };
+        let mut collector = Collector {
+            header: MultipartHeader::new(SW_HTTP_HEADER_MAX_SIZE as usize),
+            visit,
+        };
+        parser.execute(&mut collector, body) == Ok(body.len()) && parser.is_complete()
+    }
+
+    /// Whether the parser has consumed the closing multipart boundary.
+    #[must_use]
+    pub fn is_complete(&self) -> bool {
+        self.state == State::End
+    }
+
     /// `--` and the boundary, as long as upstream's `boundary_length` says.
     #[must_use]
     pub fn boundary(&self) -> &[u8] {
@@ -153,6 +240,7 @@ impl MultipartParser {
             return Vec::new();
         };
         let head: &[u8] = match reason {
+            E::Callback => return b"callback error".to_vec(),
             E::Paused => return b"parser paused".to_vec(),
             E::Unknown => return b"parser unknown".to_vec(),
             E::BoundaryEndNoCrlf => b"no CRLF at first boundary end: ",
@@ -209,9 +297,8 @@ impl MultipartParser {
 
     /// `multipart_parser_execute`: how many bytes were consumed, including a pause.
     /// # Errors
-    /// A syntax error or a failed callback. A callback failure preserves the
-    /// stored diagnostic, matching the original parser.
-    /// Header fields and values must each arrive whole within one call.
+    /// A syntax error or a failed callback.
+    /// Header fields and values may span calls.
     pub fn execute<'i>(
         &mut self,
         parts: &mut impl Parts<'i>,
@@ -221,6 +308,9 @@ impl MultipartParser {
         let mut i = 0;
         while let Some(&c) = buf.get(i) {
             if let Step::Return(result) = self.step(parts, buf, i, c, &mut mark) {
+                if result == Err(ParseError::Callback) {
+                    self.error_reason = Some(MultipartError::Callback);
+                }
                 return result;
             }
             i += 1;
@@ -333,10 +423,13 @@ impl MultipartParser {
                     if c == CR {
                         self.state = State::HeaderValueAlmostDone;
                         let result = parts.on_header_value(span(*mark, i));
-                        return done(result, i + 1).unwrap_or(Step::Next);
+                        return done(result, i + 1)
+                            .or_else(|| done(parts.on_header_value_complete(), i + 1))
+                            .unwrap_or(Step::Next);
                     }
                     if is_last {
-                        return self.expect(MultipartError::HeaderValueIncomplete, CR, i, c);
+                        return done(parts.on_header_value(span(*mark, i + 1)), i + 1)
+                            .unwrap_or(Step::Next);
                     }
                     return Step::Next;
                 }
@@ -637,7 +730,7 @@ mod tests {
     }
 
     #[test]
-    fn callback_failure_keeps_the_stored_diagnostic() {
+    fn callback_failure_replaces_the_stored_reason() {
         struct Failing;
         impl Parts<'_> for Failing {
             fn on_part_data_begin(&mut self, _: &[u8]) -> Flow {
@@ -650,17 +743,16 @@ mod tests {
             parser.error_i = 7;
             parser.error_expected = b'x';
             parser.error_unexpected = b'y';
-            let message = parser.error_message();
             assert_eq!(
                 parser.execute(&mut Failing, BODY),
                 Err(ParseError::Callback)
             );
             assert_eq!(parser.state, State::HeaderFieldStart);
-            assert_eq!(parser.error_reason, prior);
+            assert_eq!(parser.error_reason, Some(MultipartError::Callback));
             assert_eq!(parser.error_i, 7);
             assert_eq!(parser.error_expected, b'x');
             assert_eq!(parser.error_unexpected, b'y');
-            assert_eq!(parser.error_message(), message);
+            assert_eq!(parser.error_message(), b"callback error");
             // The failed begin callback consumed the boundary, as before.
             let mut parts = Recorder::default();
             assert_eq!(parser.execute(&mut parts, &BODY[6..]), Ok(BODY.len() - 6));

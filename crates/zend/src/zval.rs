@@ -161,6 +161,11 @@ unsafe extern "C" {
         arg1: Option<&Value>,
         arg2: Option<&Value>,
     ) -> std::ffi::c_int;
+    /// Run a cleanup method on the live object while preserving a pending exception.
+    safe fn swr_lent_call_cleanup(
+        object: crate::ObjectRef<'_>,
+        name: IoSlice<'_>,
+    ) -> std::ffi::c_int;
     /// `php_format_date(format, timestamp, local)` of the lent format: a new
     /// string; no PHP code runs.
     safe fn php_format_date<'a>(
@@ -768,6 +773,19 @@ impl Value {
         Ok(Some(rv))
     }
 
+    /// Call a zero-argument cleanup method, preserving an earlier PHP exception.
+    /// A non-object needs no cleanup.
+    ///
+    /// # Errors
+    /// The cleanup bailed out or a bailout was already pending.
+    pub fn call_cleanup(&self, method: &[u8]) -> Result<(), bailout::Bailout> {
+        bailout::outcome(())?;
+        if let Some(object) = self.object_ref() {
+            bailout::trapped(swr_lent_call_cleanup(object, IoSlice::new(method)))?;
+        }
+        Ok(())
+    }
+
     /// `zend_call_method(object, scope, NULL, method, &result, args)` on the
     /// object this holds, inside `zend_try` (at most two arguments, which Zend
     /// copies into the call): `scope`'s method (`None`: the object's class's).
@@ -970,7 +988,7 @@ impl Value {
         (!query.is_null()).then(|| ZString(query))
     }
 
-    /// `serialize($value)`: None when it produced nothing.
+    /// `serialize($value)`: None on a PHP exception or when it produced no bytes.
     /// # Errors
     /// The bailout a `__serialize` raised, trapped.
     pub fn serialize(&self) -> Result<Option<ZString>, bailout::Bailout> {

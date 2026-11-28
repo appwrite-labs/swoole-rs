@@ -204,6 +204,11 @@ pub(crate) struct Pending {
     coroutines: HashMap<i64, (Weak<TaskCo>, Option<u64>)>,
 }
 
+/// A reloading worker owns each per-task callback and suspended task waiter until completion.
+pub(crate) fn tasks_complete(_: &mut usize) -> bool {
+    crate::lifecycle::with_tasks(|tasks| tasks.callbacks.is_empty() && tasks.coroutines.is_empty())
+}
+
 fn facts(server: view::Server<'_>) -> Facts {
     let config = server.config();
     let worker_type = crate::server::worker_type();
@@ -396,6 +401,11 @@ fn worker<'a>(call: &'a Call, method: &CStr) -> Option<(view::Server<'a>, Facts)
     Some((serv, facts))
 }
 
+/// Release outside the table borrow so the callable's destructor can submit another task.
+fn release_callback(id: i64) {
+    drop(crate::lifecycle::with_tasks(|p| p.callbacks.remove(&id)).map(ManuallyDrop::into_inner));
+}
+
 fn task(call: &Call) {
     let Some(serv) = running(call) else { return };
     let (Ok(()), Ok(dst)) = (call.arity(1, 3), call.long(2, -1)) else {
@@ -425,6 +435,9 @@ fn task(call: &Call) {
     if dispatch(serv, &mut buf, target(dst)) {
         call.set_long(id);
     } else {
+        if TaskFlag::from_bits(buf.packed().head().ext_flags).contains(CALLBACK) {
+            release_callback(id);
+        }
         call.set_bool(false);
     }
 }
@@ -498,10 +511,15 @@ fn task_arguments(call: &Call) -> Option<(Owned, f64)> {
 }
 
 fn task_wait_multi(call: &Call) {
-    if swoole_rs_phpcoroutines::in_coroutine() {
-        return task_co(call, false);
-    }
-    let Some((serv, facts)) = worker(call, c"taskWaitMulti") else {
+    task_batch(call, c"taskWaitMulti");
+}
+
+fn task_co(call: &Call) {
+    task_batch(call, c"taskCo");
+}
+
+fn task_batch(call: &Call, method: &CStr) {
+    let Some((serv, facts)) = worker(call, method) else {
         return;
     };
     let Some((snapshot, timeout)) = task_arguments(call) else {
@@ -522,11 +540,11 @@ fn task_wait_multi(call: &Call) {
         set_last_error(SW_ERROR_TASK_DISPATCH_FAIL);
         return call.set_bool(false);
     }
-    // Complete numeric keys dispatch in key order, even when inserted out of order.
-    let values = (0..n_task)
-        .map(|i| tasks.index(u64::from(i)))
-        .collect::<Option<Vec<_>>>()
-        .unwrap_or_else(|| tasks.entries().map(|(_, value)| value).collect());
+    set_last_error(0);
+    if swoole_rs_phpcoroutines::in_coroutine() {
+        return task_batch_coroutine(call, serv, tasks, timeout);
+    }
+    let values = tasks.entries().map(|(_, value)| value).collect();
     // The results, which become the return value only once every wait is over.
     let mut out = OwnedArray::default();
     let mut multi = Multi {
@@ -542,8 +560,11 @@ fn task_wait_multi(call: &Call) {
                 false
             })
     });
-    if done {
-        call.set_owned(out.into_owned());
+    if done || log::last_error() == swoole_rs_error::ErrorCode::SW_ERROR_FILE_EMPTY as c_int {
+        if out.array().is_some_and(|results| results.count() < n_task) {
+            set_last_error(SW_ERROR_TASK_TIMEOUT);
+        }
+        call.set_owned(batch_result(tasks, out.into_owned()));
     } else {
         // `zval_ptr_dtor(return_value)`, then `RETURN_FALSE`.
         drop(out);
@@ -551,39 +572,29 @@ fn task_wait_multi(call: &Call) {
     }
 }
 
-fn task_co_method(call: &Call) {
-    task_co(call, true);
+/// Restore input order and keys once no more results can arrive.
+fn batch_result(tasks: &Array, positional: Owned) -> Owned {
+    let results = positional.array();
+    if tasks.is_list() && results.is_some_and(|r| r.is_list() && r.count() == tasks.count()) {
+        return positional;
+    }
+    let mut out = OwnedArray::default();
+    let mut position = 0;
+    tasks.for_each(|key, _| {
+        let value = results
+            .and_then(|r| r.index(position))
+            .map_or_else(|| Owned::bool(false), Value::copy);
+        match key {
+            swoole_rs_zend::Key::Name(name) => out.insert(name, value),
+            swoole_rs_zend::Key::Index(index) => out.update_index(index, value),
+        }
+        position += 1;
+    });
+    out.into_owned()
 }
 
-/// `taskCo`, and `taskWaitMulti` inside a coroutine (`fill_false`: false).
-fn task_co(call: &Call, fill_false: bool) {
-    let Some((serv, facts)) = worker(call, c"taskCo") else {
-        return;
-    };
-    let Some((snapshot, timeout)) = task_arguments(call) else {
-        return call.set_bool(false);
-    };
-    let Some(tasks) = snapshot.array() else {
-        return call.set_bool(false);
-    };
+fn task_batch_coroutine(call: &Call, serv: view::Server<'_>, tasks: &Array, timeout: f64) {
     let n_task = tasks.count();
-    if n_task >= SW_MAX_CONCURRENT_TASK {
-        fatal(E_WARNING, c"too many concurrent tasks");
-        return call.set_bool(false);
-    }
-    if !check(&facts, -1) {
-        return call.set_bool(false);
-    }
-    if n_task == 0 {
-        set_last_error(SW_ERROR_TASK_DISPATCH_FAIL);
-        return call.set_bool(false);
-    }
-    if let Err(bailout) = swoole_rs_phpruntime::coroutine_check() {
-        return bailout.defer();
-    }
-    if Coroutine::current().is_none() {
-        return;
-    }
     let task_co = Rc::new(TaskCo {
         waiter: Waiter::default(),
         result: Cell::new(OwnedArray::default().into_owned()),
@@ -625,24 +636,20 @@ fn task_co(call: &Call, fill_false: bool) {
         .with_taken(|result| result.array().is_some_and(|array| array.count() == n_task));
     #[expect(clippy::disallowed_methods, reason = "taskCo's $timeout, from PHP")]
     let deadline = Deadline::from_timeout(timeout);
-    if !complete && !task_co.waiter.wait_for(deadline) {
-        task_co.result.with_taken(|result| {
-            let Some(array) = result.array_mut() else {
-                return;
-            };
-            for (j, id) in list.into_iter().enumerate() {
-                if array.array().and_then(|a| a.index(j as u64)).is_none() {
-                    if fill_false {
-                        array.update_index(j as u64, Owned::bool(false));
-                    }
-                    if let Some(id) = id {
-                        crate::lifecycle::with_tasks(|p| p.coroutines.remove(&id));
-                    }
-                }
+    if complete || task_co.waiter.wait_for(deadline) {
+        // A late result for a previous wait can set the worker error while parked.
+        set_last_error(0);
+    } else {
+        if log::last_error() == swoole_rs_error::ErrorCode::SW_ERROR_CO_TIMEDOUT as c_int {
+            set_last_error(SW_ERROR_TASK_TIMEOUT);
+        }
+        crate::lifecycle::with_tasks(|p| {
+            for id in list.into_iter().flatten() {
+                p.coroutines.remove(&id);
             }
         });
     }
-    call.set_owned(task_co.result.take());
+    call.set_owned(batch_result(tasks, task_co.result.take()));
 }
 
 fn pack_method(call: &Call) {
@@ -658,7 +665,7 @@ fn pack_method(call: &Call) {
     }
     flag(&mut buf, NONBLOCK | NOREPLY);
     // RETURN_STRINGL of `EventData::size()` bytes, copied.
-    call.set_owned(Owned::string(ZString::new(buf.bytes())));
+    call.set_owned(Owned::string(ZString::new(buf.packed().bytes())));
 }
 
 fn unpack_method(call: &Call) {
@@ -680,7 +687,7 @@ swoole_rs_zend::handlers! {
     zim_swoole_server_task => task;
     zim_swoole_server_taskwait => taskwait;
     zim_swoole_server_taskWaitMulti => task_wait_multi;
-    zim_swoole_server_taskCo => task_co_method;
+    zim_swoole_server_taskCo => task_co;
     zim_swoole_server_task_pack => pack_method;
     zim_swoole_server_task_unpack => unpack_method;
 }
@@ -734,12 +741,13 @@ pub(crate) fn on_task(server: view::Server<'_>, task: Packed<'_>) -> Result<bool
     let [event, _, data] = args;
     drop(event);
     let outcome = outcome.and_then(|()| {
-        if !retval.is_null() {
+        if retval.kind() > swoole_rs_zend::sys::IS_NULL {
             finish_task(server, &retval, Some(&task.head()))?;
+            drop(retval);
+            swoole_rs_zend::host::uncaught_exception()?;
         }
         Ok(())
     });
-    drop(retval);
     drop(data);
     outcome.map(|()| true)
 }
@@ -755,17 +763,18 @@ pub(crate) fn on_finish(server: view::Server<'_>, task: Packed<'_>) -> Result<bo
     if flags.contains(COROUTINE) {
         return resume(id, data).map(|()| true);
     }
-    let mut callback = flags.contains(CALLBACK);
+    let callback = flags.contains(CALLBACK);
     let cb = if callback {
         // Its own reference: the callback may replace the pending entry.
-        let cb =
-            crate::lifecycle::with_tasks(|p| p.callbacks.get(&id).map(|cb| Callable::clone(cb)));
-        callback = cb.is_some();
-        cb
+        crate::lifecycle::with_tasks(|p| p.callbacks.get(&id).map(|cb| Callable::clone(cb)))
     } else {
         crate::lifecycle::callback(crate::lifecycle::ServerCallback::Finish)
     };
     let Some(cb) = cb else {
+        if callback {
+            expired(id);
+            return Ok(true);
+        }
         let outcome = event_warning(c"require 'onFinish' callback");
         drop(data);
         return outcome.map(|()| false);
@@ -790,13 +799,19 @@ pub(crate) fn on_finish(server: view::Server<'_>, task: Packed<'_>) -> Result<bo
         called => called.map(drop),
     };
     if callback {
-        // Freed once the table is no longer borrowed.
-        drop(
-            crate::lifecycle::with_tasks(|p| p.callbacks.remove(&id)).map(ManuallyDrop::into_inner),
-        );
+        release_callback(id);
     }
     drop(args);
     outcome.map(|()| true)
+}
+
+fn expired(id: i64) {
+    log::error_log(
+        SW_LOG_WARNING,
+        SW_ERROR_TASK_TIMEOUT,
+        c"php_swoole_server_onFinish",
+        format_args!("task[{id}] has expired"),
+    );
 }
 
 /// A coroutine task's result: into `taskwait`'s return value, or at its index
@@ -806,12 +821,7 @@ fn resume(id: i64, data: Owned) -> Result<(), Bailout> {
         let (task, index) = p.coroutines.remove(&id)?;
         Some((task.upgrade()?, index))
     }) else {
-        log::error_log(
-            SW_LOG_WARNING,
-            SW_ERROR_TASK_TIMEOUT,
-            c"php_swoole_server_onFinish",
-            format_args!("task[{id}] has expired"),
-        );
+        expired(id);
         return Ok(());
     };
     if let Some(index) = index {

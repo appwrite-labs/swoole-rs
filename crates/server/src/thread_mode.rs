@@ -16,16 +16,48 @@ pub mod native;
 enum Wake {
     /// The worker thread in this slot exited.
     Exited(u16),
-    Reload,
+    Reload(bool),
     Exit,
 }
 
-/// The reload in progress: the workers from `reloaded` up to `workers` are asked to
-/// stop one by one (`ThreadReloadTask`).
-#[derive(Clone, Copy)]
+/// The manager's reload targets and the slots still awaiting replacement.
 struct Reload {
-    workers: u16,
-    reloaded: u16,
+    targets: std::ops::Range<u16>,
+    pending: swoole_rs_corebase::memory::flat::BitSet,
+    remaining: usize,
+}
+
+impl Reload {
+    fn new(targets: std::ops::Range<u16>) -> Self {
+        let mut pending = swoole_rs_corebase::memory::flat::BitSet::new();
+        for _ in targets.clone() {
+            pending.push(true);
+        }
+        Self {
+            remaining: targets.len(),
+            pending,
+            targets,
+        }
+    }
+
+    fn complete(&mut self, slot: u16) {
+        let first = usize::from(self.targets.end) - self.pending.len();
+        if let Some(index) = usize::from(slot).checked_sub(first)
+            && self.pending.get(index) == Some(true)
+        {
+            self.pending.set(index, false);
+            self.remaining -= 1;
+        }
+    }
+
+    fn advance(&mut self, mut stop: impl FnMut(u16) -> bool) {
+        while let Some(slot) = self.targets.next() {
+            if stop(slot) {
+                break;
+            }
+            self.complete(slot);
+        }
+    }
 }
 
 /// The thread factory's manager state, behind `ThreadFactory`'s opaque handle, and
@@ -34,8 +66,7 @@ pub struct ThreadManager {
     wake: Sender<Wake>,
     woken: Mutex<Receiver<Wake>>,
     reloading: AtomicBool,
-    reload_all: AtomicBool,
-    reload: Mutex<Option<Reload>>,
+    shutting_down: AtomicBool,
     threads: Box<[Arc<Thread>]>,
 }
 
@@ -48,8 +79,7 @@ impl ThreadManager {
             wake,
             woken: Mutex::new(woken),
             reloading: AtomicBool::default(),
-            reload_all: AtomicBool::default(),
-            reload: Mutex::default(),
+            shutting_down: AtomicBool::default(),
             threads: (0..count).map(|_| Arc::default()).collect(),
         }
     }
@@ -90,50 +120,21 @@ impl ThreadManager {
 
     /// `ThreadFactory::reload`'s request: false while another runs.
     fn begin_reload(&self, all: bool) -> bool {
-        let (from, to) = (false, true);
-        let begun = self
-            .reloading
-            .compare_exchange(from, to, Ordering::AcqRel, Ordering::Acquire);
-        if begun.is_ok() {
-            self.reload_all.store(all, Ordering::Release);
+        if self.shutting_down.load(Ordering::Acquire) || self.reloading.swap(true, Ordering::AcqRel)
+        {
+            return false;
         }
-        begun.is_ok()
+        self.push(Wake::Reload(all));
+        true
     }
 
-    /// Whether a reload is under way.
-    fn reloading(&self) -> bool {
-        self.reloading.load(Ordering::Acquire)
+    fn finish_reload(&self) {
+        self.reloading.store(false, Ordering::Release);
     }
 
-    /// `ThreadFactory::do_reload`: `kill` the next worker of `workers` (a reload of
-    /// the task workers skips the first `events`), after `before` when the reload
-    /// starts; once the last has been asked, the reload is done and `after` runs.
-    fn reload_next(
-        &self,
-        (workers, events): (u16, u16),
-        before: impl FnOnce(),
-        kill: impl FnOnce(u16),
-        after: impl FnOnce(),
-    ) {
-        let mut reload = lock(&self.reload);
-        let task = reload.unwrap_or_else(|| {
-            let all = self.reload_all.load(Ordering::Acquire);
-            before();
-            Reload {
-                workers,
-                reloaded: if all { 0 } else { events },
-            }
-        });
-        kill(task.reloaded);
-        let reloaded = task.reloaded.wrapping_add(1);
-        if reloaded == task.workers {
-            *reload = None;
-            self.reloading.store(false, Ordering::Release);
-            drop(reload);
-            after();
-        } else {
-            *reload = Some(Reload { reloaded, ..task });
-        }
+    /// Only the manager performs worker shutdown, once even if PHP bails out.
+    fn begin_shutdown(&self) -> bool {
+        !self.shutting_down.swap(true, Ordering::AcqRel)
     }
 }
 
@@ -165,17 +166,16 @@ fn worker_thread_start() -> Option<WorkerThreadStart> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use core::cell::RefCell;
 
     #[test]
     fn the_queue_wakes_on_push_or_times_out() {
         let manager = ThreadManager::new(0);
         assert!(manager.next(5).is_none());
         manager.push(Wake::Exited(3));
-        manager.push(Wake::Reload);
+        manager.push(Wake::Reload(false));
         manager.push(Wake::Exit);
         assert!(matches!(manager.next(5), Some(Wake::Exited(3))));
-        assert!(matches!(manager.next(0), Some(Wake::Reload)));
+        assert!(matches!(manager.next(0), Some(Wake::Reload(false))));
         assert!(matches!(manager.next(5), Some(Wake::Exit)));
     }
 
@@ -218,29 +218,33 @@ mod tests {
     #[test]
     fn a_reload_kills_one_worker_per_step_until_done() {
         let manager = ThreadManager::new(0);
-        let log = RefCell::new(Vec::new());
-        let step = || {
-            manager.reload_next(
-                (4, 2),
-                || log.borrow_mut().push("before".to_owned()),
-                |id| log.borrow_mut().push(format!("kill {id}")),
-                || log.borrow_mut().push("after".to_owned()),
-            );
-        };
-        // Task workers only: the event workers are skipped.
         assert!(manager.begin_reload(false));
-        // A second request while one runs is refused.
         assert!(!manager.begin_reload(true));
-        step();
-        assert!(manager.reloading());
-        step();
-        assert!(!manager.reloading());
-        assert_eq!(*log.borrow(), ["before", "kill 2", "kill 3", "after"]);
-        // A reload of every worker starts at the first.
-        log.borrow_mut().clear();
+        assert!(matches!(manager.next(0), Some(Wake::Reload(false))));
+        let mut reload = Reload::new(2..5);
+        let mut requested = Vec::new();
+        reload.advance(|slot| {
+            requested.push(slot);
+            slot != 2
+        });
+        assert_eq!(requested, [2, 3]);
+        reload.complete(3);
+        reload.complete(3);
+        reload.complete(0);
+        reload.advance(|slot| {
+            requested.push(slot);
+            true
+        });
+        assert_eq!(requested, [2, 3, 4]);
+        assert_eq!(reload.remaining, 1);
+        reload.complete(4);
+        assert_eq!(reload.remaining, 0);
+        manager.finish_reload();
         assert!(manager.begin_reload(true));
-        step();
-        assert_eq!(log.borrow()[..2], ["before", "kill 0"]);
+        assert!(manager.begin_shutdown());
+        assert!(!manager.begin_shutdown());
+        manager.finish_reload();
+        assert!(!manager.begin_reload(false));
     }
 
     #[test]

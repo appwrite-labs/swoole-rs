@@ -32,7 +32,7 @@ python3 tools/dev.py integrate --all-modules   # every module's gates; used by C
   `--compare`); skipped if any phase failed. Stop other builds first.
 - `--php-extension NAME` passes dynamic PHP modules through to runners.
 - `--fix-halfclose`, `--match-child-php` and the build profile switches
-  (`--stdext`, `--php-sockets`) are forwarded to the builder or runners.
+  (such as `--php-sockets`) are forwarded to the builder or runners.
 
 Edit and candidate stop at the first failure; integrate runs every phase and
 fails if any failed. Each run writes logs, exit codes, phase durations,

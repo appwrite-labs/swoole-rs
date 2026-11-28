@@ -61,9 +61,6 @@ def timed_phase(report, phase):
 # runs, so it can never talk to an unrelated process; TIME_WAIT is tolerated.
 FIXED_PORTS = {'tests/swoole_timer/bug_4794_8.phpt': 9601}
 
-# Cases whose SKIPIF's only bar is skip_if_in_ci() and that need nothing the PHPT jobs lack
-# (the ssh2 key login phpt-env sets up). They run with the CI marker removed.
-OUTSIDE_CI = {'tests/swoole_ssh2/ssh2_auth_pubkey.phpt', 'tests/swoole_ssh2/ssh2_auth_pubkey_file.phpt'}
 
 
 # Only this named ZTS original is excluded after the same output interleaving was
@@ -96,20 +93,10 @@ def verdict_failed(row, require_all):
 # Originals whose verdict is decided by something outside the engine, on upstream too: a
 # race in the test itself, the runner's network, or a file or tool the runner can't use. They
 # are recorded unsupported, never run or counted as passed.
-RACY = {'tests/swoole_http_server/compression_content_type_release.phpt':
-        'the file starts with a blank line, so PHP\'s runner BORKs it ("tests must start with '
-        '--TEST--") on every engine (#1964)',
-        'tests/swoole_process/process_exec.phpt':
+RACY = {'tests/swoole_process/process_exec.phpt':
         "it execs /usr/bin/python on echo.py, which is Python 2 (raw_input, the print "
         'statement); Python 3 rejects it with a SyntaxError on every engine (#1974); companion: '
         'tests/modules/integration/companion.py --case process_exec (#5358)',
-        'tests/swoole_runtime/exec/exec.phpt':
-        "it pings www.gov.cn three times through each exec function; GitHub's hosted runners "
-        'drop ICMP, so ping never answers and the case times out on every engine (#1974)',
-        'tests/swoole_http2_client_coro/connect_twice.phpt':
-        "it fetches https://nghttp2.org/httpbin/base64/..., and nghttp2.org's httpbin backend "
-        'answers 502 Bad Gateway (nghttpx) to every engine and to curl (#1986); companion: '
-        'tests/modules/integration/companion.py --case connect_twice (#5358)',
         'tests/swoole_server/dispatch_mode_9.phpt':
         "it asserts the standard deviation of per-worker request counts is below 5, which the "
         "scheduler's interleaving decides: in 258 merge-tier runs on 11-11 the first run missed "
@@ -122,10 +109,6 @@ RACY = {'tests/swoole_http_server/compression_content_type_release.phpt':
         'tests/swoole_curl/exec_twice.phpt':
         'the same fatal_error() exit as close_before_resume orphans its SWOOLE_PROCESS server, '
         "which holds the runner's stdout open until the deadline on every engine (#1994)",
-        'tests/swoole_ssh2/ssh2_sftp_001.phpt':
-        "libssh2 (1.11.0 and 1.11.1) against OpenSSH's sftp-server (9.6, 10.0) fails every "
-        "SSH_FXP_SYMLINK after an SFTP channel's first request, though the link is created; "
-        'plain PECL ssh2 and a C client do the same, and the test calls mkdir first (#1994)',
         'tests/swoole_table/force_unlock.phpt':
         "it expects the child's OOM to bail out of Table::get while it holds the row lock; PHP's "
         'fix for CVE-2026-109618 (php-src 3584a98, in the runners\' PHP 8.3.6) delays a memory '
@@ -136,14 +119,6 @@ RACY = {'tests/swoole_http_server/compression_content_type_release.phpt':
         'tests/swoole_coroutine/dnslookup_ipv6.phpt':
         "the verdict depends on the runner's resolver reply, and both engines fail on some "
         'replies (#428)',
-        'tests/swoole_process_pool/getprocess_4.phpt':
-        'worker 0 gives the pool a fixed 100 ms to restart the SIGTERMed worker 1 before '
-        'getProcess(1); on a loaded runner both engines miss it (upstream failed re-runs in 3 '
-        'merge-tier runs, #703)',
-        'tests/swoole_curl/multi/bug4393.phpt':
-        'it asserts two concurrent requests to live www.qq.com and www.baidu.com finish within '
-        "3.0 s; that's the runner's WAN latency, and upstream misses it too (9.23 s, 3.26 s, "
-        '3.17 s in 3 of 20 merge-tier runs; hybrid 6.66 s in 1, #1210)',
         'tests/swoole_runtime/nonblock.phpt':
         'it connects to live www.baidu.com:80 with a 1 s timeout, and every engine sometimes '
         'misses it with the same "Unable to connect" (16 merge-tier runs: upstream 3/32, hybrid '
@@ -296,16 +271,11 @@ CONDITIONALLY_RACY = {'thread_context': THREAD_CONTEXT_RACY, 'sanitizers': SANIT
 # holding stdout to the deadline, libssh2, PHP's own OOM fix, the resolver's reply. --run-racy
 # leaves them unrun; the rest race, so running them shows a pass rate that moves (#5358).
 ENVIRONMENT = frozenset({
-    'tests/swoole_http_server/compression_content_type_release.phpt',
     'tests/swoole_process/process_exec.phpt',
-    'tests/swoole_runtime/exec/exec.phpt',
-    'tests/swoole_http2_client_coro/connect_twice.phpt',
     'tests/swoole_curl/close_before_resume.phpt',
     'tests/swoole_curl/exec_twice.phpt',
-    'tests/swoole_ssh2/ssh2_sftp_001.phpt',
     'tests/swoole_table/force_unlock.phpt',
     'tests/swoole_coroutine/dnslookup_ipv6.phpt',
-    'tests/swoole_curl/multi/bug4393.phpt',
     'tests/swoole_runtime/nonblock.phpt',
     'tests/swoole_client_async/enableSSL.phpt',
 })
@@ -427,7 +397,19 @@ def prepare(source, destination, cases, support_files=()):
     # Adapt only that support setup, never PHPT code, assertions, or expectations.
     bootstrap = destination / 'tests/include/bootstrap.php'
     original = bootstrap.read_text()
-    remote_setup = "// Run default remote object server\nswoole_library_set_option('default_remote_object_server_worker_num', 2);\nswoole_init_default_remote_object_server();\n"
+    remote_setup = """// Run default remote object server
+if (!is_win()) {
+    $remoteObjectDirectory = __DIR__ . '/tmp';
+    if (!is_dir($remoteObjectDirectory)
+        && !@mkdir($remoteObjectDirectory, 0755, true)
+        && !is_dir($remoteObjectDirectory)) {
+        throw new RuntimeException("Unable to create remote object server directory: $remoteObjectDirectory");
+    }
+    swoole_library_set_option('default_remote_object_server_worker_num', 2);
+    swoole_library_set_option('default_remote_object_server_dir', $remoteObjectDirectory);
+    swoole_init_default_remote_object_server();
+}
+"""
     if original.count(remote_setup) != 1:
         raise ValueError('Upstream bootstrap remote setup changed; review adapter')
     bootstrap.write_text(original.replace(remote_setup, '// Remote-object service excluded from this isolated selection.\n'))
@@ -545,10 +527,10 @@ def run_cases(engine, cases, sandbox, artifacts, timeout, jobs, *, offline=True,
     env['PHP_INI_SCAN_DIR'] = os.environ.get('PHP_INI_SCAN_DIR', '') + os.pathsep + str(scan)
     if not offline:
         env['SKIP_ONLINE_TESTS'] = '0'
-    if all(case['path'] in OUTSIDE_CI for case in cases):
-        env.pop('GITHUB_ACTIONS', None)
     child_selector = None
     if match_child_php:
+        if 'TEST_PHP_EXTRA_ARGS' in os.environ:
+            env['TEST_PHP_EXTRA_ARGS'] = os.environ['TEST_PHP_EXTRA_ARGS']
         php = shutil.which(engine.php)
         if not php:
             raise ValueError('Cannot resolve child PHP executable: ' + engine.php)
@@ -623,6 +605,8 @@ def run_cases(engine, cases, sandbox, artifacts, timeout, jobs, *, offline=True,
             generated = (sandbox / path).with_suffix('.' + suffix)
             if generated.is_file():
                 shutil.copy2(generated, artifact / generated.name)
+            else:
+                (artifact / generated.name).unlink(missing_ok=True)
         row = {'status': status, 'upstream_status': upstream_status, 'exit_code': exit_code,
                'artifacts': str(artifact), 'runner_log': str(artifacts / 'runner.log'),
                'seconds': round(time.monotonic() - started, 4) if len(cases) == 1 else times.get(path),

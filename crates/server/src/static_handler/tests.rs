@@ -137,6 +137,13 @@ impl StaticEffects for Scripted {
             ..HttpStaticObservation::default()
         }))
     }
+    fn index_stat(&self, path: &[u8]) -> Option<HttpStaticObservation> {
+        let facts = self.stat(path)?;
+        let name = path.rsplit(|&byte| byte == b'/').next()?;
+        SCRIPT
+            .with_borrow(|script| script.names.iter().any(|entry| entry == name))
+            .then_some(facts)
+    }
     fn canonical(&self, path: &[u8]) -> Option<Vec<u8>> {
         note(&[b"canonical:", path]);
         let resolved = SCRIPT.with_borrow(|script| {
@@ -174,7 +181,7 @@ impl StaticEffects for Scripted {
         out[count] = 0;
     }
     fn modified_range(&self, if_range: &[u8], mtime: i64) -> bool {
-        swoole_rs_http::conditional(if_range, swoole_rs_http::Conditional::Range, mtime, 0, self)
+        swoole_rs_http::conditional(if_range, swoole_rs_http::Conditional::Range, mtime, self)
     }
     fn overflow(&self) {
         set_errno(libc::EOVERFLOW);
@@ -191,14 +198,16 @@ impl Calendar for Scripted {
                 format.as_ptr(),
                 ptr::from_mut(tm).cast(),
             )
+            .cast_const()
+                == date.as_ptr().wrapping_add(date.count_bytes())
         }
     }
-    fn to_time(&self, tm: &mut Tm) -> i64 {
+    fn to_time(&self, mut tm: Tm) -> i64 {
         // SAFETY: an exclusive, initialized tm.
-        unsafe { oracle::swr_oracle_calendar_time(ptr::from_mut(tm).cast()) }
+        unsafe { oracle::swr_oracle_calendar_time(ptr::from_mut(&mut tm).cast()) }
     }
     fn to_gmt(&self, time: i64) -> Option<Tm> {
-        // SAFETY: null or libc's static tm, copied before another calendar call.
+        // SAFETY: null or the calling thread's tm, copied before another calendar call.
         unsafe { oracle::swr_oracle_calendar_gmt(time).cast::<Tm>().as_ref() }.copied()
     }
 }
@@ -391,6 +400,28 @@ impl Drop for Server {
     fn drop(&mut self) {
         // SAFETY: allocated in `new`, freed once; it owns the config too.
         unsafe { drop(Box::from_raw(self.0.state)) };
+    }
+}
+
+#[test]
+fn malformed_path_escapes_return_400_before_filesystem_lookup() {
+    let config = Config::default();
+    let server = Server::new(&config);
+    for url in [
+        b"/file%".as_slice(),
+        b"/file%2",
+        b"/file%x0",
+        b"/file%0x",
+        b"/file%00.txt",
+    ] {
+        script(Script::default());
+        let original = Upstream::new(&config, url);
+        let mut handler = server.handler(url);
+        assert!(original.try_serve(), "{url:?}");
+        assert!(handler.try_serve(), "{url:?}");
+        assert_eq!(handler.status(), swoole_rs_http::status::BAD_REQUEST);
+        assert!(upstream_trace().is_empty(), "{url:?}");
+        assert!(trace().is_empty(), "{url:?}");
     }
 }
 
@@ -746,6 +777,9 @@ fn conditional_dates() -> Vec<Vec<u8>> {
     let mut dates: Vec<Vec<u8>> = [
         "",
         "invalid",
+        "\"0-11-0\"",
+        "\"0-11-1\"",
+        "W/\"0-11-0\"",
         "Sun, 06 Nov 1994 08:49:37 GMT",
         "Sun, 06 Nov 1994 08:49:37 UTC",
         "Sunday, 06-Nov-94 08:49:37 GMT",
@@ -783,8 +817,7 @@ fn observed(verdict: impl FnOnce() -> bool) -> (bool, i32, Vec<Vec<u8>>) {
 }
 
 /// `is_modified` (kind 0) or `is_modified_range` (kind 1) of `date` on a file of
-/// `file` mtime, with timezone `offset`, on both sides. The candidate's If-Range
-/// verdict is `parse_range`'s: a 206 for `bytes=0-0` keeps the range.
+/// `file` mtime, with timezone `offset`, on both sides. Compare the conditional itself, including when the header is empty.
 fn compare_conditional(old: &Upstream, server: &Server, file: i64, date: &[u8], kind: u32) {
     let original = if kind == 0 {
         observed(|| old.is_modified(date))
@@ -796,12 +829,15 @@ fn compare_conditional(old: &Upstream, server: &Server, file: i64, date: &[u8], 
         assert!(handler.try_serve(), "file selection");
         observed(|| handler.is_modified(date))
     } else {
-        conditional_script(file);
-        let mut handler = server.handler(b"/file.txt");
-        assert!(handler.try_serve(), "file selection");
         observed(|| {
-            handler.parse_range(Some(b"bytes=0-0"), Some(date));
-            handler.status() == 200
+            Scripted.if_range_changed(
+                date,
+                &HttpStaticObservation {
+                    mtime: file,
+                    filesize: 17,
+                    ..Default::default()
+                },
+            )
         })
     };
     assert_eq!(
@@ -880,7 +916,7 @@ fn random_dates() -> Vec<Vec<u8>> {
 
 /// The zone sweep runs in a child per `TZ`, since the environment is
 /// process-wide; this process then runs the random dates and the two cases
-/// where the original's arithmetic misbehaves and only the correction runs.
+/// at the limits of the modification time and timezone fields.
 #[test]
 #[cfg_attr(miri, ignore = "Miri has no posix_spawnattr_init")]
 fn former_conditional_gate() {
@@ -912,29 +948,57 @@ fn former_conditional_gate() {
             compare_conditional(&old, &server, 784_111_777, &date, kind);
         }
     }
-    // An mtime gmtime can't represent.
-    conditional_script(i64::MAX);
-    let mut handler = server.handler(b"/file.txt");
-    assert!(handler.try_serve(), "file selection");
-    let (modified, _, events) = observed(|| {
-        handler.parse_range(Some(b"bytes=0-0"), Some(b"Sun, 06 Nov 1994 08:49:37 GMT"));
-        handler.status() == 200
-    });
-    assert!(!modified, "an unrepresentable mtime is not modified");
-    assert!(
-        events.len() == 2 && events[1].windows(6).any(|w| w == b":null:"),
-        "one parse, then gmtime's null"
-    );
-    // A timezone whose subtraction overflows.
-    conditional_script(0);
-    let server = Server::new(&Config {
-        timezone: c_long::MIN,
-        ..Config::default()
-    });
-    let mut handler = server.handler(b"/file.txt");
-    assert!(handler.try_serve(), "file selection");
-    assert!(
-        !handler.is_modified(b"Sun, 06 Nov 1994 08:49:37 GMT"),
-        "an overflowing timezone is not modified"
-    );
+    // Compare the boundary values directly with v6.3 in UTC.
+    for mtime in [i64::MAX, i64::MIN] {
+        conditional_script(mtime);
+        let config = Config {
+            timezone: c_long::MIN,
+            ..Config::default()
+        };
+        let upstream = Upstream::new(&config, b"/file.txt");
+        assert!(upstream.try_serve());
+        let server = Server::new(&config);
+        for kind in [0, 1] {
+            compare_conditional(
+                &upstream,
+                &server,
+                mtime,
+                b"Sun, 06 Nov 1994 08:49:37 GMT",
+                kind,
+            );
+        }
+    }
+}
+
+#[test]
+fn preconditions_and_if_range_share_validators() {
+    let file = HttpStaticObservation {
+        mtime: 1_730_000_000,
+        filesize: 10,
+        ..Default::default()
+    };
+    let tag = file.etag();
+    let weak = format!("W/{tag}");
+    let date = "Sun, 27 Oct 2024 03:33:20 GMT";
+    let status = |m: &str, u: &str, n: &str, d: &str| {
+        file.preconditions(
+            m.as_bytes(),
+            u.as_bytes(),
+            n.as_bytes(),
+            d.as_bytes(),
+            &Scripted,
+        ) as u32
+    };
+    assert_eq!(status("*", "", "", ""), 200);
+    assert_eq!(status(&tag, "invalid", "", ""), 200);
+    assert_eq!(status(&weak, "", "", ""), 412);
+    assert_eq!(status("\"other\"", "", "*", ""), 412);
+    assert_eq!(status("", "", &weak, ""), 304);
+    assert_eq!(status("", "", &format!("\"other\", {tag}"), ""), 304);
+    assert_eq!(status("", "", "\"other\"", date), 200);
+    assert_eq!(status("", "Sun, 27 Oct 2024 02:33:20 GMT", "", ""), 412);
+    assert!(!Scripted.if_range_changed(tag.as_bytes(), &file));
+    assert!(Scripted.if_range_changed(weak.as_bytes(), &file));
+    assert!(Scripted.if_range_changed(b"\"other\"", &file));
+    assert_eq!(status("", "", "   ", ""), 200);
 }

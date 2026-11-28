@@ -379,14 +379,9 @@ impl<'a> PoolRef<'a> {
         self.record().reload_task.with_box(f)
     }
 
-    /// Arms the reload's timeout timer, then gives it to the task to cancel on
-    /// drop; nothing while no reload is in progress. The task is out of the pool
-    /// while `arm` runs. The timer keeps no pointer into the task: when it fires,
-    /// it reaches the task through the pool ([`Self::with_reload_task`]).
-    pub fn arm_reload_timer(self, arm: impl FnOnce() -> Option<ArmedTimer>) {
-        self.record()
-            .reload_task
-            .with_box(|task| task.set_timer(arm()));
+    /// Configure the timer factory once for this reload. The task arms it for each worker.
+    pub fn configure_reload_timeout(self, arm: impl Fn() -> Option<ArmedTimer> + 'static) {
+        self.with_reload_task(|task| task.configure_timeout(arm));
     }
 
     fn set_reload_task(self, task: Option<Box<ReloadTask>>) {
@@ -1119,7 +1114,6 @@ const EVENT_DATA: usize = size_of::<DataHead>();
 #[must_use]
 #[inline]
 pub fn head_view(head: &DataHead) -> [u8; EVENT_DATA] {
-    use core::mem::offset_of;
     // Every byte of a `DataHead` is a field's: its fields end where the next begins.
     const _: () = assert!(
         core::mem::offset_of!(DataHead, time) + size_of::<f64>() == EVENT_DATA
@@ -1134,34 +1128,7 @@ pub fn head_view(head: &DataHead) -> [u8; EVENT_DATA] {
             && core::mem::offset_of!(DataHead, time) == 32,
         "DataHead has no padding"
     );
-    let fields: [(usize, &[u8]); 10] = [
-        (offset_of!(DataHead, fd), &head.fd.to_ne_bytes()),
-        (offset_of!(DataHead, msg_id), &head.msg_id.to_ne_bytes()),
-        (offset_of!(DataHead, len), &head.len.to_ne_bytes()),
-        (
-            offset_of!(DataHead, reactor_id),
-            &head.reactor_id.to_ne_bytes(),
-        ),
-        (offset_of!(DataHead, kind), &[head.kind]),
-        (offset_of!(DataHead, flags), &[head.flags]),
-        (
-            offset_of!(DataHead, server_fd),
-            &head.server_fd.to_ne_bytes(),
-        ),
-        (
-            offset_of!(DataHead, ext_flags),
-            &head.ext_flags.to_ne_bytes(),
-        ),
-        (offset_of!(DataHead, reserved), &head.reserved.to_ne_bytes()),
-        (offset_of!(DataHead, time), &head.time.to_ne_bytes()),
-    ];
-    let mut bytes = [0; EVENT_DATA];
-    for (at, field) in fields {
-        if let Some(to) = bytes.get_mut(at..at + field.len()) {
-            to.copy_from_slice(field);
-        }
-    }
-    bytes
+    head.to_bytes()
 }
 
 /// A pool effect, which `crates/server/src/pool_native.rs` answers; the process-wide
@@ -1720,7 +1687,13 @@ impl<H: PoolHost> Pool<'_, H> {
     }
 
     /// `ProcessPool::create`.
-    fn create(&mut self, worker_num: u32, key: c_int, mode: u8) -> bool {
+    fn create(
+        &mut self,
+        worker_num: u32,
+        key: c_int,
+        mode: u8,
+        owner: Option<(libc::uid_t, libc::gid_t)>,
+    ) -> bool {
         let mode = IpcMode::from_code(mode.into());
         if mode == IpcMode::MsgQueue && !self.h.have_msgqueue() {
             self.op(Op::Log(Log::NoSysvmsg), 0);
@@ -1741,7 +1714,7 @@ impl<H: PoolHost> Pool<'_, H> {
             IpcMode::MsgQueue => {
                 self.set_use_msgqueue(true);
                 self.set_msgqueue_key(key);
-                let Some(queue) = crate::ossupport::QueueRecord::open(key) else {
+                let Some(queue) = crate::ossupport::QueueRecord::open_pool(key, owner) else {
                     return false;
                 };
                 self.p.set_queue(Some(queue));
@@ -2184,16 +2157,18 @@ impl<H: PoolHost> Pool<'_, H> {
     /// `ProcessPool::wait`: reap and restart workers until the pool stops, then
     /// stop them all.
     pub(crate) fn wait(&mut self) -> Result<(), Bailed> {
-        reaper::run(self)?;
-
+        let result = reaper::run(self);
+        if result.is_err() && getpid() != self.master_pid() {
+            return result;
+        }
         self.set_running(false);
         self.drop_reload_task();
-        if self.on_shutdown().is_some() {
+        if result.is_ok() && self.on_shutdown().is_some() {
             self.h.callback(Callback::Shutdown, ptr::null_mut())?;
         }
         for index in 0..self.worker_num() {
             let pid = self.worker_at(index).pid();
-            if kill(pid, libc::SIGTERM).is_err() {
+            if pid > 0 && kill(pid, libc::SIGTERM).is_err() {
                 self.op(Op::Log(Log::KillFailed), u64::from(pid.cast_unsigned()));
             }
         }
@@ -2203,12 +2178,12 @@ impl<H: PoolHost> Pool<'_, H> {
         // Upstream waits for the first worker only.
         if self.worker_num() > 0 {
             let pid = self.worker_at(0).pid();
-            if !self.h.waitpid(pid) {
+            if pid > 0 && !self.h.waitpid(pid) {
                 self.op(Op::Log(Log::WaitpidFailed), u64::from(pid.cast_unsigned()));
             }
         }
         self.set_started(false);
-        Ok(())
+        result
     }
 
     /// `ProcessPool::push_message(msg)`: the `EventData` with `head` and `data` into
@@ -2410,7 +2385,20 @@ pub fn swr_v1_process_pool_create(
     key: c_int,
     mode: u8,
 ) -> bool {
-    with(native, pool, |p| p.create(worker_num, key, mode))
+    with(native, pool, |p| p.create(worker_num, key, mode, None))
+}
+
+/// Create a server task queue with the credentials its workers will use.
+pub fn create_task_queue(
+    native: &dyn PoolNative,
+    pool: PoolRef<'_>,
+    worker_num: u32,
+    key: c_int,
+    owner: (libc::uid_t, libc::gid_t),
+) -> bool {
+    with(native, pool, |p| {
+        p.create(worker_num, key, IpcMode::MsgQueue.code(), Some(owner))
+    })
 }
 
 /// `ProcessPool::push_message(type, data, length)`.
@@ -2805,7 +2793,7 @@ mod tests {
         let mut script = Script::default();
         script.answers.insert(Op::HaveMsgqueue, 0);
         let mut pool = fixture.pool(script);
-        assert!(!pool.create(2, 0, IpcMode::MsgQueue.code()));
+        assert!(!pool.create(2, 0, IpcMode::MsgQueue.code(), None));
         assert_eq!(ops(&pool), [Op::HaveMsgqueue, Op::Log(Log::NoSysvmsg)]);
     }
 
@@ -2819,7 +2807,7 @@ mod tests {
         }
         let mut fixture = Fixture::new(3);
         let mut pool = fixture.pool(Script::default());
-        assert!(pool.create(3, 0, IpcMode::UnixSock.code()));
+        assert!(pool.create(3, 0, IpcMode::UnixSock.code(), None));
         assert_eq!(
             ops(&pool),
             [
@@ -2854,7 +2842,7 @@ mod tests {
         let mut script = Script::default();
         script.answers.insert(Op::NewPipe, 0);
         let mut pool = fixture.pool(script);
-        assert!(!pool.create(3, 0, IpcMode::UnixSock.code()));
+        assert!(!pool.create(3, 0, IpcMode::UnixSock.code(), None));
         assert_eq!(
             pool.h
                 .log
@@ -2869,7 +2857,7 @@ mod tests {
     fn an_unknown_ipc_mode_is_none() {
         let mut fixture = Fixture::new(1);
         let mut pool = fixture.pool(Script::default());
-        assert!(pool.create(1, 0, 9));
+        assert!(pool.create(1, 0, 9, None));
         assert_eq!(pool.ipc_mode(), IpcMode::None);
         pool.destroy();
     }

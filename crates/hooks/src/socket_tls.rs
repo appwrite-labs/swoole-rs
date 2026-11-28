@@ -5,13 +5,13 @@ use crate::co_io::{Timer, available, default_err, set_err};
 use crate::co_socket::Co;
 use crate::connect::{HandshakeMode, Handshaking, Step, ssl_handshake};
 use crate::socket_wait::wait_for;
-use core::ffi::{CStr, c_int};
+use core::ffi::c_int;
 use std::sync::Arc;
 use swoole_rs_corebase::log;
 use swoole_rs_corebase::reactor::Events;
 use swoole_rs_corebase::tls::SslCreateFlag::{SW_SSL_CLIENT as CLIENT, SW_SSL_SERVER as SERVER};
 use swoole_rs_corebase::tls::upstream::{
-    socket_ssl_accept, socket_ssl_check_host, socket_ssl_connect, socket_ssl_verify,
+    check_peer_name, socket_ssl_accept, socket_ssl_connect, socket_ssl_verify,
 };
 use swoole_rs_corebase::tls::{
     Accept, OwnedTlsContext, SocketContextError, SslNewError, TlsContext, TlsSettings,
@@ -98,7 +98,13 @@ impl Co {
         let (owner, http2) = (self.tls_context(), self.http2());
         let made = owner.and_then(|owner| {
             self.with_network(|socket| {
-                freeze_socket_context(&mut owner.borrow_configuration(), socket, http2, true)
+                freeze_socket_context(
+                    &mut owner.borrow_configuration(),
+                    socket,
+                    http2,
+                    true,
+                    self.ssl_is_server(),
+                )
             })
         });
         match made.unwrap_or(Err(SocketContextError::Create)) {
@@ -154,18 +160,51 @@ impl Co {
     /// `SSLContext` and a TLS session.
     #[must_use]
     pub fn ssl_verify(self, allow_self_signed: bool) -> bool {
+        if self.ssl_is_server()
+            && !self
+                .with_network(|s| {
+                    swoole_rs_corebase::tls::upstream::require_peer_certificate(
+                        s,
+                        c"Socket::ssl_verify",
+                    )
+                })
+                .unwrap_or(false)
+        {
+            set_err(
+                self,
+                swoole_rs_error::ErrorCode::SW_ERROR_SSL_EMPTY_PEER_CERTIFICATE as c_int,
+            );
+            return false;
+        }
         let verified = self
             .with_network(|network| socket_ssl_verify(network, allow_self_signed))
             .unwrap_or(false)
-            && {
-                let mut name = self.tls_host_name();
-                name.is_empty() || {
-                    name.push(0);
-                    let name = CStr::from_bytes_until_nul(&name).unwrap_or_default();
-                    self.with_network(|network| socket_ssl_check_host(network, name))
-                        .unwrap_or(false)
-                }
-            };
+            && self.verify_host();
+        if !verified {
+            set_err(self, SSL_VERIFY_FAILED);
+        }
+        verified
+    }
+
+    fn verify_host(self) -> bool {
+        let policy = self.tls_settings().and_then(|s| s.verify_host());
+        if policy == Some(false) {
+            return true;
+        }
+        let strict = policy == Some(true);
+        let mut name = self.tls_host_name();
+        if name.is_empty() && strict {
+            name = self
+                .with_extra(|e| e.strings.as_ref()[2].bytes().to_vec())
+                .unwrap_or_default();
+        }
+        if name.is_empty() && !strict {
+            return true;
+        }
+        let verified = std::ffi::CString::new(name).is_ok_and(|name| {
+            !name.to_bytes().is_empty()
+                && self.with_network(|s| check_peer_name(s, &name, strict)) == Some(true)
+        });
         if !verified {
             set_err(self, SSL_VERIFY_FAILED);
         }
@@ -238,10 +277,10 @@ impl Handshaking for Handshake {
         self.socket.tls_settings().is_some()
     }
 
-    fn verify_peer(&self) -> bool {
+    fn verification_required(&self) -> bool {
         self.socket
             .tls_settings()
-            .is_some_and(|settings| settings.verify_peer())
+            .is_some_and(|settings| settings.verify_peer() || settings.verify_host() == Some(true))
     }
 
     fn available(&mut self) -> bool {
@@ -310,12 +349,13 @@ impl Handshaking for Handshake {
     }
 
     fn verify(&mut self) -> bool {
-        // Verified only with a context.
-        let allow_self_signed = self
-            .socket
-            .tls_settings()
-            .is_some_and(|settings| settings.allow_self_signed());
-        self.socket.ssl_verify(allow_self_signed)
+        self.socket.tls_settings().is_some_and(|settings| {
+            if settings.verify_peer() {
+                self.socket.ssl_verify(settings.allow_self_signed())
+            } else {
+                self.socket.verify_host()
+            }
+        })
     }
 }
 

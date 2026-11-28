@@ -6,54 +6,24 @@ struct Number {
     consumed: usize,
 }
 
-fn number(bytes: &[u8], range: &mut bool) -> Option<Number> {
-    let bytes = bytes.get(1..)?;
-    let mut end = 0;
-    while bytes
-        .get(end)
-        .is_some_and(|byte| matches!(byte, b' ' | b'\t' | b'\n' | 11 | 12 | b'\r'))
-    {
-        end += 1;
+fn number(bytes: &[u8]) -> Option<Number> {
+    let tail = bytes.get(1..)?;
+    let negative = tail.first() == Some(&b'-');
+    let digits = tail.strip_prefix(b"-").unwrap_or(tail);
+    let mut value = 0_i32;
+    let mut count = 0;
+    for &digit in digits.iter().take_while(|b| b.is_ascii_digit()) {
+        value = value
+            .checked_mul(10)?
+            .checked_add(i32::from(digit - b'0'))?;
+        count += 1;
     }
-    let negative = bytes.get(end) == Some(&b'-');
-    if matches!(bytes.get(end), Some(b'+' | b'-')) {
-        end += 1;
-    }
-    let start = end;
-    let limit = if negative {
-        (i64::MAX as u64) + 1
-    } else {
-        i64::MAX as u64
-    };
-    let mut value = 0u64;
-    while let Some(byte) = bytes.get(end).filter(|byte| byte.is_ascii_digit()) {
-        let digit = u64::from(*byte - b'0');
-        if value > (limit - digit) / 10 {
-            *range = true;
-        }
-        value = value.saturating_mul(10).saturating_add(digit).min(limit);
-        end += 1;
-    }
-    if end == start {
-        end = 0;
-    }
-    if bytes.get(end..end + 2) != Some(b"\r\n") {
+    if count == 0 || !digits.get(count..)?.starts_with(b"\r\n") {
         return None;
     }
-    let signed = if negative {
-        value.wrapping_neg().cast_signed()
-    } else {
-        value.cast_signed()
-    };
-    #[expect(
-        clippy::cast_possible_truncation,
-        reason = "C's int ret = strtol(..) narrows the long; this crate is below corebase, \
-                  so it has no c_cast"
-    )]
-    let value = signed as i32;
     Some(Number {
-        value,
-        consumed: end + 3,
+        value: if negative { -value } else { value },
+        consumed: 3 + usize::from(negative) + count,
     })
 }
 
@@ -80,25 +50,12 @@ pub struct RespSpan {
 /// Capacity of the Redis command buffer, including its terminating NUL.
 pub const REDIS_MAX_COMMAND_SIZE: usize = 64;
 
-/// Render the native PHP handler property key: ASCII lowercase `_handler_`,
-/// stopping at the command's first NUL and truncating to 63 bytes. The native
-/// caller keeps raw command-length validation and Zend registry ownership.
-/// Returns the key, zero-filled past its length.
+/// The PHP handler property name for a command, including all command bytes.
 #[must_use]
-pub fn resp_handler_key(bytes: &[u8]) -> ([u8; REDIS_MAX_COMMAND_SIZE], usize) {
-    let mut key = [0u8; REDIS_MAX_COMMAND_SIZE];
-    let prefix = b"_handler_";
-    let name = bytes
-        .iter()
-        .take(key.len() - prefix.len() - 1)
-        .take_while(|&&byte| byte != 0)
-        .map(u8::to_ascii_lowercase);
-    let mut length = 0;
-    for (slot, byte) in key.iter_mut().zip(prefix.iter().copied().chain(name)) {
-        *slot = byte;
-        length += 1;
-    }
-    (key, length)
+pub fn resp_handler_key(command: &[u8]) -> Vec<u8> {
+    let mut key = [b"_handler_".as_slice(), command].concat();
+    key.make_ascii_lowercase();
+    key
 }
 
 /// Where a RESP walk is.
@@ -123,39 +80,46 @@ pub struct RespCursor {
 
 impl RespCursor {
     #[inline]
-    fn next(&mut self, bytes: &[u8], range: &mut bool) -> Result<Option<RespSpan>, ()> {
+    fn next(&mut self, bytes: &[u8], php: bool) -> Result<Option<RespSpan>, ()> {
         while let Some(rest) = bytes.get(self.position..)
             && let Some(&first) = rest.first()
         {
-            if self.phase == RespPhase::Start && first == b'*' {
-                self.position += number(rest, range).ok_or(())?.consumed;
-                self.phase = RespPhase::Item;
-            } else if self.phase != RespPhase::Bulk && first == b'$' {
-                let value = number(rest, range).ok_or(())?;
+            let numeric = self.phase != RespPhase::Bulk
+                && (matches!(first, b'$' | b':')
+                    || self.phase == RespPhase::Start && first == b'*');
+            if let Some(value) = numeric.then(|| number(rest)).flatten() {
                 self.position += value.consumed;
-                if value.value == -1 {
-                    return Ok(Some(RespSpan {
-                        kind: RespKind::Null,
-                        ..RespSpan::default()
-                    }));
+                match first {
+                    b'*' => self.phase = RespPhase::Item,
+                    b':' => {
+                        return Ok(Some(RespSpan {
+                            integer: value.value,
+                            kind: RespKind::Integer,
+                            ..RespSpan::default()
+                        }));
+                    }
+                    _ if value.value < 0 => {
+                        if php && value.value < -1 {
+                            return Err(());
+                        }
+                        return Ok(Some(RespSpan {
+                            kind: RespKind::Null,
+                            ..RespSpan::default()
+                        }));
+                    }
+                    _ => {
+                        self.length = value.value;
+                        self.phase = RespPhase::Bulk;
+                    }
                 }
-                self.length = value.value;
-                self.phase = RespPhase::Bulk;
-            } else if self.phase != RespPhase::Bulk && first == b':' {
-                let value = number(rest, range).ok_or(())?;
-                self.position += value.consumed;
-                return Ok(Some(RespSpan {
-                    integer: value.value,
-                    kind: RespKind::Integer,
-                    ..RespSpan::default()
-                }));
             } else {
-                // Native falls through for unrecognized prefixes, initially
-                // producing empty strings. Its two trailer bytes are unchecked.
+                if numeric && php {
+                    return Err(());
+                }
                 let length = usize::try_from(self.length).map_err(|_| ())?;
                 let end = self.position.checked_add(length).ok_or(())?;
-                if end > bytes.len() {
-                    return Err(());
+                if bytes.len().saturating_sub(self.position) < length + 2 {
+                    return if php { Err(()) } else { Ok(None) };
                 }
                 let span = RespSpan {
                     offset: self.position,
@@ -171,13 +135,16 @@ impl RespCursor {
     }
 }
 
-/// Walk a whole RESP command, emitting each span but nulls, which the native vector
-/// parser omits: the span count, or `None` when the command is malformed. `range`
-/// is set when a number overflowed a signed long, even if a delimiter then failed.
-pub fn resp_spans(bytes: &[u8], mut emit: impl FnMut(RespSpan), range: &mut bool) -> Option<usize> {
+/// Emit the completed spans of the vector parser, which skips nulls and stops
+/// at an incomplete payload. The v6.3 decimal decoder leaves errno unchanged.
+pub fn resp_spans(
+    bytes: &[u8],
+    mut emit: impl FnMut(RespSpan),
+    _range: &mut bool,
+) -> Option<usize> {
     let mut cursor = RespCursor::default();
     let mut count = 0;
-    while let Some(span) = cursor.next(bytes, range).ok()? {
+    while let Some(span) = cursor.next(bytes, false).ok()? {
         // The native vector parser omits nulls; PHP keeps them as parameters.
         if span.kind != RespKind::Null {
             emit(span);
@@ -198,7 +165,7 @@ pub struct RespPhpState {
 pub struct Malformed;
 
 /// One PHP request event, or `None` at the end. The first string is the
-/// [`RespKind::Command`]; integers and nulls preceding it remain parameters. `range` reports native ERANGE without touching errno.
+/// [`RespKind::Command`]; integers and nulls preceding it remain parameters. The v6.3 decimal decoder leaves errno unchanged.
 /// Invalid input leaves `state` unchanged.
 ///
 /// # Errors
@@ -206,10 +173,10 @@ pub struct Malformed;
 pub fn resp_php_next(
     bytes: &[u8],
     state: &mut RespPhpState,
-    range: &mut bool,
+    _range: &mut bool,
 ) -> Result<Option<RespSpan>, Malformed> {
     let mut current = *state;
-    let event = current.cursor.next(bytes, range).map_err(|()| Malformed)?;
+    let event = current.cursor.next(bytes, true).map_err(|()| Malformed)?;
     let event = event.map(|mut event| {
         if event.kind == RespKind::String && !current.command_seen {
             event.kind = RespKind::Command;
@@ -289,14 +256,13 @@ pub fn resp_extend_size(length: usize, size: usize, maximum: usize, page: usize)
     }
 }
 
-/// [`resp_receive`], also reporting in `range` a number that overflowed, even when a
-/// later protocol delimiter is malformed.
+/// [`resp_receive`] with the legacy errno output, unchanged by the v6.3 decoder.
 pub fn resp_receive_range(
     bytes: &[u8],
     capacity: usize,
     maximum: usize,
     request: &mut RespRequest,
-    range: &mut bool,
+    _range: &mut bool,
 ) -> (RespAction, bool) {
     if !bytes.ends_with(b"\r\n") {
         return (
@@ -308,6 +274,7 @@ pub fn resp_receive_range(
             false,
         );
     }
+    *request = RespRequest::default();
     let mut position = 0;
     let mut set_offset = false;
     loop {
@@ -318,20 +285,23 @@ pub fn resp_receive_range(
             return (RespAction::Malformed, set_offset);
         };
         if request.state == RespState::TotalLine && first == b'*' {
-            let Some(value) = number(rest, range) else {
+            let Some(value) = number(rest) else {
                 return (RespAction::Malformed, set_offset);
             };
             position += value.consumed;
+            if value.value < 0 {
+                return (RespAction::Malformed, set_offset);
+            }
             request.lines_total = value.value;
             request.state = RespState::Length;
         } else if request.state <= RespState::Length && first == b'$' {
-            let Some(value) = number(rest, range) else {
+            let Some(value) = number(rest) else {
                 return (RespAction::Malformed, set_offset);
             };
             position += value.consumed;
             if value.value < 0 {
                 if position == bytes.len() {
-                    return (RespAction::Malformed, set_offset);
+                    return (RespAction::Wait, set_offset);
                 }
                 continue;
             }
@@ -344,32 +314,20 @@ pub fn resp_receive_range(
             request.bytes_total = value.value;
             request.state = RespState::String;
         } else if request.state <= RespState::Length && first == b':' {
-            let Some(value) = number(rest, range) else {
+            let Some(value) = number(rest) else {
                 return (RespAction::Malformed, set_offset);
             };
             position += value.consumed;
         } else {
-            let Some(remaining) = request.bytes_total.checked_sub(request.bytes_received) else {
-                return (RespAction::Malformed, set_offset);
-            };
-            if (bytes.len() - position) < remaining.max(0).unsigned_abs() as usize {
-                // Fewer bytes than `remaining`, an i32, are left.
-                let Some(received) = i32::try_from(bytes.len() - position)
-                    .ok()
-                    .and_then(|left| request.bytes_received.checked_add(left))
-                else {
-                    return (RespAction::Malformed, set_offset);
-                };
-                request.bytes_received = received;
-                return (RespAction::Wait, set_offset);
-            }
             let Some(next) = usize::try_from(request.bytes_total)
                 .ok()
                 .and_then(|n| position.checked_add(n + 2))
             else {
                 return (RespAction::Malformed, set_offset);
             };
-            // Past the end is fine: the line still counts, and the next pass fails.
+            if next > bytes.len() {
+                return (RespAction::Wait, set_offset);
+            }
             position = next;
             request.bytes_total = 0;
             let Some(lines) = request.lines_received.checked_add(1) else {
@@ -383,7 +341,7 @@ pub fn resp_receive_range(
             }
         }
         if position >= bytes.len() {
-            return (RespAction::Malformed, set_offset);
+            return (RespAction::Wait, set_offset);
         }
     }
 }
@@ -415,31 +373,13 @@ mod tests {
         assert_eq!(resp_extend_size(300_000, 300_000, 500_000, 4096), 500_000);
     }
     #[test]
-    fn handler_keys_preserve_nul_truncation_and_ascii() {
-        for input in [
-            b"".as_slice(),
-            b"EcHo\0ignored",
-            &[b'A'; 1024],
-            &[255, b'A', 128],
-        ] {
-            let (output, length) = resp_handler_key(input);
-            let expected = [
-                b"_handler_".as_slice(),
-                &input[..input.iter().position(|&b| b == 0).unwrap_or(input.len())],
-            ]
-            .concat();
-            let expected: Vec<_> = expected
-                .iter()
-                .take(63)
-                .map(u8::to_ascii_lowercase)
-                .collect();
-            assert_eq!(&output[..length], expected);
-            assert!(output[length..].iter().all(|&byte| byte == 0));
-        }
+    fn handler_keys_preserve_command_bytes() {
+        assert_eq!(resp_handler_key(b"EcHo\0A"), b"_handler_echo\0a");
+        assert_ne!(resp_handler_key(&[b'A'; 63]), resp_handler_key(&[b'A'; 62]));
     }
     #[test]
     fn php_cursor_preserves_typed_order_and_transactional_errors() {
-        let wire = b"*2\r\n$-1\r\n:9223372036854775808\r\n$4\r\nECHO\r\n$0\r\n\r\n";
+        let wire = b"*2\r\n$-1\r\n:-17\r\n$4\r\nECHO\r\n$0\r\n\r\n";
         let mut state = RespPhpState::default();
         let mut kinds = Vec::new();
         let mut ranges = Vec::new();
@@ -451,7 +391,7 @@ mod tests {
             kinds.push(event.kind);
             ranges.push(range);
             if event.kind == RespKind::Integer {
-                assert_eq!(event.integer, -1);
+                assert_eq!(event.integer, -17);
             }
             if event.kind == RespKind::Command {
                 assert_eq!(&wire[event.offset..event.offset + event.length], b"ECHO");
@@ -466,12 +406,12 @@ mod tests {
                 RespKind::String
             ]
         );
-        assert_eq!(ranges, [false, true, false, false]);
+        assert_eq!(ranges, [false; 4]);
         let malformed = b"$9223372036854775808x\r\n";
         state = RespPhpState::default();
         let mut range = false;
         assert!(resp_php_next(malformed, &mut state, &mut range).is_err());
-        assert!(range);
+        assert!(!range);
         assert_eq!(state.cursor.position, 0);
         assert_eq!(state.cursor.phase, RespPhase::Start);
         assert!(!state.command_seen);
@@ -480,37 +420,22 @@ mod tests {
         resp_spans(bytes, emit, &mut false)
     }
     #[test]
-    fn number_grammar_matches_strtol_int_conversion() {
+    fn number_grammar_requires_decimal_digits_within_i32_max() {
         for (wire, expected) in [
-            ("*\r\n", 0),
-            ("* +12\r\n", 12),
-            ("*\x0b42\r\n", 42),
-            ("*4294967295\r\n", -1),
-            ("*9223372036854775808\r\n", -1),
-            ("*-9223372036854775809\r\n", 0),
+            ("*0\r\n", 0),
+            ("*-12\r\n", -12),
+            ("*2147483647\r\n", i32::MAX),
         ] {
-            assert_eq!(number(wire.as_bytes(), &mut false).unwrap().value, expected);
+            assert_eq!(number(wire.as_bytes()).unwrap().value, expected);
         }
-        assert!(number(b"* \r\n", &mut false).is_none());
-    }
-    #[test]
-    fn overflow_is_reported_even_when_the_delimiter_fails() {
-        for (wire, expected) in [
-            (":9223372036854775807\r\n", false),
-            (":9223372036854775808\r\n", true),
-            (":-9223372036854775808\r\n", false),
-            (":-9223372036854775809x\r\n", true),
-            (":00000000000000000000000001\r\n", false),
-        ] {
-            let mut range = false;
-            let _ = resp_spans(wire.as_bytes(), |_| {}, &mut range);
-            assert_eq!(range, expected, "{wire:?}");
+        for wire in ["*\r\n", "* +12\r\n", "*4294967295\r\n", "*-2147483648\r\n"] {
+            assert!(number(wire.as_bytes()).is_none());
         }
     }
     #[test]
     fn null_empty_binary_and_integer_commands() {
         let mut spans = Vec::new();
-        let wire = b"*4\r\n$3\r\nGET\r\n$-1\r\n$0\r\n\r\n:4294967295\r\n";
+        let wire = b"*4\r\n$3\r\nGET\r\n$-1\r\n$0\r\n\r\n:-1\r\n";
         assert_eq!(scan(wire, |span| spans.push(span)), Some(3));
         assert_eq!(
             &wire[spans[0].offset..spans[0].offset + spans[0].length],
@@ -518,7 +443,7 @@ mod tests {
         );
         assert_eq!(spans[1].length, 0);
         assert_eq!(spans[2].integer, -1);
-        assert_eq!(scan(b"$99\r\nx\r\n", |_| {}), None);
+        assert_eq!(scan(b"$99\r\nx\r\n", |_| {}), Some(0));
     }
     #[test]
     fn full_request_and_partial_receive_state() {
@@ -533,23 +458,21 @@ mod tests {
             (RespAction::Wait, false)
         );
         assert_eq!(request.state, RespState::String);
-        assert_eq!(request.bytes_received, 5);
+        assert_eq!(request.bytes_received, 0);
         assert_eq!(
             resp_receive(b"abcd", 4, 4, &mut RespRequest::default()),
             (RespAction::TooBig, false)
         );
     }
     #[test]
-    fn last_line_counts_when_its_crlf_runs_past_the_end() {
-        // Upstream: a byte that isn't `$` or `:` is an empty string, and the line
-        // completes the request even though its CRLF would end past the buffer.
+    fn last_line_waits_for_its_complete_crlf() {
         assert_eq!(
             resp_receive(b"*2\r\n\n\r\n", 64, 64, &mut RespRequest::default()),
-            (RespAction::Dispatch, true)
+            (RespAction::Wait, true)
         );
         assert_eq!(
             resp_receive(b"*3\r\n\n\r\n", 64, 64, &mut RespRequest::default()),
-            (RespAction::Malformed, true)
+            (RespAction::Wait, true)
         );
     }
 }

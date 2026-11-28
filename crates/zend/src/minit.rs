@@ -48,6 +48,7 @@ unsafe extern "C" {
         name: CText<'_>,
         value: &Value,
         access: c_int,
+        mask: u32,
     ) -> bool;
     safe fn swr_zend_minit_property_string(
         class: ClassEntry<'static>,
@@ -56,7 +57,7 @@ unsafe extern "C" {
         access: c_int,
     );
     safe fn swr_zend_minit_sensitive_parameter(
-        class: ClassEntry<'static>,
+        class: Option<ClassEntry<'static>>,
         method: CText<'_>,
         offset: u32,
     ) -> bool;
@@ -349,10 +350,7 @@ impl Minit {
             let info = methods.find(method).map_or(Info::NONE, Info::row);
             // Lookup lowercases the method's ASCII bytes.
             let lower = CString::new(method.to_bytes().to_ascii_lowercase()).unwrap_or_default();
-            let found = swr_zend_minit_method_find(entry, lower.as_c_str().into());
-            // The class's table owns this live function, which remains live
-            // and unchanged throughout the registration.
-            let function = (!found.is_null()).then_some(Function(found, PhantomData));
+            let function = entry.method(&lower);
             self.alias_from(function, alias, info)?;
         }
         Ok(())
@@ -500,12 +498,12 @@ impl Minit {
     }
 
     /// `zend_add_parameter_attribute(method, offset, SensitiveParameter)`: PHP
-    /// hides argument `offset` (from 0) of `class`'s `method` (lower case) in
-    /// backtraces. Nothing when the class has no such method or parameter.
+    /// hides argument `offset` (from 0) in backtraces for a method or, with no class, a global function.
+    /// Names are lower case.
     /// # Panics
     /// `class` is not registered.
-    pub fn sensitive_parameter(&self, class: &Class, method: &CStr, offset: u32) {
-        swr_zend_minit_sensitive_parameter(registered(class), method.into(), offset);
+    pub fn sensitive_parameter(&self, class: Option<&Class>, name: &CStr, offset: u32) {
+        swr_zend_minit_sensitive_parameter(class.map(registered), name.into(), offset);
     }
 
     /// `zend::get_function(CG(function_table), name)`: the function the
@@ -566,42 +564,51 @@ impl Minit {
     /// # Panics
     /// `class` is not registered.
     pub fn property_long(&self, class: &Class, name: &CStr, value: zend_long, access: u32) {
-        self.property(class, name, &Owned::long(value), access);
+        self.scalar_property(class, name, &Owned::long(value), access, 0);
     }
 
     /// `zend_declare_property_double` with `access` flags.
     /// # Panics
     /// `class` is not registered.
     pub fn property_double(&self, class: &Class, name: &CStr, value: f64, access: u32) {
-        self.property(class, name, &Owned::double(value), access);
+        self.scalar_property(class, name, &Owned::double(value), access, 0);
     }
 
     /// `zend_declare_property_bool` with `access` flags.
     /// # Panics
     /// `class` is not registered.
     pub fn property_bool(&self, class: &Class, name: &CStr, value: bool, access: u32) {
-        self.property(class, name, &Owned::bool(value), access);
+        self.scalar_property(class, name, &Owned::bool(value), access, 0);
     }
 
     /// `zend_declare_property_null` with `access` flags.
     /// # Panics
     /// `class` is not registered.
     pub fn property_null(&self, class: &Class, name: &CStr, access: u32) {
-        self.property(class, name, &Owned::null(), access);
+        self.scalar_property(class, name, &Owned::null(), access, 0);
     }
 
-    /// `zend_declare_property` of a scalar default, as Zend's typed
-    /// `zend_declare_property_{long,double,bool,null}` each call it.
+    /// Declare a property with a scalar default and a Zend builtin type mask
+    /// (zero for an untyped property). An undefined default leaves it uninitialized.
     /// # Panics
-    /// `class` is not registered, or `value` is no scalar: an internal class's
-    /// default must not be a request allocation.
-    #[expect(
-        clippy::unused_self,
-        reason = "the token is what proves this runs at MINIT"
-    )]
-    fn property(&self, class: &Class, name: &CStr, value: &Owned, access: u32) {
+    /// The class is unregistered, the default is refcounted, or the mask is unsupported.
+    pub fn scalar_property(
+        &self,
+        class: &Class,
+        name: &CStr,
+        value: &Owned,
+        access: u32,
+        mask: u32,
+    ) {
         assert!(value.kind() < IS_STRING, "a scalar default");
-        swr_zend_minit_property(registered(class), name.into(), value, flags(access));
+        assert!(
+            matches!(
+                mask,
+                0 | crate::sys::MAY_BE_STRING | crate::sys::MAY_BE_LONG | crate::sys::MAY_BE_BOOL
+            ),
+            "a builtin property type"
+        );
+        swr_zend_minit_property(registered(class), name.into(), value, flags(access), mask);
     }
 
     /// `zend_declare_property_string` with `access` flags.
@@ -725,7 +732,10 @@ impl<'a> Alias<'a> {
     /// internal function, or when `info` misses one of its parameters.
     fn new(function: Option<Function<'_>>, alias: &'a CStr, info: Info) -> Option<(Self, u8)> {
         let function = function?;
-        let (kind, args) = (function.kind(), function.num_args());
+        let kind = function.kind();
+        // Registered functions exclude the variadic parameter from num_args.
+        let variadic = function.flags() & crate::sys::ZEND_ACC_VARIADIC != 0;
+        let args = function.num_args().checked_add(u32::from(variadic))?;
         let handler = function.internal_handler()?;
         // Zend reads the return row and the `args` rows after it.
         if !info.start.is_null() && info.rows <= args as usize {
@@ -737,6 +747,13 @@ impl<'a> Alias<'a> {
         entries[0].arg_info = info.start;
         entries[0].num_args = args;
         Some((Self(entries, PhantomData), kind))
+    }
+}
+
+impl ClassEntry<'static> {
+    pub(crate) fn method(self, lowercase: &CStr) -> Option<Function<'static>> {
+        let found = swr_zend_minit_method_find(self, lowercase.into());
+        (!found.is_null()).then_some(Function(found, PhantomData))
     }
 }
 

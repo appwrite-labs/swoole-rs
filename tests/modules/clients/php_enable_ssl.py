@@ -14,7 +14,8 @@ sys.path.insert(0,str(ROOT))
 from tools.harness import parse_engines,run_isolated,write_report
 
 CASES=dict(verify=False,trusted=True,wrong_host=False)
-EXPECTED=dict(sync=CASES,async_=CASES,warnings=[])
+EXPECTED=dict(sync=CASES,async_=CASES,warnings=[],
+              fingerprints=dict(string_match=True,string_mismatch=False,map_match=True,map_partial_mismatch=False))
 # The client logs each rejection: the self-signed certificate without a cafile, the name with one.
 LOGS=dict(self_signed=2,host=2)
 

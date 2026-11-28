@@ -19,7 +19,7 @@ zend_string *swr_zend_serialize(zval *value, bool *bailed) {
     } SWR_ZEND_CATCH {
         *bailed = true;
     } SWR_ZEND_END_TRY();
-    if (*bailed) {
+    if (*bailed || EG(exception)) {
         smart_str_free(&buffer);
         return NULL;
     }

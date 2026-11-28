@@ -26,7 +26,8 @@ int swoole_libssh2_channel_write_ex(const struct swr_v1_ssh2_ops *ops, LIBSSH2_S
 int swoole_libssh2_channel_eof(const struct swr_v1_ssh2_ops *ops, LIBSSH2_SESSION *wait_on, LIBSSH2_CHANNEL *channel);
 int swoole_libssh2_channel_close(const struct swr_v1_ssh2_ops *ops, LIBSSH2_SESSION *wait_on, LIBSSH2_CHANNEL *channel);
 int swoole_libssh2_channel_send_eof(const struct swr_v1_ssh2_ops *ops, LIBSSH2_SESSION *wait_on, LIBSSH2_CHANNEL *channel);
-int swoole_libssh2_channel_get_exit_status(const struct swr_v1_ssh2_ops *ops, LIBSSH2_SESSION *wait_on, LIBSSH2_CHANNEL *channel);
+int swoole_libssh2_keepalive_send(const struct swr_v1_ssh2_ops *ops, LIBSSH2_SESSION *wait_on, LIBSSH2_SESSION *session, int *seconds_to_next);
+int swoole_libssh2_channel_signal_ex(const struct swr_v1_ssh2_ops *ops, LIBSSH2_SESSION *wait_on, int (*sdk_call)(LIBSSH2_CHANNEL *, const char *, size_t), LIBSSH2_CHANNEL *channel, const char *signame, size_t signame_len);
 int swoole_libssh2_channel_request_pty_size_ex(const struct swr_v1_ssh2_ops *ops, LIBSSH2_SESSION *wait_on, LIBSSH2_CHANNEL *channel, int width, int height, int width_px, int height_px);
 LIBSSH2_LISTENER *swoole_libssh2_channel_forward_listen_ex(const struct swr_v1_ssh2_ops *ops, LIBSSH2_SESSION *wait_on, LIBSSH2_SESSION *session, const char *host, int port, int *bound_port, int queue_maxsize);
 LIBSSH2_CHANNEL *swoole_libssh2_channel_forward_accept(const struct swr_v1_ssh2_ops *ops, LIBSSH2_SESSION *wait_on, LIBSSH2_LISTENER *listener);
@@ -76,7 +77,7 @@ int swoole_libssh2_userauth_keyboard_interactive(const struct swr_v1_ssh2_ops *o
 /* What the bundled ext/ssh2 and crates/phpswoole share: its PHP
  * functions, in crates/phpstubs' order, and its module hooks. */
 #define SWR_SSH2_FUNCTIONS(X) \
-    X(ssh2_connect) X(ssh2_disconnect) X(ssh2_methods_negotiated) X(ssh2_fingerprint) \
+    X(ssh2_connect) X(ssh2_disconnect) X(ssh2_methods_negotiated) X(ssh2_fingerprint) X(ssh2_hostkey) \
     X(ssh2_auth_none) X(ssh2_auth_password) X(ssh2_auth_pubkey_file) X(ssh2_auth_pubkey) \
     X(ssh2_auth_hostbased_file) X(ssh2_forward_listen) X(ssh2_forward_accept) X(ssh2_shell) \
     X(ssh2_shell_resize) X(ssh2_exec) X(ssh2_tunnel) X(ssh2_scp_recv) \
@@ -91,15 +92,18 @@ int php_swoole_ssh2_minit(int module_number);
 int php_swoole_ssh2_mshutdown(void);
 void php_swoole_ssh2_minfo(void);
 /* Rust (crates/hooks/src/ssh2.rs, built with --with-swoole-ssh2): the ops for
- * session's socket once no other coroutine is bound to it, and the socket's
- * timeout, whole seconds of timeout_ms. */
+ * session's socket once no other coroutine is bound to it, and the channel stream wait. */
 #ifdef SW_HAVE_SSH2LIB
 /* A live ext/ssh2 session, as crates/hooks takes it. */
 typedef LIBSSH2_SESSION *swr_v1_ssh2_session;
 const struct swr_v1_ssh2_ops *swr_v1_ssh2_bound(swr_v1_ssh2_session session);
-void swr_v1_ssh2_set_socket_timeout(swr_v1_ssh2_session session, int timeout_ms);
+typedef struct swr_v1_co_socket *swr_ssh2_socket;
+bool swr_v1_ssh2_close_socket(swr_ssh2_socket socket);
+void swr_v1_ssh2_cancel_waits(swr_v1_ssh2_session session);
+bool swr_v1_ssh2_is_bound(swr_v1_ssh2_session session);
+double swr_v1_ssh2_release_timeout(swr_v1_ssh2_session session, double timeout);
+bool swr_v1_ssh2_channel_wait(swr_v1_ssh2_session session, bool outbound, double timeout, bool *timed_out);
 #define ssh2_bound swr_v1_ssh2_bound
-#define ssh2_set_socket_timeout swr_v1_ssh2_set_socket_timeout
 #endif
 #endif
 #ifdef __cplusplus

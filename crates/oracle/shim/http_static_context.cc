@@ -1,8 +1,8 @@
 // Upstream's StaticHandler behind C entry points: build.rs copies the class from the
 // pinned swoole_static_handler.h, its method bodies and Server::apply_rewrite_rules
-// from the pinned static_handler.cc and url_decode from the pinned http.cc unchanged.
+// unchanged from the pinned static_handler.cc.
 // The filesystem, MIME table and random strings answer from the caller's script and
-// trace each call, and strptime, mktime and gmtime are libc's, recorded as calendar
+// trace each call, and strptime, timegm and gmtime are libc's, recorded as calendar
 // events, as the retired tests/modules/http/context_gate.py and conditional_gate.py
 // oracles did.
 #include <algorithm>
@@ -62,16 +62,16 @@ std::string fields(const tm *value) {
 }  // namespace
 
 extern "C" {
-bool swr_oracle_calendar_parse(const char *text, const char *format, void *value) {
+char *swr_oracle_calendar_parse(const char *text, const char *format, void *value) {
     char *end = ::strptime(text, format, static_cast<tm *>(value));
     int saved = errno;
     calendar_events.push_back(std::string("parse:") + format + ":" + (end ? std::to_string(end - text) : "null") + ":" +
                               fields(static_cast<tm *>(value)) + ":" + std::to_string(saved));
     errno = saved;
-    return end != nullptr;
+    return end;
 }
 int64_t swr_oracle_calendar_time(void *value) {
-    time_t result = ::mktime(static_cast<tm *>(value));
+    time_t result = ::timegm(static_cast<tm *>(value));
     int saved = errno;
     calendar_events.push_back("make:" + std::to_string(result) + ":" + fields(static_cast<tm *>(value)) + ":" +
                               std::to_string(saved));
@@ -80,7 +80,8 @@ int64_t swr_oracle_calendar_time(void *value) {
 }
 void *swr_oracle_calendar_gmt(int64_t time) {
     const time_t value = time;
-    tm *result = ::gmtime(&value);
+    thread_local tm buffer;
+    tm *result = ::gmtime_r(&value, &buffer);
     int saved = errno;
     calendar_events.push_back("gmt:" + std::to_string(value) + ":" + fields(result) + ":" + std::to_string(saved));
     errno = saved;
@@ -94,7 +95,7 @@ namespace http_server = ::upstream_static_context;
 // below are as upstream's swoole_http.h, swoole_util.h and swoole_string.h, and src/core/base.cc's
 // sw_snprintf and intersection.
 #include "http_static_context_pinned.inc"
-enum { SW_HTTP_OK = 200, SW_HTTP_PARTIAL_CONTENT = 206, SW_HTTP_NOT_FOUND = 404, SW_HTTP_RANGE_NOT_SATISFIABLE = 416 };
+enum { SW_HTTP_BAD_REQUEST = 400, SW_HTTP_OK = 200, SW_HTTP_PARTIAL_CONTENT = 206, SW_HTTP_NOT_FOUND = 404, SW_HTTP_RANGE_NOT_SATISFIABLE = 416 };
 static inline unsigned int swoole_str_starts_with(const char *pstr, size_t plen, const char *sstr, size_t slen) {
     return (plen >= slen) && (strncmp(pstr, sstr, slen) == 0);
 }
@@ -139,14 +140,6 @@ static size_t sw_snprintf(char *buf, size_t size, const char *format, ...) {
         buf[retval] = '\0';
     }
     return retval;
-}
-static std::string intersection(const std::vector<std::string> &vec1, std::set<std::string> &vec2) {
-    for (const auto &vec1_item : vec1) {
-        if (vec2.find(vec1_item) != vec2.end()) {
-            return vec1_item;
-        }
-    }
-    return "";
 }
 // upstream's String, starting with "prefix" so make_index_page is seen appending.
 struct String {
@@ -227,6 +220,12 @@ static int scripted_lstat(const char *path, struct stat *value) {
 #endif
     return 0;
 }
+static int scripted_index_stat(const char *path, struct stat *value) {
+    scripted_lstat(path, value);
+    const char *slash = strrchr(path, '/');
+    const char *name = slash ? slash + 1 : path;
+    return std::find(script.names.begin(), script.names.end(), name) == script.names.end() ? -1 : 0;
+}
 static char *scripted_realpath(const char *input, char *output) {
     trace.emplace_back(std::string("canonical:") + input);
     strcpy(output, script.canonical.empty() ? input : script.canonical.c_str());
@@ -272,9 +271,12 @@ static const std::string &get(const std::string &path) {
 #define opendir scripted_opendir
 #define readdir scripted_readdir
 #define closedir scripted_closedir
-#define strptime(text, format, value) (char *) (swr_oracle_calendar_parse(text, format, value) ? text : nullptr)
-#define mktime(value) ((time_t) swr_oracle_calendar_time(value))
-#define gmtime(value) ((tm *) swr_oracle_calendar_gmt(*(value)))
+#define strptime(text, format, value) swr_oracle_calendar_parse(text, format, value)
+static time_t make_utc_time(tm value) { return swr_oracle_calendar_time(&value); }
+static tm get_utc_tm(time_t value) {
+    tm *result = static_cast<tm *>(swr_oracle_calendar_gmt(value));
+    return result ? *result : tm{};
+}
 
 class StaticHandler;
 struct RewriteRule;
@@ -291,7 +293,9 @@ struct Server {
     bool apply_rewrite_rules(StaticHandler *);
 };
 #include "http_static_context_class.inc"
+#define stat(path, result) upstream_static_context::scripted_index_stat(path, result)
 #include "http_static_context.inc"
+#undef stat
 }  // namespace upstream_static_context
 
 using namespace upstream_static_context;

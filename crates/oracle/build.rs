@@ -1,5 +1,5 @@
 // upstream/ holds unmodified Swoole files: src/protocol/http.cc is from v6.2.6
-// (13d2f336), the remaining snapshots from v6.2.5 (76c657d8). candidate/
+// (13d2f336), swoole_version.h from v6.3.0, and the rest from v6.2.5 (76c657d8). candidate/
 // holds base.cc as the hybrid shipped it before Rust replaced the file outright: its
 // bodies call Rust, so its oracle runs Rust against upstream through the same C++.
 #![expect(
@@ -112,7 +112,7 @@ fn http() {
         ),
         slice(
             &source,
-            "static int url_htoi(",
+            "static constexpr int url_hex_value(",
             "int Request::get_protocol()",
         ),
     ]
@@ -170,17 +170,14 @@ fn definition(text: &str, signature: &str) -> String {
 fn http_frame() {
     let text = fs::read_to_string("upstream/src/protocol/http.cc").expect("vendored http.cc");
     let mut parts = vec![slice(&text, "static const char *method_strings[]", "\n};") + "\n};"];
+    parts.push(include_str!("shim/http_frame_v630.inc").to_owned());
     for signature in [
-        "void Request::parse_header_info(",
-        "int Request::get_protocol(",
         "int Request::get_header_length(",
         "static bool is_http_token_char(",
         "static bool is_http_quoted_char(",
         "static bool is_http_quoted_pair_char(",
         "static ChunkSizeResult parse_chunk_size(",
         "int Request::get_chunked_body_length(",
-        "bool Request::has_expect_header(",
-        "std::string Request::get_header(",
         "const char *get_method_string(",
     ] {
         parts.push(definition(&text, signature));
@@ -262,6 +259,7 @@ fn http_static_select() {
                 "SW_HTTP_PAGE_CSS",
                 "SW_HTTP_POWER_BY",
                 "SW_HTTP_PAGE_404",
+                "SW_STRL",
                 "sw_unlikely",
             ]),
     )
@@ -277,8 +275,8 @@ fn http_static_select() {
 }
 
 /// The `StaticHandler` class from the pinned `swoole_static_handler.h`, its method
-/// bodies and `Server::apply_rewrite_rules` from the pinned `static_handler.cc`, and
-/// `url_decode` from the pinned http.cc, copied unchanged for `shim/http_static_context.cc`.
+/// bodies and `Server::apply_rewrite_rules` from the pinned `static_handler.cc`,
+/// copied unchanged for `shim/http_static_context.cc`.
 fn http_static_context() {
     let header = fs::read_to_string("upstream/include/swoole_static_handler.h")
         .expect("vendored swoole_static_handler.h");
@@ -312,20 +310,23 @@ fn http_static_context() {
         ),
     )
     .unwrap();
-    let http = fs::read_to_string("upstream/src/protocol/http.cc").expect("vendored http.cc");
     let handler = fs::read_to_string("upstream/src/server/static_handler.cc")
         .expect("vendored static_handler.cc");
-    let mut parts = vec![
-        definition(&http, "static int url_htoi("),
-        definition(&http, "size_t url_decode("),
-    ];
+    let mut parts = vec![slice(
+        &handler,
+        "std::string StaticHandler::get_etag(",
+        "bool StaticHandler::is_modified(",
+    )];
     for signature in [
+        "static bool parse_http_date(",
         "bool StaticHandler::is_modified(",
         "bool StaticHandler::is_modified_range(",
         "std::string StaticHandler::get_date_last_modified(",
         "bool StaticHandler::get_absolute_path(",
         "bool StaticHandler::try_serve(",
         "bool StaticHandler::try_serve_index_file(",
+        "static std::string html_escape(",
+        "static std::string percent_encode_path_segment(",
         "size_t StaticHandler::make_index_page(",
         "bool StaticHandler::get_dir_files(",
         "bool StaticHandler::set_filename(",

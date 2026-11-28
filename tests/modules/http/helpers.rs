@@ -47,15 +47,8 @@ fn terminated(buffer: &[u8]) -> &str {
 
 /// `url_encode`, then `url_decode` in place.
 fn encode_decode(input: &str, expected: &str) {
-    let capacity = swoole_rs_http::url_capacity(input.as_bytes()).unwrap();
-    let mut encoded = vec![std::mem::MaybeUninit::new(0u8); capacity];
-    let length = swoole_rs_http::url_encode(input.as_bytes(), &mut encoded).unwrap();
-    assert_eq!(length + 1, capacity);
-    // SAFETY: every slot started initialized, and the encoder writes only bytes.
-    let mut encoded: Vec<u8> = encoded
-        .iter()
-        .map(|slot| unsafe { slot.assume_init() })
-        .collect();
+    let mut encoded = encode(input.as_bytes());
+    encoded.push(0);
     assert_eq!(terminated(&encoded), expected);
     let decoded = url_decode(&mut encoded, expected.len());
     assert_eq!(decoded, input.len());
@@ -185,8 +178,7 @@ const INVALID: i32 = -1;
 
 /// `swoole_rs_http::url_encode` into `output`, which holds only bytes.
 fn encode_into(input: &[u8], output: &mut [u8]) -> Result<usize, i32> {
-    let slots: Vec<_> = output.iter().map(|&byte| MaybeUninit::new(byte)).collect();
-    let mut slots = slots;
+    let mut slots: Vec<_> = output.iter().copied().map(MaybeUninit::new).collect();
     let result = swoole_rs_http::url_encode(input, &mut slots);
     // SAFETY: every slot started initialized, and the encoder writes only bytes.
     let bytes = slots.iter().map(|slot| unsafe { slot.assume_init() });
@@ -220,12 +212,14 @@ fn positive_url_encoding_capacity_and_bytes_cover_loop_boundaries() {
     }
 }
 #[test]
-fn all_byte_values_keep_their_encoding_and_round_trip() {
+fn every_byte_round_trips_including_embedded_nuls() {
     let input: Vec<u8> = (0..=255).collect();
     let mut encoded = vec![0; swoole_rs_http::url_capacity(&input).unwrap()];
     let length = encode_into(&input, &mut encoded).unwrap();
     assert_eq!(length, 636);
-    let length = swoole_rs_http::url_decode(&mut encoded[..length]);
+    let length = url_decode(&mut encoded, length);
+    assert_eq!(length, 256);
+    assert_eq!(encoded[length], 0);
     assert_eq!(&encoded[..length], input);
     let mut malformed = b"%+%0%GG%a0+%00!".to_vec();
     let length = swoole_rs_http::url_decode(&mut malformed);
@@ -336,41 +330,23 @@ mod pin {
     }
 
     pub(super) fn url_encode(input: &[u8]) -> Vec<u8> {
-        let mut output = Vec::new();
-        for &byte in input {
-            // `char c` is signed, so every byte from 0x80 sorts below '0' and is escaped.
-            let escape = byte >= 0x80
-                || (byte < b'0' && byte != b'-' && byte != b'.')
-                || (byte < b'A' && byte > b'9')
-                || (byte > b'Z' && byte < b'a' && byte != b'_')
-                || (byte > b'z' && byte != b'~');
-            if escape {
-                output.extend(format!("%{byte:02X}").bytes());
-            } else {
-                output.push(byte);
-            }
-        }
+        let mut output = vec![0; input.len() * 3 + 1];
+        // SAFETY: input is readable and output has room for maximum expansion and NUL.
+        let written = unsafe {
+            swoole_rs_oracle::http::url_encode(input.as_ptr(), input.len(), output.as_mut_ptr())
+        };
+        assert!(written < output.len());
+        output.truncate(written);
         output
     }
 
-    /// `url_decode`'s output bytes (it then writes a NUL after them).
     pub(super) fn url_decode(input: &[u8]) -> Vec<u8> {
-        let (mut output, mut index) = (Vec::new(), 0);
-        while let Some(&byte) = input.get(index) {
-            let escape = input
-                .get(index + 1..index + 3)
-                .filter(|hex| byte == b'%' && hex.iter().all(u8::is_ascii_hexdigit));
-            match (byte, escape) {
-                (b'+', _) => output.push(b' '),
-                (_, Some(hex)) => {
-                    // `url_htoi` on two hex digits.
-                    output.push(u8::from_str_radix(std::str::from_utf8(hex).unwrap(), 16).unwrap());
-                    index += 2;
-                }
-                _ => output.push(byte),
-            }
-            index += 1;
-        }
+        let mut output = input.to_vec();
+        output.push(0);
+        // SAFETY: output has input.len() writable bytes plus the terminator slot.
+        let written =
+            unsafe { swoole_rs_oracle::http::url_decode(output.as_mut_ptr(), input.len()) };
+        output.truncate(written);
         output
     }
 
@@ -459,14 +435,9 @@ fn methods_match_the_pin() {
 
 fn encode(input: &[u8]) -> Vec<u8> {
     let capacity = swoole_rs_http::url_capacity(input).unwrap();
-    let mut encoded = vec![std::mem::MaybeUninit::new(0xa5u8); capacity];
-    let length = swoole_rs_http::url_encode(input, &mut encoded).unwrap();
+    let mut output = vec![0xa5; capacity];
+    let length = encode_into(input, &mut output).unwrap();
     assert_eq!(length + 1, capacity);
-    // SAFETY: every slot started initialized, and the encoder writes only bytes.
-    let mut output: Vec<u8> = encoded
-        .iter()
-        .map(|slot| unsafe { slot.assume_init() })
-        .collect();
     assert_eq!(output.pop(), Some(0));
     output
 }
@@ -488,10 +459,7 @@ fn url_coding_matches_the_pin() {
         random
     };
     for n in 0..4096 {
-        // The pin's url_encode is compared from a leading unreserved byte, as the gate did.
-        let input: Vec<u8> = std::iter::once(b'A')
-            .chain((0..n % 257).map(|_| next().to_le_bytes()[0]))
-            .collect();
+        let input: Vec<u8> = (0..n % 257).map(|_| next().to_le_bytes()[0]).collect();
         let encoded = encode(&input);
         assert_eq!(encoded, pin::url_encode(&input));
         assert_eq!(decode(&encoded), input);
@@ -535,9 +503,13 @@ fn terminator_stays_within_the_requested_allocation() {
 }
 
 #[test]
-fn unreserved_bytes_and_explicit_length_keep_their_behavior() {
+fn unreserved_characters_remain_literal() {
     let literal = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~";
     assert_eq!(encode(literal), literal);
+}
+
+#[test]
+fn encode_respects_the_explicit_input_length() {
     assert_eq!(encode(&b"a b?ignored"[..3]), b"a%20b");
 }
 
@@ -551,4 +523,129 @@ fn allocation_failure_preserves_errno_and_releases_storage() {
         storage.map(|slot| unsafe { slot.assume_init() }),
         *b"a%20b\0"
     );
+}
+
+#[test]
+fn empty_input_has_a_terminator() {
+    assert_eq!(encode(b""), b"");
+    let mut buffer = *b"x";
+    assert_eq!(url_decode(&mut buffer, 0), 0);
+    assert_eq!(buffer, [0]);
+}
+
+#[test]
+fn reserved_characters_and_binary_bytes_are_percent_encoded() {
+    assert_eq!(
+        encode(b" :/?#[]@!$&'()*+,;=\"\\\0\xff"),
+        b"%20%3A%2F%3F%23%5B%5D%40%21%24%26%27%28%29%2A%2B%2C%3B%3D%22%5C%00%FF"
+    );
+}
+
+#[test]
+fn decode_accepts_both_hex_cases_and_preserves_malformed_escapes() {
+    for (input, expected) in [
+        (&b"a+b%2Bc%20d"[..], &b"a b+c d"[..]),
+        (b"%41%4a%4A%7e%7E", b"AJJ~~"),
+        (b"%00%Ff%ff", b"\0\xff\xff"),
+        (b"%", b"%"),
+        (b"%A", b"%A"),
+        (b"%GG%4G%G4", b"%GG%4G%G4"),
+        (b"%%41", b"%A"),
+        (b"%\x80A%F\xff", b"%\x80A%F\xff"),
+    ] {
+        let mut output = input.to_vec();
+        output.push(0xa5);
+        assert_eq!(url_decode(&mut output, input.len()), expected.len());
+        assert_eq!(&output[..expected.len()], expected);
+        assert_eq!(output[expected.len()], 0);
+    }
+}
+
+#[test]
+fn decode_respects_the_input_boundary() {
+    let mut output = *b"%41+B?!";
+    assert_eq!(url_decode(&mut output, 5), 3);
+    assert_eq!(terminated(&output), "A B");
+    assert_eq!(&output[5..], b"?!");
+}
+
+#[test]
+fn expect_scan_matches_the_native_loop() {
+    // Every string over the bytes the loop branches on, up to six long.
+    let alphabet = b"\r\nEx";
+    let mut inputs = vec![Vec::new()];
+    for _ in 0..6 {
+        let longer: Vec<Vec<u8>> = inputs
+            .iter()
+            .flat_map(|s| alphabet.iter().map(move |&b| [s.as_slice(), &[b]].concat()))
+            .collect();
+        inputs.extend(longer);
+    }
+    for prefix in ["", "x", "\r", "\r\n", "GET / HTTP/1.1"] {
+        for header in [
+            "\r\nExpect: 100-continue",
+            "\r\nexpect: 100-CONTINUE",
+            "\r\nExpect:100-continue",
+            "\r\nExpect: \t 100-continue",
+            "\r\nExpect: nope",
+            "\r\nExpect: 100",
+            "\r\nX: 1\r\nExpect: 100-continue",
+        ] {
+            for suffix in ["", "\r\n", "\r\n\r\nbody\r"] {
+                inputs.push([prefix, header, suffix].concat().into_bytes());
+            }
+        }
+    }
+    for mut input in inputs {
+        let length = input.len();
+        let actual = swoole_rs_http::has_expect_header(&input);
+        input.push(0);
+        // SAFETY: the request buffer holds length bytes followed by a NUL throughout the call.
+        let expected = unsafe {
+            (swoole_rs_oracle::http_frame::UPSTREAM.expect)(input.as_mut_ptr().cast(), length)
+        };
+        assert_eq!(
+            actual,
+            expected,
+            "{:?}",
+            String::from_utf8_lossy(&input[..length])
+        );
+    }
+    assert!(swoole_rs_http::has_expect_header(
+        b"GET / HTTP/1.1\r\nExpect: 100-continue\r\n\r\n"
+    ));
+}
+
+#[test]
+fn header_lookup_matches_upstream_whitespace() {
+    for (name, value, expected) in [
+        (c"Range", &b"bytes=0-15\t "[..], &b"bytes=0-15"[..]),
+        (c"X-Whitespace", b"\talpha \t beta \t ", b"alpha \t beta"),
+        (c"X-Whitespace", b"a\x0b \t", b"a\x0b"),
+    ] {
+        let mut input = b"GET / HTTP/1.1\r\n".to_vec();
+        input.extend_from_slice(name.to_bytes());
+        input.push(b':');
+        input.extend_from_slice(value);
+        input.extend_from_slice(b"\r\n\r\n");
+        let length = input.len();
+        let header_length = u32::try_from(length).unwrap();
+        let span = swoole_rs_http::header_value(&input, 15, length, name.to_bytes()).unwrap();
+        assert_eq!(&input[span.offset..span.offset + span.length], expected);
+        input.push(0);
+        let mut output = vec![0; length];
+        // SAFETY: the request is NUL-terminated with its URL at 4..5, and output holds length bytes.
+        let written = unsafe {
+            (swoole_rs_oracle::http_frame::UPSTREAM.header)(
+                input.as_mut_ptr().cast(),
+                length,
+                4,
+                1,
+                header_length,
+                name.as_ptr(),
+                output.as_mut_ptr().cast(),
+            )
+        };
+        assert_eq!(&output[..written], expected);
+    }
 }

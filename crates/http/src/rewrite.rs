@@ -3,9 +3,8 @@
 //! A rule is a byte prefix or, between `~` delimiters, a regex. The first rule that changes
 //! the URL wins. A regex replaces every match the way libstdc++'s `std::regex_replace` does:
 //! the same steps past empty matches and the same `$` format. Patterns are compiled once,
-//! on `add`, where upstream compiled one per request; one that doesn't compile never matches,
-//! as upstream skipped a rule whose `std::regex` threw. One `std::regex` accepts but this
-//! dialect can't run (a backreference or lookahead) never matches either, and `add` says so.
+//! on `add`. Invalid patterns are ignored. A backreference or lookahead that this dialect
+//! cannot run is reported to the caller.
 mod regex;
 
 use regex::{Captures, Regex, Rejected};
@@ -13,10 +12,10 @@ use swoole_rs_corebase::buffer::BoundedBytes;
 
 enum Pattern {
     Prefix(Vec<u8>),
-    Regex(Option<Regex>),
+    Regex(Regex),
 }
 
-/// A rule `add` kept, though it never matches where upstream's would.
+/// A regex accepted by upstream that this dialect cannot run.
 #[derive(Debug, PartialEq, Eq)]
 pub struct Unsupported;
 
@@ -35,15 +34,15 @@ impl RewriteRules {
     /// # Errors
     ///
     /// [`Unsupported`] for a regex `std::regex` accepts but this dialect can't run (a
-    /// backreference or lookahead): it is added, and never matches.
+    /// backreference or lookahead): the rule is skipped.
     pub fn add(&mut self, pattern: &[u8], replacement: &[u8]) -> Result<(), Unsupported> {
-        let (pattern, result) = match pattern {
+        let pattern = match pattern {
             [b'~', inner @ .., b'~'] => match Regex::new(inner) {
-                Ok(regex) => (Pattern::Regex(Some(regex)), Ok(())),
-                Err(Rejected::Invalid) => (Pattern::Regex(None), Ok(())),
-                Err(Rejected::Unsupported) => (Pattern::Regex(None), Err(Unsupported)),
+                Ok(regex) => Pattern::Regex(regex),
+                Err(Rejected::Invalid) => return Ok(()),
+                Err(Rejected::Unsupported) => return Err(Unsupported),
             },
-            _ => (Pattern::Prefix(pattern.to_vec()), Ok(())),
+            _ => Pattern::Prefix(pattern.to_vec()),
         };
         #[cfg_attr(
             protocol_buffer_lint,
@@ -56,7 +55,7 @@ impl RewriteRules {
             pattern,
             replacement: replacement.to_vec(),
         });
-        result
+        Ok(())
     }
 
     /// The rewritten URL, or `None` when no rule applies. A prefix rule applies whenever it
@@ -75,7 +74,7 @@ impl RewriteRules {
                         return Ok(Some([rule.replacement.as_slice(), suffix].concat()));
                     }
                 }
-                Pattern::Regex(Some(regex)) => {
+                Pattern::Regex(regex) => {
                     if let Some(caps) = regex.search(url, 0, 0, false) {
                         let rewritten =
                             replace_all(regex, caps, url, &rule.replacement, max).ok_or(max)?;
@@ -84,7 +83,6 @@ impl RewriteRules {
                         }
                     }
                 }
-                Pattern::Regex(None) => {}
             }
         }
         Ok(None)
@@ -176,7 +174,7 @@ mod tests {
     fn apply(rules: &[(&[u8], &[u8])], url: &[u8]) -> Option<Vec<u8>> {
         let mut owner = RewriteRules::default();
         for (pattern, replacement) in rules {
-            // Unsupported regexes are installed as nonmatches; this helper tests the resulting URL.
+            // Unsupported regexes are skipped; this helper tests the resulting URL.
             let _added = owner.add(pattern, replacement);
         }
         owner.apply(url, 65536).unwrap()

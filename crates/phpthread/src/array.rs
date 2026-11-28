@@ -47,12 +47,17 @@ impl Array {
     }
 
     /// `append` (upstream's unlocked builder for thread arguments).
-    pub(crate) fn push(&self, value: &ZValue) {
-        let item = Item::store(value);
-        if bailout::pending() {
-            return;
+    pub(crate) fn push(&self, value: &ZValue, internal: bool) -> bool {
+        let item = if internal && value.array().is_some() {
+            Item::serialize(value)
+        } else {
+            Item::store(value)
+        };
+        if bailout::pending() || !swoole_rs_zend::host::exception().is_null() {
+            return false;
         }
         self.write().push(item);
+        true
     }
 
     pub(crate) fn clean(&self) {
@@ -161,7 +166,7 @@ impl Array {
         }
         let mut table = self.write();
         let count = length(&table);
-        if index > count {
+        if !(-1..=count).contains(&index) {
             drop(table);
             drop(item);
             return false;
@@ -178,7 +183,7 @@ impl Array {
     pub(crate) fn index_incr(&self, index: i64, delta: &ZValue, call: &Call) -> bool {
         let mut table = self.write();
         let count = length(&table);
-        if index > count {
+        if !(-1..=count).contains(&index) {
             return false;
         }
         if index == -1 || index == count {
@@ -190,12 +195,7 @@ impl Array {
         } else if let Some(item) = table.get_mut(&Key::Int(index)) {
             item.add(delta, call);
         } else {
-            // A missing item (a negative index) starts as a new counter.
-            let item = Item::counter(delta, call);
-            if bailout::pending() {
-                return false;
-            }
-            table.update(Key::Int(index), item);
+            return false;
         }
         true
     }
@@ -260,9 +260,9 @@ impl Array {
     }
 }
 
-/// `index < (zend_long) zend_hash_num_elements(&ht)`.
+/// Whether the index names an existing list element.
 fn below(index: i64, count: usize) -> bool {
-    index < i64::try_from(count).unwrap_or(i64::MAX)
+    usize::try_from(index).is_ok_and(|index| index < count)
 }
 
 /// `zend_hash_num_elements` as the signed long upstream compares it with.

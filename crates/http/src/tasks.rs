@@ -1,9 +1,8 @@
 //! Sole persistent `StaticHandler` task storage. Native owns one local immutable
 //! send snapshot and executes RNG/MIME/date/allocation/IO effects after return.
+use crate::range::MAX_RANGES;
 use crate::range_response::{HttpRangeFormat, range_format};
 
-/// Maximum number of file sends retained by a static response.
-pub const MAX_RANGE_TASKS: usize = 256;
 const PART_HEADER: usize = 256;
 #[cfg(test)]
 const _: () = assert!(
@@ -34,8 +33,7 @@ pub(crate) struct HttpTasks {
 const ALLOCATION: i32 = -3;
 
 impl HttpTasks {
-    /// Reset per-parse scratch, retaining previously committed tasks exactly as the
-    /// original method's local task initialization and persistent vector do.
+    /// Start a zero-initialized file task.
     pub(crate) fn begin(&mut self) {
         self.scratch = HttpStaticTask::default();
     }
@@ -44,16 +42,16 @@ impl HttpTasks {
         protocol_buffer_lint,
         expect(
             clippy::disallowed_methods,
-            reason = "both task count and requested capacity are capped at MAX_RANGE_TASKS"
+            reason = "both task count and requested capacity are capped at MAX_RANGES"
         )
     )]
     pub(crate) fn push(&mut self) -> Result<(), i32> {
         let count = self.items.len();
-        if count >= MAX_RANGE_TASKS {
+        if count >= MAX_RANGES {
             return Err(crate::OVERFLOW);
         }
         if count == self.items.capacity() {
-            let capacity = (count * 2).clamp(4, MAX_RANGE_TASKS);
+            let capacity = (count * 2).clamp(4, MAX_RANGES);
             self.items
                 .try_reserve_exact(capacity - count)
                 .map_err(|_| ALLOCATION)?;
@@ -90,6 +88,10 @@ impl HttpTasks {
         written: &mut usize,
     ) -> Result<bool, i32> {
         self.prepare_full(offset, length);
+        let overflow = range_format(format, &mut [], written)?;
+        if overflow || *written >= self.scratch.part_header.len() {
+            return Err(crate::OVERFLOW);
+        }
         range_format(format, &mut self.scratch.part_header, written)
     }
 }

@@ -3,7 +3,7 @@
 //! (`swoole::String` allocation, the upload's file and `swoole_tmpfile`) are direct
 //! calls, which tests run too. Its logs go through corebase's `log`. Trace logs are
 //! compiled out, as in upstream's builds without `--enable-trace-log`.
-use crate::multipart_parser::{Flow, MultipartParser, Parts};
+use crate::multipart_parser::{Flow, MultipartHeader, MultipartParser, Parts};
 use crate::{
     ChunkState, HttpChunked, HttpChunks, HttpFrame, HttpHeaderInfo, HttpSpan, MultipartError,
     case_equal,
@@ -11,7 +11,6 @@ use crate::{
 use core::ffi::c_int;
 use std::fs::File;
 use std::io::{BufWriter, Write};
-use swoole_rs_corebase::buffer::BoundedBytes;
 use swoole_rs_corebase::buffer::string::{StringBuffer, boxed_sized_string};
 use swoole_rs_corebase::log::LogLevel::{SW_LOG_NOTICE as NOTICE, SW_LOG_WARNING as WARNING};
 use swoole_rs_corebase::ossupport::TempFile;
@@ -61,7 +60,9 @@ pub struct HttpForm {
     /// `upload_tmp_dir + "/swoole.upfile.XXXXXX"`.
     template: Vec<u8>,
     /// The part header's name, copied: it may arrive split across reads.
-    header_name: BoundedBytes,
+    header: MultipartHeader,
+    disposition_seen: bool,
+    received: u64,
     upload_size: usize,
     upload_max: usize,
 }
@@ -83,7 +84,6 @@ pub struct HttpRequest {
     pub unavailable: bool,
     pub header_parsed: bool,
     pub tried_to_dispatch: bool,
-    pub multipart_header_parsed: bool,
     pub known_length: bool,
     pub keep_alive: bool,
     pub chunked: bool,
@@ -115,7 +115,6 @@ impl Default for HttpRequest {
             unavailable: false,
             header_parsed: false,
             tried_to_dispatch: false,
-            multipart_header_parsed: false,
             known_length: false,
             keep_alive: false,
             chunked: false,
@@ -203,7 +202,7 @@ impl HttpRequest {
                 | (u32::from(self.keep_alive) << 1)
                 | (u32::from(self.chunked) << 2)
                 | (u32::from(self.header_parsed) << 4),
-            number_errors: 0,
+            ..Default::default()
         };
         loop {
             let end = self.header_length.wrapping_sub(4) as usize;
@@ -215,6 +214,9 @@ impl HttpRequest {
             self.header_parsed = state.flags & 16 != 0;
             if state.number_errors != 0 {
                 Self::number_errors(state.number_errors.into());
+            }
+            if state.clear_form {
+                self.form = None;
             }
             let Ok(boundary) = status else {
                 self.excepted = true;
@@ -234,7 +236,9 @@ impl HttpRequest {
                 uploads: Vec::new(),
                 body: None,
                 template: Vec::new(),
-                header_name: BoundedBytes::new(0, 0),
+                header: MultipartHeader::new(0),
+                disposition_seen: false,
+                received: 0,
                 upload_size: 0,
                 upload_max: 0,
             }));
@@ -319,7 +323,7 @@ impl HttpRequest {
         upload_max: usize,
     ) -> bool {
         let header = self.header_length as usize;
-        let Some(form) = self.form.as_deref_mut() else {
+        let Some(mut form) = self.form.take() else {
             return false;
         };
         // The header buffer the boundary was found in.
@@ -337,7 +341,7 @@ impl HttpRequest {
         let Some(parser) = text.get(at).and_then(MultipartParser::new) else {
             return false;
         };
-        form.header_name = BoundedBytes::new(self.max_length as usize, 0);
+        form.header = MultipartHeader::new(self.max_length as usize);
         form.parser = Some(parser);
         let mut body = boxed_sized_string(BUFFER_SIZE_BIG, None);
         body.append(input.get(header..).unwrap_or_default());
@@ -345,7 +349,16 @@ impl HttpRequest {
         form.body = Some(body);
         form.template = [tmp_dir, b"/swoole.upfile.XXXXXX\0"].concat();
         form.upload_max = upload_max;
+        self.form = Some(form);
         true
+    }
+
+    /// The parser consumed the declared body length while waiting for a final boundary.
+    #[must_use]
+    pub fn multipart_body_exhausted(&self) -> bool {
+        self.form
+            .as_ref()
+            .is_some_and(|form| form.received >= self.content_length)
     }
 
     /// Free the parser and unfinished upload. The caller owns the completed files
@@ -382,10 +395,11 @@ impl HttpRequest {
         );
         let reason = parser.error_message();
         let result = crate::multipart_result(processed, length, self.excepted);
+        let form = form_of(self);
         if result.is_ok() {
+            form.received = form.received.saturating_add(length as u64);
             body.clear();
         }
-        let form = form_of(self);
         (form.parser, form.body) = (Some(parser), Some(body));
         match result {
             Err(MultipartError::Parser) => {
@@ -440,13 +454,23 @@ impl Rewrite<'_> {
         Flow::Pause
     }
 
+    fn metadata_too_large(&mut self, reason: &str) -> Flow {
+        log::error_log(
+            NOTICE,
+            INVALID_REQUEST,
+            c"http_server::multipart_process_header",
+            format_args!("reconstructed multipart request is too large: {reason}"),
+        );
+        self.too_large()
+    }
+
     fn append_metadata(&mut self, parts: &[&[u8]]) -> Flow {
         if self
             .saved
             .append_bounded(parts, self.request.max_length as usize)
             .is_err()
         {
-            return self.too_large();
+            return self.metadata_too_large("part framing exceeds the byte limit");
         }
         Flow::Go
     }
@@ -455,20 +479,26 @@ impl Rewrite<'_> {
 impl Parts<'_> for Rewrite<'_> {
     fn on_header_field(&mut self, data: &[u8]) -> Flow {
         let r = &mut *self.request;
-        if form_of(r).header_name.append(data).is_err() {
+        if form_of(r).header.append_name(data) == Flow::Fail {
             return self.too_large();
         }
         Flow::Go
     }
 
     fn on_header_value(&mut self, data: &[u8]) -> Flow {
+        if form_of(self.request).header.append_value(data) == Flow::Fail {
+            return self.too_large();
+        }
+        Flow::Go
+    }
+
+    fn on_header_value_complete(&mut self) -> Flow {
         let limit = self.request.max_length as usize;
         let form = form_of(self.request);
-        // The value callback means the name is complete.
-        let name = form.header_name.as_ref();
+        let (name, data) = form.header.parts();
         // Only the reactor may write this header; a client never names a part header so.
         if case_equal(name, UPLOAD_FILE) {
-            form.header_name.clear();
+            form.header.clear();
             log::error_log(
                 WARNING,
                 INVALID_REQUEST,
@@ -484,23 +514,30 @@ impl Parts<'_> for Rewrite<'_> {
             .append_bounded(&[name, b": ", data, b"\r\n"], limit)
             .is_err()
         {
-            return self.too_large();
+            return self.metadata_too_large("header exceeds the byte limit");
         }
-        let disposition = case_equal(name, b"content-disposition");
-        form.header_name.clear();
-        if !disposition || !crate::multipart_has_filename(data) {
+        let disposition = crate::multipart_disposition(name);
+        if disposition && std::mem::replace(&mut form.disposition_seen, true) {
+            log::warning(
+                c"http_server::multipart_on_header_value",
+                format_args!("duplicate multipart Content-Disposition"),
+            );
+            return Flow::Fail;
+        }
+        let is_upload = disposition && crate::multipart_has_filename(data);
+        form.header.clear();
+        if !is_upload {
             return Flow::Go;
         }
-        let form = form_of(self.request);
         if form.uploads.len() >= MAX_UPLOAD_FILES {
-            return self.too_large();
+            return self.metadata_too_large("file count exceeds the limit");
         }
         let mut template = form.template.clone();
         form.upload_size = 0;
         // `swoole_tmpfile` fills in the template's `XXXXXX`.
         let Some(fd) = TempFile::create(&mut template) else {
-            self.request.excepted = true;
-            return Flow::Go;
+            (self.request.excepted, self.request.unavailable) = (true, true);
+            return Flow::Pause;
         };
         form.fp = Some(fd.map_file(BufWriter::new));
         Flow::Go
@@ -537,23 +574,23 @@ impl Parts<'_> for Rewrite<'_> {
     fn on_headers_complete(&mut self) -> Flow {
         let limit = self.request.max_length as usize;
         let form = form_of(self.request);
-        form.header_name.clear();
+        form.header.clear();
         let parts: &[&[u8]] = match &form.fp {
             Some(upload) => &[b"Swoole-Upload-File: ", upload.path().to_bytes(), b"\r\n"],
             None => &[b"\r\n"],
         };
         if self.saved.append_bounded(parts, limit).is_err() {
-            return self.too_large();
+            return self.metadata_too_large("generated header exceeds the byte limit");
         }
-        self.request.multipart_header_parsed = true;
         Flow::Go
     }
 
     fn on_part_data_end(&mut self) -> Flow {
-        self.request.multipart_header_parsed = false;
-        // Dropping the file writes what is buffered and closes it.
-        if let Some(mut upload) = form_of(self.request).fp.take() {
-            if upload.file.flush().is_err() {
+        let form = form_of(self.request);
+        form.disposition_seen = false;
+        if let Some(upload) = form.fp.take() {
+            let upload = upload.map_file(|file| crate::close_upload_file(file, None));
+            if !*upload.file {
                 (self.request.excepted, self.request.unavailable) = (true, true);
                 return Flow::Pause;
             }
@@ -564,14 +601,14 @@ impl Parts<'_> for Rewrite<'_> {
                     reason = "a file is opened only below MAX_UPLOAD_FILES and taken once at part end"
                 )
             )]
-            form_of(self.request).uploads.push(upload.map_file(drop));
+            form.uploads.push(upload.map_file(drop));
             return self.append_metadata(&[b"\r\nSwoole-Upload-File\r\n"]);
         }
         self.append_metadata(&[b"\r\n"])
     }
 
     fn on_part_data_begin(&mut self, boundary: &[u8]) -> Flow {
-        form_of(self.request).header_name.clear();
+        form_of(self.request).header.clear();
         self.append_metadata(&[boundary, b"\r\n"])
     }
 
@@ -777,6 +814,31 @@ mod tests {
         assert!(!r.has_expect_header(i.bytes()), "no Expect");
         let i = input(b"POST /submit HTTP/1.1\r\nHost: www.example.com\r\nContent-Type: application/json\r\nContent-Length: 1000000\r\nExpect: 100-continue\r\n\r\n");
         assert!(r.has_expect_header(i.bytes()), "Expect: 100-continue");
+        let i = input(b"POST /submit HTTP/1.1\r\nHost: www.example.com\r\nContent-Length: 1000000\r\nExpect:\t100-continue\r\n\r\n");
+        assert!(r.has_expect_header(i.bytes()), "tab after Expect:");
+    }
+
+    #[test]
+    fn duplicate_content_type() {
+        let (_, request) = parsed(b"POST / HTTP/1.1\r\nHost: localhost\r\nContent-Type: multipart/form-data; boundary=test\r\nContent-Type: text/plain\r\nContent-Length: 0\r\n\r\n");
+        assert!(request.form.is_none());
+        let (_, request) = parsed(b"POST / HTTP/1.1\r\nHost: localhost\r\nContent-Type: text/plain\r\nContent-Type: multipart/form-data; boundary=test\r\nContent-Length: 0\r\n\r\n");
+        assert!(request.form.is_some());
+    }
+
+    #[test]
+    fn invalid_multipart_boundary() {
+        let (mut input, mut request) = parsed(b"POST / HTTP/1.1\r\nHost: localhost\r\nContent-Type: multipart/form-data\r\nContent-Length: 1\r\n\r\nx");
+        assert!(request.form.is_some());
+        assert!(!request.init_multipart_parser(input.get_mut(), b"/tmp", 0));
+        assert!(request.form.is_none());
+    }
+
+    #[test]
+    fn header_value_whitespace() {
+        let (_, r) = parsed(b"POST / HTTP/1.1\r\nHost: localhost\r\nConnection:\tkeep-alive\r\nContent-Type:\tmultipart/form-data; boundary=test\r\n\r\n");
+        assert!(r.keep_alive);
+        assert!(r.form.is_some());
     }
 
     #[test]
@@ -822,7 +884,7 @@ mod tests {
                 true,
             ),
             (b"Transfer-Encoding: chunkedchunked", false, true),
-            (b"Transfer-Encoding: chunked\t", false, true),
+            (b"Transfer-Encoding: chunked\t", true, false),
             (b"Transfer-Encoding:", false, true),
             (b"Content-Length: 3", false, false),
         ] {
@@ -960,17 +1022,23 @@ mod tests {
         r.form = None;
     }
 
-    /// One part header through the callbacks.
-    fn field(parts: &mut Rewrite<'_>, name: &[u8], value: &[u8]) {
-        parts.on_header_field(name);
-        parts.on_header_value(value);
-    }
-
-    /// Streams a two-part body, one part a file, through the callbacks.
+    /// Streams a form field and a file through the reactor's multipart parser.
     #[test]
     fn multipart_bodies_are_rewritten_with_uploads_on_disk() {
-        let head = b"POST / HTTP/1.1\r\nContent-Type: multipart/form-data; boundary=AB\r\nContent-Length: 999\r\n\r\n";
-        let (mut i, mut r) = parsed(head);
+        let wire = concat!(
+            "--AB\r\nContent-Disposition: form-data; name=\"a\"\r\n\r\n1\r\n",
+            "--AB\r\nContent-Disposition: form-data; name=\"f\"; filename=\"x.txt\"\r\n\r\n",
+            "file\r\n--AB--\r\n",
+        );
+        let head = format!(
+            "POST / HTTP/1.1\r\nContent-Type: multipart/form-data; boundary=AB \t\r\nX-Whitespace: \talpha \t beta \t \r\nContent-Length: {}\r\n\r\n",
+            wire.len()
+        );
+        let (mut i, mut r) = parsed(head.as_bytes());
+        assert_eq!(
+            r.header_bytes(i.bytes(), b"X-Whitespace"),
+            Some(&b"alpha \t beta"[..])
+        );
         r.max_length = 1 << 20;
         let dir = std::env::temp_dir();
         assert!(
@@ -982,25 +1050,10 @@ mod tests {
             head.len(),
             "the receive buffer keeps the header"
         );
-        let mut parts = Rewrite {
-            request: &mut r,
-            saved: i.get_mut(),
-        };
-        parts.on_part_data_begin(b"--AB");
-        field(&mut parts, b"Content-Disposition", b"form-data; name=\"a\"");
-        parts.on_headers_complete();
-        parts.on_part_data(b"1");
-        parts.on_part_data_end();
-        parts.on_part_data_begin(b"--AB");
-        field(
-            &mut parts,
-            b"Content-Disposition",
-            b"form-data; name=\"f\"; filename=\"x.txt\"",
-        );
-        parts.on_headers_complete();
-        parts.on_part_data(b"file");
-        parts.on_part_data_end();
-        parts.on_body_end(b"--AB");
+        for chunk in wire.as_bytes().chunks(7) {
+            r.body().unwrap().append(chunk);
+            assert!(r.parse_multipart_data(i.get_mut()));
+        }
         let body = &i.bytes()[head.len()..];
         let marker = b"Swoole-Upload-File: ";
         let at = body
@@ -1038,9 +1091,15 @@ mod tests {
         );
         std::fs::remove_file(name).unwrap();
         assert_eq!(r.content_length, expected.len() as u64, "body length");
+        assert!(r.tried_to_dispatch, "ready to dispatch");
         assert!(
-            r.tried_to_dispatch && !r.multipart_header_parsed,
-            "ready to dispatch"
+            r.form
+                .as_ref()
+                .unwrap()
+                .parser
+                .as_ref()
+                .unwrap()
+                .is_complete()
         );
         r.destroy_multipart_parser();
         assert!(r.form.is_none(), "the form is gone");
@@ -1076,33 +1135,31 @@ mod tests {
 
     #[test]
     fn file_count_limit_applies_before_opening_another_upload() {
-        let (mut saved, mut request) =
-            parsed(b"POST / HTTP/1.1\r\nContent-Type: multipart/form-data; boundary=b\r\n\r\n");
-        request.max_length = 1 << 20;
-        let dir = std::env::temp_dir();
-        assert!(request.init_multipart_parser(saved.get_mut(), dir.as_os_str().as_bytes(), 100));
+        let mut f = Fixture::new();
+        f.request.max_length = 1 << 20;
         let mut parts = Rewrite {
-            request: &mut request,
-            saved: saved.get_mut(),
+            request: &mut f.request,
+            saved: f.input.get_mut(),
         };
+        let disposition = |parts: &mut Rewrite<'_>, value: &[u8]| {
+            assert_eq!(parts.on_header_field(b"Content-Disposition"), Flow::Go);
+            assert_eq!(parts.on_header_value(value), Flow::Go);
+            parts.on_header_value_complete()
+        };
+        let file = b"form-data; filename=\"f\"";
         for _ in 0..MAX_UPLOAD_FILES {
-            parts.on_header_field(b"Content-Disposition");
-            assert_eq!(
-                parts.on_header_value(b"form-data; filename=\"f\""),
-                Flow::Go
-            );
+            assert_eq!(disposition(&mut parts, file), Flow::Go);
             assert_eq!(parts.on_part_data_end(), Flow::Go);
         }
-        parts.on_header_field(b"Content-Disposition");
-        assert_eq!(parts.on_header_value(b"form-data; name=\"text\""), Flow::Go);
-        parts.on_header_field(b"Content-Disposition");
         assert_eq!(
-            parts.on_header_value(b"form-data; filename=\"f\""),
-            Flow::Pause
+            disposition(&mut parts, b"form-data; name=\"text\""),
+            Flow::Go
         );
-        assert!(request.excepted && request.too_large);
-        assert!(form_of(&mut request).fp.is_none());
-        assert_eq!(request.destroy_multipart_parser().len(), MAX_UPLOAD_FILES);
+        assert_eq!(parts.on_part_data_end(), Flow::Go);
+        assert_eq!(disposition(&mut parts, file), Flow::Pause);
+        assert!(f.request.excepted && f.request.too_large);
+        assert!(form_of(&mut f.request).fp.is_none());
+        assert_eq!(f.request.destroy_multipart_parser().len(), MAX_UPLOAD_FILES);
     }
 
     #[test]
@@ -1238,18 +1295,22 @@ mod tests {
     // core-tests/src/server/http_upload_provenance.cpp: header_name_split_across_reads_is_assembled.
     #[test]
     fn header_name_split_across_reads_is_assembled() {
-        let body = [PART_PREFIX, b"X-Custom-Header: v\r\n\r\nvalue\r\n--b--\r\n"].concat();
+        let body = [
+            PART_PREFIX,
+            b"X-Custom-Header: sample\r\n\r\nvalue\r\n--b--\r\n",
+        ]
+        .concat();
         let start = body
             .windows(15)
             .position(|w| w == b"X-Custom-Header")
             .unwrap();
-        for split in start..=start + b"X-Custom-Header: ".len() {
+        for split in start..=start + b"X-Custom-Header: sample".len() {
             let mut f = Fixture::new();
             assert!(f.feed(&body[..split]), "{split}");
             assert!(f.feed(&body[split..]), "{split}");
             assert!(f.request.tried_to_dispatch, "{split}");
             assert!(
-                f.forwarded().contains("\r\nx-custom-header: v\r\n"),
+                f.forwarded().contains("\r\nx-custom-header: sample\r\n"),
                 "{split}"
             );
         }

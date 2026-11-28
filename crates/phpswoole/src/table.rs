@@ -3,11 +3,8 @@
 use crate::{
     asynchronous as a, constants::SHORTNAME, functions as f, implicit, interfaces as i, module, vm,
 };
-use swoole_rs_phpstubs::{ex, stdext, swoole as s, tracer};
+use swoole_rs_phpstubs::{ex, swoole as s, tracer};
 use swoole_rs_zend::{Entered, Returned, arginfo::Table, method_table, sys::zend_function_entry};
-
-/// `swr_v1_phpswoole_minit` flag: the build has `SW_STDEXT`.
-pub(crate) const STDEXT: u32 = 1 << 11;
 
 // Handlers other crates or C++ define, whichever the build selects: each takes
 // the frame and return slot only Zend makes, as a `handlers!` one does.
@@ -78,41 +75,19 @@ method_table! {
     ];
 }
 
-#[cfg(feature = "stdext")]
-// crates/phpstdext's handlers.
-unsafe extern "C" {
-    safe fn zif_swoole_call_array_method(frame: Entered<'_>, value: Returned<'_>);
-    safe fn zif_swoole_call_string_method(frame: Entered<'_>, value: Returned<'_>);
-    safe fn zif_swoole_call_stream_method(frame: Entered<'_>, value: Returned<'_>);
-    safe fn zif_swoole_array_search(frame: Entered<'_>, value: Returned<'_>);
-    safe fn zif_swoole_array_contains(frame: Entered<'_>, value: Returned<'_>);
-    safe fn zif_swoole_array_join(frame: Entered<'_>, value: Returned<'_>);
-    safe fn zif_swoole_array_key_exists(frame: Entered<'_>, value: Returned<'_>);
-    safe fn zif_swoole_array_map(frame: Entered<'_>, value: Returned<'_>);
-    safe fn zif_swoole_str_split(frame: Entered<'_>, value: Returned<'_>);
-    safe fn zif_swoole_parse_str(frame: Entered<'_>, value: Returned<'_>);
-    safe fn zif_swoole_hash(frame: Entered<'_>, value: Returned<'_>);
-    safe fn zif_swoole_typed_array(frame: Entered<'_>, value: Returned<'_>);
-    safe fn zif_swoole_array_is_typed(frame: Entered<'_>, value: Returned<'_>);
-    safe fn zif_swoole_str_is_empty(frame: Entered<'_>, value: Returned<'_>);
-    safe fn zif_swoole_array_is_empty(frame: Entered<'_>, value: Returned<'_>);
-    safe fn zif_swoole_str_match(frame: Entered<'_>, value: Returned<'_>);
-    safe fn zif_swoole_str_match_all(frame: Entered<'_>, value: Returned<'_>);
-    safe fn zif_swoole_str_json_decode(frame: Entered<'_>, value: Returned<'_>);
-    safe fn zif_swoole_str_json_decode_to_object(frame: Entered<'_>, value: Returned<'_>);
-    safe fn zif_swoole_str_replace(frame: Entered<'_>, value: Returned<'_>);
-    safe fn zif_swoole_str_ireplace(frame: Entered<'_>, value: Returned<'_>);
-    safe fn zif_swoole_array_replace_str(frame: Entered<'_>, value: Returned<'_>);
-    safe fn zif_swoole_array_ireplace_str(frame: Entered<'_>, value: Returned<'_>);
-}
-
 #[cfg(feature = "ssh2")]
 // The bundled ext/ssh2's handlers (crates/ssh2).
 unsafe extern "C" {
+    safe fn swr_ssh2_has_signal() -> bool;
+    safe fn zif_ssh2_send_signal(frame: Entered<'_>, value: Returned<'_>);
     safe fn zif_ssh2_connect(frame: Entered<'_>, value: Returned<'_>);
     safe fn zif_ssh2_disconnect(frame: Entered<'_>, value: Returned<'_>);
+    safe fn zif_ssh2_set_timeout(frame: Entered<'_>, value: Returned<'_>);
     safe fn zif_ssh2_methods_negotiated(frame: Entered<'_>, value: Returned<'_>);
+    safe fn zif_ssh2_keepalive_config(frame: Entered<'_>, value: Returned<'_>);
+    safe fn zif_ssh2_keepalive_send(frame: Entered<'_>, value: Returned<'_>);
     safe fn zif_ssh2_fingerprint(frame: Entered<'_>, value: Returned<'_>);
+    safe fn zif_ssh2_hostkey(frame: Entered<'_>, value: Returned<'_>);
     safe fn zif_ssh2_auth_none(frame: Entered<'_>, value: Returned<'_>);
     safe fn zif_ssh2_auth_password(frame: Entered<'_>, value: Returned<'_>);
     safe fn zif_ssh2_auth_pubkey_file(frame: Entered<'_>, value: Returned<'_>);
@@ -146,42 +121,17 @@ unsafe extern "C" {
     safe fn zif_ssh2_auth_agent(frame: Entered<'_>, value: Returned<'_>);
 }
 
-#[cfg(feature = "stdext")]
-method_table! {
-    static STDEXT_FUNCTIONS = [
-        c"swoole_call_array_method" => zif_swoole_call_array_method, &stdext::arginfo_swoole_call_array_method, 0;
-        c"swoole_call_string_method" => zif_swoole_call_string_method, &stdext::arginfo_swoole_call_string_method, 0;
-        c"swoole_call_stream_method" => zif_swoole_call_stream_method, &stdext::arginfo_swoole_call_stream_method, 0;
-        c"swoole_array_search" => zif_swoole_array_search, &stdext::arginfo_swoole_array_search, 0;
-        c"swoole_array_contains" => zif_swoole_array_contains, &stdext::arginfo_swoole_array_contains, 0;
-        c"swoole_array_join" => zif_swoole_array_join, &stdext::arginfo_swoole_array_join, 0;
-        c"swoole_array_key_exists" => zif_swoole_array_key_exists, &stdext::arginfo_swoole_array_key_exists, 0;
-        c"swoole_array_map" => zif_swoole_array_map, &stdext::arginfo_swoole_array_map, 0;
-        c"swoole_str_split" => zif_swoole_str_split, &stdext::arginfo_swoole_str_split, 0;
-        c"swoole_parse_str" => zif_swoole_parse_str, &stdext::arginfo_swoole_parse_str, 0;
-        c"swoole_hash" => zif_swoole_hash, &stdext::arginfo_swoole_hash, 0;
-        c"swoole_typed_array" => zif_swoole_typed_array, &stdext::arginfo_swoole_typed_array, 0;
-        c"swoole_array_is_typed" => zif_swoole_array_is_typed, &stdext::arginfo_swoole_array_is_typed, 0;
-        c"swoole_str_is_empty" => zif_swoole_str_is_empty, &stdext::arginfo_swoole_str_is_empty, 0;
-        c"swoole_array_is_empty" => zif_swoole_array_is_empty, &stdext::arginfo_swoole_array_is_empty, 0;
-        c"swoole_str_match" => zif_swoole_str_match, &stdext::arginfo_swoole_str_match, 0;
-        c"swoole_str_match_all" => zif_swoole_str_match_all, &stdext::arginfo_swoole_str_match_all, 0;
-        c"swoole_str_json_decode" => zif_swoole_str_json_decode, &stdext::arginfo_swoole_str_json_decode, 0;
-        c"swoole_str_json_decode_to_object" => zif_swoole_str_json_decode_to_object, &stdext::arginfo_swoole_str_json_decode_to_object, 0;
-        c"swoole_str_replace" => zif_swoole_str_replace, &stdext::arginfo_swoole_str_replace, 0;
-        c"swoole_str_ireplace" => zif_swoole_str_ireplace, &stdext::arginfo_swoole_str_ireplace, 0;
-        c"swoole_array_replace_str" => zif_swoole_array_replace_str, &stdext::arginfo_swoole_array_replace_str, 0;
-        c"swoole_array_ireplace_str" => zif_swoole_array_ireplace_str, &stdext::arginfo_swoole_array_ireplace_str, 0;
-    ];
-}
-
 #[cfg(feature = "ssh2")]
 method_table! {
     static SSH2_FUNCTIONS = [
         c"ssh2_connect" => zif_ssh2_connect, &swoole_rs_phpstubs::ssh2::arginfo_ssh2_connect, 0;
         c"ssh2_disconnect" => zif_ssh2_disconnect, &swoole_rs_phpstubs::ssh2::arginfo_ssh2_disconnect, 0;
+        c"ssh2_set_timeout" => zif_ssh2_set_timeout, &swoole_rs_phpstubs::ssh2::arginfo_ssh2_set_timeout, 0;
         c"ssh2_methods_negotiated" => zif_ssh2_methods_negotiated, &swoole_rs_phpstubs::ssh2::arginfo_ssh2_methods_negotiated, 0;
+        c"ssh2_keepalive_config" => zif_ssh2_keepalive_config, &swoole_rs_phpstubs::ssh2::arginfo_ssh2_keepalive_config, 0;
+        c"ssh2_keepalive_send" => zif_ssh2_keepalive_send, &swoole_rs_phpstubs::ssh2::arginfo_ssh2_keepalive_send, 0;
         c"ssh2_fingerprint" => zif_ssh2_fingerprint, &swoole_rs_phpstubs::ssh2::arginfo_ssh2_fingerprint, 0;
+        c"ssh2_hostkey" => zif_ssh2_hostkey, &swoole_rs_phpstubs::ssh2::arginfo_ssh2_hostkey, 0;
         c"ssh2_auth_none" => zif_ssh2_auth_none, &swoole_rs_phpstubs::ssh2::arginfo_ssh2_auth_none, 0;
         c"ssh2_auth_password" => zif_ssh2_auth_password, &swoole_rs_phpstubs::ssh2::arginfo_ssh2_auth_password, 0;
         c"ssh2_auth_pubkey_file" => zif_ssh2_auth_pubkey_file, &swoole_rs_phpstubs::ssh2::arginfo_ssh2_auth_pubkey_file, 0;
@@ -216,21 +166,32 @@ method_table! {
     ];
 }
 
+#[cfg(feature = "ssh2")]
+method_table! {
+    static SSH2_SIGNAL = [
+        c"ssh2_send_signal" => zif_ssh2_send_signal, &swoole_rs_phpstubs::ssh2::arginfo_ssh2_send_signal, 0;
+    ];
+}
+
 /// The complete table, in upstream's order: the optional families the build
 /// has sit between the head and the tracer's functions.
 pub(crate) fn functions() -> *const zend_function_entry {
     Table::join(&[
         HEAD.table(),
-        #[cfg(feature = "stdext")]
-        STDEXT_FUNCTIONS.table(),
         #[cfg(feature = "ssh2")]
         SSH2_FUNCTIONS.table(),
+        #[cfg(feature = "ssh2")]
+        if swr_ssh2_has_signal() {
+            SSH2_SIGNAL.table()
+        } else {
+            Table::NONE
+        },
         TAIL.table(),
     ])
     .as_ptr()
 }
 
-/// MINIT's `go`, `defer` and (with stdext) `typed_array`, when short names are on.
+/// MINIT's `go` and `defer` aliases when short names are on.
 /// The token is the module's MINIT, which Zend runs after registering the
 /// module's functions.
 pub(crate) fn register_aliases(
@@ -250,12 +211,5 @@ pub(crate) fn register_aliases(
         c"defer",
         &s::arginfo_swoole_coroutine_defer,
     )?;
-    if flags & STDEXT != 0 {
-        minit.function_alias(
-            c"swoole_typed_array",
-            c"typed_array",
-            &stdext::arginfo_swoole_typed_array,
-        )?;
-    }
     Ok(())
 }

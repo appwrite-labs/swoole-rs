@@ -329,3 +329,9 @@ pub fn stats() -> Option<(usize, usize, usize)> {
         (threads.task_num, workers, queued)
     })
 }
+
+/// Workers available to take a queued task, or zero before the AIO pool starts.
+#[must_use]
+pub fn idle_worker_num() -> usize {
+    with_current(|threads| threads.pool.map_or(0, Pool::idle_worker_num)).unwrap_or_default()
+}

@@ -7,7 +7,6 @@ pub enum StaticPhase {
     #[default]
     Root,
     Locations,
-    Directory,
     Stat,
     CanonicalPath,
     CanonicalLink,
@@ -76,8 +75,7 @@ pub(crate) enum Action {
     Done(bool),
     /// Visit the configured locations.
     Locations,
-    /// Assign `dir_path`.
-    Directory,
+    BadRequest,
     Lstat,
     Realpath,
     /// Look up the filename's MIME type.
@@ -108,29 +106,12 @@ pub(crate) fn path_step(
 ) -> Result<Action, i32> {
     match state.phase {
         StaticPhase::Root => {
-            if root.len() > capacity {
-                return Err(OVERFLOW);
-            }
             let url_length = url
                 .iter()
                 .position(|&b| b == b'?')
                 .or_else(|| url.iter().position(|&b| b == b'#'))
                 .unwrap_or(url.len());
-            // One allocation for a selected path, without reserving PATH_MAX
-            // for requests that stop after the location check.
-            let reserve = root
-                .len()
-                .saturating_add(url_length)
-                .saturating_add(1)
-                .min(capacity);
-            reserve_filename(output, capacity, reserve).ok_or(OVERFLOW)?;
-            // Old root copy precedes location rejection. Reject only its old
-            // out-of-allocation case; exact-capacity copies remain observable.
-            let Some(head) = span(output, capacity, 0, root.len()) else {
-                return Err(OVERFLOW);
-            };
             state.url_length = url_length;
-            head.copy_from_slice(root);
             state.phase = StaticPhase::Locations;
             return Ok(Action::Locations);
         }
@@ -146,33 +127,33 @@ pub(crate) fn path_step(
                 state.phase = StaticPhase::Done;
                 return Ok(Action::Catch);
             };
-            let Some((nul, path)) =
-                span(output, capacity, root.len(), length + 1).and_then(<[u8]>::split_last_mut)
-            else {
-                return Err(INVALID);
-            };
-            path.copy_from_slice(url);
-            *nul = 0;
-            state.phase = StaticPhase::Directory;
-            return Ok(Action::Directory);
-        }
-        StaticPhase::Directory => {
-            if state.url_length > url.len() {
-                return Err(INVALID);
+            let path = span(output, capacity, 0, length + 1).ok_or(OVERFLOW)?;
+            let (prefix, tail) = path.split_at_mut(root.len());
+            prefix.copy_from_slice(root);
+            let mut bytes = url.iter().copied();
+            let mut written = 0;
+            for slot in tail {
+                let Some(byte) = bytes.next() else {
+                    *slot = 0;
+                    break;
+                };
+                let decoded = if byte == b'%' {
+                    bytes
+                        .next()
+                        .and_then(crate::hex)
+                        .zip(bytes.next().and_then(crate::hex))
+                        .map(|(high, low)| (high << 4) | low)
+                } else {
+                    Some(byte)
+                };
+                let Some(byte) = decoded.filter(|&b| b != 0) else {
+                    state.phase = StaticPhase::Done;
+                    return Ok(Action::BadRequest);
+                };
+                *slot = byte;
+                written += 1;
             }
-            let Some(path) = root
-                .len()
-                .checked_add(state.url_length)
-                .filter(|&n| n < capacity)
-                .and_then(|length| output.get_mut(..length))
-            else {
-                return Err(INVALID);
-            };
-            let length = crate::url_decode(path);
-            if let Some(nul) = output.get_mut(length) {
-                *nul = 0;
-            }
-            state.filename_length = length;
+            state.filename_length = root.len() + written;
             state.phase = StaticPhase::Stat;
             return Ok(Action::Lstat);
         }
@@ -283,61 +264,9 @@ pub(crate) fn span(
     output.get_mut(from..to)
 }
 
-/// Append an index filename using the pinned logical-length/slash behavior.
-/// Logical length intentionally stays unchanged in the native class.
-pub(crate) fn static_index_path(
-    output: &mut Vec<u8>,
-    capacity: usize,
-    logical_length: usize,
-    name: &[u8],
-) -> Result<(), i32> {
-    let Some(room) = capacity
-        .checked_sub(logical_length)
-        .filter(|&room| room > 0)
-    else {
-        return Err(INVALID);
-    };
-    let slash = output.get(logical_length) != Some(&b'/');
-    let length = usize::from(slash) + name.len();
-    if length >= room {
-        return Err(OVERFLOW);
-    }
-    let Some(rest) = span(
-        output,
-        capacity,
-        logical_length,
-        logical_length + length + 1,
-    ) else {
-        return Err(OVERFLOW);
-    };
-    let tail = slash
-        .then_some(b'/')
-        .into_iter()
-        .chain(name.iter().copied())
-        .chain([0]);
-    for (slot, byte) in rest.iter_mut().zip(tail) {
-        *slot = byte;
-    }
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    #[test]
-    fn index_path_appends_after_one_slash() {
-        let mut out = b"/a\0\0\0\0\0\0".to_vec();
-        assert_eq!(static_index_path(&mut out, 8, 2, b"ix"), Ok(()));
-        assert_eq!(out, b"/a/ix\0\0\0");
-        let mut out = b"/a/\0\0\0".to_vec();
-        assert_eq!(static_index_path(&mut out, 6, 2, b"ix"), Ok(()));
-        assert_eq!(out, b"/aix\0\0");
-        assert_eq!(static_index_path(&mut out, 6, 2, b"ixxx"), Err(OVERFLOW));
-        assert_eq!(static_index_path(&mut out, 6, 6, b""), Err(INVALID));
-        let mut out = b"/a".to_vec();
-        assert_eq!(static_index_path(&mut out, 8, 2, b"ix"), Ok(()));
-        assert_eq!(out, b"/a/ix\0");
-    }
     #[test]
     fn query_bytes_do_not_size_the_filename_buffer() {
         let mut url = b"/a?".to_vec();
@@ -351,39 +280,32 @@ mod tests {
         assert!(out.capacity() < url.len());
         assert_eq!(
             path_step(&url, b"/r", &mut out, 4096, &mut state, 0),
-            Ok(Action::Directory)
+            Ok(Action::Lstat)
         );
         assert_eq!(out, b"/r/a\0");
     }
 
     #[test]
-    fn path_publication_waits_for_native_directory_allocation() {
+    fn selected_url_is_decoded_after_matching_the_location() {
         let mut out = vec![0xa5; 64];
         let mut state = HttpStaticPath {
             filename_length: 12,
             ..Default::default()
         };
         let url = b"/a%2eb#before?query";
-        let root = b"/r";
+        let root = b"/+%";
         assert_eq!(
             path_step(url, root, &mut out, 64, &mut state, LOCATIONS),
             Ok(Action::Locations)
         );
-        assert_eq!(&out[..3], &[b'/', b'r', 0xa5]);
-        assert_eq!(state.filename_length, 12);
+        assert_eq!(out, [0xa5; 64]);
         assert_eq!(location_match(url, b"/A", &mut state), Ok(true));
-        assert_eq!(
-            path_step(url, root, &mut out, 64, &mut state, LOCATIONS),
-            Ok(Action::Directory)
-        );
-        assert_eq!(&out[..17], b"/r/a%2eb#before\0\xa5");
-        assert_eq!(state.filename_length, 12);
         assert_eq!(
             path_step(url, root, &mut out, 64, &mut state, LOCATIONS),
             Ok(Action::Lstat)
         );
-        assert_eq!(state.filename_length, 13);
-        assert_eq!(&out[..14], b"/r/a.b#before\0");
+        assert_eq!(state.filename_length, 14);
+        assert_eq!(&out[..15], b"/+%/a.b#before\0");
         assert_eq!(
             path_step(url, root, &mut out, 64, &mut state, STAT_OK | FILE),
             Ok(Action::Mime)
@@ -394,31 +316,28 @@ mod tests {
         );
     }
     #[test]
-    fn c_string_prefix_rules_and_root_copy_overflow_are_explicit() {
+    fn location_rejection_precedes_root_size_checks() {
         assert!(prefix(b"/a\0different", b"/A\0suffix", true));
         assert!(!prefix(b"/A/path", b"/a", false));
         let mut state = HttpStaticPath::default();
-        let mut empty = Vec::new();
-        assert_eq!(
-            path_step(b"/", b"oversized", &mut empty, 4, &mut state, 0),
-            Err(OVERFLOW)
-        );
-        assert_eq!(empty.capacity(), 0);
-        let mut out = vec![0xa5; 4];
+        let mut out = Vec::new();
         assert_eq!(
             path_step(b"/", b"oversized", &mut out, 4, &mut state, 0),
-            Err(OVERFLOW)
+            Ok(Action::Locations)
         );
-        assert_eq!(out, [0xa5; 4]);
-        assert_eq!(state.phase as u32, 0);
+        assert_eq!(
+            path_step(b"/", b"oversized", &mut out, 4, &mut state, LOCATIONS),
+            Ok(Action::Done(false))
+        );
+        state = HttpStaticPath::default();
         assert_eq!(
             path_step(b"x", b"1234", &mut out, 4, &mut state, 0),
             Ok(Action::Locations)
         );
-        assert_eq!(out, *b"1234");
         assert_eq!(
             path_step(b"x", b"1234", &mut out, 4, &mut state, 0),
             Ok(Action::Catch)
         );
+        assert_eq!(out, []);
     }
 }

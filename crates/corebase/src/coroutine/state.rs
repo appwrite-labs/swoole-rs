@@ -173,8 +173,8 @@ pub struct Scheduler {
     /// Where `swoole_coroutine_iterator_each` (gdb's walk) resumes.
     pub cursor: c_long,
     pub activated: bool,
-    /// Mirrors `hooks.bailout` being set: resumes are refused, and a switch
-    /// back that did not end the coroutine runs the callback.
+    /// Refuse resumes after termination. A native bailout also installs a
+    /// callback to run when switching back from a suspended coroutine.
     pub bailout: bool,
 }
 

@@ -219,8 +219,6 @@ impl Drop for LiveServer {
                 conn.free_socket(|| {});
             }
         }
-        // SAFETY: the listener this fixture opened; its record goes with its port.
-        unsafe { libc::close(self.listener_fd) };
         // The configuration's `gs` names the fixture's own record, which the state's drop
         // must not unmap.
         self.config_mut().gs = crate::table::Table::empty();

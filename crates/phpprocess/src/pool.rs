@@ -54,6 +54,7 @@ thread_local! {
     /// every pool hook runs beneath it on its thread, a worker's in the child it
     /// forked. Undefined otherwise.
     static OWNER: Cell<Option<swoole_rs_zend::Weak<PoolObject>>> = const { Cell::new(None) };
+    static IN_PHP_SERVER_LOOP: Cell<bool> = const { Cell::new(false) };
 }
 
 /// The pool a Pool object owns, reached in place: the pool's workers keep the
@@ -242,17 +243,37 @@ method_table! {
 /// inside the trap and return deferred escapes to their owners.
 struct Bailouts;
 
+/// Keep the server's PHP dispatch thread identifiable while the native loop runs.
+pub fn with_php_server_loop<R>(body: impl FnOnce() -> R) -> R {
+    let previous = IN_PHP_SERVER_LOOP.replace(true);
+    let result = body();
+    IN_PHP_SERVER_LOOP.set(previous);
+    result
+}
+
+// Native reactor threads do not have a PHP executor.
+fn pool_unwind_exit() -> bool {
+    (OWNER.get().is_some() || IN_PHP_SERVER_LOOP.get())
+        && swoole_rs_zend::host::unwind_exit_pending()
+}
+
 impl process::pool::Bailouts for Bailouts {
     fn contain(&self, body: &mut dyn FnMut()) -> bool {
-        swoole_rs_zend::contain_with(body).is_err()
+        if let Err(bailout) = swoole_rs_zend::contain_with(body) {
+            bailout.defer();
+            return true;
+        }
+        pool_unwind_exit()
     }
 
     fn defer(&self) {
-        swoole_rs_zend::bailout::Bailout.defer();
+        if !pool_unwind_exit() {
+            swoole_rs_zend::bailout::Bailout.defer();
+        }
     }
 
     fn pending(&self) -> bool {
-        swoole_rs_zend::bailout::pending()
+        swoole_rs_zend::bailout::pending() || pool_unwind_exit()
     }
 }
 
@@ -573,10 +594,7 @@ fn set(call: &Call) {
     if !swoole_rs_phpswoole::set_global(options) {
         return;
     }
-    swoole_rs_phpcoroutines::set_coroutine_option(options);
-    // Each setter stops at a conversion's bailout, which upstream's ended the
-    // call at; the handler raises it.
-    if swoole_rs_zend::bailout::pending() {
+    if !swoole_rs_phpcoroutines::set_coroutine_option(options) {
         return;
     }
     swoole_rs_phpswoole::php_swoole_set_aio_option(options);
@@ -584,10 +602,15 @@ fn set(call: &Call) {
         return;
     }
     if let Some(value) = options.get(b"max_package_size") {
-        let Some(size) = swoole_rs_phpswoole::php_swoole_parse_to_size(value) else {
+        let Some(size) = swoole_rs_phpswoole::php_swoole_parse_to_size(value)
+            .and_then(|size| swoole_rs_phpswoole::nonnegative_setting(c"max_package_size", size))
+        else {
             return;
         };
-        pool.set_max_packet_size(packet_limit(pool.use_msgqueue(), max_package_size(size)));
+        pool.set_max_packet_size(packet_limit(
+            pool.use_msgqueue(),
+            max_package_size(i64::from(size)),
+        ));
     }
     if let Some(value) = options.get(b"max_wait_time") {
         let Some(seconds) = value.applied_long() else {
@@ -769,6 +792,11 @@ fn send_message(call: &Call) {
         call.set_bool(false);
         return;
     };
+    let first = i64::from(view.start_id());
+    if !(first..first + i64::from(view.worker_num())).contains(&worker) {
+        fatal(E_WARNING, &message!("invalid worker_id[{worker}]"));
+        return call.set_bool(false);
+    }
     let sent = methods::send_message(
         swoole_rs_server::process_pool_native(),
         view,
@@ -806,19 +834,6 @@ fn start(call: &Call) {
         call.set_bool(false);
         return;
     }
-    // The reactor must be cleaned up before registering signals.
-    swoole_rs_corebase::reactor::swoole_event_free();
-    let signals = pool_signals();
-    let mut previous = [SignalHandler::NONE; 6];
-    for (signo, old) in signals.iter().zip(previous.iter_mut()) {
-        if *signo != 0 {
-            *old = host::signal_swap(*signo, SignalHandler::new(on_signal), false);
-        }
-    }
-    if !protocol(view, this.enable_message_bus.get()) {
-        call.set_bool(false);
-        return;
-    }
     if !this.on_worker_start.is_set() && !this.on_message.is_set() {
         if view.is_async() {
             fatal(E_ERROR, &message!("require 'onWorkerStart' callback"));
@@ -839,6 +854,18 @@ fn start(call: &Call) {
         call.set_bool(false);
         return;
     }
+    if !protocol(view, this.enable_message_bus.get()) {
+        call.set_bool(false);
+        return;
+    }
+    // The reactor must be cleaned up before registering signals.
+    swoole_rs_corebase::reactor::swoole_event_free();
+    let master_pid = getpid();
+    // Keep the caller’s dispositions saved until the pool and its timers finish.
+    let _signals = swoole_rs_corebase::process::signal_upstream::SignalGuard::install(
+        pool_signals(),
+        SignalHandler::new(on_signal),
+    );
     CURRENT.store(view.raw(), Ordering::Release);
     let with_message = this.on_message.is_set();
     if !with_message {
@@ -862,20 +889,19 @@ fn start(call: &Call) {
     if started {
         methods::wait(swoole_rs_server::process_pool_native(), view);
     }
-    if swoole_rs_zend::bailout::pending() {
-        return;
-    }
     OWNER.set(None);
-    if !started {
-        call.set_bool(false);
+    CURRENT.store(ptr::null_mut(), Ordering::Release);
+    if getpid() != master_pid {
         return;
     }
-    CURRENT.store(ptr::null_mut(), Ordering::Release);
-    for (signo, old) in signals.iter().zip(previous) {
-        if *signo != 0 {
-            // Restores the handler `start()` replaced.
-            _ = host::signal_swap(*signo, old, false);
-        }
+    if started
+        && !swoole_rs_zend::bailout::pending()
+        && swoole_rs_corebase::timer::thread_timer_detached()
+    {
+        swoole_rs_corebase::timer::swoole_timer_free();
+    }
+    if !started && !swoole_rs_zend::bailout::pending() {
+        call.set_bool(false);
     }
 }
 
@@ -926,9 +952,8 @@ fn get_process(call: &Call) {
         call.set_bool(false);
         return;
     }
-    let current_id = i64::from(methods::swoole_get_worker_id());
     if id < 0 {
-        id = current_id;
+        id = i64::from(methods::swoole_get_worker_id());
     }
     // `$this`, of the registered class.
     let Some(props) = call.props(Some(&POOL)) else {
@@ -954,7 +979,7 @@ fn get_process(call: &Call) {
                 let index = usize::try_from(id).unwrap_or(usize::MAX);
                 let pipe = worker_record::copy_for_process(view, index, &mut copy);
                 if let Some(props) = object.props(Some(class)) {
-                    props.long(c"id", current_id);
+                    props.long(c"id", i64::from(copy.id()));
                     props.long(c"pid", i64::from(copy.pid()));
                     if view.ipc_mode() == IpcMode::UnixSock {
                         props.long(c"pipe", pipe.map_or(-1, |pipe| i64::from(pipe.fd())));

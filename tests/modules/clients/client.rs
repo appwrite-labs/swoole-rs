@@ -62,7 +62,7 @@ const SW_ERROR_OPERATION_NOT_SUPPORT: c_int = 507;
 const SW_ERROR_DNSLOOKUP_RESOLVE_FAILED: c_int = 711;
 const SW_ERROR_OUTPUT_BUFFER_OVERFLOW: c_int = 1009;
 const SW_ERROR_SSL_HANDSHAKE_FAILED: c_int = 1018;
-const SW_ERROR_HTTP_PROXY_HANDSHAKE_ERROR: c_int = 7101;
+const SW_ERROR_HTTP_PROXY_BAD_RESPONSE: c_int = 7104;
 const SW_DNS_RESOLV_CONF: &CStr = c"/etc/resolv.conf";
 
 unsafe extern "C" {
@@ -692,7 +692,7 @@ fn async_tcp_http_proxy_handshake_fail() {
     });
     ac.on_close(|_| {});
     ac.on_error(|_| {
-        assert_eq!(last_error(), SW_ERROR_HTTP_PROXY_HANDSHAKE_ERROR);
+        assert_eq!(last_error(), SW_ERROR_HTTP_PROXY_BAD_RESPONSE);
         handshake_failed.set(true);
     });
     ac.on_receive(|ac, _| {

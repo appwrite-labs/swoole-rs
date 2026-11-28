@@ -21,9 +21,11 @@ unsafe extern "C" {
     ) -> c_int;
     /// `EG(exception)`: one pointer of the executor's is read; null for none.
     safe fn swr_zend_facade_exception() -> *mut zend_object;
-    /// `zend_exception_error(EG(exception), E_ERROR)` inside `zend_try`, as
-    /// `swr_zend_try` returns: nothing without an exception.
-    safe fn swr_zend_try_uncaught_exception() -> c_int;
+    /// Read the current executor's exception class without running PHP.
+    safe fn swr_zend_unwind_exit_pending() -> bool;
+    /// Inspect the pending exception. Leave `UnwindExit` in the executor and
+    /// report other exceptions inside `zend_try`.
+    safe fn swr_zend_try_uncaught_exception(unwind_exit: &mut bool) -> c_int;
     /// `sw_callable_warning(message)` inside `zend_try` (nonzero for a
     /// bailout): it records the error and raises the warning, whose user
     /// handler runs PHP code.
@@ -75,6 +77,12 @@ pub fn exception() -> *mut zend_object {
     swr_zend_facade_exception()
 }
 
+/// Whether this PHP thread needs to return to the VM to complete `exit()`.
+#[must_use]
+pub fn unwind_exit_pending() -> bool {
+    swr_zend_unwind_exit_pending()
+}
+
 /// `EG(exception)` with a reference of its own: the exception pending on this
 /// thread, or None for none.
 #[must_use]
@@ -90,15 +98,19 @@ pub fn exception_owned() -> Option<Owned> {
     Some(crate::Value::of(&mut value).copy())
 }
 
-/// `zend_exception_error(EG(exception), E_ERROR)` of a pending exception,
-/// inside the C trap: what a callback outside the VM does about an exception
-/// nothing caught; nothing when none is pending. Like [`exception`] it takes
-/// nothing from its caller: it reads the executor's slot itself.
+/// Finish an uncaught callback exception. `UnwindExit` stops the reactor and
+/// stays pending for the VM. Other exceptions go through Zend’s fatal report.
 /// # Errors
 /// The report bailed out, as an `E_ERROR` does.
 pub fn uncaught_exception() -> Result<(), bailout::Bailout> {
-    // Observed only after the preceding call returned.
-    bailout::trapped(swr_zend_try_uncaught_exception())
+    let mut unwind_exit = false;
+    bailout::trapped(swr_zend_try_uncaught_exception(&mut unwind_exit))?;
+    if unwind_exit {
+        // Leave the exit object with Zend and stop dispatching callbacks while
+        // the native loop releases its resources and returns to the VM.
+        swoole_rs_corebase::reactor::event_api::swoole_event_bail_out();
+    }
+    Ok(())
 }
 
 /// [`uncaught_exception`], its bailout deferred.
@@ -238,28 +250,71 @@ pub fn function_call(
 ) -> Result<bool, bailout::Bailout> {
     // Upstream never ran past a pending bailout: no coroutine starts, as no call runs.
     bailout::outcome(())?;
-    let mut ran = false;
-    let success = if coroutine {
+    if coroutine {
         if let Some(retval) = retval {
             // The caller's return slot, whose type alone this writes:
             // coroutines publish null before creation and have no return value.
             retval.retype_null();
         }
-        let (trapped, result) = coroutine_call(cache, args, None, creator, then, &mut ran);
-        bailed(trapped);
-        result >= 0
-    } else {
-        direct_call(cache, args, retval)
-    };
-    // `then` ran with no exception pending, as this check would have found it.
-    if !ran && !bailout::pending() {
-        // Callbacks outside the VM must report an exception immediately.
+        return creator.call(cache, args, then).map(|cid| cid >= 0);
+    }
+    let success = direct_call(cache, args, retval);
+    if !bailout::pending() {
         fatal_exception();
     }
-    if bailout::pending() {
-        Err(bailout::Bailout)
-    } else {
-        Ok(success)
+    bailout::outcome(success)
+}
+
+impl Creator {
+    /// Start an internal instance method in the declaring class's scope.
+    /// # Errors
+    /// PHP bailed out while starting the coroutine.
+    pub fn call_method(
+        self,
+        object: &crate::Value,
+        class: &crate::Class,
+        method: &CStr,
+        args: crate::Zvals<'_>,
+    ) -> Result<bool, bailout::Bailout> {
+        let Some(object) = object.object_of(class) else {
+            return Ok(false);
+        };
+        let Some(scope) = class.handle() else {
+            return Ok(false);
+        };
+        let Some(function) = scope.method(method) else {
+            return Ok(false);
+        };
+        let mut cache = crate::EMPTY_FCC;
+        cache.function_handler = function.as_ptr();
+        cache.object = object;
+        cache.called_scope = scope.as_ptr();
+        let callee = Callee {
+            cache: CalleePtr(&raw mut cache, std::marker::PhantomData),
+            resolved: true,
+        };
+        self.call(callee, args, NO_THEN).map(|cid| cid >= 0)
+    }
+
+    /// Start a callback coroutine and return its ID, or a negative creation error.
+    /// # Errors
+    /// PHP bailed out while starting the coroutine or releasing the caller's objects.
+    pub fn call(
+        self,
+        cache: Callee<'_>,
+        args: crate::Zvals<'_>,
+        then: Then,
+    ) -> Result<c_long, bailout::Bailout> {
+        bailout::outcome(())?;
+        let mut ran = false;
+        let (trapped, result) = coroutine_call(cache, args, None, self, then, &mut ran);
+        bailed(trapped);
+        // `then` ran with no exception pending, as this check would have found it.
+        if !ran && !bailout::pending() {
+            // Callbacks outside the VM must report an exception immediately.
+            fatal_exception();
+        }
+        bailout::outcome(result)
     }
 }
 
@@ -304,7 +359,7 @@ pub const NO_THEN: Then = Then(None, ptr::null_mut());
 /// holds what it returned, in place of what it held, which is not released.
 /// # Errors
 /// The call bailed out.
-pub(crate) fn user_call(
+pub fn user_call(
     name: &crate::Value,
     args: crate::zval::Zvals<'_>,
     retval: &Owned,

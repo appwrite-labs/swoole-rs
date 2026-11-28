@@ -5,6 +5,27 @@ if (($argv[1] ?? '') === 'cpp-probe') {
     echo "cpp-probe: ok\n";
     exit;
 }
+class ThreadArgument {
+    public static int $serialized = 0;
+    public function __serialize(): array {
+        if (++self::$serialized === 1) throw new RuntimeException('argument failed');
+        return [];
+    }
+}
+if (($argv[1] ?? '') === 'argument-exception') {
+    if (!Thread::getInfo()['is_main_thread']) {
+        echo "worker started\n";
+        return;
+    }
+    try {
+        new Thread(__FILE__, new ThreadArgument(), new ThreadArgument());
+        throw new LogicException('constructor swallowed the exception');
+    } catch (RuntimeException $error) {
+        if ($error->getMessage() !== 'argument failed') throw $error;
+    }
+    echo json_encode([$argv[1], ThreadArgument::$serialized]), "\n";
+    return;
+}
 function guarded(callable $callback) {
     return function_exists('swr_guard_owned') ? swr_guard_owned($callback) : $callback();
 }

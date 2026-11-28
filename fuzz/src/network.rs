@@ -518,6 +518,7 @@ const STATIC_ROOT: &[u8] = b"/srv/www";
 /// those links lexically, so a link never leaves its directory.
 struct StaticTree {
     mime: bool,
+    stat_called: Cell<bool>,
 }
 
 /// `path`'s last name.
@@ -548,6 +549,7 @@ fn lexical(path: &[u8]) -> Vec<u8> {
 
 impl StaticEffects for StaticTree {
     fn stat(&self, path: &[u8]) -> Option<HttpStaticObservation> {
+        self.stat_called.set(true);
         let name = last_name(path);
         let kind = match name.first() {
             Some(b'x') => return None,
@@ -597,7 +599,7 @@ impl StaticEffects for StaticTree {
 /// A flags byte, then any bytes as a request URL, through the static handler's file
 /// selection (`try_serve`, `try_serve_index_file` and the index page) over
 /// [`StaticTree`] under [`STATIC_ROOT`], with a filename capacity the flags pick:
-/// nothing panics, and a file served (not the 404 page) for a URL starting with `/`
+/// a malformed path is rejected before stat, and a file served for a URL starting with `/`
 /// lies inside the root.
 pub fn http_static_path(bytes: &[u8]) {
     let Some((&flags, url)) = bytes.split_first() else {
@@ -614,6 +616,7 @@ pub fn http_static_path(bytes: &[u8]) {
     };
     let tree = StaticTree {
         mime: flags & 8 != 0,
+        stat_called: Cell::new(false),
     };
     let inside = |context: &HttpStaticContext| {
         let path = lexical(context.filename());
@@ -626,12 +629,19 @@ pub fn http_static_path(bytes: &[u8]) {
             context.filename()
         );
     };
-    // Under a matched location, a path that fails selection is answered with the 404
-    // page, not a file.
-    if !context.try_serve(STATIC_ROOT, locations, has_index, autoindex, &tree)
-        || context.observe().status == 404
-    {
+    if !context.try_serve(STATIC_ROOT, locations, has_index, autoindex, &tree) {
         return;
+    }
+    match context.observe().status {
+        swoole_rs_http::status::BAD_REQUEST => {
+            assert!(
+                !tree.stat_called.get(),
+                "malformed path reached the filesystem"
+            );
+            return;
+        }
+        swoole_rs_http::status::NOT_FOUND => return,
+        _ => {}
     }
     inside(&context);
     let index: &[&[u8]] = if has_index { &[b"index.html"] } else { &[] };

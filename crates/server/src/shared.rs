@@ -41,6 +41,8 @@ pub struct ServerCounters {
     /// `pid_t`s, set by the master and the manager and read by every process.
     pub master_pid: AtomicI32,
     pub manager_pid: AtomicI32,
+    /// Changes after waitpid reaps a child, including a detached reload worker.
+    pub(crate) worker_exits: AtomicU64,
     /// `long`, read under the shared spin lock.
     pub session_round: AtomicI64,
     pub start: AtomicBool,

@@ -9,9 +9,11 @@ use libc::{c_char, c_int};
 use std::ffi::{CStr, CString};
 use swoole_rs_clients::protocol::Protocol;
 use swoole_rs_corebase::CCast;
-use swoole_rs_corebase::net_types::{PacketLength, SocketAddress};
+use swoole_rs_corebase::net_types::SocketAddress;
 use swoole_rs_corebase::tls::{self as tls, Text};
-use swoole_rs_phpswoole::{SocketSettings as Settings, Switch, built_with};
+use swoole_rs_phpswoole::{
+    SocketSettings as Settings, Switch, built_with, invalid_setting, setting_ok,
+};
 use swoole_rs_zend::{
     Array, Call, HeldArray, OwnedArray, StreamSocket, Value, bailout, report,
     sys::{E_ERROR, E_WARNING},
@@ -20,37 +22,39 @@ use swoole_rs_zend::{
 use swoole_rs_corebase::reactor::TimeoutKind;
 /// `SW_DATA_EOF_MAXLEN`.
 const EOF_MAXLEN: usize = swoole_rs_corebase::constants::SW_DATA_EOF_MAXLEN as usize;
-/// `SW_ERROR_OPERATION_NOT_SUPPORT`.
-const OPERATION_NOT_SUPPORT: i64 =
-    swoole_rs_error::ErrorCode::SW_ERROR_OPERATION_NOT_SUPPORT as i64;
-
 /// `open_fastcgi_protocol`'s length: the record's content and padding lengths
-/// plus its 8-byte header, or `None` past 65535.
-fn fastcgi_length(
-    _protocol: &Protocol,
-    _: Option<u8>,
-    _owner: Option<std::rc::Rc<dyn std::any::Any>>,
-    pl: &mut PacketLength,
-) -> Option<usize> {
-    pl.bytes()
-        .first_chunk::<8>()
-        .map_or(Some(0), |&p| fastcgi_record_length(p))
-}
-
-fn fastcgi_record_length(p: [u8; 8]) -> Option<usize> {
-    let length = ((usize::from(p[4]) << 8) | usize::from(p[5])) + usize::from(p[6]);
-    (length <= 0xffff).then_some(length + 8)
+/// plus its 8-byte header. A partial header needs more data.
+fn fastcgi_record_length(bytes: &[u8]) -> usize {
+    let Some(header) = bytes.first_chunk::<8>() else {
+        return 0;
+    };
+    let content = u16::from_be_bytes([header[4], header[5]]);
+    header.len() + usize::from(content) + usize::from(header[6])
 }
 
 /// `swoole_type_size`: the byte width of a `pack()` length type, or 0.
 fn type_size(kind: u8) -> u8 {
-    match kind {
-        b'c' | b'C' => 1,
-        b's' | b'S' | b'n' | b'v' => 2,
-        b'l' | b'L' | b'N' | b'V' => 4,
-        b'q' | b'Q' | b'J' | b'P' => 8,
-        _ => 0,
+    u8::try_from(swoole_rs_corebase::swoole_type_size(c_char::from_ne_bytes(
+        [kind],
+    )))
+    .unwrap_or_default()
+}
+
+/// Validate the delimiter before either client writes it into the protocol.
+pub(crate) fn eof_length(eof: &[u8]) -> Option<u8> {
+    if !setting_ok() {
+        return None;
     }
+    if eof.is_empty() {
+        invalid_setting(c"package_eof cannot be an empty string");
+    } else if eof.len() > EOF_MAXLEN {
+        invalid_setting(
+            swoole_rs_zend::message!("package_eof max length is {EOF_MAXLEN}").as_cstr(),
+        );
+    } else {
+        return u8::try_from(eof.len()).ok();
+    }
+    None
 }
 
 /// A bailout is pending: upstream never ran past it.
@@ -125,13 +129,12 @@ pub(crate) fn apply(socket: Co, settings: &Array, which: Settings) -> bool {
         Settings::Protocol => set_protocol(settings, socket),
         Settings::Ssl => set_ssl(settings, socket),
     };
-    applied.unwrap_or(false)
+    applied.unwrap_or(false) && setting_ok()
 }
 
 /// `php_swoole_socket_set(socket, settings)`: every setting, as [`socket_settings`].
 pub fn socket_set(socket: swoole_rs_hooks::co_socket::Co, settings: &Array) -> bool {
-    let applied = apply(socket.into(), settings, Settings::All);
-    applied && !bailout::pending()
+    apply(socket.into(), settings, Settings::All)
 }
 
 /// `apply` for crates/phpruntime (through crates/phpswoole's families) and the
@@ -151,7 +154,6 @@ pub fn socket_settings(
 
 /// `php_swoole_socket_set_protocol`.
 fn set_protocol(s: &Array, socket: Co) -> Result<bool, Stop> {
-    let mut ret = true;
     if let Some(v) = s.get(b"open_ssl")
         && v.truthy()
     {
@@ -161,7 +163,7 @@ fn set_protocol(s: &Array, socket: Co) -> Result<bool, Stop> {
         socket.set_http2(v.truthy());
     }
     if !socket.ssl_context().is_null() && !set_ssl(s, socket)? {
-        ret = false;
+        return Ok(false);
     }
     if let Some(v) = s.get(b"open_eof_check") {
         socket.set_eof_check(v.truthy());
@@ -175,23 +177,13 @@ fn set_protocol(s: &Array, socket: Co) -> Result<bool, Stop> {
     }
     if let Some(v) = s.get(b"package_eof") {
         let eof = string(v)?;
-        if eof.is_empty() {
-            fatal(E_ERROR, b"package_eof cannot be an empty string")?;
-            ret = false;
-        } else if eof.len() > EOF_MAXLEN {
-            fatal(
-                E_ERROR,
-                format!("package_eof max length is {EOF_MAXLEN}").as_bytes(),
-            )?;
-            ret = false;
-        } else {
-            edit(socket, |p| {
-                p.package_eof_len = u8::try_from(eof.len()).unwrap_or(0);
-                for (slot, byte) in p.package_eof.iter_mut().zip(&eof) {
-                    *slot = *byte;
-                }
-            });
-        }
+        let length = eof_length(&eof).ok_or(Stop)?;
+        edit(socket, |p| {
+            p.package_eof_len = length;
+            for (slot, byte) in p.package_eof.iter_mut().zip(eof.iter()) {
+                *slot = *byte;
+            }
+        });
     }
     if let Some(v) = s.get(b"open_fastcgi_protocol") {
         socket.set_length_check(v.truthy());
@@ -199,7 +191,8 @@ fn set_protocol(s: &Array, socket: Co) -> Result<bool, Stop> {
             p.package_length_size = 8;
             p.package_length_offset = 0;
             p.package_body_offset = 0;
-            p.get_package_length = Some(fastcgi_length);
+            p.get_package_length =
+                Some(|_, _, _, packet| Some(fastcgi_record_length(packet.bytes())));
         });
     }
     if let Some(v) = s.get(b"open_mqtt_protocol") {
@@ -227,8 +220,8 @@ fn set_protocol(s: &Array, socket: Co) -> Result<bool, Stop> {
                 b"', see pack(). Link: https://php.net/pack",
             ]
             .concat();
-            fatal(E_WARNING, &message)?;
-            ret = false;
+            invalid_setting(&text(&message));
+            return Ok(false);
         }
     }
     if let Some(v) = s.get(b"package_length_offset") {
@@ -240,14 +233,15 @@ fn set_protocol(s: &Array, socket: Co) -> Result<bool, Stop> {
         edit(socket, |p| p.package_body_offset = offset);
     }
     if let Some(v) = s.get(b"package_length_func") {
-        native::length_callable(socket, v);
+        let callback = swoole_rs_phpswoole::setting_callable(v).ok_or(Stop)?;
+        native::length_callable(socket, callback);
         checked()?;
     }
     if let Some(v) = s.get(b"package_max_length") {
         let max = u32::try_from(size(v)?.clamp(0, i64::from(u32::MAX))).unwrap_or(u32::MAX);
         edit(socket, |p| p.package_max_length = max);
     }
-    Ok(ret)
+    Ok(true)
 }
 
 fn clamp_u16(value: i64) -> u16 {
@@ -279,8 +273,11 @@ fn set(s: &Array, socket: Co) -> Result<bool, Stop> {
     if let Some(v) = s.get(b"bind_address") {
         bind_address = string(v)?;
     }
-    if !bind_address.is_empty() {
-        ret &= socket.bind(&bind_address, bind_port);
+    if !bind_address.is_empty() && !socket.bind(&bind_address, bind_port) {
+        let message =
+            socket.with_error(|_, error| [b"failed to bind socket: ", error.to_bytes()].concat());
+        invalid_setting(&text(&message));
+        return Ok(false);
     }
     if let Some(v) = s.get(b"socket_buffer_size") {
         let size = size(v)?;
@@ -303,18 +300,18 @@ fn set(s: &Array, socket: Co) -> Result<bool, Stop> {
         socket.with_net(|net| net.edit(|record| record.set_tcp_nodelay(nodelay)));
     }
     if !set_protocol(s, socket)? {
-        ret = false;
+        return Ok(false);
     }
     let inet = swoole_rs_corebase::constants::SocketType::from_raw(kind)
         .is_some_and(|kind| kind.is_tcp() || kind.is_udp());
     if let Some(host) = s.get(b"socks5_host") {
         if !inet {
-            throw_unsupported(c"Only tcp socket supports socks5 proxy settings");
+            invalid_setting(c"Only tcp socket supports socks5 proxy settings");
             return Ok(false);
         }
         let host = string(host)?;
         let Some(port) = s.get(b"socks5_port") else {
-            fatal(E_WARNING, b"socks5_port should not be null")?;
+            invalid_setting(c"socks5_port should not be null");
             return Ok(false);
         };
         let port = long(port)?;
@@ -324,20 +321,20 @@ fn set(s: &Array, socket: Co) -> Result<bool, Stop> {
             match s.get(b"socks5_password") {
                 Some(v) if !user.is_empty() => password = string(v)?,
                 _ => {
-                    fatal(E_WARNING, b"socks5_password should not be null")?;
-                    ret = false;
+                    invalid_setting(c"proxy password should not be null");
+                    return Ok(false);
                 }
             }
         }
         socket.proxy(false, &host, port, &user, &password);
     } else if let Some(host) = s.get(b"http_proxy_host") {
         if !inet {
-            throw_unsupported(c"Only tcp socket supports http proxy settings");
+            invalid_setting(c"Only tcp socket supports http proxy settings");
             return Ok(false);
         }
         let host = string(host)?;
         let Some(port) = s.get(b"http_proxy_port") else {
-            fatal(E_WARNING, b"http_proxy_port should not be null")?;
+            invalid_setting(c"http_proxy_port should not be null");
             return Ok(false);
         };
         let port = long(port)?;
@@ -350,18 +347,14 @@ fn set(s: &Array, socket: Co) -> Result<bool, Stop> {
             match s.get(b"http_proxy_password") {
                 Some(v) if !user.is_empty() => password = string(v)?,
                 _ => {
-                    fatal(E_WARNING, b"socks5_password should not be null")?;
-                    ret = false;
+                    invalid_setting(c"proxy password should not be null");
+                    return Ok(false);
                 }
             }
         }
         socket.proxy(true, &host, port, &user, &password);
     }
     Ok(ret)
-}
-
-fn throw_unsupported(message: &CStr) {
-    swoole_rs_phpswoole::exception().throw(message, OPERATION_NOT_SUPPORT);
 }
 
 /// `php_swoole_socket_set_ssl`.
@@ -383,28 +376,33 @@ fn set_ssl(s: &Array, socket: Co) -> Result<bool, Stop> {
     {
         owner.set_value(tls::Value::DisableCompress(!v.truthy()));
     }
-    for (key, which, what) in [
-        (b"ssl_cert_file".as_slice(), Text::CertFile, "cert"),
-        (b"ssl_key_file", Text::KeyFile, "key"),
-    ] {
-        if let Some(v) = s.get(key) {
-            let file = string(v)?;
-            if !owner.set_text(which, &file) {
-                let message = [
-                    format!("ssl {what} file[").as_bytes(),
-                    &self::text(&file).into_bytes(),
-                    b"] not found",
-                ]
-                .concat();
-                fatal(E_WARNING, &message)?;
-                return Ok(false);
+    let file_setting =
+        |owner: &mut tls::Lent<'_>, key: &[u8], which, what: &str| -> Result<(), Stop> {
+            if let Some(v) = s.get(key) {
+                let file = string(v)?;
+                if !owner.set_text(which, &file) {
+                    let message = [
+                        format!("ssl {what} file[").as_bytes(),
+                        &self::text(&file).into_bytes(),
+                        b"] not found",
+                    ]
+                    .concat();
+                    invalid_setting(&self::text(&message));
+                    return Err(Stop);
+                }
             }
-        }
-    }
-    match tls::has_files(&context) {
-        (true, false) => fatal(E_WARNING, b"ssl require key file")?,
-        (false, true) => fatal(E_WARNING, b"ssl require cert file")?,
-        _ => {}
+            Ok(())
+        };
+    file_setting(&mut owner, b"ssl_cert_file", Text::CertFile, "cert")?;
+    file_setting(&mut owner, b"ssl_key_file", Text::KeyFile, "key")?;
+    let missing = match tls::has_files(&context) {
+        (true, false) => Some(c"ssl require key file"),
+        (false, true) => Some(c"ssl require cert file"),
+        _ => None,
+    };
+    if let Some(message) = missing {
+        invalid_setting(message);
+        return Ok(false);
     }
     if let Some(v) = s.get(b"ssl_passphrase") {
         text(&mut owner, Text::Passphrase, v)?;
@@ -414,12 +412,21 @@ fn set_ssl(s: &Array, socket: Co) -> Result<bool, Stop> {
     {
         text(&mut owner, Text::HostName, v)?;
     }
+    if let Some(v) = s.get(b"ssl_verify_host") {
+        owner.set_value(tls::Value::VerifyHost(v.truthy()));
+    }
     if let Some(v) = s.get(b"ssl_verify_peer") {
         owner.set_value(tls::Value::VerifyPeer(v.truthy()));
     }
     if let Some(v) = s.get(b"ssl_allow_self_signed") {
         owner.set_value(tls::Value::AllowSelfSigned(v.truthy()));
     }
+    file_setting(
+        &mut owner,
+        b"ssl_client_cert_file",
+        Text::ClientCertFile,
+        "client cert",
+    )?;
     if let Some(v) = s.get(b"ssl_cafile") {
         text(&mut owner, Text::Cafile, v)?;
     }
@@ -490,7 +497,8 @@ fn get_option(call: &Call) {
             Ok(None) => {}
         }
     }
-    if name == i64::from(libc::SO_LINGER) {
+    let socket_level = level == i64::from(libc::SOL_SOCKET);
+    if socket_level && name == i64::from(libc::SO_LINGER) {
         let mut linger = libc::linger {
             l_onoff: 0,
             l_linger: 0,
@@ -503,7 +511,9 @@ fn get_option(call: &Call) {
         call.add_assoc_long(c"l_linger", i64::from(linger.l_linger));
         return;
     }
-    if (name == i64::from(libc::SO_RCVTIMEO)) || (name == i64::from(libc::SO_SNDTIMEO)) {
+    if socket_level
+        && (name == i64::from(libc::SO_RCVTIMEO) || name == i64::from(libc::SO_SNDTIMEO))
+    {
         let kind = if name == i64::from(libc::SO_RCVTIMEO) {
             TimeoutKind::READ
         } else {
@@ -520,10 +530,11 @@ fn get_option(call: &Call) {
         return;
     }
     #[cfg(target_os = "linux")]
-    if name_int == libc::TCP_INFO {
+    if level == i64::from(libc::IPPROTO_TCP) && name == i64::from(libc::TCP_INFO) {
         let mut info: libc::tcp_info = swoole_rs_corebase::sys::zeroed();
         if getsockopt(fd, libc::SOL_TCP, libc::TCP_INFO, &mut info).is_err() {
-            return warn_sys(&format!("getsockopt({fd}, SOL_TCP, TCP_INFO)"), errno());
+            warn_sys(&format!("getsockopt({fd}, SOL_TCP, TCP_INFO)"), errno());
+            return call.set_bool(false);
         }
         call.set_array();
         for (key, value) in swoole_rs_server::tcp_fields(&info) {
@@ -536,8 +547,7 @@ fn get_option(call: &Call) {
         return failed();
     };
     if length == 1 {
-        let byte = other.to_ne_bytes()[0];
-        call.set_long(i64::from(c_char::from_ne_bytes([byte])));
+        call.set_long(i64::from(other.to_ne_bytes()[0]));
     } else {
         call.set_long(i64::from(other));
     }
@@ -588,7 +598,6 @@ fn set_option(call: &Call) {
     };
     let Some(socket) = open(call) else { return };
     let (level_int, name_int) = (level.c_cast::<c_int>(), name.c_cast::<c_int>());
-    let mut plain = false;
     if level == i64::from(libc::IPPROTO_IP) || level == i64::from(libc::IPPROTO_IPV6) {
         let result = if level == i64::from(libc::IPPROTO_IPV6) {
             multicast::set_ipv6(socket, level_int, name_int, value)
@@ -596,14 +605,14 @@ fn set_option(call: &Call) {
             multicast::set_ip(socket, level_int, name_int, value)
         };
         let Ok(result) = result else { return };
-        match result {
-            None => plain = true,
-            Some(ok) => return call.set_bool(ok),
+        if let Some(ok) = result {
+            return call.set_bool(ok);
         }
     }
+    let socket_level = level == i64::from(libc::SOL_SOCKET);
+    let linger = socket_level && name == i64::from(libc::SO_LINGER);
     // The option, set once every argument is read.
-    let set: &dyn Fn(c_int) -> std::io::Result<()> = if !plain && name == i64::from(libc::SO_LINGER)
-    {
+    let set: &dyn Fn(c_int) -> std::io::Result<()> = if linger {
         let Some(table) = option_table(call, value, "SO_LINGER") else {
             return;
         };
@@ -624,7 +633,7 @@ fn set_option(call: &Call) {
             l_linger: c_int::from(clamp_u16(wait)),
         };
         &move |fd| setsockopt(fd, level_int, name_int, &linger)
-    } else if !plain
+    } else if socket_level
         && (name == i64::from(libc::SO_RCVTIMEO) || name == i64::from(libc::SO_SNDTIMEO))
     {
         let read = name == i64::from(libc::SO_RCVTIMEO);
@@ -647,7 +656,7 @@ fn set_option(call: &Call) {
         };
         socket.set_timeout(timeout, kind);
         return call.set_bool(true);
-    } else if !plain && bind_to_device(name) {
+    } else if socket_level && bind_to_device(name) {
         let device = value.bytes().unwrap_or_default();
         &move |fd| setsockopt_bytes(fd, level_int, name_int, device)
     } else {
@@ -802,13 +811,14 @@ mod tests {
 
     #[test]
     fn fastcgi_lengths() {
-        // content 0x0102, padding 3: 258 + 3 + header 8.
-        assert_eq!(fastcgi_record_length([1, 6, 0, 1, 1, 2, 3, 0]), Some(269));
-        assert_eq!(
-            fastcgi_record_length([1, 6, 0, 1, 0xff, 0xff, 0, 0]),
-            Some(0xffff + 8)
-        );
-        assert_eq!(fastcgi_record_length([1, 6, 0, 1, 0xff, 0xff, 1, 0]), None);
+        assert_eq!(fastcgi_record_length(&[0; 7]), 0);
+        assert_eq!(fastcgi_record_length(&[1, 6, 0, 1, 1, 2, 3, 0]), 269);
+        for padding in [0, 1, 255] {
+            assert_eq!(
+                fastcgi_record_length(&[1, 6, 0, 1, 0xff, 0xff, padding, 0]),
+                8 + 65535 + usize::from(padding)
+            );
+        }
     }
 
     #[test]

@@ -9,7 +9,9 @@ use std::{
 };
 use swoole_rs_corebase::CCast;
 use swoole_rs_server::{ServerText, server_methods, view};
-use swoole_rs_zend::{Array, Call, E_ERROR, E_WARNING, Value, bailout, message, report};
+use swoole_rs_zend::{
+    Array, Call, E_ERROR, E_WARNING, Owned, Value, ZString, bailout, message, report,
+};
 
 /// `SW_ERROR_PHP_RUNTIME_NOTICE`, `SW_ERROR_SERVER_UNRELATED_THREAD`.
 const SW_ERROR_PHP_RUNTIME_NOTICE: c_int =
@@ -193,17 +195,18 @@ pub(crate) struct Settings<'a> {
     pub(crate) vht: Option<&'a Array>,
 }
 
-/// Stop: a bailout is pending (upstream never ran past it).
+/// Stop applying settings after an exception or a bailout.
 pub(crate) struct Stop;
+
+pub(crate) fn invalid_setting(message: &CStr) -> Stop {
+    swoole_rs_phpswoole::invalid_setting(message);
+    Stop
+}
 
 pub(crate) type Step = Result<(), Stop>;
 
 pub(crate) fn checked() -> Step {
-    if bailout::pending() {
-        Err(Stop)
-    } else {
-        Ok(())
-    }
+    swoole_rs_phpswoole::setting_ok().then_some(()).ok_or(Stop)
 }
 
 impl<'a> Settings<'a> {
@@ -283,14 +286,13 @@ impl<'a> Settings<'a> {
         Ok(())
     }
 
-    /// Each value of an array option, as a string; `E_ERROR` otherwise.
+    /// Each value of an array option, as a string, raising a setting exception for a non-array.
     fn list(&self, keys: &[&CStr], error: &CStr, each: impl Fn(&[u8])) -> Step {
         let Some(value) = self.get_any(keys) else {
             return Ok(());
         };
         let Some(array) = value.array() else {
-            fatal(E_ERROR, error);
-            return Err(Stop);
+            return Err(invalid_setting(error));
         };
         let items: Vec<&Value> = array.entries().map(|(_, item)| item).collect();
         for item in items {
@@ -313,6 +315,14 @@ fn set(call: &Call) {
     let Some(serv) = server(call) else { return };
     let s = Settings { serv, vht: None };
     if s.fact(field::WORKER_THREAD) != 0 {
+        let Ok(settings) = call.arity(1, 1).and_then(|()| call.array(1)) else {
+            return;
+        };
+        if let Some(port) = serv.port_at(0)
+            && crate::port_settings::worker_length(port, settings).is_err()
+        {
+            return;
+        }
         set_last_error(SW_ERROR_SERVER_UNRELATED_THREAD);
         return call.set_bool(false);
     }
@@ -335,9 +345,9 @@ fn set(call: &Call) {
     // Every early exit after an `E_ERROR` or a deferred bailout leaves the
     // handler, whose last step raises it.
     let this = ServerObject::this(call);
-    if matches!(options(&s, this), Ok(true)) {
-        match finish(this, vht) {
-            Ok(()) => call.set_bool(true),
+    if let Ok(bootstrap) = options(&s) {
+        match finish(this, vht, bootstrap) {
+            Ok(result) => call.set_bool(result),
             Err(bailed) => bailed.defer(),
         }
     } else if !bailout::pending() {
@@ -347,28 +357,48 @@ fn set(call: &Call) {
 
 /// `$this->ports[0]->set($settings)` (Port's own method), then the merge into
 /// `$this->setting`.
-fn finish(this: ServerObject<'_>, settings: &Value) -> Result<(), bailout::Bailout> {
-    drop(
-        this.port(0)
-            .call_method(Some(&crate::PORT), b"set", &[settings])?,
-    );
+fn finish(
+    this: ServerObject<'_>,
+    settings: &Value,
+    bootstrap: Option<ZString>,
+) -> Result<bool, bailout::Bailout> {
+    let result = this
+        .port(0)
+        .call_method(Some(&crate::PORT), b"set", &[settings])?;
+    if !swoole_rs_phpswoole::setting_ok() || !result.truthy() {
+        return Ok(false);
+    }
     crate::lifecycle::Props::server(this).merge(c"setting", settings);
-    bailout::outcome(())
+    if swoole_rs_phpswoole::setting_ok() && crate::server::THREAD.load(Ordering::Relaxed) {
+        let merged = this.value().property(c"setting");
+        if let Some(arguments) = merged
+            .as_deref()
+            .and_then(Value::array)
+            .and_then(|a| a.get(b"init_arguments"))
+        {
+            this.set_init_arguments(arguments);
+        }
+        if let Some(bootstrap) = bootstrap.filter(|_| swoole_rs_phpswoole::setting_ok()) {
+            crate::lifecycle::Props::own(this).set(c"bootstrap", &Owned::string(bootstrap));
+        }
+    }
+    bailout::outcome(true)
 }
 
-/// The options, in upstream's order. `Ok(false)`: return false.
-fn options(s: &Settings, this: ServerObject<'_>) -> Result<bool, Stop> {
+/// Parse options in upstream order, holding the bootstrap until the port accepts its settings.
+fn options(s: &Settings) -> Result<Option<ZString>, Stop> {
     use field as f;
     // php_swoole_set_global_option, _coroutine_option and _aio_option; the
     // first defers its fatal error for a size that does not parse.
     let Some(vht) = s.vht else {
-        return Ok(true);
+        return Ok(None);
     };
     if !swoole_rs_phpswoole::set_global(vht) {
         return Err(Stop);
     }
-    swoole_rs_phpcoroutines::set_coroutine_option(vht);
-    checked()?;
+    if !swoole_rs_phpcoroutines::set_coroutine_option(vht) {
+        return Err(Stop);
+    }
     swoole_rs_phpswoole::php_swoole_set_aio_option(vht);
     s.string_option(c"chroot", |v| s.text(ServerText::Chroot, v))?;
     s.string_option(c"user", |v| s.text(ServerText::User, v))?;
@@ -408,6 +438,12 @@ fn options(s: &Settings, this: ServerObject<'_>) -> Result<bool, Stop> {
         Some(value) => s.set(f::ENABLE_COROUTINE, Settings::truth(value)),
         None => s.set(f::ENABLE_COROUTINE, s.fact(f::GLOBAL_ENABLE_COROUTINE)),
     }
+    if let Some(value) = s.get(c"http2_cancel_on_stream_reset") {
+        s.server()
+            .config()
+            .http2_cancel_on_stream_reset
+            .set(value.truthy());
+    }
     if let Some(value) = s.get(c"send_timeout") {
         let v = value.double();
         checked()?;
@@ -427,36 +463,35 @@ fn options(s: &Settings, this: ServerObject<'_>) -> Result<bool, Stop> {
         None => s.set(f::SEND_YIELD, s.fact(f::ENABLE_COROUTINE)),
     }
     if let Some(value) = s.get(c"dispatch_func") {
-        // `sw_callable_create`, whose bailouts stay deferred.
-        let created = crate::callable::create(value);
-        if checked().is_err() {
-            drop(created);
-            return Err(Stop);
+        if s.server().config().mode_ != swoole_rs_server::Mode::Process {
+            return Err(invalid_setting(
+                c"dispatch_func is only supported in PROCESS mode",
+            ));
         }
-        if let Some(callable) = created {
-            let set = crate::dispatch::set_dispatch_func(s.serv, callable);
-            if set.is_err() {
-                bailout::defer(set);
-                return Err(Stop);
-            }
-        }
+        let callable = swoole_rs_phpswoole::setting_callable(value).ok_or(Stop)?;
+        crate::dispatch::set_dispatch_func(s.serv, callable).map_err(|bailed| {
+            bailed.defer();
+            Stop
+        })?;
     }
     workers(s)?;
-    http(s, this)
+    http(s)
 }
 
-/// `bootstrap` into `$this->bootstrap`, and `init_arguments` kept on the object.
-fn thread_options(s: &Settings, this: ServerObject<'_>) -> Step {
-    if let Some(value) = s.get(c"bootstrap") {
-        crate::lifecycle::Props::own(this).set(c"bootstrap", value);
-        if bailout::pending() {
-            return Err(Stop);
+fn thread_options(s: &Settings) -> Result<Option<ZString>, Stop> {
+    let bootstrap = s.get(c"bootstrap").map(Value::string);
+    checked()?;
+    if let Some(value) = s.get(c"init_arguments") {
+        let valid = swoole_rs_zend::host::callable::is_callable(value).map_err(|bailed| {
+            bailed.defer();
+            Stop
+        })?;
+        checked()?;
+        if !valid {
+            return Err(invalid_setting(c"init_arguments must be callable or null"));
         }
     }
-    if let Some(value) = s.get(c"init_arguments") {
-        this.set_init_arguments(value);
-    }
-    Ok(())
+    Ok(bootstrap)
 }
 
 /// The task, worker and connection options.
@@ -536,9 +571,8 @@ fn workers(s: &Settings) -> Step {
     s.flag(c"open_cpu_affinity", f::OPEN_CPU_AFFINITY);
     if s.fact(f::HAVE_CPU_AFFINITY) != 0
         && let Some(value) = s.get(c"cpu_affinity_ignore")
-        && !cpu_affinity_ignore(s, value)?
     {
-        return Err(Stop);
+        cpu_affinity_ignore(s, value)?;
     }
     Ok(())
 }
@@ -567,43 +601,28 @@ fn affinity() -> Result<Vec<c_int>, c_int> {
 }
 
 /// `php_swoole_server_set_cpu_affinity_ignore`: the CPUs left to bind workers
-/// to once `value`'s are taken out of this process's affinity. False: rejected.
-fn cpu_affinity_ignore(s: &Settings, value: &Value) -> Result<bool, Stop> {
+/// to once `value`'s are taken out of this process's affinity.
+fn cpu_affinity_ignore(s: &Settings, value: &Value) -> Step {
     let Some(ignored) = value.array() else {
-        fatal(E_ERROR, c"cpu_affinity_ignore must be array");
-        return Err(Stop);
+        return Err(invalid_setting(c"cpu_affinity_ignore must be array"));
     };
-    let mut cpus = match affinity() {
-        Ok(cpus) => cpus,
-        Err(error) => {
-            // php_swoole_sys_error(E_WARNING, "sched_getaffinity() failed")
-            set_last_error(error);
-            if display_errors() {
-                let reason = swoole_rs_phpruntime::strerror(error);
-                let text = message!(
-                    "sched_getaffinity() failed, Error: {}[{error}]",
-                    reason.to_string_lossy()
-                );
-                bailout::defer(report(E_WARNING, text.as_cstr()));
-            }
-            return checked().map(|()| false);
-        }
-    };
+    let mut cpus = affinity().map_err(|_| invalid_setting(c"sched_getaffinity() failed"))?;
     let items: Vec<&Value> = ignored.entries().map(|(_, item)| item).collect();
     for item in items {
         let cpu = Settings::long(item)?;
         cpus.retain(|&available| i64::from(available) != cpu);
     }
     if cpus.is_empty() {
-        fatal(E_ERROR, c"cpu_affinity_ignore excludes all available CPUs");
-        return Err(Stop);
+        return Err(invalid_setting(
+            c"cpu_affinity_ignore excludes all available CPUs",
+        ));
     }
     s.server().config().cpu_affinity_available.set(cpus);
-    Ok(true)
+    Ok(())
 }
 
 /// The HTTP, buffer, queue and thread options, and the final checks.
-fn http(s: &Settings, this: ServerObject<'_>) -> Result<bool, Stop> {
+fn http(s: &Settings) -> Result<Option<ZString>, Stop> {
     use field as f;
     s.flag(c"http_parse_cookie", f::HTTP_PARSE_COOKIE);
     s.flag(c"http_parse_post", f::HTTP_PARSE_POST);
@@ -622,7 +641,12 @@ fn http(s: &Settings, this: ServerObject<'_>) -> Result<bool, Stop> {
         }
         if let Some(value) = s.get_any(&[c"http_compression_min_length", c"compression_min_length"])
         {
-            s.set(f::COMPRESSION_MIN_LENGTH, Settings::size(value)?);
+            let size = swoole_rs_phpswoole::nonnegative_setting(
+                c"compression_min_length",
+                Settings::size(value)?,
+            )
+            .ok_or(Stop)?;
+            s.set(f::COMPRESSION_MIN_LENGTH, i64::from(size));
         }
     }
     if s.fact(f::HAVE_ZLIB) != 0 {
@@ -648,21 +672,22 @@ fn http(s: &Settings, this: ServerObject<'_>) -> Result<bool, Stop> {
         }
     }
     if let Some(value) = s.get(c"upload_max_filesize") {
-        s.set(f::UPLOAD_MAX_FILESIZE, Settings::size(value)?);
+        let size = Settings::size(value)?;
+        swoole_rs_phpswoole::nonnegative_setting(c"upload_max_filesize", size).ok_or(Stop)?;
+        s.set(f::UPLOAD_MAX_FILESIZE, size);
     }
     s.flag(c"enable_static_handler", f::ENABLE_STATIC_HANDLER);
     if let Some(value) = s.get(c"document_root") {
         let path_max = s.fact(f::PATH_MAX);
-        let fits = Settings::string(value, |root| {
+        let configured = Settings::string(value, |root| {
             if i64::try_from(root.len()).unwrap_or(i64::MAX) >= path_max {
                 let text = message!("The length of document_root must be less than {path_max}");
                 fatal(E_ERROR, text.as_cstr());
                 return false;
             }
-            server_methods::set_document_root(s.serv, root);
-            true
+            server_methods::set_document_root(s.serv, root)
         })?;
-        if !fits {
+        if !configured {
             return Err(Stop);
         }
     }
@@ -711,28 +736,26 @@ fn http(s: &Settings, this: ServerObject<'_>) -> Result<bool, Stop> {
         let v = Settings::long(value)?;
         // A positive SysV key must fit key_t's unsigned counterpart.
         if v > i64::from(u32::MAX) {
-            fatal(E_ERROR, c"message_queue_key is out of range");
-            return Err(Stop);
+            return Err(invalid_setting(c"message_queue_key is out of range"));
         }
         s.set(f::MESSAGE_QUEUE_KEY, v.max(0));
     }
-    if s.fact(f::THREAD) != 0 {
-        thread_options(s, this)?;
-    }
+    let bootstrap = if s.fact(f::THREAD) != 0 {
+        thread_options(s)?
+    } else {
+        None
+    };
     let ipc = s.fact(f::TASK_IPC_MODE);
     let queue = ipc == 2 || ipc == 3;
     if s.fact(f::HAVE_MSGQUEUE) == 0 && queue {
-        fatal(E_ERROR, c"not support `sysvmsg`");
-        return Err(Stop);
+        return Err(invalid_setting(c"not support `sysvmsg`"));
     }
     if s.fact(f::TASK_ENABLE_COROUTINE) != 0 && queue {
-        fatal(
-            E_ERROR,
+        return Err(invalid_setting(
             c"cannot use msgqueue when `task_enable_coroutine` is enable",
-        );
-        return Err(Stop);
+        ));
     }
-    Ok(true)
+    Ok(bootstrap)
 }
 
 /// `url_rewrite_rules`: string keys to string replacements.
@@ -741,14 +764,12 @@ fn rewrite_rules(s: &Settings) -> Step {
         return Ok(());
     };
     let Some(array) = value.array() else {
-        fatal(E_ERROR, c"The `url_rewrite_rules` must be array");
-        return Err(Stop);
+        return Err(invalid_setting(c"The `url_rewrite_rules` must be array"));
     };
     for (key, value) in array.entries() {
         let value = value.dereferenced();
         let Some(replacement) = value.bytes() else {
-            fatal(E_ERROR, c"The `replacement` must be string");
-            return Err(Stop);
+            return Err(invalid_setting(c"The `replacement` must be string"));
         };
         // An integer key has no pattern: an empty one.
         let pattern = key.unwrap_or_default();

@@ -519,10 +519,10 @@ mod tests {
         );
     }
 
-    // macOS answers SO_ACCEPTCONN with ENOPROTOOPT, so import refuses every socket there.
+    // macOS answers SO_ACCEPTCONN with ENOPROTOOPT, so this stream-listener check is Linux-only.
     #[cfg(target_os = "linux")]
     #[test]
-    fn import_adopts_a_listening_socket_and_refuses_others() {
+    fn import_requires_stream_sockets_to_be_listening() {
         let config = &mut *PortConfig::boxed(1000);
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let bound = listener.local_addr().unwrap().port();
@@ -550,6 +550,17 @@ mod tests {
             "the refused record freed, not kept"
         );
         sys::close(stream).unwrap();
+    }
+
+    #[test]
+    fn unbound_datagrams_remain_with_the_caller() {
+        for family in [libc::AF_INET, libc::AF_INET6, libc::AF_UNIX] {
+            let config = &mut *PortConfig::boxed(1000);
+            let fd = sys::socket(family, libc::SOCK_DGRAM, 0).unwrap();
+            assert!(!crate::lifecycle::import(config, fd));
+            assert!(config.socket_ptr().is_null());
+            sys::close(fd).unwrap();
+        }
     }
 
     /// A port whose settings own a fresh `kind` socket on 127.0.0.1, unbound

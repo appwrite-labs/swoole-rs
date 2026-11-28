@@ -102,9 +102,6 @@ pub(crate) trait Hybrid: Sync {
     /// `Server::start_worker_threads`: whether the master thread's loop ran.
     fn start_worker_threads(&self, serv: Server<'_>) -> bool;
 
-    /// `Server::stop_worker_threads`.
-    fn stop_worker_threads(&self, serv: Server<'_>);
-
     /// `serv->stop_async_worker(sw_worker())` over base mode's single worker.
     fn stop_single_worker(&self, serv: Server<'_>);
 
@@ -218,7 +215,6 @@ pub(crate) mod tests {
         /// The worker, the message's kind and the bytes sent: the head and its payload.
         Pipe(u32, u8, usize),
         StartWorkerThreads,
-        StopWorkerThreads,
         StopSingleWorker,
         SendShutdown,
         Thread0Shutdown,
@@ -261,6 +257,7 @@ pub(crate) mod tests {
 
     thread_local! {
         pub(crate) static BASE_PAYLOAD: RefCell<Vec<u8>> = const { RefCell::new(Vec::new()) };
+        pub(crate) static FAIL_NOTIFY: core::cell::Cell<bool> = const { core::cell::Cell::new(false) };
         static CALLS: RefCell<Vec<Call>> = const { RefCell::new(Vec::new()) };
         static FAILING: core::cell::Cell<Option<Step>> = const { core::cell::Cell::new(None) };
         static ON_STEP: RefCell<Option<StepCheck>> = const { RefCell::new(None) };
@@ -309,11 +306,11 @@ pub(crate) mod tests {
                 head.reactor_id,
                 head.kind,
                 head.server_fd,
-            ))
+            )) && !FAIL_NOTIFY.replace(false)
         }
 
         fn pipe_to_worker(&self, _: Server<'_>, worker_id: u32, message: &TaskBuffer) -> bool {
-            let sent = message.bytes().len();
+            let sent = message.packed().bytes().len();
             hear(Call::Pipe(worker_id, message.head().kind, sent))
         }
 
@@ -323,10 +320,6 @@ pub(crate) mod tests {
 
         fn start_worker_threads(&self, _: Server<'_>) -> bool {
             hear(Call::StartWorkerThreads)
-        }
-
-        fn stop_worker_threads(&self, _: Server<'_>) {
-            hear(Call::StopWorkerThreads);
         }
 
         fn stop_single_worker(&self, _: Server<'_>) {

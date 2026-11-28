@@ -123,7 +123,7 @@ pub(crate) fn signal(call: &Call) {
     };
     let sync = host::sync_server();
     if !sync {
-        host::signal_listen();
+        swoole_rs_phpswoole::check_reactor();
     }
     // The slot lets go of the previous callable first: a destructor that bails
     // out leaves it empty.

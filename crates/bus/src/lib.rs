@@ -169,6 +169,7 @@ pub struct Bus {
     buffer_generation: Cell<usize>,
     buffer_size: Cell<usize>,
     always_chunked: Cell<bool>,
+    defer_write: Cell<bool>,
     packets: Cell<Option<Box<Packets>>>,
     /// `pipe_sockets_`: by descriptor, this bus's own records of the pipes, which
     /// `init_pipe_sockets` made and only the bus's drop frees.
@@ -217,6 +218,7 @@ impl Bus {
             buffer_generation: Cell::new(0),
             buffer_size: Cell::new(buffer_size),
             always_chunked: Cell::new(false),
+            defer_write: Cell::new(false),
             packets: Cell::new(None),
             pipe_sockets: OnceCell::new(),
             next_id: Cell::new(None),
@@ -741,6 +743,11 @@ impl Bus {
         self.always_chunked.set(true);
     }
 
+    /// Event worker pipe queues survive until the replacement reactor can drain them.
+    pub fn set_defer_write(&self) {
+        self.defer_write.set(true);
+    }
+
     /// `MessageBus::alloc_buffer()`: replace the receive buffer with `size` bytes
     /// from `allocator`, initialized once for safe reads. False, leaving no buffer,
     /// on failure.
@@ -863,7 +870,7 @@ impl Bus {
     /// `MessageBus::write` of a message its caller holds as a `SendData`: a head and,
     /// unless it has none, the payload its `len` counts (at most `data`'s bytes are
     /// sent). Numbers the message, then writes it through the event loop while one is
-    /// available, else synchronously. False if the pipe failed. (What the event loop
+    /// available, else through the persistent pipe queue or synchronously. False if the pipe failed. (What the event loop
     /// cannot send at once it queues, and watches `socket` until it drains: a [`Heap`]
     /// socket may be.)
     pub fn send(&self, socket: Heap<'_>, head: &mut BusHead, data: Option<&[u8]>) -> bool {
@@ -871,6 +878,23 @@ impl Bus {
         let send = |vectors: &[IoSlice<'_>]| {
             if event_api::swoole_event_is_available() {
                 event_api::swoole_event_writev(socket, vectors)
+            } else if self.defer_write.get() {
+                let queued = socket.edit(|fields| fields.queue_pipe_write(vectors));
+                if queued.is_none() {
+                    let (used, limit) =
+                        socket.read(|fields| (fields.queued_bytes(), fields.output_limit()));
+                    log::error_log(
+                        log::LogLevel::SW_LOG_WARNING,
+                        swoole_rs_error::ErrorCode::SW_ERROR_OUTPUT_BUFFER_OVERFLOW as c_int,
+                        c"MessageBus::enqueue_write",
+                        format_args!(
+                            "pipe#{} output buffer overflow: ({used}/{limit})",
+                            socket.fd()
+                        ),
+                    );
+                    sys::set_errno(libc::ENOSPC);
+                }
+                queued
             } else {
                 writev_sync(*socket, vectors)
             }
@@ -889,8 +913,8 @@ impl Bus {
     }
 
     /// `MessageBus::init_pipe_socket` of each of `fds`: this bus's own nonblocking
-    /// records of the pipes, with no send-buffer limit. A thread that starts again
-    /// over its bus (a reload) starts each record over, as upstream's new one would.
+    /// records of the pipes, with no send-buffer limit. Replacement workers inherit
+    /// the records and the packets their predecessors queued.
     pub fn init_pipe_sockets(&self, fds: impl IntoIterator<Item = c_int>) {
         // `make_socket`: a new record, which the bus frees on drop.
         let make = |fd| {
@@ -903,11 +927,10 @@ impl Bus {
             .into_iter()
             .filter_map(|fd| Some((usize::try_from(fd).ok()?, fd)));
         if let Some(sockets) = self.pipe_sockets.get() {
-            for (index, fd) in fds {
-                let Some(socket) = sockets.get(index).and_then(Option::as_ref) else {
+            for (index, _) in fds {
+                if sockets.get(index).and_then(Option::as_ref).is_none() {
                     swoole_rs_corebase::fatal("a message bus's pipes changed");
-                };
-                socket.socket().edit(|fields| *fields = make(fd).fields);
+                }
             }
             return;
         }
@@ -921,6 +944,15 @@ impl Bus {
             }
         }
         _ = self.pipe_sockets.set(sockets.into_boxed_slice());
+    }
+
+    /// The pipe records owned by this bus, including task-worker and command pipes.
+    pub fn pipes(&self) -> impl Iterator<Item = Heap<'_>> {
+        self.pipe_sockets
+            .get()
+            .into_iter()
+            .flat_map(|pipes| pipes.iter().flatten())
+            .map(OwnedSocket::heap)
     }
 
     /// `MessageBus::get_pipe_socket`: the record `init_pipe_socket` made for `fd`.
@@ -974,20 +1006,31 @@ mod tests {
 
     #[test]
     #[cfg_attr(miri, ignore = "Miri has no socket options on a socketpair")]
-    fn a_second_init_starts_the_same_pipe_records_over() {
+    fn a_second_init_preserves_the_pipe_and_its_queued_writes() {
         let pipe = Pipe::new(libc::SOCK_STREAM, 64, false);
         let fd = pipe.fds[1];
         pipe.bus.init_pipe_sockets([fd]);
         let record = pipe.bus.pipe_socket(fd);
-        pipe.bus.pipe(fd).unwrap().edit(|f| f.limit_output(1));
+        let socket = pipe.bus.pipe(fd).unwrap();
+        pipe.bus.set_defer_write();
+        let mut head = BusHead {
+            len: 7,
+            ..BusHead::default()
+        };
+        let size = u32::try_from(HEAD + 7).unwrap();
+        socket.edit(|fields| fields.limit_output(size));
+        assert!(pipe.bus.send(socket, &mut head, Some(b"pending")));
+        assert!(!pipe.bus.send(socket, &mut head, Some(b"pending")));
+        assert_eq!(sys::errno(), libc::ENOSPC);
+        assert_eq!(socket.read(SocketFields::queued_bytes), size);
         pipe.bus.init_pipe_sockets([fd]);
         assert_eq!(pipe.bus.pipe_socket(fd), record, "the same record");
-        let size = pipe
-            .bus
-            .pipe(fd)
-            .unwrap()
-            .read(swoole_rs_corebase::reactor::SocketFields::output_limit);
-        assert_eq!(size, u32::MAX, "started over");
+        pipe.bus.pipe(fd).unwrap().with_output_queue(|queue| {
+            assert_eq!(
+                queue.unwrap().front_data().get(HEAD..),
+                Some(b"pending".as_slice())
+            );
+        });
         assert!(pipe.bus.pipe(pipe.fds[0]).is_none());
     }
 

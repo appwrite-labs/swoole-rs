@@ -5,9 +5,7 @@
 //! waits. Native code keeps only the name lookup (`Host::lookup`).
 use crate::co_io::{Message, available, borrowed_err, default_err, errno, ops, owned_err, set_err};
 use crate::co_socket::{Co, reinit};
-use crate::packet::recv_packet;
 use crate::socket_members::assign;
-use crate::socket_scope::ProtocolScope;
 use core::ffi::c_int;
 use core::ptr::null_mut;
 use std::rc::Rc;
@@ -21,7 +19,7 @@ use swoole_rs_corebase::constants::SocketType;
 use swoole_rs_corebase::lent::lend_spare;
 use swoole_rs_corebase::net_types::SocketAddress;
 use swoole_rs_corebase::{NameResolverContext, ProxyState, log};
-use swoole_rs_http::{proxy_accept, proxy_connect};
+use swoole_rs_http::{ProxyReadError, http_proxy_fragment, proxy_connect};
 
 /// Swoole error codes this sequence sets.
 const WRONG_OPERATION: c_int = swoole_rs_error::ErrorCode::SW_ERROR_WRONG_OPERATION as c_int;
@@ -94,7 +92,14 @@ pub trait Connecting {
     fn connect(&mut self) -> bool;
     /// The socket's `send` and `recv`.
     fn send(&mut self, data: &[u8]) -> Option<usize>;
-    fn recv(&mut self, into: &mut [u8]) -> Option<usize>;
+    fn recv_socks5_reply(&mut self, into: &mut [u8]) -> Option<usize>;
+    /// Receive the proxy replies under one read timer.
+    fn socks5_replies(&mut self) -> bool
+    where
+        Self: Sized,
+    {
+        socks5_replies(self)
+    }
     /// Packs the SOCKS5 negotiation, moving the proxy to the handshake state.
     fn socks5_negotiate(&mut self) -> Vec<u8>;
     /// `Socks5Proxy::handshake` of a reply (sending what it packs): whether the
@@ -102,12 +107,13 @@ pub trait Connecting {
     fn socks5_step(&mut self, reply: &[u8]) -> Option<bool>;
     /// Packs the HTTP CONNECT request into the write buffer, and returns it.
     fn http_request(&mut self) -> Vec<u8>;
-    /// Receives the HTTP proxy's response head (`recv_packet` under a "\r\n\r\n"
-    /// protocol): whether it received a head, and whether `HttpProxy::handshake`
-    /// accepts it.
-    fn http_response(&mut self) -> (bool, bool);
-    /// Clears the write buffer, and the read buffer when `received`.
-    fn http_done(&mut self, received: bool);
+    /// Read the CONNECT response, leaving tunneled data for the application.
+    ///
+    /// # Errors
+    /// Socket I/O failed or the proxy returned an invalid or incomplete header.
+    fn http_response(&mut self) -> Result<(), ProxyReadError>;
+    /// Clear the CONNECT request buffer.
+    fn http_done(&mut self);
     /// `ssl_is_server = false`.
     fn client(&mut self);
     /// `ssl_handshake()`.
@@ -155,9 +161,13 @@ fn socks5(ops: &mut impl Connecting) -> bool {
     if ops.send(&request).is_none() {
         return false;
     }
-    let mut reply = [0u8; 512];
+    ops.socks5_replies()
+}
+
+fn socks5_replies(ops: &mut impl Connecting) -> bool {
+    let mut reply = [0u8; 262];
     loop {
-        let Some(received) = ops.recv(&mut reply).filter(|&n| n > 0) else {
+        let Some(received) = ops.recv_socks5_reply(&mut reply).filter(|&n| n > 0) else {
             return false;
         };
         match ops.socks5_step(reply.get(..received).unwrap_or_default()) {
@@ -171,21 +181,23 @@ fn socks5(ops: &mut impl Connecting) -> bool {
 /// `http_proxy_handshake`: CONNECT, then the response head.
 fn http(ops: &mut impl Connecting) -> bool {
     let request = ops.http_request();
-    if ops.send(&request) != Some(request.len()) {
-        ops.http_done(false);
-        return false;
+    let result = if ops.send(&request) == Some(request.len()) {
+        ops.http_response()
+    } else {
+        Err(ProxyReadError::Socket)
+    };
+    ops.http_done();
+    match result {
+        Ok(()) => true,
+        Err(ProxyReadError::BadResponse(message)) => {
+            ops.set_err_text(HTTP_PROXY_BAD_RESPONSE, Some(message.as_bytes()));
+            false
+        }
+        Err(ProxyReadError::Socket) => {
+            ops.set_err(HTTP_PROXY_HANDSHAKE_FAILED);
+            false
+        }
     }
-    let (received, accepted) = ops.http_response();
-    if received && !accepted {
-        // Upstream reports the request as the response too.
-        let mut text = b"wrong http_proxy response received, \n[Request]: ".to_vec();
-        text.extend_from_slice(&request);
-        text.extend_from_slice(b"\n[Response]: ");
-        text.extend_from_slice(&request);
-        ops.set_err_text(HTTP_PROXY_BAD_RESPONSE, Some(&text));
-    }
-    ops.http_done(true);
-    received && accepted
 }
 
 /// `Socket::connect(host, port)` over `ops`.
@@ -231,7 +243,6 @@ fn connect_host(ops: &mut impl Connecting, host: &[u8], port: c_int) -> bool {
         return false;
     }
     if proxy == Some(Proxy::Http) && ops.http_handshake() && !http(ops) {
-        ops.set_err(HTTP_PROXY_HANDSHAKE_FAILED);
         return false;
     }
     ops.client();
@@ -353,6 +364,14 @@ impl Connecting for Live<'_> {
     }
 
     fn set_host(&mut self, which: Host, host: &[u8], port: c_int) {
+        if which != Host::Tls
+            && self
+                .socket
+                .tls_context()
+                .is_some_and(|tls| tls.requires_host_name())
+        {
+            self.set_slot(SSL_HOST_NAME, host);
+        }
         let (mut host, mut port) = (host.to_vec(), port);
         if which == Host::Proxy
             && let Some(proxy) = self.socks5.or(self.http)
@@ -441,8 +460,19 @@ impl Connecting for Live<'_> {
         self.socket.send(data)
     }
 
-    fn recv(&mut self, into: &mut [u8]) -> Option<usize> {
-        lend_spare(into, |out| self.socket.recv(out)).0
+    fn recv_socks5_reply(&mut self, into: &mut [u8]) -> Option<usize> {
+        let state = self.socks5?.fields().state;
+        swoole_rs_clients::owned_proxy::receive_socks5_reply(state, into, |room| {
+            lend_spare(room, |out| self.socket.recv(out)).0
+        })
+    }
+
+    fn socks5_replies(&mut self) -> bool {
+        let mut timer =
+            crate::co_io::Timer::new(self.socket, Events::READ, self.socket.read_timeout());
+        let ready = timer.start() && socks5_replies(self);
+        timer.stop();
+        ready
     }
 
     fn socks5_negotiate(&mut self) -> Vec<u8> {
@@ -481,31 +511,39 @@ impl Connecting for Live<'_> {
         })
     }
 
-    fn http_response(&mut self) -> (bool, bool) {
-        let scope = ProtocolScope::new(self.socket);
-        self.socket.set_open_eof_check(true);
-        self.socket.set_open_length_check(false);
-        let mut protocol = self.socket.protocol();
-        protocol.package_eof_len = 4;
-        protocol.package_eof = *b"\r\n\r\n\0\0\0\0";
-        self.socket.set_protocol(protocol);
-        let received = recv_packet(self.socket, 0.0) > Some(0);
-        let accepted = received
-            && self
-                .socket
-                .with_buffer(false, |read| proxy_accept(read.view()));
-        drop(scope);
-        (received, accepted)
+    fn http_response(&mut self) -> Result<(), ProxyReadError> {
+        let socket = self.socket;
+        let mut input = swoole_rs_corebase::buffer::string::OwnedString::default();
+        input.alloc(
+            swoole_rs_corebase::constants::SW_BUFFER_SIZE_BIG as usize,
+            None,
+        );
+        let mut timer = crate::co_io::Timer::new(socket, Events::READ, socket.read_timeout());
+        if !timer.start() {
+            return Err(ProxyReadError::Socket);
+        }
+        let result = loop {
+            let fragment = http_proxy_fragment(&mut input, |room, peek| {
+                let n = if peek {
+                    socket.peek(room, 0)
+                } else {
+                    socket.recv_all(room)
+                };
+                n.map(Some).ok_or(ProxyReadError::Socket)
+            });
+            if fragment != Ok(false) {
+                break fragment;
+            }
+        };
+        timer.stop();
+        result.map(|_| ())
     }
 
-    fn http_done(&mut self, received: bool) {
-        for write in [false, true] {
-            if write || received {
-                self.socket.with_buffer(write, |buffer| {
-                    buffer.clear();
-                });
-            }
-        }
+    fn http_done(&mut self) {
+        self.socket.with_buffer(
+            true,
+            swoole_rs_corebase::buffer::string::StringBuffer::clear,
+        );
     }
 
     fn client(&mut self) {
@@ -618,7 +656,7 @@ pub trait Handshaking {
     fn handshaked(&self) -> bool;
     /// Whether the SSL context has its `SSL_CTX`, and whether it verifies the peer.
     fn context_ready(&self) -> bool;
-    fn verify_peer(&self) -> bool;
+    fn verification_required(&self) -> bool;
     /// `is_available(SW_EVENT_RDWR)`.
     fn available(&mut self) -> bool;
     /// `set_err(code)`, or `set_err()` for -1.
@@ -665,7 +703,7 @@ pub fn ssl_handshake(ops: &mut impl Handshaking) -> bool {
         return false;
     }
     let prepared = ops.available() && (ops.context_ready() || ops.context_create()) && ops.create();
-    prepared && steps(ops) && (!ops.verify_peer() || ops.verify())
+    prepared && steps(ops) && (!ops.verification_required() || ops.verify())
 }
 
 #[cfg(test)]
@@ -779,7 +817,7 @@ mod tests {
         fn send(&mut self, data: &[u8]) -> Option<usize> {
             usize::try_from(take("send", data.len().cast_signed())).ok()
         }
-        fn recv(&mut self, _: &mut [u8]) -> Option<usize> {
+        fn recv_socks5_reply(&mut self, _: &mut [u8]) -> Option<usize> {
             usize::try_from(take("recv", 2)).ok()
         }
         fn socks5_negotiate(&mut self) -> Vec<u8> {
@@ -797,12 +835,14 @@ mod tests {
             take("request", 7);
             b"CONNECT".to_vec()
         }
-        fn http_response(&mut self) -> (bool, bool) {
-            let accepted = take("accepted", 1) != 0;
-            (take("response", 10) > 0, accepted)
+        fn http_response(&mut self) -> Result<(), ProxyReadError> {
+            if take("accepted", 1) == 0 {
+                return Err(ProxyReadError::BadResponse("invalid HTTP proxy response"));
+            }
+            Ok(())
         }
-        fn http_done(&mut self, received: bool) {
-            log(format!("done {received}"));
+        fn http_done(&mut self) {
+            log("done".to_owned());
         }
         fn client(&mut self) {
             log("client".to_owned());
@@ -969,20 +1009,16 @@ mod tests {
         let mut ops = connect_ops(Some(Proxy::Http), false, 0);
         let (ok, log) = run(&mut ops, "h", &[]);
         assert!(ok);
-        assert!(log.contains(&"done true".to_owned()));
+        assert!(log.contains(&"done".to_owned()));
         let (ok, log) = run(&mut ops, "h", &[("accepted", 0)]);
         assert!(!ok);
         assert_eq!(
-            log[log.len() - 3..],
-            [
-                "err 7104 wrong http_proxy response received, \n[Request]: CONNECT\n[Response]: CONNECT",
-                "done true",
-                "err 7103"
-            ]
+            log[log.len() - 2..],
+            ["done", "err 7104 invalid HTTP proxy response"]
         );
         let (ok, log) = run(&mut ops, "h", &[("send", 3)]);
         assert!(!ok);
-        assert_eq!(log[log.len() - 2..], ["done false", "err 7103"]);
+        assert_eq!(log[log.len() - 2..], ["done", "err 7103"]);
         let mut quiet = connect_ops(Some(Proxy::Http), false, 0);
         quiet.http_handshake = false;
         let (ok, log) = run(&mut quiet, "h", &[]);
@@ -1019,7 +1055,7 @@ mod tests {
         fn context_ready(&self) -> bool {
             self.context_ready
         }
-        fn verify_peer(&self) -> bool {
+        fn verification_required(&self) -> bool {
             self.verify_peer
         }
         fn available(&mut self) -> bool {

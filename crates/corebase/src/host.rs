@@ -245,6 +245,7 @@ pub struct DataHead {
     pub flags: u8,
     pub server_fd: u16,
     pub ext_flags: u16,
+    /// The C header aliases this field as `task_source_pid` for task routing.
     pub reserved: u32,
     pub time: f64,
 }

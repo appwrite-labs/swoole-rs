@@ -12,7 +12,7 @@ pub static arginfo_class_Swoole_Redis_Server_setHandler: a::ArgInfo<3> = a::ArgI
     a::arg_type(c"callback", 0, false, z::IS_CALLABLE, false, None),
 ]);
 pub static arginfo_class_Swoole_Redis_Server_getHandler: a::ArgInfo<2> = a::ArgInfo::new([
-    a::begin_class(1, 0, c"Closure", false),
+    a::begin_type(1, 0, z::IS_CALLABLE, true),
     a::arg_type(c"command", 0, false, z::IS_STRING, false, None),
 ]);
 pub static arginfo_class_Swoole_Redis_Server_format: a::ArgInfo<3> = a::ArgInfo::new([

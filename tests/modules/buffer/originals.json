@@ -1,7 +1,7 @@
 {
   "repository": "https://github.com/swoole/swoole-src",
-  "tag": "v6.2.6",
-  "commit": "13d2f33664d60b72aaa9f102ff0ef4085c028513",
+  "tag": "v6.3.0",
+  "commit": "e0d606594e13cecd7790baafc5f1e1ead816b77c",
   "tests": [
     {
       "path": "tests/swoole_http_server_coro/buffer_clear.phpt",
@@ -56,7 +56,7 @@
     },
     {
       "path": "tests/swoole_client_coro/sendfile.phpt",
-      "sha256": "8d8fdd34da9fd3637a25b602f2d02431e5e931c34fd5565a9d20316adbcd13ef",
+      "sha256": "8dfa73632daa4c15c683e7fab6ebb57abcc79bb8edc9b8683eb9ce97fe6c1c6c",
       "module": "buffer",
       "requires": [
         "upstream_test_bootstrap",
@@ -70,7 +70,7 @@
     },
     {
       "path": "tests/swoole_client_sync/sendfile.phpt",
-      "sha256": "2725d319ffabef79f2a025f7be848a606634d00089f6dd71a8c99bf5f2f2bcad",
+      "sha256": "495632afdf9a9ae75d94bcd63227500ea622d6bfd0f9c35aa3f81eb0c6822ea5",
       "module": "buffer",
       "requires": [
         "upstream_test_bootstrap",

@@ -43,7 +43,7 @@ pub static SIGNALS: [Slot; SIGNO_MAX] = [const { Slot::empty() }; SIGNO_MAX];
 static ORIGIN: Mutex<[Option<libc::sigaction>; SIGNO_MAX]> =
     Mutex::new([const { None }; SIGNO_MAX]);
 
-fn origin(signo: c_int, f: impl FnOnce(&mut Option<libc::sigaction>)) {
+pub(super) fn origin(signo: c_int, f: impl FnOnce(&mut Option<libc::sigaction>)) {
     let mut origin = ORIGIN.lock().unwrap_or_else(PoisonError::into_inner);
     if let Some(action) = usize::try_from(signo).ok().and_then(|i| origin.get_mut(i)) {
         f(action);
@@ -60,7 +60,7 @@ pub(crate) fn restore_origin(signo: c_int) {
     origin(signo, |action| {
         if let Some(action) = action.take() {
             // An action sigaction returned.
-            sigaction(signo, &action);
+            sigaction(signo, Some(&action));
         } else {
             install(signo, SIG_DFL, false, false);
         }
@@ -113,7 +113,7 @@ pub type Dispatch = extern "C" fn(c_int);
 /// Whether this thread has a reactor (`sw_reactor()`).
 pub type HasReactor = fn() -> bool;
 
-fn slot(signo: c_int) -> Option<&'static Slot> {
+pub(super) fn slot(signo: c_int) -> Option<&'static Slot> {
     SIGNALS.get(usize::try_from(signo).ok()?)
 }
 
@@ -158,13 +158,14 @@ pub(crate) fn install(
     }
     action.sa_flags = if restart { libc::SA_RESTART } else { 0 };
     // `func` is a handler or SIG_IGN/SIG_DFL.
-    sigaction(signo, &action)
+    sigaction(signo, Some(&action))
 }
 
 /// `sigaction(2)`: the previous action, or none if it failed.
-fn sigaction(signo: c_int, action: &libc::sigaction) -> Option<libc::sigaction> {
+pub(super) fn sigaction(signo: c_int, action: Option<&libc::sigaction>) -> Option<libc::sigaction> {
     let mut previous: libc::sigaction = crate::sys::zeroed();
-    // SAFETY: both actions are valid for the call.
+    let action = action.map_or(std::ptr::null(), std::ptr::from_ref);
+    // SAFETY: the optional action is valid or null and previous receives the old action.
     let installed = unsafe { libc::sigaction(signo, action, &raw mut previous) };
     (installed == 0).then_some(previous)
 }
@@ -218,8 +219,38 @@ pub(crate) fn register_with_reactor() {
             target_os = "netbsd",
             target_os = "dragonfly"
         ))]
-        kqueue: crate::process::signal_kqueue::signal_kqueue_dispatch,
+        kqueue: |signo| dispatch_kqueue(signo, signal_activated(signo)),
     });
+}
+
+#[cfg(any(
+    target_os = "macos",
+    target_os = "freebsd",
+    target_os = "openbsd",
+    target_os = "netbsd",
+    target_os = "dragonfly"
+))]
+/// An activated signal (`Some` handler) runs its handler unless that is `SIG_IGN`,
+/// and warns when it has none.
+pub(super) fn dispatch_kqueue(signo: c_int, activated: Option<Handler>) {
+    let Some(handler) = activated else {
+        return;
+    };
+    match handler {
+        Handler::NONE => {
+            let name = signal_name(signo);
+            crate::log::error_log(
+                crate::log::LogLevel::SW_LOG_WARNING,
+                swoole_rs_error::ErrorCode::SW_ERROR_UNREGISTERED_SIGNAL as c_int,
+                c"ReactorKqueue::wait",
+                format_args!(
+                    "Unable to find callback function for signal {}",
+                    name.as_cstr().to_string_lossy()
+                ),
+            );
+        }
+        handler => handler.call(signo),
+    }
 }
 
 /// `signal_handler_safety`: marks the signal for the next dispatch.
@@ -258,16 +289,20 @@ extern "C" fn immediate(signo: c_int) {
 }
 
 /// `void swoole_signal_dispatch()`: runs `swoole_signal_callback` for each signal
-/// the deferred handler marked, in signal order, clearing each mark after its
+/// the deferred handler marked, in signal order, clearing each mark before its
 /// callback.
 pub fn swoole_signal_dispatch() {
     dispatch_if_pending();
 }
 
+pub(crate) fn pending() -> bool {
+    PENDING.load(Relaxed)
+}
+
 pub(crate) fn dispatch_if_pending() -> bool {
-    let pending = PENDING.load(Relaxed);
+    let pending = pending();
     if pending {
-        dispatch_pending();
+        dispatch_pending(crate::process::pool::bailout_pending);
     }
     pending
 }
@@ -275,24 +310,30 @@ pub(crate) fn dispatch_if_pending() -> bool {
 // Keep the signal walk out of the hot reactor callback loop so its fixed slots
 // can be unrolled even when the process and reactor modules share a crate.
 #[inline(never)]
-fn dispatch_pending() {
+fn dispatch_pending(bailout_pending: impl Fn() -> bool) {
     // Only the deferred handler marks a signal, and `signal_set` stores its
     // `Dispatch` before installing that handler.
     let Some(callback) = callback() else {
         return;
     };
+    PENDING.store(false, Relaxed);
     for (signo, triggered) in (0..).zip(&TRIGGERED) {
         if triggered.load(Relaxed) {
+            triggered.store(false, Relaxed);
             // Upstream calls dispatch from a safe context, never a signal frame; the
             // callback may run PHP, and no value with a destructor is live across it.
             callback(signo);
-            if crate::process::pool::bailout_pending() {
+            if bailout_pending() {
+                // Resume the unfinished walk at the next safe dispatch.
+                PENDING.store(true, Relaxed);
                 return;
             }
-            triggered.store(false, Relaxed);
         }
     }
-    PENDING.store(false, Relaxed);
+    if pending() {
+        // A callback raised a signal whose slot was already visited.
+        _ = crate::reactor::event_api::swoole_event_defer_value(());
+    }
 }
 
 /// What `swoole_signal_callback` should do for a signal.
@@ -356,17 +397,26 @@ pub fn signal_reset() {
 /// `swoole_signal_clear` without signalfd or kqueue: restores `SIG_DFL` for every
 /// registered signal, then empties the table.
 pub fn signal_clear() {
+    clear_actions(|_| true);
+    signal_reset();
+}
+
+/// Whether a signal now routed to signalfd still has one of our native handlers.
+#[cfg(target_os = "linux")]
+pub(super) fn has_native_handler(signo: c_int) -> bool {
+    sigaction(signo, None).is_some_and(|action| {
+        [address(immediate), address(deferred)].contains(&action.sa_sigaction)
+    })
+}
+
+/// Restore the default disposition of active signals handled through sigaction.
+pub(super) fn clear_actions(native: impl Fn(c_int) -> bool) {
     for slot in &SIGNALS {
-        if slot.activated.load(Relaxed) {
-            set_action(
-                c_int::from(slot.signo.load(Relaxed)),
-                usize::MAX,
-                true,
-                false,
-            );
+        let signo = c_int::from(slot.signo.load(Relaxed));
+        if slot.activated.load(Relaxed) && native(signo) {
+            set_action(signo, usize::MAX, true, false);
         }
     }
-    signal_reset();
 }
 
 /// `void swoole_signal_unblock_all()`: [`crate::signal_unblock_all`].
@@ -478,6 +528,18 @@ mod tests {
         assert_eq!(SEEN.swap(0, Relaxed), libc::SIGUSR2);
         assert!(!crate::reactor::signals::dispatch());
 
+        // A bailout interrupts the walk after the first callback.
+        let mut signals = [libc::SIGUSR1, libc::SIGUSR2];
+        signals.sort_unstable();
+        for signo in signals {
+            deferred(signo);
+        }
+        dispatch_pending(|| true);
+        assert_eq!(SEEN.swap(0, Relaxed), signals[0]);
+        assert!(dispatch_if_pending());
+        assert_eq!(SEEN.swap(0, Relaxed), signals[1]);
+        assert!(!pending());
+
         // Removing a handler puts back the action from before its registration.
         set_action(libc::SIGUSR2, 0, false, false);
         signal_set(libc::SIGUSR2, Handler(handler), true, record, with_reactor);
@@ -489,6 +551,17 @@ mod tests {
         assert!(!swoole_signal_isset(libc::SIGUSR2));
         assert_eq!(set_action(libc::SIGUSR2, usize::MAX, false, false), SIG_IGN);
 
+        #[cfg(target_os = "linux")]
+        {
+            use crate::process::signalfd::{signalfd_clear, signalfd_set};
+            // SIGUSR1 already uses the immediate handler. Routing it through the
+            // descriptor must retire that disposition before the mask is unblocked.
+            signalfd_set(libc::SIGUSR1, Handler(handler));
+            assert!(has_native_handler(libc::SIGUSR1));
+            assert!(signalfd_clear());
+            assert_eq!(set_action(libc::SIGUSR1, usize::MAX, false, false), SIG_DFL);
+        }
+
         signal_clear();
         assert!(!swoole_signal_isset(libc::SIGUSR1));
         assert_eq!(signal_lookup(libc::SIGUSR1), Lookup::Default);
@@ -496,6 +569,51 @@ mod tests {
         assert_eq!(set_action(libc::SIGUSR1, 0, false, false), SIG_DFL);
         assert_eq!(signal_lookup(libc::SIGUSR1), Lookup::Default);
         set_action(libc::SIGUSR1, usize::MAX, false, false);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    #[cfg_attr(miri, ignore = "Miri has no signalfd")]
+    fn pool_guard_restores_a_descriptor_signal() {
+        use crate::process::signalfd;
+        use crate::signal_mask::tests::{current, same};
+
+        let _state = crate::process::signal_state_lock();
+        let signo = libc::SIGURG;
+        let original_mask = current();
+        let old = sigaction(signo, None).unwrap();
+        let handler = Handler::new(record);
+        signal_set(signo, handler, true, record, no_reactor);
+        let action = sigaction(signo, None).unwrap();
+        signalfd::signalfd_set(signo, handler);
+        signalfd::signalfd_create().unwrap();
+        let blocked = current();
+
+        let guard =
+            crate::process::signal_upstream::SignalGuard::install([signo], Handler::new(deferred));
+        assert_eq!(
+            signal_lookup(signo),
+            Lookup::Handler(Handler::new(deferred))
+        );
+        assert_ne!(
+            sigaction(signo, None).unwrap().sa_sigaction,
+            action.sa_sigaction
+        );
+        assert_eq!(crate::sys::sigismember(&current(), signo), 0);
+        assert!(!signalfd::route(signo, false));
+        drop(guard);
+        assert_eq!(signal_lookup(signo), Lookup::Handler(handler));
+        assert_eq!(
+            sigaction(signo, None).unwrap().sa_sigaction,
+            action.sa_sigaction
+        );
+        assert!(same(current(), blocked));
+        assert!(signalfd::route(signo, true));
+
+        assert!(signalfd::signalfd_clear());
+        signalfd::signalfd_close();
+        sigaction(signo, Some(&old));
+        crate::sys::pthread_sigmask(libc::SIG_SETMASK, Some(&original_mask), None);
     }
 
     #[test]

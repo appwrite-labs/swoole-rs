@@ -158,7 +158,7 @@ pub fn decode_in_place(data: &mut [u8]) -> Result<DecodedFrame, DecodeError> {
 /// Close, ping and pong frames must be final and carry at most 125 bytes.
 #[must_use]
 pub fn control_invalid(opcode: Opcode, flags: FrameFlags, length: usize) -> bool {
-    opcode.is_control() && (!flags.is_final() || length > 125)
+    opcode.is_control() && (!flags.is_final() || length > crate::CONTROL_PAYLOAD_MAX_LEN)
 }
 
 /// Why a frame could not be encoded. Rejected inputs leave the output untouched.

@@ -179,6 +179,9 @@ fn wait(serv: view::Server<'_>) {
     let (state, config) = (serv.state(), serv.config());
     let manager = &config.manager;
     init(serv, manager);
+    if swoole_rs_corebase::timer::swoole_timer_is_available() {
+        swoole_rs_corebase::timer::swoole_timer_free();
+    }
     swoole_rs_corebase::reactor::swoole_event_free();
     set_signal(libc::SIGHUP, SignalHandler::None);
     for signo in [
@@ -324,7 +327,10 @@ impl Reap for Reaping<'_> {
     }
 
     fn wait(&mut self, nonblock: bool) -> Waited {
-        reaper::wait_child(nonblock)
+        let pool = self.serv.event_pool_ref();
+        reaper::wait_manager_child(|| {
+            !nonblock && self.serv.state().running() && !pool.reload_init() && !pool.read_message()
+        })
     }
 
     /// Dispatch signals, take the workers' messages (a stopping worker's asks for
@@ -337,6 +343,7 @@ impl Reap for Reaping<'_> {
         }
         let pool = serv.event_pool_ref();
         if pool.read_message() {
+            pool.set_read_message(false);
             let mut msg = EventData([0; EVENT_DATA_SIZE]);
             while methods::pop_message(pool, &mut msg.0).is_some_and(|length| length > 0) {
                 if process::pool::bailout_pending() {
@@ -361,8 +368,8 @@ impl Reap for Reaping<'_> {
                 }
                 serv.registry().detach(pid);
             }
-            pool.set_read_message(false);
         }
+        swoole_rs_corebase::swr_v1_core_set_signal_alarm(false);
         if swoole_rs_corebase::timer::swoole_timer_is_available() {
             swoole_rs_corebase::timer::swoole_timer_select();
         }
@@ -524,6 +531,9 @@ fn read_worker_message(pool: PoolRef<'_>, msg: &[u8; EVENT_DATA_SIZE]) {
 pub fn restart_worker_process(serv: view::Server<'_>, status: &ExitStatus) {
     const ORIGIN: &core::ffi::CStr = c"Server::restart_worker_process";
     let pid = status.pid();
+    serv.counters()
+        .worker_exits
+        .fetch_add(1, core::sync::atomic::Ordering::Release);
     let worker = worker_methods::get_worker_by_pid(serv, pid);
     let Some(worker) = serv.own_worker(worker) else {
         // A child that is not a worker: a detached worker finishing, or unknown.

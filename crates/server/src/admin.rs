@@ -82,14 +82,13 @@ const MANAGER_PROCESS: c_int = 1 << 5;
 /// `get_connections` and `get_connection_info` run where connections live.
 const CONNECTION_OWNER: c_int = -1;
 
-/// Upstream's registrations, in order; `get_thread_info` twice, as upstream adds it.
-const COMMAND_TABLE: [(&str, c_int); 11] = [
+/// Upstream's admin commands in registration order.
+const COMMAND_TABLE: [(&str, c_int); 10] = [
     ("get_all_sockets", ALL_PROCESS),
     ("get_all_commands", ALL_PROCESS),
     ("get_socket_info", ALL_PROCESS),
-    ("get_thread_info", ALL_PROCESS),
+    ("get_thread_info", REACTOR_THREAD),
     ("get_manager_info", MANAGER_PROCESS),
-    ("get_thread_info", ALL_PROCESS),
     ("get_memory_info", ALL_PROCESS),
     ("get_all_unix_sockets", ALL_PROCESS),
     ("get_all_ports", MASTER),
@@ -148,6 +147,14 @@ fn answer(code: i64, data: Json) -> Json {
 
 fn require(name: &str) -> Json {
     answer(4003, Json::Str(format!("require parameter {name}")))
+}
+
+fn numeric_id<T: std::str::FromStr>(msg: &[u8], key: &str) -> Option<T> {
+    let text = json::param(msg, key)?;
+    if !text.bytes().all(|byte| byte.is_ascii_digit()) {
+        return None;
+    }
+    text.parse().ok()
 }
 
 /// Admin command `index`'s answer to request `msg`.
@@ -269,13 +276,13 @@ fn all_commands<F: Facts>(f: &mut F) -> Json {
 }
 
 fn socket_info(msg: &[u8]) -> Json {
-    let Some(fd) = json::param(msg, "fd") else {
+    let Some(fd) = numeric_id(msg, "fd") else {
         return require("fd");
     };
     if !TCP_INFO_SUPPORTED {
         return answer(5001, Json::Str("platform unsupported".into()));
     }
-    let data = match tcp_info_of(swoole_rs_corebase::atoi(fd.as_bytes())) {
+    let data = match tcp_info_of(fd) {
         Some(fields) => Json::Object(fields.into_iter().collect()),
         // Upstream returned the dumped error object as the data.
         None => Json::Str(
@@ -363,11 +370,10 @@ fn connections<F: Facts>(f: &mut F) -> Json {
 }
 
 fn connection_info<F: Facts>(f: &mut F, msg: &[u8]) -> Json {
-    let Some(session_id) = json::param(msg, "session_id") else {
+    let Some(session_id) = numeric_id(msg, "session_id") else {
         return require("session_id");
     };
-    // An `int` session id, widened as `SessionId`.
-    if !f.session(swoole_rs_corebase::atoi(session_id.as_bytes()).into()) {
+    if !f.session(session_id) {
         return answer(4004, Json::Str("connection not exists".into()));
     }
     answer(0, connection_json(f.connection(0)))
@@ -514,14 +520,15 @@ mod tests {
     #[test]
     fn registers_upstreams_commands_in_order() {
         let names: Vec<_> = commands(true).collect();
-        assert_eq!(names.len(), 11, "get_thread_info is registered twice");
+        assert_eq!(names.len(), 10);
+        assert_eq!(names[3], ("get_thread_info", 4), "owner reactor only");
         assert_eq!(names[4], ("get_manager_info", 32), "manager only");
         assert_eq!(
-            names[9],
+            names[8],
             ("get_connections", 8 | 2),
             "event worker and master"
         );
-        let types = commands(false).nth(10).map(|(_, types)| types);
+        let types = commands(false).nth(9).map(|(_, types)| types);
         assert_eq!(
             types,
             Some(4),
@@ -621,7 +628,7 @@ mod tests {
         let out = run(
             &mut Script::default(),
             index("get_socket_info"),
-            br#"{"fd":"-1"}"#,
+            br#"{"fd":"2147483647"}"#,
         )
         .dump();
         assert_eq!(

@@ -36,6 +36,8 @@ pub struct UpperLayer {
     /// `swoole_is_main_thread()`: only the main thread's reactor dispatches signals
     /// and trims malloc at its end.
     pub main_thread: fn() -> bool,
+    /// Attach process signal listeners once the main thread can reach its new reactor.
+    pub init_signals: fn(),
 }
 
 static UPPER_LAYER: std::sync::OnceLock<UpperLayer> = std::sync::OnceLock::new();
@@ -62,10 +64,12 @@ pub struct ReactorFields {
     pub running: bool,
     pub start: bool,
     pub once: bool,
+    pub(super) waiting: bool,
     pub wait_exit: bool,
     pub destroyed: bool,
     pub bailout: bool,
     pub timed_out: bool,
+    pub round: u64,
     pub timeout_msec: i32,
     pub id: u16,
     pub max_socket: u32,
@@ -229,10 +233,12 @@ impl ReactorState {
                 running: false,
                 start: false,
                 once: false,
+                waiting: false,
                 wait_exit: false,
                 destroyed: false,
                 bailout: false,
                 timed_out: false,
+                round: 0,
                 timeout_msec: 0,
                 id: 0,
                 max_socket: 0,
@@ -442,6 +448,9 @@ pub fn swoole_event_init(flags: c_int) -> Result<(), InitError> {
     set_thread_reactor(handle.as_ptr());
     // A reactor this replaces stays allocated, as upstream's overwritten pointer did.
     EVENT_REACTOR.set(Some(reactor));
+    if (upper_layer().main_thread)() {
+        (upper_layer().init_signals)();
+    }
     Ok(())
 }
 
@@ -654,10 +663,7 @@ fn backend_wait(
             target_os = "dragonfly"
         ))]
         Backend::Kqueue(array) => {
-            let timeout = crate::reactor::kqueue_timeout(
-                owner.fields.timeout_msec,
-                owner.fields.timeout_msec <= 0 && deferred,
-            );
+            let timeout = crate::reactor::kqueue_timeout(owner.fields.timeout_msec, deferred);
             crate::sys::kevent_wait(owner.backend_fd, array, timeout.as_ref())
         }
     };

@@ -10,7 +10,9 @@ int swr_zend_try_facade_truth(zval *value, bool *result) {
 }
 int swr_zend_try_facade_callable(zval *value, zend_fcall_info_cache *cache, bool *result) {
     volatile int bailed = 0;
-    SWR_ZEND_TRY { *result = zend_is_callable_at_frame(value, NULL, NULL, 0, cache, NULL); }
+    SWR_ZEND_TRY {
+        *result = cache ? zend_is_callable_at_frame(value, NULL, NULL, 0, cache, NULL) : zend_is_callable(value, 0, NULL);
+    }
     SWR_ZEND_CATCH { bailed = 1; } SWR_ZEND_END_TRY();
     return bailed;
 }
@@ -40,6 +42,21 @@ int swr_zend_try_facade_throw_error(const char *message) {
 int swr_zend_try_facade_object_init(zval *target, zend_class_entry *ce) {
     volatile int bailed = 0;
     SWR_ZEND_TRY { object_init_ex(target, ce); }
+    SWR_ZEND_CATCH { bailed = 1; } SWR_ZEND_END_TRY();
+    return bailed;
+}
+
+/* bailout: an object's clone handler may invoke PHP __clone. */
+int swr_zend_try_facade_clone(const zval *source, zval *result) {
+    volatile int bailed = 0;
+    SWR_ZEND_TRY {
+        if (Z_TYPE_P(source) == IS_OBJECT && Z_OBJ_HT_P(source)->clone_obj) {
+            zend_object *copy = Z_OBJ_HT_P(source)->clone_obj(Z_OBJ_P(source));
+            if (copy) {
+                ZVAL_OBJ(result, copy);
+            }
+        }
+    }
     SWR_ZEND_CATCH { bailed = 1; } SWR_ZEND_END_TRY();
     return bailed;
 }

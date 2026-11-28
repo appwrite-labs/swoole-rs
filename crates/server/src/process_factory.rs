@@ -70,8 +70,9 @@ pub(crate) fn dispatch(serv: view::Server<'_>, send: &mut SendData) -> bool {
         .cast_signed();
     let target = match schedule_worker(serv, fd, Some(send)) {
         Ok(target) => target,
+        Err(DISPATCH_DISCARD_PACKET) => return true,
         Err(target) => {
-            if target != DISPATCH_DISCARD_PACKET && target != DISPATCH_CLOSE_CONNECTION {
+            if target != DISPATCH_CLOSE_CONNECTION {
                 let m = format_args!("invalid target worker id[{target}]");
                 log::warning(c"ProcessFactory::dispatch", m);
             }
@@ -100,7 +101,22 @@ pub(crate) fn dispatch(serv: view::Server<'_>, send: &mut SendData) -> bool {
     {
         worker.count_dispatch();
     }
-    hybrid().process_send(serv, Pipe::Worker(target), send)
+    let close_owner = if event == Some(ServerEvent::Close) {
+        serv.worker_record(target)
+            .map(swoole_rs_corebase::process::worker_record::Worker::pid)
+            .filter(|pid| *pid > 0)
+    } else {
+        None
+    };
+    let session = send.info().fd;
+    let sent = hybrid().process_send(serv, Pipe::Worker(target), send);
+    if sent
+        && let Some(pid) = close_owner
+        && let Some(conn) = serv.state().connection(session, Lookup::Verified)
+    {
+        conn.set_close_worker(Some((target, pid)));
+    }
+    sent
 }
 
 /// `ProcessFactory::finish`: a worker sends `send` to its session through the reactor
@@ -222,8 +238,14 @@ pub(crate) fn end(serv: view::Server<'_>, session: c_long, flags: c_int) -> bool
             .compare_exchange(0, 1, Relaxed, Relaxed)
             .is_ok()
     {
+        conn.close_callback_pid().store(
+            std::process::id().cast_signed(),
+            core::sync::atomic::Ordering::Release,
+        );
         let call = |info: &mut DataHead| state.callbacks.event(EventSlot::Close, serv, info);
-        _ = crate::base_factory::on_close(|| Some(conn), session, call);
+        if crate::base_factory::on_close(|| serv.verified(session), session, call).is_none() {
+            return false;
+        }
     }
     conn.set_close_errno(0);
     let close = SendData::empty(DataHead {
@@ -304,6 +326,26 @@ mod tests {
         assert!(finish(serv, &send(1, ServerEvent::Close, 0)));
         conn.set_peer_closed(true);
         assert!(!finish(serv, &send(1, ServerEvent::SendData, 1)));
+    }
+
+    #[test]
+    fn rejected_process_handoff_releases_the_file() {
+        let (live, _clients) = accepted();
+        let serv = live.server();
+        let path =
+            std::env::temp_dir().join(format!("swoole-factory-sendfile-{}", std::process::id()));
+        std::fs::write(&path, b"abc").unwrap();
+        let mut task = vec![0; 16];
+        task.extend(path.as_os_str().as_encoded_bytes());
+        task.push(0);
+        let head = DataHead {
+            fd: 99,
+            kind: ServerEvent::SendFile.code(),
+            ext_flags: crate::send::SENDFILE_DELETE,
+            ..DataHead::default()
+        };
+        assert!(!crate::factory::finish(serv, &SendData::new(head, &task)));
+        assert!(!path.exists());
     }
 
     #[test]

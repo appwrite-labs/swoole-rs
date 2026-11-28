@@ -41,12 +41,15 @@ void swr_zend_register_stream_constant(const char *name, php_stream *stream);
  * thread's TSRM resources (ts_resource(0)) and sets the INI a thread's request
  * starts with: expose_php and enable_dl off, auto_globals_jit on. */
 void swr_zend_thread_enter(void);
+/* Look up a lowercase entry without autoloading. */
+bool swr_zend_thread_is_internal(const zend_string *name);
 /* php_request_startup with the main request's script path and argc and no
  * headers; then, inside zend_first_try (the thread's script scope),
- * prologue(context) and `file` as the primary script; then epilogue(context)
+ * the prologue and the script or internal function entry; then epilogue(context)
  * and request shutdown. EG(exit_status), 1 if startup failed. */
-int swr_zend_thread_request(const char *file, const char *path_translated, int argc, void (*prologue)(void *),
-                            void (*epilogue)(void *), void *context);
+int swr_zend_thread_request(const char *file, bool internal, const char *path_translated, int argc,
+                            void (*prologue)(void *, zval *),
+                            void (*capture)(void *, const zval *), void (*epilogue)(void *), void *context);
 /* ts_free_thread(). */
 void swr_zend_thread_leave(void);
 /* $argv and $argc in the global symbol table, which takes `argv`. */

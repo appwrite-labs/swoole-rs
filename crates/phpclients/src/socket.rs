@@ -172,6 +172,7 @@ method_table! {
         c"getsockname" => zim_swoole_socket_coro_getsockname, &socket_coro::arginfo_class_Swoole_Coroutine_Socket_getsockname, z::ZEND_ACC_PUBLIC;
         c"isClosed" => zim_swoole_socket_coro_isClosed, &socket_coro::arginfo_class_Swoole_Coroutine_Socket_isClosed, z::ZEND_ACC_PUBLIC;
         c"import" => crate::socket_options::zim_swoole_socket_coro_import, &socket_coro::arginfo_class_Swoole_Coroutine_Socket_import, z::ZEND_ACC_PUBLIC | z::ZEND_ACC_STATIC;
+        c"export" => zim_swoole_socket_coro_export, &socket_coro::arginfo_class_Swoole_Coroutine_Socket_export, z::ZEND_ACC_PUBLIC;
     ];
 }
 
@@ -265,6 +266,37 @@ pub(crate) fn open(call: &Call) -> Option<Co> {
         return None;
     }
     Some(socket)
+}
+
+/// Export an independently owned stream over the same socket.
+fn export(call: &Call) {
+    if call.arity(0, 0).is_err() {
+        return;
+    }
+    let Some(socket) = open(call) else { return };
+    let fd = match swoole_rs_corebase::sys::dup(socket.fd()) {
+        Ok(fd) => fd,
+        Err(error) => {
+            let code = error.raw_os_error().unwrap_or(0);
+            set_error(call, code, &strerror(code));
+            crate::net::warn_sys("dup() failed", code);
+            return call.set_bool(false);
+        }
+    };
+    let s = socket.handle();
+    match swoole_rs_phpruntime::socket_resource(
+        fd,
+        s.sock_domain(),
+        s.sock_type(),
+        s.sock_protocol(),
+    ) {
+        Ok(Some(resource)) => call.set_owned(resource),
+        Ok(None) => {
+            warn(false, "failed to create stream");
+            call.set_bool(false);
+        }
+        Err(error) => error.defer(),
+    }
 }
 
 /// `strerror(code)` of a system error: `swoole_strerror` passes those to it.
@@ -485,17 +517,26 @@ fn buffer_length(length: i64) -> usize {
     usize::try_from(if length <= 0 { BUFFER_SIZE_BIG } else { length }).unwrap_or(usize::MAX)
 }
 
-/// `peek(int $length = 65536): string|false`.
+/// Peek at the next bytes with an optional read timeout and receive flags.
 fn peek(call: &Call) {
-    let Ok(length) = call
-        .arity(0, 1)
-        .and_then(|()| call.long(1, BUFFER_SIZE_BIG))
-    else {
+    let parsed = call.arity(0, 3).and_then(|()| {
+        Ok((
+            call.long(1, BUFFER_SIZE_BIG)?,
+            call.double(2, 0.0)?,
+            call.long(3, 0)?,
+        ))
+    });
+    let Ok((length, timeout, flags)) = parsed else {
         return call.set_bool(false);
     };
-    let length = buffer_length(length);
     let Some(socket) = open(call) else { return };
-    receive(call, socket, Transfer::Peek, length, 0.0);
+    receive(
+        call,
+        socket,
+        Transfer::Peek(flags.c_cast()),
+        buffer_length(length),
+        timeout,
+    );
 }
 
 /// Fill a new string of `length` bytes with one transfer and return it.
@@ -678,7 +719,7 @@ fn read_vector(call: &Call, socket: Co, op: c_int, array: &Array, timeout: f64) 
             );
             return call.set_bool(false);
         };
-        let Ok(length) = usize::try_from(length) else {
+        let Ok(length @ 1..) = usize::try_from(length) else {
             throw(
                 libc::EINVAL,
                 &format!("Item #[{index}] must be greater than 0"),
@@ -715,16 +756,9 @@ fn read_vector_all(call: &Call) {
 
 /// `sendFile(string $file, int $offset = 0, int $length = 0): bool`.
 fn send_file(call: &Call) {
-    let parsed = call
-        .arity(1, 3)
-        .and_then(|()| Ok((call.string(1, b"")?, call.long(2, 0)?, call.long(3, 0)?)));
-    let Ok((file, offset, length)) = parsed else {
+    let Some((file, offset, length)) = crate::net::sendfile_args(call) else {
         return call.set_bool(false);
     };
-    if file.is_empty() {
-        warn(true, "file to send is empty");
-        return call.set_bool(false);
-    }
     let Some(socket) = open(call) else { return };
     if socket.sendfile(file, offset, length) {
         call.set_bool(true);
@@ -745,10 +779,12 @@ fn recvfrom(call: &mut Call) {
     let mut buffer = ZBuf::with_capacity(length);
     let bytes = socket.recvfrom(&mut buffer, timeout);
     sync(call, socket);
+    if bytes.is_some() {
+        call.assign(1, address(socket).into_owned());
+    }
     if bytes <= Some(0) {
         return set_received(call, buffer, bytes);
     }
-    call.assign(1, address(socket).into_owned());
     call.set_zstring(buffer.into_zstring());
 }
 
@@ -852,9 +888,6 @@ fn set_protocol(call: &Call) {
     let Ok(settings) = socket_coro::parse_class_swoole_coroutine_socket_setprotocol(call) else {
         return call.set_bool(false);
     };
-    if settings.count() == 0 {
-        return call.set_bool(false);
-    }
     call.set_bool(crate::socket_options::apply(
         socket,
         settings,
@@ -885,6 +918,7 @@ swoole_rs_zend::handlers! {
     zim_swoole_socket_coro_connect => connect;
     zim_swoole_socket_coro_checkLiveness => check_liveness;
     zim_swoole_socket_coro_getBoundCid => bound_cid;
+    zim_swoole_socket_coro_export => export;
     zim_swoole_socket_coro_peek => peek;
     zim_swoole_socket_coro_recv => recv;
     zim_swoole_socket_coro_recvAll => recv_all;

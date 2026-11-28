@@ -248,13 +248,7 @@ impl Connection for Read<'_> {
                 let buffer = self.buffer();
                 // A redis port's `onPackage` is `dispatch_task`.
                 let dispatch = |data: swoole_rs_server::SendData<'_>| session.task(data);
-                crate::resp_recv::recv_packet(
-                    max_length,
-                    session.conn,
-                    session.socket,
-                    buffer,
-                    dispatch,
-                )
+                crate::resp_recv::recv_packet(max_length, session.socket, buffer, dispatch)
             }
         }
     }
@@ -371,10 +365,10 @@ impl Connection for Read<'_> {
     }
 
     fn serve_static(&mut self) -> bool {
-        let (server, session, socket) = (self.server, self.conn.session_id(), self.socket);
-        self.request.as_deref().is_some_and(|request| {
-            static_select(server, request, self.recv.view(), session, socket)
-        })
+        let (server, session) = (self.server, self.conn.session_id());
+        self.request
+            .as_deref()
+            .is_some_and(|request| static_select(server, request, self.recv.view(), session))
     }
 
     #[inline]
@@ -392,11 +386,6 @@ impl Connection for Read<'_> {
     fn extend(&mut self, size: u64) {
         self.buffer()
             .extend(usize::try_from(size).unwrap_or(usize::MAX));
-    }
-
-    fn header_end(&mut self) -> bool {
-        let bytes = self.buffer().view();
-        bytes.windows(4).any(|w| w == b"\r\n\r\n")
     }
 
     #[inline]

@@ -2,12 +2,27 @@
 #![forbid(unsafe_code)]
 use std::mem::MaybeUninit;
 use swoole_rs_locale::case_prefix;
+fn skip_ows(mut bytes: &[u8]) -> &[u8] {
+    while let [b' ' | b'\t', rest @ ..] = bytes {
+        bytes = rest;
+    }
+    bytes
+}
+fn rtrim_ows(mut bytes: &[u8]) -> &[u8] {
+    while let [rest @ .., b' ' | b'\t'] = bytes {
+        bytes = rest;
+    }
+    bytes
+}
+fn trim_ows(bytes: &[u8]) -> &[u8] {
+    rtrim_ows(skip_ows(bytes))
+}
 const INVALID: i32 = -1;
 const OVERFLOW: i32 = -2;
 mod chunked;
 pub use chunked::{ChunkState, HttpChunked, HttpChunks};
 mod conditional;
-pub use conditional::{Calendar, Conditional, Tm, conditional, http_date};
+pub use conditional::{Calendar, Conditional, PreconditionStatus, Tm, conditional, http_date};
 mod dispatch;
 mod framing;
 pub use framing::{HttpFrame, expect as has_expect_header, header_delimiter, header_value};
@@ -18,7 +33,9 @@ pub use headers::{
 };
 mod maps;
 mod multipart;
-pub use multipart::{MultipartError, multipart_disposition, multipart_filename, multipart_result};
+pub use multipart::{
+    MultipartError, close_upload_file, multipart_disposition, multipart_filename, multipart_result,
+};
 pub mod llhttp;
 pub mod multipart_parser;
 mod owned_proxy;
@@ -37,8 +54,9 @@ pub use rewrite::{RewriteRules, Unsupported};
 mod static_context;
 pub use static_context::*;
 mod tasks;
+pub use range::MAX_RANGES as MAX_RANGE_TASKS;
+pub use tasks::HttpStaticTask;
 use tasks::HttpTasks;
-pub use tasks::{HttpStaticTask, MAX_RANGE_TASKS};
 mod static_meta;
 /// Status codes shared by the PHP HTTP client and server (`swoole_http.h`).
 pub mod status {
@@ -66,8 +84,8 @@ mod status_buffer;
 pub use status_buffer::{STATUS_CODES, status_message};
 mod static_headers;
 mod static_path;
-pub use maps::{METHOD_HEAD, METHOD_PRI, method, method_string};
-pub use static_headers::{HttpStaticHeaders, StaticHead, StaticRange, static_headers};
+pub use maps::{METHOD_GET, METHOD_HEAD, METHOD_PRI, method, method_string};
+pub use static_headers::{HttpStaticHeaders, static_headers};
 pub use static_path::{HttpStaticPath, StaticPhase, location_match};
 
 /// `input` up to its first NUL, or all of it.
@@ -128,12 +146,14 @@ pub fn url_encode(input: &[u8], output: &mut [MaybeUninit<u8>]) -> Result<usize,
     else {
         return Err(INVALID);
     };
-    let mut slots = output.iter_mut();
-    let mut put = |byte: u8| {
-        if let Some(slot) = slots.next() {
-            slot.write(byte);
-        }
-    };
+    for (slot, byte) in output.iter_mut().zip(encoded_url_bytes(input)) {
+        slot.write(byte);
+    }
+    nul.write(0);
+    Ok(needed - 1)
+}
+
+fn encoded_url_bytes(input: &[u8]) -> impl Iterator<Item = u8> {
     let digit = |nibble: u8| {
         if nibble < 10 {
             b'0' + nibble
@@ -141,17 +161,14 @@ pub fn url_encode(input: &[u8], output: &mut [MaybeUninit<u8>]) -> Result<usize,
             b'A' + nibble - 10
         }
     };
-    for &byte in input {
-        if unreserved(byte) {
-            put(byte);
+    input.iter().flat_map(move |&byte| {
+        let (bytes, length) = if unreserved(byte) {
+            ([byte, 0, 0], 1)
         } else {
-            put(b'%');
-            put(digit(byte >> 4));
-            put(digit(byte & 15));
-        }
-    }
-    nul.write(0);
-    Ok(needed - 1)
+            ([b'%', digit(byte >> 4), digit(byte & 15)], 3)
+        };
+        bytes.into_iter().take(length)
+    })
 }
 fn hex(byte: u8) -> Option<u8> {
     match byte {

@@ -1,6 +1,6 @@
 /* Coroutine file hooks for native/hooks/plain_wrapper.c: the libc calls
  * it makes become the hooked swoole_coroutine_* functions (crates/hooks), and it
- * calls flock and socket_create directly. */
+ * calls flock and the socket registration helpers directly. */
 #ifndef SW_FILE_HOOK_H_
 #define SW_FILE_HOOK_H_
 #include <dirent.h>
@@ -33,6 +33,7 @@ struct dirent *swoole_coroutine_readdir(DIR *dirp);
 int swoole_coroutine_closedir(DIR *dirp);
 int swoole_coroutine_flock(int fd, int operation);
 int swoole_coroutine_socket_create(int fd);
+int swoole_coroutine_socket_unwrap(int fd);
 
 #define access(pathname, mode) swoole_coroutine_access(pathname, mode)
 #define open(pathname, flags, mode) swoole_coroutine_open(pathname, flags, mode)

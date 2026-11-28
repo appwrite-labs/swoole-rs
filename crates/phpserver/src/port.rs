@@ -116,6 +116,28 @@ pub struct PortData {
     bound: Cell<bool>,
 }
 
+/// The public ports array holds the PHP reference. The property identity guards
+/// against Zend reusing the handle for another Port after the array is edited.
+pub(crate) struct PortRef {
+    object: swoole_rs_zend::Weak<PortData>,
+    property: Weak<PortProperty>,
+}
+
+impl PortRef {
+    pub(crate) fn of(value: &Value) -> Option<Self> {
+        Some(Self {
+            object: swoole_rs_zend::Weak::of(value)?,
+            property: Rc::downgrade(&value.custom::<PortData>()?.property),
+        })
+    }
+
+    pub(crate) fn get(&self) -> Option<Owned> {
+        let value = self.object.get()?;
+        let data = value.custom::<PortData>()?;
+        std::ptr::eq(Rc::as_ptr(&data.property), self.property.as_ptr()).then_some(value)
+    }
+}
+
 impl Custom for PortData {
     fn class() -> &'static CustomClass<Self> {
         &PORT
@@ -384,12 +406,27 @@ fn get_socket(call: &Call) {
 /// enabled, then the merge into `$this->setting`.
 fn finish(call: &Call, settings: &Value) -> Result<(), bailout::Bailout> {
     if swoole_rs_phpswoole::enable_library() {
-        swoole_rs_zend::host::named_call(br"\Swoole\Server\Helper::checkOptions", &[settings])?;
+        let method = Owned::string(ZString::new(br"\Swoole\Server\Helper::checkOptions"));
+        let result = Owned::default();
+        let status = swoole_rs_zend::Zvals::with([settings], |args| {
+            swoole_rs_zend::host::user_call(&method, args, &result)
+        })?;
+        if status != 0 {
+            call.set_bool(false);
+            return Ok(());
+        }
+    }
+    if !swoole_rs_zend::host::exception().is_null() {
+        return Ok(());
     }
     if let Some(props) = call.props(Some(&PORT)) {
         props.merge(c"setting", settings);
     }
-    bailout::outcome(())
+    bailout::outcome(())?;
+    if swoole_rs_zend::host::exception().is_null() {
+        call.set_bool(true);
+    }
+    Ok(())
 }
 
 fn set(call: &Call) {
@@ -403,6 +440,12 @@ fn set(call: &Call) {
     let Some(serv) = bound_server(call) else {
         return;
     };
+    if serv.is_worker_thread() {
+        if port_settings::worker_length(port, settings).is_ok() {
+            call.set_bool(false);
+        }
+        return;
+    }
     if apply_settings(port, serv, settings).is_err() {
         return call.set_bool(false);
     }

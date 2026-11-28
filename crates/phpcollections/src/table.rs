@@ -12,12 +12,15 @@ use std::{
 };
 use swoole_rs_corebase::memory::{
     members::SharedTable,
-    table::{Column, ColumnType, Current, KEY_SIZE, Locked, TYPE_FLOAT, TYPE_INT, TYPE_STRING},
+    table::{
+        Column, ColumnType, Current, KEY_SIZE, Locked, TYPE_FLOAT, TYPE_INT, TYPE_STRING, Table,
+        field_bytes, field_number,
+    },
 };
 use swoole_rs_corebase::{CCast, CellExt};
 use swoole_rs_phpstubs::table;
 use swoole_rs_zend::{
-    Call, Custom, CustomClass, E_ERROR, E_WARNING, Message, Minit, Owned, OwnedArray, Value,
+    Array, Call, Custom, CustomClass, E_ERROR, E_WARNING, Message, Minit, Owned, OwnedArray, Value,
     ZString,
     bailout::{self, Bailout},
     method_table,
@@ -38,7 +41,10 @@ static TABLE: CustomClass<Held> = CustomClass::new();
 /// `struct TableObject { Table *ptr; zend_object std; }`: none until
 /// `__construct`, and again after `destroy()`. Like upstream, the shared
 /// table outlives its object (forked workers may use it).
-struct Held(Cell<Option<Rc<SharedTable>>>);
+struct Held {
+    table: Cell<Option<Rc<SharedTable>>>,
+    converting: Cell<bool>,
+}
 
 impl Custom for Held {
     fn class() -> &'static CustomClass<Self> {
@@ -46,20 +52,23 @@ impl Custom for Held {
     }
 
     fn new() -> Self {
-        Self(Cell::new(None))
+        Self {
+            table: Cell::new(None),
+            converting: Cell::new(false),
+        }
     }
 }
 
 impl Held {
     fn get(&self) -> Option<Rc<SharedTable>> {
-        let table = self.0.take();
+        let table = self.table.take();
         let copy = table.clone();
         // Still empty: cloning an `Rc` runs no code, so nothing filled the slot.
         #[expect(
             clippy::mem_forget,
             reason = "the slot is still empty, so there is nothing to release"
         )]
-        std::mem::forget(self.0.replace(table));
+        std::mem::forget(self.table.replace(table));
         copy
     }
 }
@@ -71,7 +80,12 @@ method_table! {
         c"create" => zim_swoole_table_create, &table::arginfo_class_Swoole_Table_create, ZEND_ACC_PUBLIC;
         c"destroy" => zim_swoole_table_destroy, &table::arginfo_class_Swoole_Table_destroy, ZEND_ACC_PUBLIC;
         c"set" => zim_swoole_table_set, &table::arginfo_class_Swoole_Table_set, ZEND_ACC_PUBLIC;
+        c"add" => zim_swoole_table_add, &table::arginfo_class_Swoole_Table_add, ZEND_ACC_PUBLIC;
+        c"cmpset" => zim_swoole_table_cmpset, &table::arginfo_class_Swoole_Table_cmpset, ZEND_ACC_PUBLIC;
+        c"cmpdel" => zim_swoole_table_cmpdel, &table::arginfo_class_Swoole_Table_cmpdel, ZEND_ACC_PUBLIC;
+        c"update" => zim_swoole_table_update, &table::arginfo_class_Swoole_Table_update, ZEND_ACC_PUBLIC;
         c"get" => zim_swoole_table_get, &table::arginfo_class_Swoole_Table_get, ZEND_ACC_PUBLIC;
+        c"getdel" => zim_swoole_table_getdel, &table::arginfo_class_Swoole_Table_getdel, ZEND_ACC_PUBLIC;
         c"count" => zim_swoole_table_count, &table::arginfo_class_Swoole_Table_count, ZEND_ACC_PUBLIC;
         c"del" => zim_swoole_table_del, &table::arginfo_class_Swoole_Table_del, ZEND_ACC_PUBLIC;
         c"delete" => zim_swoole_table_del, &table::arginfo_class_Swoole_Table_del, ZEND_ACC_PUBLIC;
@@ -116,28 +130,29 @@ fn fatal(level: i32, message: &CStr) {
     bailout::defer(swoole_rs_zend::report(level, message));
 }
 
-/// `php_swoole_fatal_error(E_WARNING, "<before>%s<after>", text)` of Zend's
-/// string bytes (`%s` stops at a NUL); true if a user error handler bailed
-/// out (deferred: the method stops).
-fn report(before: &[u8], text: &[u8], after: &[u8]) -> bool {
-    let mut message = Message::new();
-    message.push(before);
-    message.push(text.split(|&b| b == 0).next().unwrap_or_default());
-    message.push(after);
-    swoole_rs_corebase::log::set_last_error(PHP_FATAL_ERROR);
-    let reported = swoole_rs_zend::report(E_WARNING, message.as_cstr());
-    let bailed = reported.is_err();
-    bailout::defer(reported);
-    bailed
+fn valid_key(call: &Call, key: &[u8]) -> bool {
+    if key.is_empty() {
+        fatal(E_WARNING, c"key must not be empty");
+    } else if key.len() >= KEY_SIZE {
+        let message =
+            swoole_rs_zend::message!("key length exceeds the limit of {} bytes", KEY_SIZE - 1);
+        fatal(E_WARNING, message.as_cstr());
+    } else {
+        return true;
+    }
+    call.set_bool(false);
+    false
 }
 
 /// `php_swoole_error(E_WARNING, "failed to set('%*s'), unable to allocate
 /// memory", (int) keylen, key)`: the key up to a NUL, right-aligned to its
 /// length; shown when `swoole.display_errors` is on.
-fn set_failed(key: &[u8]) {
+fn write_failed(key: &[u8], operation: &[u8]) {
     let text = key.split(|&b| b == 0).next().unwrap_or_default();
     let mut message = Message::new();
-    message.push(b"failed to set('");
+    message.push(b"failed to ");
+    message.push(operation);
+    message.push(b"('");
     for _ in text.len()..key.len() {
         message.push(b" ");
     }
@@ -183,12 +198,19 @@ fn change(call: &Call, change: impl FnOnce(&mut SharedTable) -> bool) -> bool {
     let Some(held) = call.custom::<Held>() else {
         return false;
     };
-    held.0
+    held.table
         .with_taken(|table| table.as_mut().and_then(Rc::get_mut).is_some_and(change))
 }
 
 /// `__construct(int $table_size, float $conflict_proportion = 0.2)`.
 fn construct(call: &Call) {
+    let parsed = call
+        .arity(1, 2)
+        .and_then(|()| Ok((call.long(1, 0)?, call.double(2, CONFLICT_PROPORTION)?)));
+    let Ok((rows, conflict)) = parsed else {
+        call.set_bool(false);
+        return;
+    };
     let Some(held) = call.custom::<Held>() else {
         return;
     };
@@ -197,13 +219,6 @@ fn construct(call: &Call) {
         call.set_bool(false);
         return;
     }
-    let parsed = call
-        .arity(1, 2)
-        .and_then(|()| Ok((call.long(1, 0)?, call.double(2, CONFLICT_PROPORTION)?)));
-    let Ok((rows, conflict)) = parsed else {
-        call.set_bool(false);
-        return;
-    };
     let made = SharedTable::make(
         rows.c_cast::<u32>(),
         conflict.c_cast::<f32>(),
@@ -215,20 +230,19 @@ fn construct(call: &Call) {
         call.set_bool(false);
         return;
     };
-    held.0.set(Some(Rc::new(table)));
+    held.table.set(Some(Rc::new(table)));
 }
 
 /// `column(string $name, int $type, int $size = 0): bool`.
 fn column(call: &Call) {
-    // No handle across the parse: a `__toString` it calls may create the table.
-    if constructed(call).is_none() {
-        return;
-    }
     let parsed = call
         .arity(2, 3)
         .and_then(|()| Ok((call.string(1, b"")?, call.long(2, 0)?, call.long(3, 0)?)));
     let Ok((name, kind, mut size)) = parsed else {
         call.set_bool(false);
+        return;
+    };
+    let Some(ready) = constructed(call).map(|table| table.ready()) else {
         return;
     };
     if kind == i64::from(TYPE_STRING) {
@@ -241,9 +255,9 @@ fn column(call: &Call) {
             return;
         }
         // SW_MEM_ALIGNED_SIZE: to `sizeof(unsigned long)`.
-        size = (size + 7) & !7;
+        size = size.checked_add(7).map_or(i64::MAX, |n| n & !7);
     }
-    if table_of(call).is_some_and(|table| table.ready()) {
+    if ready {
         fatal(
             E_WARNING,
             c"unable to add column after table has been created",
@@ -281,33 +295,51 @@ fn destroy(call: &Call) {
     if created(call).is_none() {
         return;
     }
-    if let Some(table) = call.custom::<Held>().and_then(|held| held.0.take()) {
+    let Some(held) = call.custom::<Held>() else {
+        return;
+    };
+    if held.converting.get() {
+        let mut message = Message::new();
+        message.push(b"Cannot destroy ");
+        message.push(call.class_name().unwrap_or(c"Swoole\\Table").to_bytes());
+        message.push(b" during value conversion");
+        call.throw_error(message.as_cstr());
+        return;
+    }
+    if let Some(table) = held.table.take() {
         table.destroy();
     }
     call.set_bool(true);
 }
 
-/// `table_set_field_value`: store `value` into a row's column; a new row
-/// clears a column its array leaves out or sets to null. None, with nothing
-/// written, once the conversion bailed out: upstream's longjmp skipped the
-/// write and every later column.
-fn store(row: &mut Locked, column: &Column, value: Option<&Value>, initialize: bool) -> Option<()> {
-    let Some(value) = value.filter(|value| !(initialize && value.is_null())) else {
-        row.clear(column);
-        return Some(());
-    };
-    match column.kind {
-        // Copied, cut to the column with a warning.
-        ColumnType::String => row.set_bytes(column, value.applied_string()?.bytes()),
-        ColumnType::Float => row.set_number(column, value.applied_double()?.to_bits()),
-        ColumnType::Int => row.set_number(column, (value.applied_long()?).c_cast::<u64>()),
-    }
-    Some(())
+/// Converted PHP values owned until the write completes.
+enum ColumnValue {
+    Number(u64),
+    String(ZString),
+}
+
+fn convert<T>(call: &Call, read: impl FnOnce() -> Option<T>) -> Option<T> {
+    let held = call.custom::<Held>()?;
+    let previous = held.converting.replace(true);
+    let result = read();
+    held.converting.set(previous);
+    result.filter(|_| swoole_rs_zend::host::exception().is_null())
 }
 
 /// `set(string $key, array $value): bool`.
 fn set(call: &Call) {
-    let Some(table) = created(call) else { return };
+    write(call, Table::lock_set, b"set");
+}
+
+fn add(call: &Call) {
+    write(call, Table::lock_add, b"add");
+}
+
+fn update(call: &Call) {
+    write(call, Table::lock_update, b"update");
+}
+
+fn write(call: &Call, lock: for<'a> fn(&'a Table, &[u8]) -> Option<Locked<'a>>, operation: &[u8]) {
     let parsed = call
         .arity(2, 2)
         .and_then(|()| Ok((call.string(1, b"")?, call.array_ref(2)?)));
@@ -315,39 +347,167 @@ fn set(call: &Call) {
         call.set_bool(false);
         return;
     };
-    if !table.ready() {
-        fatal(E_ERROR, c"the table object does not exist");
-        call.set_bool(false);
+    let Some(table) = created(call) else { return };
+    if !valid_key(call, key) {
         return;
     }
-    if key.len() >= KEY_SIZE && report(b"key[", key, b"] is too long") {
-        call.set_bool(false);
-        return;
-    }
-    let Some(mut row) = table.lock_set(key).filter(Locked::found) else {
-        set_failed(key);
-        call.set_bool(false);
-        return;
+    let Some(values) = marshal(call, &table, key, array, false) else {
+        return call.set_bool(false);
     };
-    let stored = if row.is_new() {
-        table
-            .columns()
-            .try_for_each(|column| store(&mut row, column, array.find(column.name()), true))
-    } else {
-        array.entries().try_for_each(|(name, value)| {
-            match name.and_then(|name| table.column(name)) {
-                Some(column) => store(&mut row, column, Some(value), false),
-                None => Some(()),
+    let Some(mut row) = lock(&table, key) else {
+        return call.set_bool(false);
+    };
+    if !row.found() {
+        drop(row);
+        write_failed(key, operation);
+        call.set_bool(false);
+        return;
+    }
+    if row.is_new() {
+        row.clear_row(table.columns());
+    }
+    apply_values(&mut row, &values);
+    call.set_bool(true);
+}
+
+type Values<'a> = Vec<(&'a Column, ColumnValue)>;
+
+fn apply_values(row: &mut Locked<'_>, values: &[(&Column, ColumnValue)]) {
+    for (column, value) in values {
+        match value {
+            ColumnValue::Number(number) => row.set_number(column, *number),
+            ColumnValue::String(string) => row.set_bytes(column, string.bytes()),
+        }
+    }
+}
+
+fn marshal<'a>(
+    call: &Call,
+    table: &'a SharedTable,
+    key: &[u8],
+    array: &Array,
+    expected: bool,
+) -> Option<Values<'a>> {
+    if expected {
+        if array.count() == 0 {
+            fatal(E_WARNING, c"expected values must not be empty");
+            return None;
+        }
+        for (name, _) in array.entries() {
+            let Some(name) = name else {
+                fatal(E_WARNING, c"expected values must use column names");
+                return None;
+            };
+            if table.column(name).is_none() {
+                missing_column(name);
+                return None;
+            }
+        }
+    }
+    convert(call, || {
+        let mut values = Vec::new();
+        for (name, value) in array.entries() {
+            let Some(column) = name.and_then(|name| table.column(name)) else {
+                continue;
+            };
+            let converted = match column.kind {
+                ColumnType::String if expected => ColumnValue::String(value.applied_string()?),
+                ColumnType::String => ColumnValue::String(write_string(value, key, column)?),
+                ColumnType::Float => ColumnValue::Number(value.applied_double()?.to_bits()),
+                ColumnType::Int => ColumnValue::Number(value.applied_long()?.c_cast::<u64>()),
+            };
+            if !swoole_rs_zend::host::exception().is_null() {
+                return None;
+            }
+            values.push((column, converted));
+        }
+        Some(values)
+    })
+}
+
+fn compare(call: &Call, delete: bool) {
+    let argc = if delete { 2 } else { 3 };
+    let parsed = call.arity(argc, argc).and_then(|()| {
+        Ok((
+            call.string(1, b"")?,
+            call.array_ref(2)?,
+            if delete {
+                None
+            } else {
+                Some(call.array_ref(3)?)
+            },
+        ))
+    });
+    let Ok((key, conditions, changes)) = parsed else {
+        return call.set_bool(false);
+    };
+    let Some(table) = created(call) else { return };
+    if !valid_key(call, key) {
+        return;
+    }
+    let Some(expected) = marshal(call, &table, key, conditions, true) else {
+        return call.set_bool(false);
+    };
+    let matches = |data: &[u8]| {
+        expected.iter().all(|(column, value)| {
+            let field = column.field(data);
+            match value {
+                ColumnValue::Number(number) => field_number(field) == *number,
+                ColumnValue::String(string) => field_bytes(field) == string.bytes(),
             }
         })
     };
-    drop(row);
-    call.set_bool(stored.is_some());
+    let Some(changes) = changes else {
+        return call.set_bool(table.delete_if(key, matches));
+    };
+    let Some(values) = marshal(call, &table, key, changes, false) else {
+        return call.set_bool(false);
+    };
+    let Some(mut row) = table.lock_update_if(key, matches) else {
+        return call.set_bool(false);
+    };
+    apply_values(&mut row, &values);
+    call.set_bool(true);
+}
+
+fn cmpset(call: &Call) {
+    compare(call, false);
+}
+fn cmpdel(call: &Call) {
+    compare(call, true);
+}
+
+/// Convert and cap string columns before acquiring the shared bucket lock.
+fn write_string(value: &Value, key: &[u8], column: &Column) -> Option<ZString> {
+    fn display(bytes: &[u8]) -> std::borrow::Cow<'_, str> {
+        String::from_utf8_lossy(bytes.split(|&b| b == 0).next().unwrap_or_default())
+    }
+    let string = value.applied_string()?;
+    let capacity = column.width as usize - size_of::<u32>();
+    if string.bytes().len() <= capacity {
+        return Some(string);
+    }
+    swoole_rs_corebase::log::warning(
+        c"table_marshal_values",
+        format_args!(
+            "[key={},field={}]string value is too long",
+            display(key),
+            display(column.name())
+        ),
+    );
+    Some(ZString::new(string.bytes().get(..capacity)?))
+}
+
+fn missing_column(name: &[u8]) {
+    let mut message = Message::new();
+    message.push(b"column[");
+    message.push(name.split(|&b| b == 0).next().unwrap_or_default());
+    message.push(b"] does not exist");
+    fatal(E_WARNING, message.as_cstr());
 }
 
 /// `incr()`/`decr()`: `(string $key, string $column, mixed $incrby = 1)`.
-fn update(call: &Call, subtract: bool) {
-    let Some(table) = created(call) else { return };
+fn increment(call: &Call, subtract: bool) {
     let parsed = call
         .arity(2, 3)
         .and_then(|()| Ok((call.string(1, b"")?, call.string(2, b"")?)));
@@ -355,24 +515,29 @@ fn update(call: &Call, subtract: bool) {
         call.set_bool(false);
         return;
     };
-    let by = call.value(3);
-    let Some(mut row) = table.lock_set(key).filter(Locked::found) else {
-        fatal(E_WARNING, c"unable to allocate memory");
-        call.set_bool(false);
+    let Some(table) = created(call) else { return };
+    if !valid_key(call, key) {
         return;
-    };
-    let Some(column) = table.column(name) else {
-        drop(row);
-        report(b"column[", name, b"] does not exist");
-        call.set_bool(false);
-        return;
-    };
-    if row.is_new() {
-        row.clear_row(table.columns());
     }
+    let by = call.value(3);
+    let Some(column) = table.column(name) else {
+        missing_column(name);
+        call.set_bool(false);
+        return;
+    };
+    let lock_row = || {
+        let Some(mut row) = table.lock_set(key).filter(Locked::found) else {
+            fatal(E_WARNING, c"unable to allocate memory");
+            call.set_bool(false);
+            return None;
+        };
+        if row.is_new() {
+            row.clear_row(table.columns());
+        }
+        Some(row)
+    };
     match column.kind {
         ColumnType::String => {
-            drop(row);
             fatal(
                 E_WARNING,
                 if subtract {
@@ -384,9 +549,10 @@ fn update(call: &Call, subtract: bool) {
             call.set_bool(false);
         }
         ColumnType::Float => {
-            let Some(by) = by.map_or(Some(1.0), Value::applied_double) else {
+            let Some(by) = convert(call, || by.map_or(Some(1.0), Value::applied_double)) else {
                 return;
             };
+            let Some(mut row) = lock_row() else { return };
             let current = f64::from_bits(row.number(column));
             let value = if subtract { current - by } else { current + by };
             row.set_number(column, value.to_bits());
@@ -394,9 +560,10 @@ fn update(call: &Call, subtract: bool) {
             set_double(call, value);
         }
         ColumnType::Int => {
-            let Some(by) = by.map_or(Some(1), Value::applied_long) else {
+            let Some(by) = convert(call, || by.map_or(Some(1), Value::applied_long)) else {
                 return;
             };
+            let Some(mut row) = lock_row() else { return };
             let current = row.number(column).c_cast::<i64>();
             let value = if subtract {
                 current.wrapping_sub(by)
@@ -415,35 +582,11 @@ fn set_double(call: &Call, value: f64) {
 }
 
 fn incr(call: &Call) {
-    update(call, false);
+    increment(call, false);
 }
 
 fn decr(call: &Call) {
-    update(call, true);
-}
-
-/// A locked row, or the iterator's copy of one.
-trait Row {
-    fn number(&self, column: &Column) -> u64;
-    fn bytes(&self, column: &Column) -> &[u8];
-}
-
-impl Row for Locked<'_> {
-    fn number(&self, column: &Column) -> u64 {
-        Locked::number(self, column)
-    }
-    fn bytes(&self, column: &Column) -> &[u8] {
-        Locked::bytes(self, column)
-    }
-}
-
-impl Row for Current {
-    fn number(&self, column: &Column) -> u64 {
-        Current::number(self, column)
-    }
-    fn bytes(&self, column: &Column) -> &[u8] {
-        Current::bytes(self, column)
-    }
+    increment(call, true);
 }
 
 /// A column's value in a row.
@@ -453,20 +596,20 @@ enum Field<'a> {
     Bytes(&'a [u8]),
 }
 
-fn read<'a>(row: &'a impl Row, column: &Column) -> Field<'a> {
+fn read<'a>(data: &'a [u8], column: &Column) -> Field<'a> {
     match column.kind {
-        ColumnType::String => Field::Bytes(row.bytes(column)),
-        ColumnType::Float => Field::Double(f64::from_bits(row.number(column))),
-        ColumnType::Int => Field::Long(row.number(column).c_cast::<i64>()),
+        ColumnType::String => Field::Bytes(field_bytes(data)),
+        ColumnType::Float => Field::Double(f64::from_bits(field_number(data))),
+        ColumnType::Int => Field::Long(field_number(data).c_cast::<i64>()),
     }
 }
 
 /// `table_row2array`: every column of a row, as the result.
-fn row_array(call: &Call, table: &SharedTable, row: &impl Row) {
+fn row_array(call: &Call, table: &SharedTable, row: &[u8]) {
     let mut array = OwnedArray::default();
     for column in table.columns() {
         let name = column.name();
-        match read(row, column) {
+        match read(column.field(row), column) {
             Field::Long(value) => array.insert_long(name, value),
             Field::Double(value) => array.insert_double(name, value),
             Field::Bytes(bytes) => array.insert_bytes(name, Some(bytes)),
@@ -481,60 +624,91 @@ fn set_bytes(call: &Call, bytes: &[u8]) {
 
 /// `get(string $key, ?string $field = null): mixed`.
 fn get(call: &Call) {
-    let Some(table) = created(call) else { return };
+    fetch(call, false);
+}
+
+fn getdel(call: &Call) {
+    fetch(call, true);
+}
+
+fn fetch(call: &Call, delete: bool) {
     let Ok((key, field)) = table::parse_class_swoole_table_get(call) else {
         call.set_bool(false);
         return;
     };
-    let Some(row) = table.lock_get(key).filter(Locked::found) else {
-        call.set_bool(false);
+    let Some(table) = created(call) else { return };
+    if !valid_key(call, key) {
         return;
+    }
+    let column = match field {
+        Some(name) => {
+            let Some(column) = table.column(name) else {
+                return call.set_bool(false);
+            };
+            Some(column)
+        }
+        None => None,
     };
-    if let Some(field) = field {
-        match table.column(field) {
-            None => call.set_bool(false),
-            Some(column) => match read(&row, column) {
-                Field::Long(value) => call.set_long(value),
-                Field::Double(value) => set_double(call, value),
-                Field::Bytes(bytes) => set_bytes(call, bytes),
-            },
+    let snapshot;
+    let locked;
+    let data = if delete {
+        let Some(row) = table.getdel(key, column) else {
+            return call.set_bool(false);
+        };
+        snapshot = row;
+        &snapshot[..]
+    } else {
+        let Some(row) = table.lock_get(key).filter(Locked::found) else {
+            return call.set_bool(false);
+        };
+        locked = row;
+        column.map_or(locked.data(), |c| c.field(locked.data()))
+    };
+    if let Some(column) = column {
+        match read(data, column) {
+            Field::Long(value) => call.set_long(value),
+            Field::Double(value) => set_double(call, value),
+            Field::Bytes(bytes) => set_bytes(call, bytes),
         }
     } else {
-        row_array(call, &table, &row);
+        row_array(call, &table, data);
     }
 }
 
-/// A key argument (`"s"` or `Z_PARAM_STRING`), or `RETURN_FALSE`.
-fn key<'c>(call: &'c Call<'_>) -> Option<&'c [u8]> {
-    let key = call.arity(1, 1).and_then(|()| call.string(1, b""));
-    if key.is_err() {
+/// Parse the key before reading the table: argument conversion can change its state.
+fn keyed<'c>(call: &'c Call<'_>) -> Option<(Rc<SharedTable>, &'c [u8])> {
+    let Ok(key) = call.arity(1, 1).and_then(|()| call.string(1, b"")) else {
         call.set_bool(false);
-    }
-    key.ok()
+        return None;
+    };
+    let table = created(call)?;
+    valid_key(call, key).then_some((table, key))
 }
 
 /// `exists(string $key): bool`.
 fn exists(call: &Call) {
-    let Some(table) = created(call) else { return };
-    let Some(key) = key(call) else { return };
+    let Some((table, key)) = keyed(call) else {
+        return;
+    };
     call.set_bool(table.exists(key));
 }
 
 /// `del(string $key): bool`.
 fn del(call: &Call) {
-    let Some(table) = created(call) else { return };
-    let Some(key) = key(call) else { return };
+    let Some((table, key)) = keyed(call) else {
+        return;
+    };
     call.set_bool(table.del(key));
 }
 
 /// `count(int $mode = COUNT_NORMAL): int`.
 fn count(call: &Call) {
-    let Some(table) = table_of(call) else {
-        call.set_long(0);
-        return;
-    };
     let Ok(mode) = call.arity(0, 1).and_then(|()| call.long(1, 0)) else {
         call.set_bool(false);
+        return;
+    };
+    let Some(table) = table_of(call) else {
+        call.set_long(0);
         return;
     };
     let rows = table.count();
@@ -557,7 +731,7 @@ fn get_size(call: &Call) {
 
 /// `stats(): array|false`.
 fn stats(call: &Call) {
-    let Some(table) = table_of(call) else {
+    let Some(table) = table_of(call).filter(|table| table.ready()) else {
         call.set_bool(false);
         return;
     };
@@ -616,7 +790,7 @@ fn valid(call: &Call) {
 
 fn current(call: &Call) {
     match current_row(call) {
-        Some((table, row)) if !row.key().is_empty() => row_array(call, &table, &row),
+        Some((table, row)) if !row.key().is_empty() => row_array(call, &table, row.data()),
         Some(_) => call.set_null(),
         None => {}
     }
@@ -636,7 +810,12 @@ swoole_rs_zend::handlers! {
     zim_swoole_table_create => create;
     zim_swoole_table_destroy => destroy;
     zim_swoole_table_set => set;
+    zim_swoole_table_add => add;
+    zim_swoole_table_cmpset => cmpset;
+    zim_swoole_table_cmpdel => cmpdel;
+    zim_swoole_table_update => update;
     zim_swoole_table_get => get;
+    zim_swoole_table_getdel => getdel;
     zim_swoole_table_count => count;
     zim_swoole_table_del => del;
     zim_swoole_table_exists => exists;

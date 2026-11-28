@@ -72,6 +72,31 @@ pub fn wait_child(nonblock: bool) -> Waited {
     Waited { pid, status }
 }
 
+/// Wait with a SIGCHLD handler installed. Block signals across the state check
+/// so a command arriving before the wait still wakes the manager.
+pub fn wait_manager_child(should_wait: impl FnOnce() -> bool) -> Waited {
+    let mut all = crate::sys::zeroed();
+    let mut previous = crate::sys::zeroed();
+    crate::sys::sigfillset(&mut all);
+    if crate::sys::sigprocmask(libc::SIG_BLOCK, Some(&all), Some(&mut previous)) < 0 {
+        return Waited {
+            pid: Err(std::io::Error::last_os_error()),
+            status: 0,
+        };
+    }
+    let mut child = wait_child(true);
+    if matches!(child.pid, Ok(None))
+        && !crate::swr_v1_core_signal_alarm()
+        && !super::signal::pending()
+        && should_wait()
+    {
+        crate::sys::sigsuspend(&previous);
+        child = wait_child(true);
+    }
+    crate::sys::sigprocmask(libc::SIG_SETMASK, Some(&previous), None);
+    child
+}
+
 /// Run a manager's reap loop until it stops or a callback requests an escape.
 /// # Errors
 /// A callback bailed out; the caller must return to its native boundary.
@@ -101,39 +126,36 @@ pub fn run(host: &mut impl Reap) -> Result<(), crate::process::pool::Bailed> {
             }
         }
 
-        let mut kill_next = false;
         if host.running() {
             let reload = host.start_reload();
             if host.bailed() {
                 return Err(crate::process::pool::Bailed);
             }
-            match reload {
-                ReloadStart::KillOne => kill_next = true,
-                ReloadStart::Skip => continue,
-                ReloadStart::None | ReloadStart::Signalled => {}
-            }
-            if !kill_next {
-                let Ok(child) = pid else {
-                    continue;
-                };
-                if host.skip_no_child() && child.is_none() {
-                    continue;
-                }
-                let pid = child.unwrap_or(0);
+            let kill_next = reload == ReloadStart::KillOne;
+            let reaped_pid = match pid {
+                Ok(Some(pid)) => Some(pid),
+                Ok(None) if reload == ReloadStart::None && !host.skip_no_child() => Some(0),
+                _ => None,
+            };
+            if let Some(pid) = reaped_pid {
                 let reaped = host.reap(pid, status);
                 if host.bailed() {
                     return Err(crate::process::pool::Bailed);
                 }
-                if !reaped {
+                if reaped {
+                    host.with_reload(|task| task.remove(pid));
+                } else if !kill_next {
                     continue;
                 }
-                host.with_reload(|task| task.remove(pid));
+            } else if !kill_next {
+                continue;
+            }
+            if reload == ReloadStart::Skip {
+                continue;
             }
         }
 
-        if kill_next {
-            host.with_reload(|task| task.kill_one(libc::SIGTERM, warn));
-        } else if !host.reload_requested() {
+        if !host.reload_requested() {
             let completed = host.with_reload(|task| {
                 let completed = task.completed();
                 if !completed {
@@ -335,6 +357,22 @@ mod tests {
     }
 
     #[test]
+    fn reload_initialization_preserves_a_child_reaped_by_the_same_wait() {
+        let mut reload = task();
+        reload.add(GONE, 1);
+        let mut script = Script {
+            waits: VecDeque::from([(GONE, 0)]),
+            reload_requested: true,
+            start: VecDeque::from([ReloadStart::KillOne]),
+            task: Some(Box::new(reload)),
+            ..Script::default()
+        };
+        run(&mut script, false, true);
+        assert!(script.log.contains(&format!("reap {GONE} 9")));
+        assert!(script.task.is_none());
+    }
+
+    #[test]
     fn an_unknown_pid_ends_the_iteration() {
         let mut s = Script {
             waits: VecDeque::from([(13, 0)]),
@@ -359,7 +397,13 @@ mod tests {
         run(&mut s, false, true);
         assert_eq!(
             s.log,
-            ["wait nonblock=false", "service", "start Skip", "service"]
+            [
+                "wait nonblock=false",
+                "service",
+                "start Skip",
+                "reap 12 9",
+                "service"
+            ]
         );
     }
 

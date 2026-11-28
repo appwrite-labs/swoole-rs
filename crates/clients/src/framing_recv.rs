@@ -15,7 +15,7 @@ use swoole_rs_corebase::reactor::{Caught, Socket, SocketFields, swr_v1_socket_re
 use swoole_rs_corebase::{log, swr_v1_core_pagesize};
 use swoole_rs_error::ErrorCode;
 use swoole_rs_framing::recv::{self, Buffer, Effects, Received, Status, recv};
-use swoole_rs_framing::recv::{FLAG_DYNAMIC, FLAG_SKIP, FLAG_WAIT, Mode, Op};
+use swoole_rs_framing::recv::{FLAG_DYNAMIC, FLAG_WAIT, Mode, Op};
 use swoole_rs_framing::{DefaultLength, default_length};
 
 /// One receive: the protocol and socket each effect acts on, live for the receive.
@@ -271,10 +271,24 @@ fn split<S: Source, K: Packages>(with: &mut With<'_, S, K>) -> Option<usize> {
     };
     // The protocol's settings bound the length by the array.
     let eof = eof.get(..usize::from(eof_len))?;
-    buffer.split_with(eof, |b, start, length| {
-        packages.dispatch(r, Package::of(b, start, length))
-            && !r.socket.read(SocketFields::has_left_reactor)
-    })
+    let mut paused_at = None;
+    let delivered = buffer.split_with(eof, |b, start, length| {
+        if !packages.dispatch(r, Package::of(b, start, length)) {
+            return false;
+        }
+        if r.socket.read(SocketFields::has_left_reactor) {
+            if packages.paused() {
+                let end = start + length;
+                paused_at = Some(end);
+                if end < b.len() {
+                    r.socket.edit(SocketFields::skip_next_recv);
+                }
+            }
+            return false;
+        }
+        true
+    });
+    paused_at.or(delivered)
 }
 
 /// The effects a frame rarely needs.
@@ -345,19 +359,19 @@ pub fn receive<'a, S: Source, K: Packages>(
         packages,
         buffer,
     );
-    let entry = initial.unwrap_or_else(|| socket.read(|s| s.framing_entry_flags(|| r.2.paused())));
-    let (mut flags, skip) = (entry & !FLAG_SKIP, entry & FLAG_SKIP != 0);
+    let mut flags =
+        initial.unwrap_or_else(|| socket.read(|s| s.framing_entry_flags(|| r.2.paused())));
     r.1 = flags & FLAG_WAIT != 0;
     let mut head = 0;
     if let Some(fixed) = K::HEAD {
         head = fixed;
-        flags |= if skip { FLAG_SKIP } else { 0 };
     } else if mode == Mode::Length {
         let p = r.0.owner.protocol();
         let size = p.get_package_length_size;
         head = u32::from(r.2.dynamic_header(&p).unwrap_or(p.package_length_size));
-        flags |=
-            (if skip { FLAG_SKIP } else { 0 }) | (if size.is_some() { FLAG_DYNAMIC } else { 0 });
+        if size.is_some() {
+            flags |= FLAG_DYNAMIC;
+        }
     }
     let status = recv(mode, head, &mut flags, &mut r);
     r.apply_wait(flags);

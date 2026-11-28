@@ -1,6 +1,9 @@
 //! Upstream `http_server::StaticHandler`'s state: the request URL, the paths and texts
 //! derived from it, the file's facts, the directory listing and the range tasks. The
 //! filesystem, MIME, random and calendar effects are the caller's [`StaticEffects`].
+use crate::conditional::{
+    Calendar, Conditional, PreconditionStatus, conditional, matches_etag, parse_http_date,
+};
 use crate::static_meta::joined;
 use crate::static_path::{self, Action};
 use crate::{HttpStaticPath, HttpStaticTask, HttpTasks, INVALID, OVERFLOW};
@@ -48,12 +51,52 @@ pub enum StaticFileKind {
 pub struct HttpStaticObservation {
     pub filesize: usize,
     pub mtime: i64,
+    pub mtime_nsec: i64,
     pub content_length: usize,
     pub directory_count: usize,
     pub task_count: usize,
     pub status: i32,
     pub kind: StaticFileKind,
     pub file_ready: bool,
+}
+
+impl HttpStaticObservation {
+    /// Strong validator derived from the metadata of the selected file.
+    #[must_use]
+    pub fn etag(&self) -> String {
+        format!(
+            "\"{:x}-{:x}-{:x}\"",
+            self.mtime, self.filesize, self.mtime_nsec
+        )
+    }
+
+    /// Return the HTTP status after evaluating the request's four conditional headers.
+    pub fn preconditions(
+        &self,
+        if_match: &[u8],
+        unmodified: &[u8],
+        none_match: &[u8],
+        modified: &[u8],
+        calendar: &impl Calendar,
+    ) -> PreconditionStatus {
+        if !if_match.is_empty() {
+            if !matches_etag(if_match, self.etag().as_bytes(), false) {
+                return PreconditionStatus::Failed;
+            }
+        } else if parse_http_date(unmodified, calendar).is_some_and(|date| self.mtime > date) {
+            return PreconditionStatus::Failed;
+        }
+        let cached = if none_match.is_empty() {
+            conditional(modified, Conditional::ModifiedSince, self.mtime, calendar)
+        } else {
+            matches_etag(none_match, self.etag().as_bytes(), true)
+        };
+        if cached {
+            PreconditionStatus::NotModified
+        } else {
+            PreconditionStatus::Ok
+        }
+    }
 }
 pub struct HttpStaticContext {
     original: Vec<u8>,
@@ -67,7 +110,6 @@ pub struct HttpStaticContext {
     content: Vec<u8>,
     end: Vec<u8>,
     path: HttpStaticPath,
-    range: range::HttpContextRange,
     serve: serve::Serve,
     facts: HttpStaticObservation,
     directory: Vec<Vec<u8>>,
@@ -93,7 +135,6 @@ impl HttpStaticContext {
             content: Vec::new(),
             end: Vec::new(),
             path: HttpStaticPath::default(),
-            range: range::HttpContextRange::default(),
             serve: serve::Serve::default(),
             facts: HttpStaticObservation {
                 status: 200,
@@ -149,7 +190,7 @@ impl HttpStaticContext {
             &mut self.path,
             facts,
         );
-        if result == Ok(Action::Directory) {
+        if result == Ok(Action::Lstat) && self.path.phase == crate::StaticPhase::Stat {
             let url = url.get(..self.path.url_length).ok_or(INVALID)?;
             self.directory_path = joined(&[url])?;
         }
@@ -169,6 +210,25 @@ impl HttpStaticContext {
     pub fn filename(&self) -> &[u8] {
         crate::c_text(&self.filename)
     }
+    /// Canonical directory URL, preserving the query and collapsing leading slashes.
+    #[must_use]
+    pub fn directory_redirect(&self) -> Option<Vec<u8>> {
+        if self.facts.kind != StaticFileKind::Directory || self.url() != self.original {
+            return None;
+        }
+        let split = self
+            .original
+            .iter()
+            .position(|b| matches!(b, b'?' | b'#'))
+            .unwrap_or(self.original.len());
+        let (path, suffix) = self.original.split_at(split);
+        if path.is_empty() || path.ends_with(b"/") {
+            return None;
+        }
+        let start = path.iter().position(|&b| b != b'/')?;
+        joined(&[b"/", path.get(start..)?, b"/", suffix]).ok()
+    }
+
     /// The directory's index file, empty when there is none.
     #[must_use]
     pub fn index_file(&self) -> &[u8] {
@@ -234,6 +294,7 @@ impl HttpStaticContext {
     fn observed(&mut self, input: &HttpStaticObservation) {
         self.facts.filesize = input.filesize;
         self.facts.mtime = input.mtime;
+        self.facts.mtime_nsec = input.mtime_nsec;
         self.facts.kind = input.kind;
         self.facts.file_ready = true;
     }
@@ -248,6 +309,9 @@ impl HttpStaticContext {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod rewrite_tests;
 
 #[cfg(test)]
 mod tests {
@@ -305,33 +369,6 @@ mod tests {
         assert_eq!(owner.text(Url), b"/second\0tail");
         assert_eq!(owner.text(Original), b"/first");
         assert!(HttpStaticContext::new(b"/", 0).is_none());
-    }
-    #[test]
-    fn path_owner_preserves_index_backing_and_separate_base_length() {
-        let mut owner = make();
-        let root = b"/root";
-        assert_eq!(owner.path_step(root, 0), Ok(Action::Locations));
-        assert_eq!(owner.path_step(root, 0), Ok(Action::Directory));
-        assert_eq!(owner.text(Directory), b"/files");
-        assert_eq!(owner.path_step(root, 0), Ok(Action::Lstat));
-        assert_eq!(owner.publish(Index, b"index.html"), Ok(()));
-        let base = owner.path.filename_length;
-        let index_path = |owner: &mut HttpStaticContext| {
-            crate::static_path::static_index_path(
-                &mut owner.filename,
-                owner.capacity,
-                owner.path.filename_length,
-                &owner.index,
-            )
-        };
-        assert_eq!(index_path(&mut owner), Ok(()));
-        assert_eq!(owner.path.filename_length, base);
-        assert_eq!(owner.text(Filename), b"/root/files/index.html");
-        assert_eq!(owner.publish(Index, b"other.html"), Ok(()));
-        assert_eq!(index_path(&mut owner), Ok(()));
-        // The pinned helper observes slash at the unchanged base offset,
-        // then overwrites from that offset on a repeated append.
-        assert_eq!(owner.text(Filename), b"/root/filesother.html");
     }
     #[test]
     fn initialized_facts_and_nested_stores_have_one_custodian() {

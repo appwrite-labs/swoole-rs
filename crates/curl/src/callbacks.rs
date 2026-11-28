@@ -67,7 +67,8 @@ unsafe extern "C" {
     // `CURLOPT_INFILE`'s stream, or null.
     safe fn swoole_curl_read_stream(handle: PhpHandle<'_>, value: &mut Owned);
     // The response `CURLOPT_RETURNTRANSFER` collects. Bails out past the memory limit.
-    safe fn swoole_curl_buffer_append(handle: PhpHandle<'_>, data: Data<'_>, length: usize);
+    safe fn swoole_curl_buffer_append(handle: PhpHandle<'_>, data: Data<'_>, length: usize)
+    -> bool;
     // The collected response as `curl_exec` returns it, which the handle keeps until its
     // next transfer; false with none collected.
     safe fn swoole_curl_buffer_result(handle: PhpHandle<'_>, result: &mut Owned) -> bool;
@@ -163,6 +164,8 @@ impl Plain {
 /// installed function must receive the copy as its userdata.
 pub(super) fn copy_handlers(copy: PhpHandle<'_>, source: PhpHandle<'_>) {
     swoole_curl_copy_streams(copy, source);
+    *swoole_curl_file_stream(copy, CURLOPT_STDERR) =
+        swoole_curl_file_stream(source, CURLOPT_STDERR).copy();
     for stream in [Stream::Read, Stream::Write, Stream::Header] {
         swoole_curl_copy_callback(copy, source, stream as c_int, 0);
     }
@@ -470,7 +473,7 @@ extern "C" fn swoole_curl_on_write(
     match swoole_curl_method(handle, Stream::Write as c_int) {
         STDOUT => print(data, length),
         FILE => return write_file(handle, Stream::Write, data, size, nmemb),
-        RETURN => append(handle, data, length),
+        RETURN => return append(handle, data, length),
         USER => {
             let failed = c"Could not call the CURLOPT_WRITEFUNCTION";
             return write_user(handle, Stream::Write, data, length, failed);
@@ -493,7 +496,7 @@ extern "C" fn swoole_curl_on_header(
         IGNORE => {}
         // `CURLOPT_HEADER`: the headers go where the body goes.
         STDOUT if swoole_curl_method(handle, Stream::Write as c_int) == RETURN => {
-            append(handle, data, length);
+            return append(handle, data, length);
         }
         STDOUT => print(data, length),
         FILE => return write_file(handle, Stream::Header, data, size, nmemb),
@@ -774,12 +777,16 @@ fn print(data: Data<'_>, length: usize) {
     bailout::defer(contain_with(|| swoole_curl_print(data, length)));
 }
 
-fn append(handle: PhpHandle<'_>, data: Data<'_>, length: usize) {
+fn append(handle: PhpHandle<'_>, data: Data<'_>, length: usize) -> usize {
+    let mut written = 0;
     if length > 0 {
         bailout::defer(contain_with(|| {
-            swoole_curl_buffer_append(handle, data, length);
+            if swoole_curl_buffer_append(handle, data, length) {
+                written = length;
+            }
         }));
     }
+    written
 }
 
 fn write_file(

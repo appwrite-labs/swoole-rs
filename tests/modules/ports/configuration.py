@@ -18,14 +18,14 @@ def attest(manifest,metadata):
 
 CASES={
     'convert_eof':None, 'convert_length_type':None, 'settings_release_reentry':None,
-    'callback_release_reentry':None, 'ignored_ssl':None,
+    'port_property_cycle':None, 'callback_release_reentry':None, 'ignored_ssl':None,
     'fatal_empty_eof':'package_eof cannot be an empty string',
     'fatal_long_eof':'package_eof max length is 8',
     'fatal_length_type':'unknown package_length_type',
     'fatal_length_offset':"'package_length_offset' value is too large",
     'fatal_body_offset':"'package_body_offset' value is too large",
     'fatal_body_alias':"'package_body_offset' value is too large",
-    'conversion_throw':'unknown package_length_type',
+    'conversion_throw':'Uncaught RuntimeException: port conversion sentinel',
 }
 
 
@@ -45,8 +45,8 @@ def main():
             output=r.stdout+r.stderr
             if case=='conversion_throw':
                 # Upstream reports the __toString exception as uncaught, then the failed conversion as fatal (#317).
-                expected=(r.returncode==255 and 'Uncaught RuntimeException: port conversion sentinel' in output
-                          and 'unknown package_length_type' in output
+                expected=(r.returncode==255 and message in output
+                          and 'unknown package_length_type' not in output
                           and observations==[{'case':case,'shutdown':True,'error_type':1,'conversions':1,'reentry':True,'setting_merged':False}])
             elif message is None:
                 expected=r.returncode==0 and len(observations)==1

@@ -209,6 +209,8 @@ impl Fresh {
 /// and [`Value::custom`](crate::Value::custom) borrow it. Mutable state goes in
 /// `Cell`s or `OnceCell`s: methods, and PHP code they run, share the data.
 pub trait Custom: Sized + 'static {
+    /// Enumerate native-owned PHP references during cycle collection.
+    const TRACE: Option<GcTrace<Self>> = None;
     /// The class.
     fn class() -> &'static CustomClass<Self>;
     /// A new object's data, before its constructor runs.
@@ -424,24 +426,15 @@ fn free_data<T: Custom>(freed: &Freed) {
     unsafe { Object::<T>::data_ptr(std).drop_in_place() };
 }
 
-/// Zend's native `free_obj` boundary. Property destruction may execute PHP.
-///
-/// # Safety
-/// Zend enters with a bailout scope and no intervening Rust owners.
-unsafe extern "C" fn free<T: Custom>(freed: Freed) {
-    let pending = bailout::pending();
-    free_data::<T>(&freed);
-    // SAFETY: all Rust data has been dropped. Zend lends the standard object
-    // for this last release; only the saved boolean lives across its bailout.
-    unsafe { std_dtor(freed) };
-    if !pending && bailout::relay_to_c(Ok(())) {
-        // SAFETY: cleanup is complete and the caller supplied the bailout scope.
-        unsafe { crate::sys::swr_zend_guard_resume() };
-    }
-}
-
 crate::exports! {
     preserve_pending:
+/// Zend's native `free_obj` boundary. Property destruction may execute PHP.
+extern "C" fn free<T: Custom>(freed: Freed) {
+    free_data::<T>(&freed);
+    // SAFETY: all Rust data has been dropped; Zend lends the object for this last release.
+    unsafe { std_dtor(freed) };
+}
+
 /// `T`'s `dtor_obj` handler: `__destruct`, then [`Custom::destruct`]. Zend
 /// calls it once, with one of `T`'s live objects.
 extern "C" fn destruct<T: Custom>(object: Handled) {
@@ -467,12 +460,59 @@ extern "C" fn destruct<T: Custom>(object: Handled) {
 
 }
 
+/// An audited enumerator of an object's native-owned PHP references.
+pub struct GcTrace<T>(fn(&T, &mut GcRoots));
+
+impl<T> GcTrace<T> {
+    /// # Safety
+    /// Report each object-owned PHP reference at most once, never a borrowed or
+    /// externally owned reference. The visit must not run PHP or change ownership.
+    pub const unsafe fn new(visit: fn(&T, &mut GcRoots)) -> Self {
+        Self(visit)
+    }
+}
+
+/// Zend's buffer of native-owned references, borrowed for one cycle collector visit.
+#[repr(transparent)]
+pub struct GcRoots(crate::sys::zend_get_gc_buffer);
+
+impl GcRoots {
+    /// Record one reference owned by the object being traced.
+    pub fn owned(&mut self, value: &Owned) {
+        swr_slot_gc_add(self, value);
+    }
+}
+
+type GcTable = std::mem::MaybeUninit<*mut crate::sys::zval>;
+type GcCount = std::mem::MaybeUninit<c_int>;
+type GetGc = extern "C" fn(ObjectRef<'_>, &mut GcTable, &mut GcCount) -> *mut crate::sys::HashTable;
+
+extern "C" fn get_gc<T: Custom>(
+    object: ObjectRef<'_>,
+    table: &mut GcTable,
+    count: &mut GcCount,
+) -> *mut crate::sys::HashTable {
+    extern "C" fn visit<T: Custom>(object: ObjectRef<'_>, roots: &mut GcRoots) {
+        if let (Some(data), Some(trace)) = (object.custom::<T>(), T::TRACE) {
+            (trace.0)(data, roots);
+        }
+    }
+    swr_slot_gc_properties(object, table, count, visit::<T>)
+}
+
 /// Native object handlers, called by Zend inside its bailout scope.
 type Create = unsafe extern "C" fn(ClassEntry<'_>) -> *mut zend_object;
 type Free = unsafe extern "C" fn(Freed);
 type Destruct = unsafe extern "C" fn(Handled);
 
 unsafe extern "C" {
+    safe fn swr_slot_gc_add(roots: &mut GcRoots, value: &Value);
+    safe fn swr_slot_gc_properties(
+        object: ObjectRef<'_>,
+        table: &mut GcTable,
+        count: &mut GcCount,
+        visit: extern "C" fn(ObjectRef<'_>, &mut GcRoots),
+    ) -> *mut crate::sys::HashTable;
     /// `ce->create_object = create`, which Zend calls with the class or a
     /// subclass that inherits it.
     safe fn swr_slot_create_object(entry: &mut zend_class_entry, create: Create);
@@ -482,6 +522,7 @@ unsafe extern "C" {
         handlers: &mut zend_object_handlers,
         free: Free,
         destruct: Option<Destruct>,
+        get_gc: Option<GetGc>,
     );
 }
 
@@ -504,7 +545,12 @@ pub(crate) fn install_custom<T: Custom>(
     // without freeing the object: Zend then frees the allocation at `std - OFFSET`.
     set_create(entry, create::<T>);
     let destruct: Destruct = destruct::<T>;
-    swr_slot_object_free(handlers, free::<T>, T::DESTRUCTS.then_some(destruct));
+    swr_slot_object_free(
+        handlers,
+        free::<T>,
+        T::DESTRUCTS.then_some(destruct),
+        T::TRACE.map(|_| -> GetGc { get_gc::<T> }),
+    );
     handlers.offset = c_int::try_from(Object::<T>::OFFSET).unwrap_or(c_int::MAX);
 }
 

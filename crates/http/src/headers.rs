@@ -47,6 +47,8 @@ pub struct HttpHeaderInfo {
     /// Bit1=range error seen,bit2=last numeric error had no digits. Native
     /// reproduces libc errno policy after return, before native allocation.
     pub number_errors: u32,
+    /// A non-multipart Content-Type superseded the previous form during this scan.
+    pub clear_form: bool,
 }
 /// A request head `header_info` refuses.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -65,6 +67,7 @@ pub fn header_info(
 ) -> Result<Option<HttpSpan>, MalformedHead> {
     let length = input.len();
     state.number_errors = 0;
+    state.clear_form = false;
     let Some(head) = input.get(..end) else {
         return Err(MalformedHead);
     };
@@ -97,7 +100,7 @@ pub fn header_info(
             };
             if let Some((skip, kind)) = kind {
                 at += skip;
-                while input.get(at) == Some(&b' ') {
+                while matches!(input.get(at), Some(b' ' | b'\t')) {
                     at += 1;
                 }
                 state.cursor = at + 1;
@@ -123,13 +126,8 @@ pub fn header_info(
                         let length = memchr::memchr(b'\r', value).unwrap_or(value.len());
                         state.flags |= 8;
                         let codings = value.get(..length).unwrap_or_default();
-                        for mut coding in codings.split(|&b| b == b',') {
-                            while let [b' ' | b'\t', rest @ ..] = coding {
-                                coding = rest;
-                            }
-                            while let [rest @ .., b' '] = coding {
-                                coding = rest;
-                            }
+                        for coding in codings.split(|&b| b == b',') {
+                            let coding = super::trim_ows(coding);
                             if state.flags & 32 != 0 {
                                 state.flags |= 64;
                             }
@@ -152,9 +150,13 @@ pub fn header_info(
                             let begin = at + 19;
                             return Ok(Some(HttpSpan {
                                 offset: begin,
-                                length: at + count - begin,
+                                length: super::rtrim_ows(
+                                    input.get(begin..at + count).ok_or(MalformedHead)?,
+                                )
+                                .len(),
                             }));
                         }
+                        state.clear_form = true;
                     }
                     _ => unreachable!(),
                 }
@@ -191,15 +193,17 @@ fn cookie_key(token: &[u8]) -> Option<Range<usize>> {
     Some(start..end)
 }
 
-/// Whether a Content-Disposition value contains the filename parameter.
+/// Whether the first filename parameter calls for an upload temporary file.
 #[must_use]
 pub fn multipart_has_filename(data: &[u8]) -> bool {
     let text = data.split(|&b| b == 0).next().unwrap_or_default();
-    text.split(|&b| b == b';').any(|token| {
-        cookie_key(token)
-            .and_then(|key| token.get(key))
-            .is_some_and(|key| super::case_equal(key, b"filename"))
-    })
+    text.split(|&b| b == b';')
+        .find_map(|token| {
+            let key = cookie_key(token)?;
+            super::case_equal(token.get(key.clone())?, b"filename")
+                .then(|| token.get(key.end..) != Some(b"=\"\""))
+        })
+        .unwrap_or(false)
 }
 /// Tokenize the next cookie of `data` from `cursor`, as legacy `strtok_r`: the
 /// delimiter after it and its '=' become NULs. Reads stop at the NUL that ends the

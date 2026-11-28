@@ -19,18 +19,17 @@ callback that can bail out runs beneath a Rust frame.
   domain lengths and the deferred 480-byte proxy host check. Factory credentials
   reject either field above 250 bytes and ignore both when either is missing.
   Native address-validation failures keep the three-byte CONNECT prefix.
-- RESP keeps C ASCII whitespace, signed-long saturation/int32 truncation,
-  null-bulk omission, permissive prefix fallthrough, full-buffer dispatch and the
-  original receive counters. Native callers set errno=ERANGE after Rust returns.
-  Public unbounded `get_number` remains a libc adapter.
+- RESP numeric fields accept decimal digits with an optional minus and a magnitude up to
+  `INT32_MAX`. Every read reparses the buffered command and waits for a complete bulk
+  payload and its two trailing bytes before dispatch.
 - PHP request decoding shares the bounded Rust RESP cursor. Zend arrays keep
   nulls and integer ordering, even before the first string command.
 - Handler keys use one Rust normalizer for registration, property lookup and
   dispatch: `_handler_` prefix, 63-byte truncation, embedded-NUL stop, ASCII
   lowercase.
 - PHP reply encoding: PHP NIL=1 differs from native codec NIL=7. Present-empty
-  status/error differs from missing; PHP empty bulk emits `$0` while the primitive
-  formatter writes nothing. Embedded-NUL status/key truncation, unsigned numeric
+  status/error differs from missing; empty bulk values in both formatters
+  have a zero length and a trailing CRLF. Embedded-NUL status/key truncation, unsigned numeric
   map keys and 32-bit map-count wrapping remain.
 - MessageBus: Rust owns the receive buffer, the packets being
   reassembled and both read loops and the write loop. It keeps direct/chunk flags,
@@ -91,18 +90,17 @@ each C export replaced by the safe function that was its body:
 | `native.cc` part | Rust test | Export → function |
 | --- | --- | --- |
 | `receive_states`: every split of eight commands at three package limits against the pinned `redis::recv_packet` | `receive_states` | `swr_v1_resp_recv` over C effects → `recv_packet` over a `RespConnection` |
-| `handler_key_trace`: 2432 keys against `snprintf` and an ASCII case model | `handler_keys` | `swr_v1_resp_handler_key` → `resp_handler_key` |
+| `handler_key_trace`: 2432 keys against v6.3’s full-length ASCII case model | `handler_keys` | `swr_v1_resp_handler_key` → `resp_handler_key` |
 | Five values and five integers as each of the seven reply types against the pinned `redis::format` overloads (70) | `reply_formats` | `swr_v1_resp_format` → `resp_format` |
-| Integers, numbers at and past a signed long from errno 0, `EDOM` and `ERANGE`, 1 to 128 arguments, permissive fallthrough and bulk payloads against the pinned `redis::parse`, or `get_number` where parse reads outside its input (134) | `parse_replies` | `swr_v1_resp_scan`, `swr_v1_resp_parse_range` → `resp_spans` |
+| Integers, numbers at and past a signed long from errno 0, `EDOM` and `ERANGE`, 1 to 128 arguments, permissive fallthrough and bulk payloads against the pinned `redis::parse`, and `get_number` for malformed numeric delimiters (134) | `parse_replies` | `swr_v1_resp_scan`, `swr_v1_resp_parse_range` → `resp_spans` |
 | `seeded_resp_trace`: 10,000 seeded wires through the pinned `redis::parse` and the pinned PHP request loop with modeled Zend parameters, strings, parameters and errno compared | `seeded_requests` | `swr_v1_resp_scan`, `swr_v1_resp_php_next` → `resp_spans`, `resp_php_next` |
 | The bounded failures that leave their output alone | `bounded_failures_leave_output` | `swr_v1_mqtt_frame_length`, `swr_v1_socks_auth`, `swr_v1_socks_connect`, `swr_v1_resp_format` → `mqtt_frame_length`, `socks_auth`, `socks_connect`, `resp_format` |
 
 The pinned sides are `crates/oracle`'s `protocols`: `redis::get_number`, `parse` and
 `format` from the pinned redis.cc and the request loop from the pinned
-`ext-src/swoole_redis_server.cc`, copied unchanged by its build script. `redis::parse`
-over Rust's spans is `redis_reply.inc`'s, which the gate compiled: an integer span in
-decimal, any other span's bytes, nothing for a malformed wire, and `ERANGE` set by the
-caller. `seeded_requests` also asserts the gate's `resp_corpus_fnv1a64`
+`ext-src/swoole_redis_server.cc`, copied unchanged by its build script. The comparison checks each completed
+span and the original errno. The PHP comparison also checks whether the server closes
+the connection while parsing the request. `seeded_requests` also asserts the gate's `resp_corpus_fnv1a64`
 (`c51ae5cf4cf33d44`), so the wires are the ones `native.cc` generated.
 
 Five of the gate's assertions checked the exports' own argument validation, which
@@ -122,7 +120,7 @@ and request state; the Rust loop runs over the same model and must log the same
 bytes. It makes the further calls the oracle's driver makes until the stream is
 drained, where the C++ gate made one. `handler_key_trace` also checked a guard byte
 either side of the export's 64-byte output, which went with the export:
-`resp_handler_key` returns its array.
+`resp_handler_key` returns owned bytes.
 
 ## Actual PHP checks
 

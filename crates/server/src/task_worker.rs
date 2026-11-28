@@ -49,8 +49,7 @@ fn schedule_by_sysvmsg(mode: Option<TaskIpcMode>) -> bool {
 fn answerable(task_workers: u32, task: Option<&DataHead>) -> Option<&DataHead> {
     let refusal = if task_workers < 1 {
         "cannot use Server::task()/Server::finish() method, because no set [task_worker_num]"
-    } else {
-        let task = task?;
+    } else if let Some(task) = task {
         if task.event() == Some(ServerEvent::PipeMessage) {
             "Server::task()/Server::finish() is not supported in onPipeMessage callback"
         } else if TaskFlag::from_bits(task.ext_flags).contains(TaskFlag::SW_TASK_NOREPLY) {
@@ -58,6 +57,8 @@ fn answerable(task_workers: u32, task: Option<&DataHead>) -> Option<&DataHead> {
         } else {
             return Some(task);
         }
+    } else {
+        "Server::finish() requires an active task context"
     };
     log::warning(c"Server::finish", format_args!("{refusal}"));
     None

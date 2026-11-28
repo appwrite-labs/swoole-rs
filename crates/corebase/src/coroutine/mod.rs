@@ -9,7 +9,7 @@ pub use state::*;
 mod facade;
 pub use facade::{
     activate, cancel, cancel_cid, deactivate, print_socket_bound_error, spawn, steady_usec,
-    yield_resumed, yield_timed, yield_timed_armed,
+    stop_resumes, yield_resumed, yield_timed, yield_timed_armed,
 };
 pub use facade::{print_list, swoole_coroutine_iterator_each, swoole_coroutine_iterator_reset};
 mod live;

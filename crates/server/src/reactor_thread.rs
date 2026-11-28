@@ -24,9 +24,6 @@ use swoole_rs_corebase::log::LogLevel::SW_LOG_TRACE;
 const FD_SESSION: c_int = swoole_rs_corebase::constants::FdType::SW_FD_SESSION as c_int;
 const FD_DGRAM_SERVER: c_int = swoole_rs_corebase::constants::FdType::SW_FD_DGRAM_SERVER as c_int;
 
-/// The heartbeat thread's `ServerState::start_thread` key; reactor threads use their ids.
-pub(crate) const HEARTBEAT: u64 = u64::MAX;
-
 thread_local! {
     /// This thread's datagram buffer, the size of its `sw_tg_buffer()`: taken out while
     /// a read dispatches from it, so a nested read makes its own.
@@ -151,14 +148,9 @@ pub(crate) fn close(serv: view::Server<'_>, reactor: Reactor, session: c_long) {
         log::error_log(SW_LOG_TRACE, code, c"ReactorThread::close_connection", m);
         return;
     };
-    // A TLS connection that never finished its handshake has nobody to notify.
-    let handshaking = conn.ssl() && !conn.ssl_ready();
-    if serv.state().config_ref().disable_notify.get() || conn.close_force() || handshaking {
-        crate::conn_io::close_connection(serv, reactor, conn.socket());
-        return;
+    if crate::connection::begin_idle_close(serv, reactor, conn) {
+        reactor.trigger_close(&mut conn.event(0, 0));
     }
-    conn.set_close_force(true);
-    reactor.trigger_close(&mut conn.event(0, 0));
 }
 
 /// `Server::heartbeat_check`: close `reactor`'s connections idle past their port's
@@ -210,11 +202,7 @@ pub(crate) fn join_reactor_threads(serv: view::Server<'_>) {
     if config.single_thread.get() {
         return;
     }
-    if config.heartbeat_check_interval.get() > 0
-        && let Some(heartbeat) = state.take_thread(HEARTBEAT)
-    {
-        heartbeat.join().unwrap_or_default();
-    }
+    state.join_heartbeat();
     for id in 0..config.reactor_num.get() {
         let Some(joining) = state.take_thread(u64::from(id)) else {
             continue;
@@ -448,12 +436,18 @@ mod tests {
         for id in 0..u64::from(config.reactor_num.get()) {
             ServerState::start_thread(serv, id, joined(id));
         }
-        ServerState::start_thread(serv, HEARTBEAT, joined(HEARTBEAT));
+        ServerState::start_heartbeat(serv, joined(crate::state::HEARTBEAT));
         config.heartbeat_check_interval.set(1);
         join_reactor_threads(serv);
         let mut ran = JOINED.lock().unwrap().clone();
         ran.sort_unstable();
-        assert_eq!(ran, vec![0, HEARTBEAT], "each thread ran and was joined");
-        assert!(state.take_thread(0).is_none() && state.take_thread(HEARTBEAT).is_none());
+        assert_eq!(
+            ran,
+            vec![0, crate::state::HEARTBEAT],
+            "each thread ran and was joined"
+        );
+        assert!(
+            state.take_thread(0).is_none() && state.take_thread(crate::state::HEARTBEAT).is_none()
+        );
     }
 }

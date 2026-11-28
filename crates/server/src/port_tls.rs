@@ -82,7 +82,7 @@ pub fn context_create(
     });
     // The snapshot owns independent fields, strings and OpenSSL configuration.
     let owner = context.borrow_configuration();
-    let settings = owner.freeze(callback);
+    let settings = owner.freeze_server(callback);
     if settings.is_none() {
         log::warning(
             c"ListenPort::ssl_context_create",
@@ -161,6 +161,11 @@ pub(crate) fn ssl_create(config: &PortConfig, sock: Socket<'_>) -> bool {
         log::set_last_error(SSL_CREATE_SESSION_FAILED);
         return false;
     }
+    bind_listener(config, sock)
+}
+
+/// Make the owning port available to the SNI callback before TLS or DTLS handshaking.
+pub(crate) fn bind_listener(config: &PortConfig, sock: Socket<'_>) -> bool {
     // The port outlives its connections; the SNI callback only reads it.
     let port = ptr::from_ref(config).cast_mut().cast();
     if !Ssl::of(sock).is_some_and(|ssl| ssl.get().set_ex_data(swr_v1_tls_port_index(), port)) {
@@ -180,10 +185,10 @@ extern "C" fn sni_callback(ssl: Ssl<'_>, _al: *mut c_int, _arg: *mut c_void) -> 
         return TLSEXT_NOACK;
     };
     let name = name.as_slice();
-    // `ssl_create` stored its port.
+    // The handshake uses the listener stored by `bind_listener`.
     let port = ssl.ex_data(swr_v1_tls_port_index());
     // SAFETY: the port the handshake's connection belongs to, live while it serves:
-    // only a port's own contexts hold this callback, and `ssl_create` names the port
+    // only a port's own contexts hold this callback, and `bind_listener` names the port
     // on each SSL it makes from one. Handshakes on every reactor thread read it at
     // once, through `&` only.
     let Some(port) = (unsafe { port.cast::<PortConfig>().as_ref() }) else {

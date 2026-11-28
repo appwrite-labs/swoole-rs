@@ -10,12 +10,9 @@ use swoole_rs_clients::framing_recv::default_length_func;
 use swoole_rs_corebase::CCast;
 use swoole_rs_corebase::constants::SW_IPC_BUFFER_SIZE;
 use swoole_rs_corebase::tls::{self as tls, Text, Value};
-use swoole_rs_phpswoole::length::Named;
 use swoole_rs_zend::host::callable::Callable;
 use swoole_rs_zend::{Array, E_ERROR, Owned, Value as Zval, ZString, bailout};
 
-/// `SW_DATA_EOF_MAXLEN`.
-const EOF_MAX: usize = swoole_rs_corebase::constants::SW_DATA_EOF_MAXLEN as usize;
 /// `SW_INPUT_BUFFER_SIZE`.
 const INPUT_BUFFER_SIZE: i64 = swoole_rs_corebase::constants::SW_INPUT_BUFFER_SIZE as i64;
 
@@ -169,27 +166,10 @@ pub(crate) fn apply(cli: Cli<'_>, settings: &Array) -> Option<bool> {
     }
     if let Some(eof) = options.string("package_eof") {
         let eof = eof.bytes();
-        let length = eof.len().c_cast::<u8>();
-        edit(cli, |record| record.protocol.package_eof_len = length);
-        if length == 0 {
-            report(
-                ErrorKind::Fatal,
-                E_ERROR,
-                "package_eof cannot be an empty string",
-            );
-            return Some(false);
-        } else if usize::from(length) > EOF_MAX {
-            report(
-                ErrorKind::Fatal,
-                E_ERROR,
-                &format!("package_eof max length is {EOF_MAX}"),
-            );
-            return Some(false);
-        }
-        let length = usize::from(length);
+        let length = crate::socket_options::eof_length(eof)?;
         edit(cli, |record| {
-            let package_eof = &mut record.protocol.package_eof;
-            for (slot, byte) in package_eof.iter_mut().zip(eof).take(length) {
+            record.protocol.package_eof_len = length;
+            for (slot, byte) in record.protocol.package_eof.iter_mut().zip(eof.iter()) {
                 *slot = *byte;
             }
         });
@@ -228,14 +208,12 @@ pub(crate) fn apply(cli: Cli<'_>, settings: &Array) -> Option<bool> {
         edit(cli, |record| record.protocol.package_body_offset = offset);
     }
     if let Some(function) = options.get("package_length_func") {
-        let Some(callable) = bailed(native::owned_callable(function))? else {
+        let Some(callable) = swoole_rs_phpswoole::setting_callable(function) else {
             return Some(false);
         };
-        let named = Named::new(callable);
         length_option(cli);
         bailed(native::free_owner(
-            cli.get()
-                .replace_length_owner(Some(std::rc::Rc::new(named))),
+            cli.get().replace_length_owner(Some(callable)),
         ))?;
     }
     let max_length = options
@@ -254,6 +232,13 @@ pub(crate) fn apply(cli: Cli<'_>, settings: &Array) -> Option<bool> {
         && !address.bytes().is_empty()
         && !bind(cli, address.bytes(), bind_port)
     {
+        let message = [
+            b"failed to bind client to ",
+            address.c_str().to_bytes(),
+            format!(":{bind_port}").as_bytes(),
+        ]
+        .concat();
+        swoole_rs_phpswoole::invalid_setting(&native::c_text(&message));
         return Some(false);
     }
     if options.truthy("open_tcp_nodelay").unwrap_or(true)

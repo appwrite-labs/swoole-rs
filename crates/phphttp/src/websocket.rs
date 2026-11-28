@@ -525,6 +525,38 @@ pub(crate) fn response_disconnect(context: Ctx, code: i64, reason: Option<&ZStr>
     sent
 }
 
+/// Match an extension name before its parameters. Commas inside a quoted
+/// parameter are data, including after an escaped quote.
+fn offers_compression(mut header: &[u8]) -> bool {
+    while !header.is_empty() {
+        let end = header
+            .iter()
+            .position(|b| matches!(b, b';' | b','))
+            .unwrap_or(header.len());
+        let (name, parameters) = header.split_at(end);
+        let mut token = name
+            .split(|b| matches!(b, b' ' | b'\t'))
+            .filter(|s| !s.is_empty());
+        if token.next() == Some(b"permessage-deflate") && token.next().is_none() {
+            return true;
+        }
+        let mut params = parameters.iter();
+        let mut quoted = false;
+        while let Some(byte) = params.next() {
+            match byte {
+                b'\\' if quoted => {
+                    params.next();
+                }
+                b'"' => quoted = !quoted,
+                b',' if !quoted => break,
+                _ => {}
+            }
+        }
+        header = params.as_slice();
+    }
+    false
+}
+
 /// The coroutine `Response::upgrade`'s handshake.
 /// The handshake response's `permessage-deflate` answer, when built with zlib
 /// and offered: the request asked for it, so the response says so and the
@@ -550,9 +582,7 @@ pub(crate) fn accept(mut context: Ctx) {
             .and_then(Value::array)
             .and_then(|header| header.find(b"sec-websocket-extensions"))
             .and_then(Value::bytes);
-        if let Some(text) = text
-            && text.split(|&byte| byte == b';').next() == Some(b"permessage-deflate")
-        {
+        if text.is_some_and(offers_compression) {
             accepted = true;
             crate::response::set_header_bytes(
                 context,

@@ -23,8 +23,7 @@ use swoole_rs_corebase::{
 use swoole_rs_ssh2_sys::{KbdintResponse, LIBSSH2_CHANNEL};
 use swoole_rs_zend::stream::{REPORT_ERRORS, Stream};
 use swoole_rs_zend::{
-    Call, E_ERROR, E_NOTICE, E_WARNING, Owned, OwnedArray, ReturnSlot, Value, ZStr, ZString,
-    bailout, report,
+    Call, E_NOTICE, E_WARNING, Owned, OwnedArray, ReturnSlot, Value, ZStr, ZString, bailout, report,
 };
 
 /// `LIBSSH2_METHOD_*`, the negotiated method kinds `ssh2_methods_negotiated` reads.
@@ -38,17 +37,25 @@ const METHOD_COMP_CS: c_int = 6;
 const METHOD_COMP_SC: c_int = 7;
 const METHOD_LANG_CS: c_int = 8;
 const METHOD_LANG_SC: c_int = 9;
-/// `LIBSSH2_HOSTKEY_HASH_MD5` and `LIBSSH2_HOSTKEY_HASH_SHA1`.
+/// libssh2 host key hash selectors.
 const HASH_MD5: c_int = 1;
 const HASH_SHA1: c_int = 2;
-/// `PHP_SSH2_FINGERPRINT_SHA1` and `PHP_SSH2_FINGERPRINT_RAW`.
+const HASH_SHA256: c_int = 3;
+/// PHP fingerprint algorithm and output flags.
 const FINGERPRINT_SHA1: i64 = 0x0001;
 const FINGERPRINT_RAW: i64 = 0x0002;
+const FINGERPRINT_SHA256: i64 = 0x0004;
 
 unsafe extern "C" {
+    #[link_name = "libssh2_keepalive_send"]
+    safe fn send_keepalive(session: Session, seconds: &mut c_int) -> c_int;
+    safe fn libssh2_keepalive_config(session: Session, want_reply: c_int, interval: c_uint);
+
     /// `ssh2_bound` (crates/hooks): the wait for the session's socket, once no
     /// other coroutine is bound to it.
     safe fn swr_v1_ssh2_bound(session: Session) -> &'static Ops;
+    /// The read and write timeout on the live session socket.
+    safe fn swr_v1_ssh2_session_timeout(session: Session, seconds: f64);
     /// The password `ssh2.cc`'s keyboard-interactive callback answers with,
     /// which must stay live until the authentication returns.
     safe fn swr_ssh2_kbd_password(password: Text<'_>);
@@ -178,12 +185,7 @@ unsafe extern "C" {
     safe fn libssh2_sftp_init(session: Session) -> Option<Started>;
     /// `ssh2_sftp`'s `SSH2 SFTP` resource over `sftp`, which holds a
     /// reference to the session resource, put in `out`.
-    safe fn swr_ssh2_sftp_open(
-        session_resource: &Value,
-        session: Session,
-        sftp: Started,
-        out: ReturnSlot<'_>,
-    );
+    safe fn swr_ssh2_sftp_open(session_resource: &Value, sftp: Started, out: ReturnSlot<'_>);
     /// `libssh2_sftp_stat_ex` of `stat_type` (`LIBSSH2_SFTP_STAT` or
     /// `_LSTAT`), retried through the hook, each attribute stored in its out
     /// parameter; 0, or libssh2's error with none stored.
@@ -239,7 +241,12 @@ unsafe extern "C" {
     safe fn swr_ssh2_forward_closed(session: Session) -> bool;
     /// The channel stream over `channel`, which holds a reference to the
     /// session resource, put in `out`; false when no stream can be allocated.
-    safe fn swr_ssh2_session_stream(session_resource: &Value, channel: Opened, out: ReturnSlot<'_>);
+    safe fn swr_ssh2_session_stream(
+        session_resource: &Value,
+        channel: Opened,
+        wait_for_remote_close: bool,
+        out: ReturnSlot<'_>,
+    );
     /// libssh2's own declarations for a shell channel: an environment
     /// variable, the pty, the shell itself, and freeing a channel no stream
     /// was made over.
@@ -269,6 +276,7 @@ unsafe extern "C" {
         message_len: c_uint,
     ) -> c_int;
     safe fn libssh2_channel_free(channel: Opened) -> c_int;
+    safe fn libssh2_channel_eof(channel: Opened) -> c_int;
     /// `libssh2_scp_recv` of `path`, retried through the hook: the channel the
     /// file arrives on, its size in `size`, or null.
     safe fn swr_ssh2_scp_recv(session: Session, path: Text<'_>, size: &mut i64) -> Option<Opened>;
@@ -300,6 +308,8 @@ unsafe extern "C" {
     ) -> isize;
     /// libssh2's own channel declarations.
     safe fn libssh2_channel_send_eof(channel: StreamChannel) -> c_int;
+    /// The optional channel signal function from the installed libssh2 header.
+    safe fn swr_ssh2_signal_function() -> Option<SignalFunction>;
     safe fn libssh2_channel_request_pty_size_ex(
         channel: StreamChannel,
         width: c_int,
@@ -307,9 +317,6 @@ unsafe extern "C" {
         width_px: c_int,
         height_px: c_int,
     ) -> c_int;
-    /// Whether the session of the `SSH2 SFTP` resource [`swr_ssh2_sftp`]
-    /// accepted has been closed (`ssh2_disconnect`).
-    safe fn swr_ssh2_sftp_session_closed(resource: &Value) -> bool;
     /// `libssh2_sftp_symlink_ex` reading a link or resolving a path: the path
     /// is read and the result written to `target`; its length, or a negative
     /// error.
@@ -379,18 +386,12 @@ unsafe extern "C" {
     /// libssh2's own declaration: the negotiated method of `kind`, which the
     /// session keeps, or null.
     safe fn libssh2_session_methods<'a>(session: Session, kind: c_int) -> Option<Text<'a>>;
-    /// libssh2's own declaration for the MD5 hostkey hash: the session's 16
-    /// bytes, or null.
-    #[link_name = "libssh2_hostkey_hash"]
-    safe fn hostkey_md5<'a>(session: Session, kind: c_int) -> Option<&'a [u8; 16]>;
-    /// libssh2's own declaration for the SHA1 hostkey hash: the session's 20
-    /// bytes, or null.
-    #[expect(
-        clashing_extern_declarations,
-        reason = "libssh2_hostkey_hash returns a char *: each declaration types the hash it asks for"
-    )]
-    #[link_name = "libssh2_hostkey_hash"]
-    safe fn hostkey_sha1<'a>(session: Session, kind: c_int) -> Option<&'a [u8; 20]>;
+    safe fn libssh2_hostkey_hash(session: Session, kind: c_int) -> Option<NonNull<u8>>;
+    safe fn libssh2_session_hostkey(
+        session: Session,
+        len: &mut usize,
+        kind: &mut c_int,
+    ) -> *const u8;
 }
 
 /// A session's ssh-agent handle (`LIBSSH2_AGENT *`), live until freed.
@@ -427,6 +428,14 @@ struct Started(NonNull<c_void>);
 #[derive(Clone, Copy)]
 struct StreamChannel(NonNull<c_void>);
 
+type SignalFunction = for<'a> extern "C" fn(StreamChannel, In<'a, u8>, Count<'a>) -> c_int;
+
+/// Whether to register the PHP signal function for this SDK.
+#[unsafe(no_mangle)]
+extern "C" fn swr_ssh2_has_signal() -> bool {
+    swr_ssh2_signal_function().is_some()
+}
+
 /// What no value has: the password-change callback `ssh2_auth_password` never
 /// passes, the bound port `ssh2_forward_listen` never asks for, and the pty
 /// modes a shell or command never sends.
@@ -435,8 +444,10 @@ enum Nothing {}
 swoole_rs_zend::handlers! {
     zif_ssh2_connect => connect;
     zif_ssh2_disconnect => disconnect;
+    zif_ssh2_set_timeout => set_timeout;
     zif_ssh2_sftp => sftp_init;
     zif_ssh2_send_eof => send_eof;
+    zif_ssh2_send_signal => send_signal;
     zif_ssh2_fetch_stream => fetch_stream;
     zif_ssh2_tunnel => tunnel;
     zif_ssh2_shell => shell;
@@ -455,7 +466,10 @@ swoole_rs_zend::handlers! {
     zif_ssh2_sftp_readlink => sftp_readlink;
     zif_ssh2_sftp_realpath => sftp_realpath;
     zif_ssh2_methods_negotiated => methods_negotiated;
+    zif_ssh2_keepalive_config => keepalive_config;
+    zif_ssh2_keepalive_send => keepalive_send;
     zif_ssh2_fingerprint => fingerprint;
+    zif_ssh2_hostkey => hostkey;
     zif_ssh2_auth_none => auth_none;
     zif_ssh2_auth_password => auth_password;
     zif_ssh2_auth_pubkey_file => auth_pubkey_file;
@@ -517,6 +531,62 @@ fn warn_bytes(parts: &[&[u8]]) {
     }
 }
 
+fn set_timeout(call: &Call<'_>) {
+    if call.arity(2, 3).is_err() {
+        return;
+    }
+    let Ok(resource) = call.resource(1) else {
+        return;
+    };
+    let Ok(seconds) = call.long(2, 0) else { return };
+    let Ok(micros) = call.long(3, 0) else { return };
+    if let Some(session) = session(call, resource) {
+        let timeout = seconds.c_cast::<f64>() + (micros.c_cast::<f64>() / 1000.0).ceil() / 1000.0;
+        swr_v1_ssh2_session_timeout(session, if timeout == 0.0 { -1.0 } else { timeout });
+    }
+}
+
+fn keepalive_config(call: &Call<'_>) {
+    if call.arity(3, 3).is_err() {
+        return;
+    }
+    let Ok(resource) = call.resource(1) else {
+        return;
+    };
+    let Ok(reply) = call.bool(2, false) else {
+        return;
+    };
+    let Ok(interval) = call.long(3, 0) else {
+        return;
+    };
+    let Ok(interval) = c_uint::try_from(interval) else {
+        warn("Argument #3 ($interval) must be between 0 and 4294967295");
+        return;
+    };
+    if let Some(session) = session(call, resource) {
+        libssh2_keepalive_config(session, reply.into(), interval);
+    }
+}
+
+fn keepalive_send(call: &Call<'_>) {
+    if call.arity(1, 1).is_err() {
+        return;
+    }
+    let Ok(resource) = call.resource(1) else {
+        return;
+    };
+    let Some(session) = session(call, resource) else {
+        return;
+    };
+    let mut seconds = 0;
+    let result = hooked(session, || send_keepalive(session, &mut seconds));
+    if result == 0 {
+        call.set_long(seconds.into());
+    } else {
+        call.set_bool(false);
+    }
+}
+
 /// `ssh2_methods_negotiated(resource $session): array|false`: the key exchange
 /// and hostkey methods, and each direction's cipher, MAC, compression and
 /// language. A method libssh2 has none for is null (C would have crashed).
@@ -563,8 +633,34 @@ fn methods_negotiated(call: &Call<'_>) {
     call.set_owned(methods.into_owned());
 }
 
+/// Copy the negotiated server host key and its libssh2 algorithm identifier.
+fn hostkey(call: &Call<'_>) {
+    if call.arity(1, 1).is_err() {
+        return;
+    }
+    let Ok(resource) = call.resource(1) else {
+        return;
+    };
+    let Some(session) = session(call, resource) else {
+        return;
+    };
+    let (mut len, mut kind) = (0, 0);
+    let key = libssh2_session_hostkey(session, &mut len, &mut kind);
+    if key.is_null() {
+        call.set_bool(false);
+        return;
+    }
+    // SAFETY: libssh2 owns these len bytes for the lifetime of the live session.
+    // Copy them into the PHP array before returning to user code.
+    let bytes = unsafe { std::slice::from_raw_parts(key, len) };
+    let mut result = OwnedArray::default();
+    result.insert_bytes(b"key", Some(bytes));
+    result.insert_long(b"type", kind.into());
+    call.set_owned(result.into_owned());
+}
+
 /// `ssh2_fingerprint(resource $session, int $flags = 0): string|false|null`:
-/// the server's hostkey hash, MD5 unless `SSH2_FINGERPRINT_SHA1`, as uppercase
+/// the selected server host key hash (MD5 by default), as uppercase
 /// hex unless `SSH2_FINGERPRINT_RAW`; null, with a warning, when it is all zero.
 fn fingerprint(call: &Call<'_>) {
     // The arguments in order, as `zend_parse_parameters("r|l")` checks them.
@@ -580,16 +676,20 @@ fn fingerprint(call: &Call<'_>) {
     let Some(session) = session(call, resource) else {
         return;
     };
-    let hash: Option<&[u8]> = if flags & FINGERPRINT_SHA1 != 0 {
-        hostkey_sha1(session, HASH_SHA1).map(<[u8; 20]>::as_slice)
+    let (algorithm, length) = if flags & FINGERPRINT_SHA256 != 0 {
+        (HASH_SHA256, 32)
+    } else if flags & FINGERPRINT_SHA1 != 0 {
+        (HASH_SHA1, 20)
     } else {
-        hostkey_md5(session, HASH_MD5).map(<[u8; 16]>::as_slice)
+        (HASH_MD5, 16)
     };
-    let Some(hash) = hash else {
+    let Some(hash) = libssh2_hostkey_hash(session, algorithm) else {
         warn("Unable to retrieve fingerprint from specified session");
         call.set_bool(false);
         return;
     };
+    // SAFETY: the live session owns the digest, with the byte count of its algorithm.
+    let hash = unsafe { std::slice::from_raw_parts(hash.as_ptr(), length) };
     if hash.iter().all(|&byte| byte == 0) {
         warn("No fingerprint available using specified hash");
         call.set_null();
@@ -1416,10 +1516,6 @@ fn sftp_realpath(call: &Call<'_>) {
     let Some((sftp, session)) = sftp(call, resource) else {
         return;
     };
-    if swr_ssh2_sftp_session_closed(resource) {
-        call.set_bool(false);
-        return;
-    }
     resolve(
         call,
         sftp,
@@ -1447,7 +1543,7 @@ fn sftp_init(call: &Call<'_>) {
         call.set_bool(false);
         return;
     };
-    swr_ssh2_sftp_open(resource, session, sftp, call.return_slot());
+    swr_ssh2_sftp_open(resource, sftp, call.return_slot());
 }
 
 /// `ssh2_sftp_chmod(resource $sftp, string $filename, int $mode): bool`:
@@ -1552,6 +1648,34 @@ fn stat(call: &Call<'_>, stat_type: c_int) {
     call.set_owned(stat.into_owned());
 }
 
+fn send_signal(call: &Call<'_>) {
+    if call.arity(2, 2).is_err() {
+        return;
+    }
+    let Ok(stream) = call.resource(1) else { return };
+    let Some(signal) = path(call, 2) else { return };
+    let Some(channel) = swr_ssh2_stream_channel(stream, true) else {
+        call.set_bool(false);
+        return;
+    };
+    let Some(send) = swr_ssh2_signal_function() else {
+        call.set_bool(false);
+        return;
+    };
+    let session = swr_ssh2_stream_session(stream);
+    let status = hooked(session, || {
+        lend_in(signal.bytes(), |name, len| send(channel, name, len))
+    });
+    if status < 0 {
+        warn_bytes(&[
+            b"Couldn't send signal ",
+            text(signal).0.get().to_bytes(),
+            format!(" to channel (Return code {status})").as_bytes(),
+        ]);
+    }
+    call.set_bool(status >= 0);
+}
+
 /// `ssh2_send_eof(resource $channel): bool`: EOF sent on the stream's channel,
 /// or C's warning with libssh2's return code and false.
 fn send_eof(call: &Call<'_>) {
@@ -1644,7 +1768,7 @@ fn tunnel(call: &Call<'_>) {
         call.set_bool(false);
         return;
     };
-    swr_ssh2_session_stream(resource, channel, call.return_slot());
+    swr_ssh2_session_stream(resource, channel, false, call.return_slot());
 }
 
 /// `PHP_SSH2_DEFAULT_TERMINAL`, `_TERM_WIDTH`, `_TERM_HEIGHT` and
@@ -1657,10 +1781,10 @@ const TERM_UNIT_CHARS: i64 = 0;
 /// `ssh2_shell(resource $session, string $term_type = "vanilla",
 /// ?array $env = null, int $width = 80, int $height = 25,
 /// int $width_height_type = SSH2_TERM_UNIT_CHARS): resource|false`: a shell
-/// on the server, as a stream. Five arguments are C's fatal error.
+/// on the server, as a stream. Width and height must be supplied together.
 fn shell(call: &Call<'_>) {
-    if call.num_args() == 5 {
-        bailout::defer(report(E_ERROR, c"width specified without height parameter"));
+    if call.num_args() == 4 {
+        warn("width specified without height parameter");
         call.set_bool(false);
         return;
     }
@@ -1714,7 +1838,7 @@ fn shell(call: &Call<'_>) {
         call.set_bool(false);
         return;
     };
-    swr_ssh2_session_stream(resource, channel, call.return_slot());
+    swr_ssh2_session_stream(resource, channel, true, call.return_slot());
 }
 
 swoole_rs_zend::exports! {
@@ -1807,19 +1931,10 @@ fn set_environment(session: Session, channel: Opened, environment: &swoole_rs_ze
             })
         });
         if set != 0 {
-            // C's %s of each, up to its first NUL.
-            let until_nul = |bytes: &[u8]| {
-                bytes
-                    .split(|&byte| byte == 0)
-                    .next()
-                    .unwrap_or_default()
-                    .to_vec()
-            };
+            let name = name.split(|&byte| byte == 0).next().unwrap_or_default();
             warn_bytes(&[
-                b"Failed setting ",
-                &until_nul(name),
-                b"=",
-                &until_nul(value.bytes()),
+                b"Failed setting environment variable ",
+                name,
                 b" on remote end",
             ]);
         }
@@ -1928,7 +2043,7 @@ fn exec(call: &Call<'_>) {
         call.set_bool(false);
         return;
     };
-    swr_ssh2_session_stream(resource, channel, call.return_slot());
+    swr_ssh2_session_stream(resource, channel, true, call.return_slot());
 }
 
 swoole_rs_zend::exports! {
@@ -2044,7 +2159,10 @@ fn scp_recv(call: &Call<'_>) {
         return;
     };
     let mut buffer = [0u8; 8192];
-    while remaining != 0 {
+    let complete = loop {
+        if remaining == 0 {
+            break true;
+        }
         // C's int bytes_read of at most 8192 bytes, or the rest of the file.
         let want = usize::try_from(remaining.clamp(0, 8192)).unwrap_or_default();
         let slots = buffer.get_mut(..want).unwrap_or_default();
@@ -2053,24 +2171,33 @@ fn scp_recv(call: &Call<'_>) {
                 libssh2_channel_read_ex(channel, 0, out, count)
             })
         });
-        let Ok(length) = usize::try_from(read) else {
+        let Some(bytes) = usize::try_from(read).ok().and_then(|n| slots.get(..n)) else {
             warn("Error reading from remote file");
-            free();
-            drop(file);
-            call.set_bool(false);
-            return;
+            break false;
         };
-        // C wrote what arrived and went on, whatever the stream took.
-        let _written = file.write(buffer.get(..length).unwrap_or_default());
+        if bytes.is_empty() && libssh2_channel_eof(channel) != 0 {
+            warn("Error reading from remote file");
+            break false;
+        }
+        let written = file.write(bytes);
         if bailout::pending() {
-            // As at the open: the stream is left to the request's shutdown.
             return;
         }
-        remaining -= i64::from(read);
-    }
+        match written {
+            Some(n) if n == bytes.len() => remaining -= i64::from(read),
+            Some(_) => {
+                warn("Mismatch in bytes read from remote file and bytes written to local file");
+                break false;
+            }
+            None => {
+                warn("Error writing to local file");
+                break false;
+            }
+        }
+    };
     free();
     drop(file);
-    call.set_bool(true);
+    call.set_bool(complete);
 }
 
 /// `LIBSSH2_ERROR_*` a channel write reports, each with C's warning.

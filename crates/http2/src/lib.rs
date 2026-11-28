@@ -77,33 +77,27 @@ pub const INITIAL_CONNECTION_WINDOW: u32 = 65_535;
 static DEFAULT_SETTINGS: [AtomicU32; SETTING_COUNT] = [
     AtomicU32::new(1 << 12),
     AtomicU32::new(0),
-    AtomicU32::new(u32::MAX),
+    AtomicU32::new(128),
     AtomicU32::new(INITIAL_CONNECTION_WINDOW),
     AtomicU32::new(1 << 14),
     AtomicU32::new(u32::MAX),
 ];
 
-/// The slot of a setting id. Upstream asserts on any other id, so this aborts.
-#[expect(
-    clippy::disallowed_methods,
-    reason = "upstream asserts on an unknown id; this crate has no dependencies, so no logger"
-)]
-fn default_slot(id: u32) -> &'static AtomicU32 {
-    usize::try_from(id)
-        .ok()
-        .and_then(|id| DEFAULT_SETTINGS.get(id.checked_sub(1)?))
-        .unwrap_or_else(|| std::process::abort())
+fn default_slot(id: u32) -> Option<&'static AtomicU32> {
+    DEFAULT_SETTINGS.get(usize::try_from(id.checked_sub(1)?).ok()?)
 }
 
 /// `swoole::http2::put_default_setting(swHttp2SettingId, uint32_t)`.
 pub fn put_default_setting(id: u32, value: u32) {
-    default_slot(id).store(value, Ordering::Relaxed);
+    if let Some(slot) = default_slot(id) {
+        slot.store(value, Ordering::Relaxed);
+    }
 }
 
 /// `swoole::http2::get_default_setting(swHttp2SettingId)`.
 #[must_use]
 pub fn get_default_setting(id: u32) -> u32 {
-    default_slot(id).load(Ordering::Relaxed)
+    default_slot(id).map_or(0, |slot| slot.load(Ordering::Relaxed))
 }
 
 // This local decode limit is independent of the settings advertised to peers.
@@ -176,8 +170,12 @@ pub fn sw_rs_http2_window_plan(
 /// HTTP/2 error codes used by both the wire handlers and PHP registration.
 pub mod error_code {
     pub const NO_ERROR: u32 = 0;
+    pub const PROTOCOL_ERROR: u32 = 1;
     pub const INTERNAL_ERROR: u32 = 2;
+    pub const FLOW_CONTROL_ERROR: u32 = 3;
+    pub const STREAM_CLOSED: u32 = 5;
     pub const FRAME_SIZE_ERROR: u32 = 6;
+    pub const REFUSED_STREAM: u32 = 7;
 }
 
 /// The frame types this side sends (`SW_HTTP2_TYPE_*`).
@@ -444,9 +442,23 @@ pub fn sw_rs_http2_header_defaults(published: u32) -> u32 {
     (2 | 16 | 32) & !published
 }
 
+/// Parse the three ASCII digits of an HTTP/2 response status (100 through 599).
 #[must_use]
-pub fn sw_rs_http2_content_length_rejected(complete: bool, parsed: i64, maximum: u32) -> bool {
-    !complete || parsed > i64::from(maximum)
+pub fn parse_status_code(value: &[u8]) -> Option<u16> {
+    let &[hundreds @ b'1'..=b'5', tens @ b'0'..=b'9', units @ b'0'..=b'9'] = value else {
+        return None;
+    };
+    Some(u16::from(hundreds - b'0') * 100 + u16::from(tens - b'0') * 10 + u16::from(units - b'0'))
+}
+
+/// Whether the entire Content-Length is an unsigned decimal within the request limit.
+#[must_use]
+pub fn valid_content_length(value: &[u8], maximum: u32) -> bool {
+    matches!(value.first(), Some(b'0'..=b'9'))
+        && std::str::from_utf8(value)
+            .ok()
+            .and_then(|s| s.parse::<u32>().ok())
+            .is_some_and(|n| n <= maximum)
 }
 
 /// A content type or encoding the session acts on.
@@ -795,100 +807,118 @@ mod tests {
     /// The process-wide defaults are shared by every test in this binary.
     static DEFAULTS: Mutex<()> = Mutex::new(());
 
-    /// `swoole_rand(1, 100000)`.
-    fn rand() -> u32 {
-        use std::hash::{BuildHasher, RandomState};
-        (RandomState::new().hash_one(0u8) % 100_000) as u32 + 1
+    struct SettingsFixture {
+        saved: [u32; SETTING_COUNT],
+        max_headers: u32,
+        _lock: std::sync::MutexGuard<'static, ()>,
     }
 
-    // Upstream core-tests/src/protocol/http2.cpp, one test per TEST. `http2.ssl` is not
-    // ported: it needs the nghttp2 client, so the native lane excluded it too.
+    impl SettingsFixture {
+        fn new() -> Self {
+            let lock = DEFAULTS
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            Self {
+                saved: std::array::from_fn(|i| get_default_setting(i as u32 + 1)),
+                max_headers: max_headers(),
+                _lock: lock,
+            }
+        }
+    }
 
-    /// `TEST(http2, default_settings)`.
+    impl Drop for SettingsFixture {
+        fn drop(&mut self) {
+            for (id, value) in (1..).zip(self.saved) {
+                put_default_setting(id, value);
+            }
+            set_max_headers(self.max_headers);
+        }
+    }
+
     #[test]
     fn http2_default_settings() {
-        let _defaults = DEFAULTS
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        assert_eq!(
-            get_default_setting(1),
-            4096,
-            "SW_HTTP2_DEFAULT_HEADER_TABLE_SIZE"
-        );
-        assert_eq!(get_default_setting(2), 0, "SW_HTTP2_DEFAULT_ENABLE_PUSH");
-        assert_eq!(
-            get_default_setting(3),
-            u32::MAX,
-            "SW_HTTP2_DEFAULT_MAX_CONCURRENT_STREAMS"
-        );
-        assert_eq!(
-            get_default_setting(4),
-            65535,
-            "SW_HTTP2_DEFAULT_INIT_WINDOW_SIZE"
-        );
-        assert_eq!(
-            get_default_setting(5),
-            16384,
-            "SW_HTTP2_DEFAULT_MAX_FRAME_SIZE"
-        );
-        assert_eq!(
-            get_default_setting(6),
-            u32::MAX,
-            "SW_HTTP2_DEFAULT_MAX_HEADER_LIST_SIZE"
-        );
-
-        let original = sw_rs_http2_default_settings();
-        let settings = [rand(), rand(), rand(), rand(), rand(), rand()];
-        for (id, value) in (1..).zip(settings) {
+        let _fixture = SettingsFixture::new();
+        let defaults = [4096, 0, 128, 65535, 16384, u32::MAX];
+        let replacement = [1024, 0, 17, 65535, 32768, 4096];
+        for ((id, default), value) in (1..).zip(defaults).zip(replacement) {
+            assert_eq!(get_default_setting(id), default);
             put_default_setting(id, value);
-        }
-        for (id, value) in (1..).zip(settings) {
             assert_eq!(get_default_setting(id), value);
         }
-        // Each upstream case runs in its own process; these share one.
-        for (id, value) in (1..).zip([
-            original.header_table_size,
-            original.enable_push,
-            original.max_concurrent_streams,
-            original.init_window_size,
-            original.max_frame_size,
-            original.max_header_list_size,
-        ]) {
-            put_default_setting(id, value);
+        let settings = sw_rs_http2_default_settings();
+        assert_eq!(
+            [
+                settings.header_table_size,
+                settings.enable_push,
+                settings.max_concurrent_streams,
+                settings.init_window_size,
+                settings.max_frame_size,
+                settings.max_header_list_size,
+            ],
+            replacement
+        );
+    }
+
+    #[test]
+    fn unknown_setting_preserves_defaults() {
+        let fixture = SettingsFixture::new();
+        put_default_setting(7, u32::MAX);
+        assert_eq!(get_default_setting(7), 0);
+        for (id, value) in (1..).zip(fixture.saved) {
+            assert_eq!(get_default_setting(id), value);
         }
+    }
+
+    #[test]
+    fn max_headers_ignores_zero() {
+        let _fixture = SettingsFixture::new();
+        set_max_headers(17);
+        assert_eq!(max_headers(), 17);
+        set_max_headers(0);
+        assert_eq!(max_headers(), 17);
+        set_max_headers(u32::MAX);
+        assert_eq!(max_headers(), u32::MAX);
     }
 
     /// `TEST(http2, pack_setting_frame)`.
     #[test]
     fn http2_pack_setting_frame() {
-        let _defaults = DEFAULTS
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        // SW_HTTP2_SETTING_FRAME_SIZE + SW_HTTP2_FRAME_HEADER_SIZE
-        let mut frame = [0u8; 45 + 9];
-        let settings_1 = sw_rs_http2_default_settings();
-        let n = sw_rs_http2_pack_settings(&mut frame, &settings_1, false);
+        let settings = Http2Settings {
+            header_table_size: 1024,
+            enable_push: 1,
+            max_concurrent_streams: 17,
+            init_window_size: 65535,
+            max_frame_size: 32768,
+            max_header_list_size: u32::MAX,
+        };
+        for server in [false, true] {
+            let mut frame = [0; SETTINGS_FRAME_SIZE];
+            let size = sw_rs_http2_pack_settings(&mut frame, &settings, server);
+            let count = if server { 5 } else { 6 };
+            assert_eq!(size, HEADER_BYTES + count * SETTING_BYTES);
+            assert_eq!(
+                &frame[..HEADER_BYTES],
+                &[0, 0, (count * SETTING_BYTES) as u8, 4, 0, 0, 0, 0, 0]
+            );
 
-        assert!(n > 16);
-
-        // unpack_setting_data over n bytes after the header, stopping at an unknown id.
-        let mut settings_2 = Http2Settings::default();
-        for item in frame[9..].chunks(6).take(n.div_ceil(6)) {
-            let mut padded = [0u8; 6];
-            padded[..item.len()].copy_from_slice(item);
-            let (id, value) = sw_rs_http2_unpack_setting(&padded);
-            match id {
-                1 => settings_2.header_table_size = value,
-                2 => settings_2.enable_push = value,
-                3 => settings_2.max_concurrent_streams = value,
-                4 => settings_2.init_window_size = value,
-                5 => settings_2.max_frame_size = value,
-                6 => settings_2.max_header_list_size = value,
-                _ => break,
-            }
+            let (items, remainder) = frame[HEADER_BYTES..size].as_chunks::<SETTING_BYTES>();
+            assert_eq!(remainder, []);
+            let mut decoded: Vec<_> = items.iter().map(sw_rs_http2_unpack_setting).collect();
+            decoded.sort_unstable();
+            let expected = [
+                (1, 1024),
+                (2, 1),
+                (3, 17),
+                (4, 65535),
+                (5, 32768),
+                (6, u32::MAX),
+            ];
+            let expected: Vec<_> = expected
+                .into_iter()
+                .filter(|&(id, _)| !server || id != 2)
+                .collect();
+            assert_eq!(decoded, expected);
         }
-
-        assert_eq!(settings_1, settings_2);
     }
 
     /// `TEST(http2, get_type)`.
@@ -922,15 +952,13 @@ mod tests {
 
     #[test]
     fn default_settings_round_trip() {
-        let _defaults = DEFAULTS
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let _fixture = SettingsFixture::new();
         assert_eq!(
             sw_rs_http2_default_settings(),
             Http2Settings {
                 header_table_size: 4096,
                 enable_push: 0,
-                max_concurrent_streams: u32::MAX,
+                max_concurrent_streams: 128,
                 init_window_size: 65535,
                 max_frame_size: 16384,
                 max_header_list_size: u32::MAX,
@@ -938,7 +966,6 @@ mod tests {
         );
         put_default_setting(2, 1);
         assert_eq!(get_default_setting(2), 1);
-        put_default_setting(2, 0);
     }
     #[test]
     fn send_complete_matches_the_wrapping_native_cast() {
@@ -991,6 +1018,51 @@ mod tests {
             }
         }
     }
+    #[test]
+    fn status_code_boundaries() {
+        for (text, expected) in [
+            (b"100".as_slice(), Some(100)),
+            (b"200", Some(200)),
+            (b"599", Some(599)),
+            (b"099", None),
+            (b"600", None),
+            (b"", None),
+            (b"20", None),
+            (b"2000", None),
+            (b"+20", None),
+            (b"2 0", None),
+            (b"20\0", None),
+            (b"2\xff0", None),
+        ] {
+            assert_eq!(parse_status_code(text), expected, "{text:?}");
+        }
+        assert_eq!(parse_status_code(&b"200x"[..3]), Some(200));
+    }
+
+    #[test]
+    fn frame_length_requires_complete_header() {
+        let frame = sw_rs_http2_pack_frame_header(FrameType::Data, 0xff_ffff, 0, 1);
+        for size in 0..frame.len() {
+            assert_eq!(frame_length(&frame[..size]), None);
+        }
+        assert_eq!(frame_length(&frame), Some(0xff_ffff + 9));
+        let empty = sw_rs_http2_pack_frame_header(FrameType::Data, 0, 0, 1);
+        assert_eq!(frame_length(&empty), Some(9));
+    }
+
+    #[test]
+    fn frame_header_uses_network_byte_order() {
+        let frame = sw_rs_http2_pack_frame_header(
+            FrameType::Data,
+            0x12_3456,
+            frame_flag::PADDED,
+            0x0102_0304,
+        );
+        assert_eq!(frame, [0x12, 0x34, 0x56, 0, 8, 1, 2, 3, 4]);
+        let decoded = sw_rs_http2_decode_frame(&frame, 0, false).unwrap();
+        assert_eq!(decoded.length, 0x12_3456);
+    }
+
     #[test]
     fn framing_and_short_prefix() {
         let bytes = header(255, 0x00ff_ffff, 0x80, 0xffff_ffff);

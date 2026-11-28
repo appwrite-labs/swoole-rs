@@ -11,16 +11,13 @@ use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::FileExt;
 
 use crate::constants::TaskFlag;
-use crate::{
-    DataHead, datahead_dump, log, microtime, swr_v1_core_current_task_id,
-    swr_v1_core_set_current_task_id, task_tmpfile,
-};
+use crate::{DataHead, datahead_dump, log, microtime, task_tmpfile};
 
 use crate::buffer::string::StringBuffer;
 use crate::ossupport::fd_write_all;
 
 use crate::constants::SW_IPC_BUFFER_SIZE as IPC_PAYLOAD;
-use crate::process::methods::swoole_get_worker_id;
+use crate::process::methods::{swoole_get_worker_id, swoole_get_worker_pid};
 
 /// Why reading a task's temporary file failed.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -220,14 +217,15 @@ impl TaskBuffer {
         self.head.ext_flags |= flags;
     }
 
-    /// `info.type = kind`.
-    pub fn set_kind(&mut self, kind: u8) {
-        self.head.kind = kind;
+    /// Identify the synchronous batch sharing a result slot.
+    pub(super) fn set_batch_id(&mut self, id: u64) {
+        self.head.msg_id = id;
     }
 
-    /// `info.fd = fd`.
-    pub fn set_fd(&mut self, fd: std::ffi::c_long) {
-        self.head.fd = fd;
+    /// Set the event and the ID its receiver uses to match it.
+    pub fn set_event(&mut self, event: ServerEvent, id: std::ffi::c_long) {
+        self.head.kind = event.code();
+        self.head.fd = id;
     }
 
     /// `info.server_fd = server_fd`.
@@ -246,34 +244,54 @@ impl TaskBuffer {
         Packed { bytes }
     }
 
-    /// The buffer, for an operation that reads `EventData::size()` bytes of it.
-    #[must_use]
-    pub fn as_mut_ptr(&mut self) -> *mut c_void {
-        std::ptr::from_mut(self).cast()
-    }
-
-    /// `EventData::size()` bytes: the head, then the payload it counts.
-    #[must_use]
-    pub fn bytes(&self) -> &[u8] {
-        self.packed().bytes()
-    }
-
     /// `Server::task_pack`: a task header from this worker, with `data` inline or
     /// in a temporary file.
     pub fn pack(&mut self, data: &[u8]) -> bool {
-        let id = swr_v1_core_current_task_id();
-        swr_v1_core_set_current_task_id(id.wrapping_add(1));
+        let Some(id) = crate::global::next_task_id() else {
+            self.head = DataHead {
+                fd: -1,
+                ..DataHead::default()
+            };
+            log::error_log(
+                log::LogLevel::SW_LOG_WARNING,
+                libc::EOVERFLOW,
+                c"Server::task_pack",
+                format_args!("task ID range exhausted"),
+            );
+            return false;
+        };
+        self.pack_event(data, ServerEvent::Task, id)
+    }
+
+    /// Release a locally packed spill when its waiter has already left.
+    pub fn discard(&self) {
+        if let Some(path) = self.packed().spill_path() {
+            _ = crate::sys::unlink(path);
+        }
+    }
+
+    /// Finish a task, retaining the originating worker's PID on asynchronous replies.
+    pub fn pack_result(&mut self, data: &[u8], task: &DataHead) -> bool {
+        let packed = self.pack_event(data, ServerEvent::Finish, task.fd);
+        if TaskFlag::from_bits(task.ext_flags).contains(TaskFlag::SW_TASK_NONBLOCK) {
+            self.head.reserved = task.reserved;
+        }
+        packed
+    }
+
+    /// Pack an event with the ID that its receiver will match.
+    pub fn pack_event(&mut self, data: &[u8], event: ServerEvent, id: std::ffi::c_long) -> bool {
         let reactor_id = swoole_get_worker_id().c_cast::<i16>();
         self.head = DataHead {
             fd: id,
             msg_id: 0,
             len: 0,
             reactor_id,
-            kind: ServerEvent::Task.code(),
+            kind: event.code(),
             flags: 0,
             server_fd: 0,
             ext_flags: 0,
-            reserved: 0,
+            reserved: swoole_get_worker_pid().cast_unsigned(),
             time: microtime(),
         };
         let packed = pack_payload(&mut self.data, data, task_tmpfile);
@@ -298,6 +316,14 @@ pub struct Packed<'a> {
 }
 
 impl<'a> Packed<'a> {
+    /// The file named by a complete spilled payload descriptor.
+    pub(super) fn spill_path(self) -> Option<&'a CStr> {
+        if !TaskFlag::from_bits(self.head().ext_flags).contains(TaskFlag::SW_TASK_TMPFILE) {
+            return None;
+        }
+        PacketTask::read(self.payload()).ok().map(|(_, path)| path)
+    }
+
     /// `Server::task_dump`: the header, and the temporary file's name if it has one.
     pub fn dump(self) {
         let mut buf = [0_u8; 1024];
@@ -512,13 +538,13 @@ mod tests {
         let _turn = methods::TASK_ID.lock();
         let mut buf = TaskBuffer::default();
         assert_eq!(
-            buf.bytes().len(),
+            buf.packed().bytes().len(),
             size_of::<DataHead>(),
             "an empty buffer is its head"
         );
         assert!(buf.pack(b"abc"));
         buf.add_flags(1 << 2);
-        let bytes = buf.bytes();
+        let bytes = buf.packed().bytes();
         assert_eq!(bytes.len(), size_of::<DataHead>() + 3);
         assert_eq!(&bytes[size_of::<DataHead>()..], b"abc");
         assert_eq!(
@@ -647,6 +673,7 @@ mod tests {
 
     mod methods {
         use super::super::*;
+        use crate::{swr_v1_core_current_task_id, swr_v1_core_set_current_task_id};
 
         /// `task_pack` draws from the process-wide task id, so its tests take turns.
         pub(super) static TASK_ID: std::sync::Mutex<()> = std::sync::Mutex::new(());
@@ -669,6 +696,17 @@ mod tests {
             assert_eq!(data.len(), 5);
             assert_eq!(data.as_ptr(), task.data.as_ptr().cast());
             assert!(string.as_ptr().is_null());
+            let mut request = *task.head();
+            request.ext_flags = TaskFlag::SW_TASK_NONBLOCK.bits();
+            request.reserved = 12345;
+            assert!(task.pack_result(b"done", &request));
+            assert_eq!(
+                DataHead::from_bytes(&task.head().to_bytes()).reserved,
+                12345
+            );
+            assert_eq!(task.head().fd, 41);
+            assert_eq!(task.head().event(), Some(ServerEvent::Finish));
+            assert_eq!(swr_v1_core_current_task_id(), 42);
         }
 
         #[test]

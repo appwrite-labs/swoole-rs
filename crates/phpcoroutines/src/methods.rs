@@ -14,7 +14,9 @@ use std::{cell::Cell, ffi::c_long, ptr, rc::Rc};
 use swoole_rs_corebase::CCast;
 use swoole_rs_corebase::CellExt;
 use swoole_rs_corebase::timer::Deadline;
-use swoole_rs_zend::{Call, Callable, E_ERROR, E_WARNING, OwnedArray, Php, bailout::Bailout};
+use swoole_rs_zend::{
+    Call, Callable, E_ERROR, E_WARNING, OwnedArray, Php, Value, bailout::Bailout,
+};
 
 /// `DEBUG_BACKTRACE_PROVIDE_OBJECT`.
 const PROVIDE_OBJECT: i64 = 1;
@@ -309,7 +311,13 @@ fn join(call: &Call) {
 
 /// `php_swoole_coroutine_throw_exception`: cancel `cid`, throwing `ce` in it
 /// when `throw`.
-pub(crate) fn throw_exception(cid: c_long, throw: bool, class: Option<ExceptionClass>) -> bool {
+fn throw_exception(
+    cid: c_long,
+    throw: bool,
+    class: Option<ExceptionClass>,
+    reason: Option<&Value>,
+    wake: bool,
+) -> bool {
     if !throw {
         let Some(co) = host::by_cid(cid) else {
             host::set_last_error(SW_ERROR_CO_NOT_EXISTS);
@@ -330,7 +338,7 @@ pub(crate) fn throw_exception(cid: c_long, throw: bool, class: Option<ExceptionC
         host::set_last_error(SW_ERROR_CO_CANCELED);
         return false;
     }
-    let exception = Exception::new(class);
+    let exception = Exception::new(class, reason);
     // The new exception, located in the coroutine's frame: the running one's
     // is the live Co::cancel frame, internal, so Zend redirects the user caller
     // when it returns.
@@ -344,20 +352,46 @@ pub(crate) fn throw_exception(cid: c_long, throw: bool, class: Option<ExceptionC
     }
     task.set_exception(exception, class);
     // Even an irrevocable wait ends: the exception terminates the coroutine.
-    host::cancel(co);
+    if wake {
+        host::cancel(co);
+    }
     true
 }
 
-/// `Co::cancel(int $cid, bool $throw_exception = false)`.
+/// Cancel the callback while it is running. Its deferred cleanup is independent.
+pub fn cancel_callback(cid: c_long, reason: &Value, wake: bool) {
+    if context::by_cid(cid).is_some_and(context::Ctx::callback_running) {
+        throw_exception(cid, true, classes::canceled(), Some(reason), wake);
+    }
+}
+
+/// `Co::cancel(int $cid, bool $throw_exception = false, mixed $reason = null)`.
 fn cancel(call: &Call) {
     let parsed = call
-        .arity(1, 2)
+        .arity(1, 3)
         .and_then(|()| Ok((call.long(1, 0)?, call.bool(2, false)?)));
     let Ok((cid, throw)) = parsed else {
         call.set_bool(false);
         return;
     };
-    call.set_bool(throw_exception(cid, throw, classes::canceled()));
+    let reason = call
+        .value(3)
+        .map(Value::referred)
+        .filter(|value| !value.is_null());
+    if !throw && reason.is_some() {
+        call.argument_value_error(
+            3,
+            c"must be null when argument #2 ($throw_exception) is false",
+        );
+        return;
+    }
+    call.set_bool(throw_exception(
+        cid,
+        throw,
+        classes::canceled(),
+        reason,
+        true,
+    ));
 }
 
 /// `Co::setTimeLimit(float $timeout)`.
@@ -367,7 +401,7 @@ fn set_time_limit(call: &Call) {
         return;
     };
     let co = host::require_coroutine();
-    let Some(co) = co.filter(|_| timeout > 0.0) else {
+    let Some(co) = co.filter(|_| timeout >= 0.0) else {
         call.set_bool(false);
         return;
     };
@@ -376,13 +410,18 @@ fn set_time_limit(call: &Call) {
         call.set_bool(false);
         return;
     };
-    let Some(timer) =
-        swoole_rs_corebase::timer::add_fn_sec(timeout, false, move || time_limit(cid))
-    else {
-        call.set_bool(false);
-        return;
+    let timer = if timeout == 0.0 {
+        None
+    } else {
+        let Some(timer) =
+            swoole_rs_corebase::timer::add_fn_sec(timeout, false, move || time_limit(cid))
+        else {
+            call.set_bool(false);
+            return;
+        };
+        Some(timer)
     };
-    if let Some(old) = context::swap_time_limit(ctx, cid, Some(timer)) {
+    if let Some(old) = context::swap_time_limit(ctx, cid, timer) {
         swoole_rs_corebase::timer::del_id(old);
     }
     call.set_bool(true);
@@ -392,7 +431,7 @@ fn time_limit(cid: c_long) {
     if let Some(ctx) = context::by_cid(cid) {
         // Its timer has fired.
         let _fired = context::swap_time_limit(ctx, cid, None);
-        throw_exception(cid, true, classes::timeout());
+        throw_exception(cid, true, classes::timeout(), None, true);
     }
 }
 
@@ -409,11 +448,12 @@ fn stats(call: &Call) {
     let mut stats = host::Stats::default();
     host::stats(&mut stats);
     call.set_array();
-    let values: [(&std::ffi::CStr, i64); 9] = [
+    let values: [(&std::ffi::CStr, i64); 10] = [
         (c"event_num", stats.event_num),
         (c"signal_listener_num", stats.signal_listener_num),
         (c"aio_task_num", stats.aio_task_num),
         (c"aio_worker_num", stats.aio_worker_num),
+        (c"aio_idle_worker_num", stats.aio_idle_worker_num),
         (c"aio_queue_size", stats.aio_queue_size),
         (c"c_stack_size", stats.c_stack_size),
         (c"coroutine_num", stats.coroutine_num),

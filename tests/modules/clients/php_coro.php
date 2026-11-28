@@ -6,7 +6,13 @@ try {
   Swoole\Coroutine\run(static function()use(&$summary):void{
    $client=new Swoole\Coroutine\Client(SWOOLE_SOCK_TCP);$weak=WeakReference::create($client);check($client->connect('',0)===false,'empty host');check($client->connect('127.0.0.1',0)===false,'invalid TCP port');check($client->send('')===false,'empty send');check($client->sendfile('')===false,'empty sendfile');check($client->send('x')===false&&$client->errCode===SWOOLE_ERROR_CLIENT_NO_CONNECTION,'no-connection send');check($client->fd===-1&&$client->socket===null&&$client->connected===false,'no socket published');$client=null;gc_collect_cycles();check($weak->get()===null,'owner GC');$summary=['setup_errors_matched'=>true,'no_socket_published'=>true,'owner_collected'=>true];
   });
-  $expected=['The host is empty','The port is invalid','data to send is empty','file to send is empty'];check(count($warnings)===count($expected),'warning count');foreach($expected as $i=>$text)check($warnings[$i][0]===E_WARNING&&str_ends_with($warnings[$i][1],$text),'warning order');
+  foreach ([new Swoole\Client(SWOOLE_SOCK_TCP), new Swoole\Coroutine\Client(SWOOLE_SOCK_TCP)] as $client) {
+      check($client->sendfile(__FILE__, -1) === false, 'negative sendfile offset');
+      check($client->sendfile(__FILE__, 0, -1) === false, 'negative sendfile length');
+  }
+  $expected=['The host is empty','The port is invalid','data to send is empty','file to send is empty'];
+  $rangeWarnings = ['parameter $offset[-1] must be greater than or equal to 0', 'parameter $length[-1] must be greater than or equal to 0'];
+  $expected = array_merge($expected, $rangeWarnings, $rangeWarnings);check(count($warnings)===count($expected),'warning count');foreach($expected as $i=>$text)check($warnings[$i][0]===E_WARNING&&str_ends_with($warnings[$i][1],$text),'warning order');
  }else {
   $process=proc_open([PHP_BINARY,'-n',__DIR__.'/php_coro_peer.php',$mode],[0=>['pipe','r'],1=>['pipe','w'],2=>['pipe','w']],$pipes);check(is_resource($process),'spawn');fclose($pipes[0]);stream_set_timeout($pipes[1],15);$address=trim((string)fgets($pipes[1]));check(preg_match('/^127\.0\.0\.1:([0-9]+)$/D',$address,$matches)===1,'peer ready');$port=(int)$matches[1];
   if($mode==='sendfile'){$temp=tempnam(sys_get_temp_dir(),'swr-coro-');check(is_string($temp)&&file_put_contents($temp,"0F\0ILE9")===7,'file fixture');}

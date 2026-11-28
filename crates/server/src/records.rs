@@ -2,7 +2,7 @@
 use core::cell::Cell;
 use core::ffi::{c_int, c_void};
 use core::sync::atomic::{
-    AtomicBool, AtomicU8, AtomicU32,
+    AtomicBool, AtomicI32, AtomicU8, AtomicU32,
     Ordering::{AcqRel, Acquire, Relaxed, Release},
 };
 use swoole_rs_corebase::constants::SocketTypeCode;
@@ -40,6 +40,12 @@ pub struct ConnectionRecord {
     pub socket_type: Cell<SocketTypeCode>,
     pub fd: Cell<c_int>,
     pub worker_id: Cell<c_int>,
+    /// The event worker that accepted the close notification, identified across restarts.
+    close_worker: Cell<Option<(u16, c_int)>>,
+    /// The process that started the close callback. A replacement may consume the original message.
+    close_callback_pid: AtomicI32,
+    /// One-based index in the owning reactor's pending close list.
+    close_wait_index: Cell<usize>,
     pub session_id: Cell<libc::c_long>,
     pub ssl: Cell<bool>,
     pub ssl_ready: Cell<bool>,
@@ -58,6 +64,8 @@ pub struct ConnectionRecord {
     pub close_force: Cell<bool>,
     pub reactor_id: Cell<u8>,
     pub close_errno: Cell<u16>,
+    /// Explicit receive pause, independent of the queued-byte throttle timer.
+    recv_paused: Cell<bool>,
     pub recv_queued_bytes: AtomicU32,
     pub send_queued_bytes: Cell<u32>,
     pub waiting_time: Cell<u16>,
@@ -116,6 +124,9 @@ impl ConnectionRecord {
         self.socket_type.set(SocketTypeCode::default());
         self.fd.set(0);
         self.worker_id.set(0);
+        self.close_worker.set(None);
+        self.close_callback_pid.store(0, Relaxed);
+        self.close_wait_index.set(0);
         self.session_id.set(0);
         for flag in [
             &self.ssl,
@@ -130,6 +141,7 @@ impl ConnectionRecord {
             &self.closing,
             &self.close_reset,
             &self.peer_closed,
+            &self.recv_paused,
             &self.protect,
             &self.close_notify,
             &self.close_force,
@@ -374,8 +386,11 @@ impl<'a> Connection<'a> {
     }
 
     field!(socket_type, set_socket_type: SocketTypeCode);
+    field!(@[pub(crate)] close_wait_index = close_wait_index, set_close_wait_index: usize);
+    field!(atomic close_callback_pid: AtomicI32);
     field!(fd, set_fd: c_int);
     field!(worker_id, set_worker_id: c_int);
+    field!(@[pub(crate)] close_worker = close_worker, set_close_worker: Option<(u16, c_int)>);
     field!(session_id, set_session_id: libc::c_long);
     field!(ssl, set_ssl: bool);
     field!(ssl_ready, set_ssl_ready: bool);
@@ -389,6 +404,7 @@ impl<'a> Connection<'a> {
     field!(closing, set_closing: bool);
     field!(close_reset, set_close_reset: bool);
     field!(peer_closed, set_peer_closed: bool);
+    field!(recv_paused, set_recv_paused: bool);
     field!(protect, set_protect: bool);
     field!(close_notify, set_close_notify: bool);
     field!(close_force, set_close_force: bool);

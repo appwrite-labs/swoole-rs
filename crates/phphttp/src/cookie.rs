@@ -34,14 +34,9 @@ impl Held {
         self.0.with_taken(|cookie| cookie.as_mut().map(f))
     }
 
-    /// `Cookie::toString`: the line, or None after a warning, which resets the
-    /// cookie. The warning may run PHP code, so it formats a copy.
+    /// Format a snapshot because a validation warning may run PHP code.
     fn line(&self) -> Option<ZString> {
-        let line = self.with(|cookie| cookie.clone())?.line();
-        if line.is_none() {
-            self.with(Cookie::reset);
-        }
-        line
+        self.with(|cookie| cookie.clone())?.line()
     }
 }
 
@@ -242,6 +237,13 @@ fn cookie<'c>(call: &'c Call<'_>) -> Option<&'c Held> {
     constructed(call.custom())
 }
 
+fn required_cookie<'c>(call: &'c Call<'_>) -> Option<&'c Held> {
+    cookie(call).or_else(|| {
+        call.throw_error(c"Swoole\\Http\\Cookie is not initialized");
+        None
+    })
+}
+
 /// `__construct(bool $encode = true)`.
 fn construct(call: &Call) {
     let Ok(encode) = call.arity(0, 1).and_then(|()| call.bool(1, true)) else {
@@ -260,25 +262,25 @@ fn construct(call: &Call) {
 
 /// `with<Field>(string $field)`: set a string field and return `$this`.
 fn with_string(call: &Call, field: usize) {
-    let held = cookie(call);
+    let Some(held) = required_cookie(call) else {
+        return;
+    };
     let Ok(string) = call.arity(1, 1).and_then(|()| call.zstr(1)) else {
         return;
     };
-    if let Some(held) = held {
-        held.with(|cookie| cookie.set(field, string));
-    }
+    held.with(|cookie| cookie.set(field, string));
     call.set_this();
 }
 
 /// `with<Flag>(bool $flag = false)`: set a flag and return `$this`.
 fn with_flag(call: &Call, flag: fn(&mut Cookie) -> &mut bool) {
-    let held = cookie(call);
+    let Some(held) = required_cookie(call) else {
+        return;
+    };
     let Ok(value) = call.arity(0, 1).and_then(|()| call.bool(1, false)) else {
         return;
     };
-    if let Some(held) = held {
-        held.with(|cookie| *flag(cookie) = value);
-    }
+    held.with(|cookie| *flag(cookie) = value);
     call.set_this();
 }
 
@@ -312,20 +314,20 @@ fn with_partitioned(call: &Call) {
 
 /// `withExpires(int $expires = 0)`.
 fn with_expires(call: &Call) {
-    let held = cookie(call);
+    let Some(held) = required_cookie(call) else {
+        return;
+    };
     let Ok(expires) = call.arity(0, 1).and_then(|()| call.long(1, 0)) else {
         return;
     };
-    if let Some(held) = held {
-        held.with(|cookie| cookie.expires = expires);
-    }
+    held.with(|cookie| cookie.expires = expires);
     call.set_this();
 }
 
-/// `toString(): string|false`; a cookie that cannot be sent is reset.
+/// `toString(): string|false`.
 fn to_string(call: &Call) {
     let Some(held) = cookie(call) else {
-        return;
+        return call.set_bool(false);
     };
     match held.line() {
         Some(line) => call.set_zstring(line),
@@ -335,7 +337,9 @@ fn to_string(call: &Call) {
 
 /// `toArray(): array`.
 fn to_array(call: &Call) {
-    if let Some(array) = cookie(call).and_then(|held| held.with(|cookie| cookie.to_array())) {
+    if let Some(array) =
+        required_cookie(call).and_then(|held| held.with(|cookie| cookie.to_array()))
+    {
         call.set_owned(array.into_owned());
     }
 }
@@ -385,11 +389,12 @@ pub(crate) fn header_line(
     cookie.line()
 }
 
-/// `Response::cookie()` with an object: a constructed `Swoole\Http\Cookie`'s
-/// line, or None (after a warning, which also resets the cookie, or for any
-/// other object).
+/// Serialize the cookie object supplied in place of a name.
 pub(crate) fn object_header_line(object: &Value) -> Option<ZString> {
-    constructed(object.custom())?.line()
+    let Some(held) = object.custom() else {
+        return warn("The first argument must be a string or a Http\\Cookie object");
+    };
+    constructed(Some(held))?.line()
 }
 
 #[cfg(test)]

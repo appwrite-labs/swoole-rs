@@ -30,8 +30,9 @@ use swoole_rs_zend::{
     bailout::Bailout,
     contain_with, message, string,
     sys::{
-        PHP_STREAM_FLAG_AVOID_BLOCKING, php_stream, php_stream_xport_crypto_param,
-        php_stream_xport_param, sockaddr, timeval, zend_long, zend_result, zend_string,
+        PHP_STREAM_FLAG_AVOID_BLOCKING, PHP_STREAM_FLAG_SUPPRESS_ERRORS, php_stream,
+        php_stream_xport_crypto_param, php_stream_xport_param, sockaddr, timeval, zend_long,
+        zend_result, zend_string,
     },
     value::empty_string,
 };
@@ -156,6 +157,13 @@ const E_NOTICE: i32 = swoole_rs_zend::sys::E_NOTICE.cast_signed();
 struct NetStream {
     socket: Rc<Socket>,
     blocking: std::cell::Cell<bool>,
+    zero_timeout: std::cell::Cell<bool>,
+}
+
+impl NetStream {
+    fn wait_for_io(&self) -> bool {
+        self.blocking.get() && (!self.zero_timeout.get() || self.socket.has_ssl())
+    }
 }
 
 /// Report a trapped bailout through `flag`; `failed` stands in for the result.
@@ -248,6 +256,7 @@ fn alloc(
         let net = Box::into_raw(Box::new(NetStream {
             socket,
             blocking: std::cell::Cell::new(true),
+            zero_timeout: std::cell::Cell::new(swr_zend_stream_default_timeout() == 0),
         }));
         fresh
             .stream()
@@ -299,14 +308,18 @@ fn c_str(bytes: &[u8]) -> &[u8] {
 /// `param` wants it.
 fn parse_address(name: &[u8], param: &mut php_stream_xport_param) -> Option<(CString, i32)> {
     use swoole_rs_hooks::address::{AddressError, parse};
+    if name.contains(&0) {
+        set_error(param, b"The hostname must not contain null bytes");
+        return None;
+    }
     match parse(name) {
-        Ok((host, port)) => Some((CString::new(c_str(host)).unwrap_or_default(), port)),
+        Ok((host, port)) => Some((CString::new(host).ok()?, port)),
         Err(error) => {
             let what = match error {
                 AddressError::Ipv6 => "IPv6 address",
                 AddressError::Address => "address",
             };
-            let name = String::from_utf8_lossy(c_str(name));
+            let name = String::from_utf8_lossy(name);
             set_error(
                 param,
                 format!("Failed to parse {what} \"{name}\"").as_bytes(),
@@ -347,29 +360,33 @@ fn write(stream: Stream<'_>, data: &[u8]) -> Result<isize, Bailout> {
             .send(SendOp::Sync, data)
             .map_or(-1, usize::cast_signed));
     }
-    let mut written = if blocking {
-        socket
-            .send(SendOp::All, data)
-            .map_or(-1, usize::cast_signed)
+    let sent = if net.wait_for_io() {
+        socket.send(SendOp::All, data)
     } else {
-        let written = socket
-            .send(SendOp::Once, data)
-            .map_or(-1, usize::cast_signed);
-        socket.set_error(errno());
-        written
+        write_once(&socket, data, blocking)
     };
-    if written < 0 || written.unsigned_abs() != count {
-        // the caller does not loop on send, and a partial count is meaningless
+    let mut written = sent.map_or(-1, usize::cast_signed);
+    // PHP retries a positive short write. A canceled blocking send must stop that retry.
+    if blocking
+        && written > 0
+        && written.unsigned_abs() < count
+        && socket.error() == libc::ECANCELED
+    {
         written = -1;
+    }
+    if written < 0 {
         let code = socket.error();
         if code != libc::ETIMEDOUT {
             if socket.catch_error(code) == Some(Caught::Wait) {
                 written = 0;
             } else {
-                let reason = socket.message().unwrap_or_default();
-                let reason = reason.to_string_lossy();
-                let message = message!("Send of {count} bytes failed with errno={code} {reason}");
-                report(Report::Docref, E_NOTICE, message.as_cstr())?;
+                if stream.fields(|s| s.flags & PHP_STREAM_FLAG_SUPPRESS_ERRORS == 0) {
+                    let reason = socket.message().unwrap_or_default();
+                    let reason = reason.to_string_lossy();
+                    let message =
+                        message!("Send of {count} bytes failed with errno={code} {reason}");
+                    report(Report::Docref, E_NOTICE, message.as_cstr())?;
+                }
                 set_eof(stream);
             }
         }
@@ -380,6 +397,33 @@ fn write(stream: Stream<'_>, data: &[u8]) -> Result<isize, Bailout> {
         }
     }
     Ok(written)
+}
+
+/// A blocking stream with a zero timeout may retry only while its fd is writable.
+fn write_once(socket: &Socket, data: &[u8], blocking: bool) -> Option<usize> {
+    loop {
+        if let Some(written) = socket.send(SendOp::Once, data) {
+            socket.set_error(0);
+            return Some(written);
+        }
+        let code = errno();
+        if !blocking || socket.catch_error(code) != Some(Caught::Wait) {
+            socket.set_error(code);
+            return None;
+        }
+        let mut fd = [libc::pollfd {
+            fd: socket.fd(),
+            events: libc::POLLOUT,
+            revents: 0,
+        }];
+        match swoole_rs_corebase::sys::poll(&mut fd, 0) {
+            Ok(0) => socket.set_error(libc::ETIMEDOUT),
+            Ok(_) => continue,
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(error) => socket.set_error(error.raw_os_error().unwrap_or(libc::EIO)),
+        }
+        return None;
+    }
 }
 
 swoole_rs_zend::exports! {
@@ -395,13 +439,14 @@ fn read(stream: Stream<'_>, out: &mut [MaybeUninit<u8>]) -> Result<isize, Bailou
     let Some(net) = stream.net() else {
         return Ok(-1);
     };
-    let (socket, blocking) = (Rc::clone(&net.socket), net.blocking.get());
+    let socket = Rc::clone(&net.socket);
     if !vm_active() {
         return Ok(socket
             .recv(RecvOp::Sync, out)
             .map_or(-1, usize::cast_signed));
     }
-    let mut read = if blocking && !stream.fields(|stream| swr_zend_stream_buffered(stream)) {
+    let mut read = if net.wait_for_io() && !stream.fields(|stream| swr_zend_stream_buffered(stream))
+    {
         socket
             .recv(RecvOp::Recv, out)
             .map_or(-1, usize::cast_signed)
@@ -409,7 +454,7 @@ fn read(stream: Stream<'_>, out: &mut [MaybeUninit<u8>]) -> Result<isize, Bailou
         let read = socket
             .recv(RecvOp::Once, out)
             .map_or(-1, usize::cast_signed);
-        socket.set_error(errno());
+        socket.set_error(if read < 0 { errno() } else { 0 });
         read
     };
     if read > 0 {
@@ -578,11 +623,13 @@ extern "C" fn swr_v1_phpruntime_socket_option(
         return socket.check_liveness();
     }
     if let Some(data) = data {
-        meta_data(stream, &socket, data);
+        meta_data(stream, &socket, net.blocking.get(), data);
     }
     if let Some(time) = timeout {
-        // PHP socket streams share this timeout between reads and writes
-        socket.set_timeout(seconds(time), TimeoutKind::RDWR);
+        let zero = time.tv_sec == 0 && time.tv_usec == 0;
+        net.zero_timeout.set(zero);
+        socket.set_error(0);
+        socket.set_timeout(if zero { -1.0 } else { seconds(time) }, TimeoutKind::RDWR);
     }
     let Some(param) = crypto else {
         return true;
@@ -605,7 +652,7 @@ extern "C" fn swr_v1_phpruntime_socket_option(
 
 /// `PHP_STREAM_OPTION_META_DATA_API`: the TLS session, `timed_out`, `eof`
 /// and `blocked`.
-fn meta_data(stream: Stream<'_>, socket: &Socket, data: &mut ArrayMut) {
+fn meta_data(stream: Stream<'_>, socket: &Socket, blocking: bool, data: &mut ArrayMut) {
     if let Some(session) = socket.ssl_session() {
         let protocol: &[u8] = match session.version {
             0x304 => b"TLSv1.3",
@@ -624,7 +671,7 @@ fn meta_data(stream: Stream<'_>, socket: &Socket, data: &mut ArrayMut) {
     }
     data.insert_bool(b"timed_out", socket.error() == libc::ETIMEDOUT);
     data.insert_bool(b"eof", stream.fields(|stream| stream.eof()) != 0);
-    data.insert_bool(b"blocked", true);
+    data.insert_bool(b"blocked", blocking);
 }
 
 /// `PHP_STREAM_OPTION_XPORT_API`.
@@ -674,10 +721,7 @@ fn xport_api(stream: Stream<'_>, socket: &Socket, xport: Xport<'_>) -> Result<()
             p.outputs.returncode = code;
         }
         xport::GET_PEER_NAME => {
-            let mut unwanted = 0;
-            let (textaddr, addr, addrlen) = name_slots(p, &mut unwanted);
-            let code = php_network_get_peer_name(socket.fd(), textaddr, addr, addrlen);
-            p.outputs.returncode = code;
+            p.outputs.returncode = peer_name(socket.fd(), p);
         }
         xport::SEND => {
             if p.inputs.flags & STREAM_OOB == STREAM_OOB {
@@ -717,7 +761,7 @@ fn xport_api(stream: Stream<'_>, socket: &Socket, xport: Xport<'_>) -> Result<()
                 .get(p.how() as usize)
                 .copied()
                 .unwrap_or(libc::SHUT_RDWR);
-            p.outputs.returncode = socket.shutdown(how).into();
+            p.outputs.returncode = status(socket.shutdown(how));
         }
         _ => {}
     }
@@ -841,23 +885,26 @@ fn accept(
         }
         return Ok(false);
     };
-    // The peer's name, as upstream reports it: from an empty address.
-    let peer = SocketAddress::default();
-    populate_name(param, &peer.addr, SocketAddress::CAPACITY);
+    if param.want_textaddr() != 0 || param.want_addr() != 0 {
+        peer_name(client.fd(), param);
+    }
     if nodelay {
         client.set_nodelay(1);
     }
-    let connection = alloc(Rc::new(client), None, false)?;
-    if let Some(connection) = &connection {
-        // The new stream, which names no context yet, counts its reference.
-        connection.stream().fields(|client| {
-            stream.fields(|server| {
-                swr_zend_stream_share_context(client, server);
-            });
-        });
-    }
-    param.outputs.client = connection.map_or(ptr::null_mut(), Fresh::into_ptr);
+    let Some(connection) = alloc(Rc::new(client), None, false)? else {
+        return Ok(false);
+    };
+    connection.stream().fields(|client| {
+        stream.fields(|server| swr_zend_stream_share_context(client, server));
+    });
+    param.outputs.client = connection.into_ptr();
     Ok(true)
+}
+
+fn peer_name(fd: c_int, param: &mut php_stream_xport_param) -> c_int {
+    let mut unwanted = 0;
+    let (textaddr, addr, addrlen) = name_slots(param, &mut unwanted);
+    php_network_get_peer_name(fd, textaddr, addr, addrlen)
 }
 
 /// The output slots of the names the transport parameter wants: `textaddr` and
@@ -922,17 +969,53 @@ fn enable_crypto(stream: Stream<'_>, socket: &Socket, activate: bool) -> Result<
     let context = stream.context();
     if activate && !socket.ssl_available() {
         socket.enable_ssl();
-        if !ssl_set_options(socket, context)? || !socket.ssl_handshake() {
+        if !ssl_set_options(socket, context, true)? || !socket.ssl_handshake() {
             return Ok(false);
         }
     } else if !activate && socket.ssl_available() && socket.has_ssl() {
         socket.ssl_close();
         return Ok(false);
     }
+    if activate
+        && socket.ssl_available()
+        && let Some(expected) = context_option(stream, c"ssl", c"peer_fingerprint")
+        && !fingerprint_matches(socket, &expected)
+    {
+        socket.set_error(swoole_rs_error::ErrorCode::SW_ERROR_SSL_VERIFY_FAILED as c_int);
+        report(Report::Docref, E_WARNING, c"peer_fingerprint match failure")?;
+        return Ok(false);
+    }
     Ok(!(context.is_some()
         && socket.ssl_available()
         && option_true(stream, c"ssl", c"capture_peer_cert")
         && !capture_peer_certs(stream, socket)?))
+}
+
+fn fingerprint_matches(socket: &Socket, expected: &Value) -> bool {
+    let Some(cert) = socket
+        .co()
+        .with_network(swoole_rs_corebase::tls::upstream::ssl_get_peer_certificate)
+        .flatten()
+    else {
+        return false;
+    };
+    if let Some(hex) = expected.bytes() {
+        let algorithm = match hex.len() {
+            32 => c"md5",
+            40 => c"sha1",
+            _ => return false,
+        };
+        return cert.matches_fingerprint(algorithm, hex);
+    }
+    expected.array().is_some_and(|list| {
+        list.count() > 0
+            && list.entries().all(|(key, value)| {
+                let (Some(key), Some(hex)) = (key, value.bytes()) else {
+                    return false;
+                };
+                CString::new(key).is_ok_and(|algorithm| cert.matches_fingerprint(&algorithm, hex))
+            })
+    })
 }
 
 /// `php_openssl_capture_peer_certs`: the `peer_certificate` (and with
@@ -985,17 +1068,27 @@ const SSL_ALIASES: [(&str, &str); 10] = [
 
 /// `socket_ssl_set_options`: an encrypted socket takes the context's `ssl`
 /// options; false if Swoole refuses them.
-fn ssl_set_options(socket: &Socket, context: Option<StreamContext<'_>>) -> Result<bool, Bailout> {
+fn ssl_set_options(
+    socket: &Socket,
+    context: Option<StreamContext<'_>>,
+    is_client: bool,
+) -> Result<bool, Bailout> {
     // `php_swoole_array_get_value_ex`: present and not null.
     let ssl = context
         .and_then(StreamContext::options)
         .and_then(|options| options.get(b"ssl")?.array());
-    let Some(ssl) = ssl.filter(|_| socket.ssl_enabled()) else {
+    if !socket.ssl_enabled() || (ssl.is_none() && !is_client) {
         return Ok(true);
-    };
+    }
     let mut aliases = OwnedArray::default();
+    if is_client {
+        aliases.insert(b"ssl_verify_peer", Owned::bool(true));
+    }
     for (name, alias) in SSL_ALIASES {
-        if let Some(value) = ssl.get(name.as_bytes()) {
+        if let Some(value) = ssl
+            .and_then(|options| options.get(name.as_bytes()))
+            .filter(|value| !value.is_null())
+        {
             aliases.insert(alias.as_bytes(), value.copy());
         }
     }
@@ -1013,6 +1106,7 @@ pub(crate) type FactoryBody = extern "C" fn(
     name: Text<'_>,
     persistent: Option<Text<'_>>,
     context: Option<StreamContext<'_>>,
+    is_client: bool,
     bailed: &mut bool,
     original: &mut Option<crate::transport::Factory>,
 ) -> *mut php_stream;
@@ -1027,6 +1121,7 @@ pub(crate) extern "C" fn transport_factory_body(
     name: Text<'_>,
     persistent: Option<Text<'_>>,
     context: Option<StreamContext<'_>>,
+    is_client: bool,
     flag: &mut bool,
     original: &mut Option<crate::transport::Factory>,
 ) -> *mut php_stream {
@@ -1065,7 +1160,7 @@ pub(crate) extern "C" fn transport_factory_body(
             else {
                 return Ok(ptr::null_mut());
             };
-            if !ssl_set_options(&socket, context)? {
+            if !ssl_set_options(&socket, context, is_client)? {
                 drop(socket);
                 if swr_zend_try_stream_close(stream) != 0 {
                     return Err(Bailout);
@@ -1140,6 +1235,25 @@ fn stream_from_socket(
     Ok(stream)
 }
 
+/// Create a PHP stream resource that takes ownership of the supplied socket fd.
+///
+/// # Errors
+/// Allocating the PHP stream bailed out.
+pub fn socket_resource(
+    fd: c_int,
+    domain: c_int,
+    kind: c_int,
+    protocol: c_int,
+) -> Result<Option<Owned>, Bailout> {
+    Ok(
+        stream_from_socket(fd, domain, kind, protocol)?.map(|stream| {
+            let resource = Owned::default();
+            swr_zend_stream_to_zval(stream, &resource);
+            resource
+        }),
+    )
+}
+
 swoole_rs_zend::handlers! {
     zif_swoole_stream_socket_pair => stream_socket_pair;
 }
@@ -1173,9 +1287,7 @@ fn socket_pair(call: &Call) -> Result<(), Bailout> {
     check_reactor();
     let mut streams = OwnedArray::default();
     for fd in pair {
-        if let Some(stream) = stream_from_socket(fd, domain, kind, protocol)? {
-            let resource = Owned::default();
-            swr_zend_stream_to_zval(stream, &resource);
+        if let Some(resource) = socket_resource(fd, domain, kind, protocol)? {
             streams.push(resource);
         }
     }

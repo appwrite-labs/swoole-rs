@@ -37,7 +37,8 @@ pub struct GlobalImpl {
     creator: u32,
     /// The pool this one replaced in a forked process. Its pages stay mapped, since
     /// the parent's objects in them stay in use, and go with this pool.
-    _inherited: Option<Arc<GlobalImpl>>,
+    inherited: Option<Arc<GlobalImpl>>,
+    task_id: std::sync::OnceLock<(&'static std::sync::atomic::AtomicI64, Arc<Page>)>,
 }
 
 impl GlobalImpl {
@@ -52,8 +53,24 @@ impl GlobalImpl {
             pages: Mutex::new(pages),
             page_size: page,
             creator: if shared { std::process::id() } else { 0 },
-            _inherited: inherited,
+            inherited,
+            task_id: std::sync::OnceLock::new(),
         })
+    }
+
+    fn init_task_id(
+        &self,
+        allocate: impl FnOnce() -> (&'static std::sync::atomic::AtomicI64, Arc<Page>),
+    ) {
+        self.task_id.get_or_init(allocate);
+    }
+
+    fn task_id(&self) -> Option<&std::sync::atomic::AtomicI64> {
+        let mut root = self;
+        while let Some(parent) = root.inherited.as_deref() {
+            root = parent;
+        }
+        root.task_id.get().map(|(word, _page)| *word)
     }
 
     fn pages(&self) -> MutexGuard<'_, Global> {
@@ -466,6 +483,32 @@ pub mod pool {
             crate::fatal("the global memory pool can't be created");
         };
         POOL.replace(Some(ptr::null()), Some(Arc::new(fresh)));
+    }
+
+    /// Allocate the task sequence before the first worker fork. Its pool generation
+    /// owns the mapping until all readers and inherited generations have released it.
+    pub(crate) fn init_task_id() {
+        let Some(root) = POOL.snapshot() else {
+            crate::fatal("no pool for the task ID counter")
+        };
+        root.init_task_id(|| {
+            let Some((words, page)) = scoped_words::<AtomicI64>(1) else {
+                crate::fatal("task ID counter allocation failed")
+            };
+            let [word] = words else {
+                crate::fatal("expected one task ID counter")
+            };
+            (word, page)
+        });
+    }
+
+    /// Keep the inherited generation live while using its task sequence.
+    pub(crate) fn with_task_id<R>(fallback: &AtomicI64, f: impl FnOnce(&AtomicI64) -> R) -> R {
+        let live = POOL.snapshot();
+        f(live
+            .as_deref()
+            .and_then(super::GlobalImpl::task_id)
+            .unwrap_or(fallback))
     }
 
     /// `delete SwooleG.memory_pool`. A thread still reading the pool keeps it mapped.

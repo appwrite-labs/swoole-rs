@@ -48,9 +48,7 @@ const EVENT_DATA_SIZE: usize = swoole_rs_corebase::constants::SW_IPC_MAX_SIZE as
 struct EventData([u8; EVENT_DATA_SIZE]);
 
 thread_local! {
-    /// A copy of the head of the task this task worker last ran, which
-    /// `Server::finish` answers when it is given none. A copy, not a pointer: the
-    /// task's buffer is gone once its callback returns.
+    /// The current task callback's head, restored when nested dispatch returns.
     static LATEST_TASK: Cell<Option<DataHead>> = const { Cell::new(None) };
 }
 
@@ -95,8 +93,15 @@ fn on_task(pool: PoolRef<'_>, worker: Worker<'_>, task: Packed<'_>) -> CallbackR
 
 /// `TaskWorker_onTask`: one task, pipe message, shutdown or command.
 fn run_task(serv: view::Server<'_>, worker: Worker<'_>, task: Packed<'_>) -> CallbackResult {
+    struct RestoreTask(Option<DataHead>);
+    impl Drop for RestoreTask {
+        fn drop(&mut self) {
+            LATEST_TASK.set(self.0);
+        }
+    }
     let head = task.head();
-    LATEST_TASK.set(Some(head));
+    // Restore the enclosing task on every exit, including a PHP bailout.
+    let _restore = RestoreTask(LATEST_TASK.replace(Some(head)));
     worker.set_status(WorkerStatus::busy(true));
     let callbacks = &serv.state().callbacks;
     let ret = match head.event() {
@@ -258,7 +263,7 @@ fn on_pipe_receive(reactor: Running<'_>, event: &mut Event) -> bool {
 /// `Server::finish(data, data_len, flags, current_task)`: the task's result to the
 /// worker that sent it, through its pipe (nonblocking tasks) or the shared result
 /// slot and its notify pipe (blocking ones). With no `current_task`, the task this
-/// worker ran last; false when there is none.
+/// worker is handling; false outside its callback.
 #[must_use]
 pub fn finish(
     serv: view::Server<'_>,
@@ -281,23 +286,22 @@ pub fn finish(
     };
     let flags = flags.c_cast::<u16>();
     let reply = |buf: &mut TaskBuffer, flags| {
+        let packed = buf.pack_result(data, task);
         buf.add_flags(flags);
-        buf.set_kind(ServerEvent::Finish.code());
-        buf.set_fd(task.fd);
+        packed
     };
     let mut buf = TaskBuffer::default();
     let sent = if TaskFlag::from_bits(task.ext_flags).contains(TaskFlag::SW_TASK_NONBLOCK) {
-        if !buf.pack(data) {
+        if !reply(&mut buf, super::nonblocking_flags(flags, task.ext_flags)) {
             log::warning(c"Server::finish", format_args!("large task pack failed()"));
             return false;
         }
-        reply(&mut buf, super::nonblocking_flags(flags, task.ext_flags));
         match stream_connection(worker) {
             Some(connection) => send_stream(connection.socket(), data),
             None => send_pipe_message(
                 crate::process_pool_native(),
                 worker,
-                buf.bytes(),
+                buf.packed().bytes(),
                 PIPE_MASTER,
             ),
         }
@@ -313,21 +317,34 @@ pub fn finish(
             return false;
         };
         let lock = worker.lock();
+        let wait_all = TaskFlag::from_bits(task.ext_flags).contains(TaskFlag::SW_TASK_WAITALL);
+        if !wait_all {
+            if data.len() >= swoole_rs_corebase::constants::SW_IPC_BUFFER_SIZE {
+                _ = lock.map(SharedMutex::lock);
+                let waiting = slot.awaits(task);
+                _ = lock.map(SharedMutex::unlock);
+                if !waiting {
+                    return false;
+                }
+            }
+            // File I/O must not keep the waiter from timing out and reusing its slot.
+            if !reply(&mut buf, flags) {
+                log::warning(c"Server::finish", format_args!("large task pack failed()"));
+                return false;
+            }
+        }
         _ = lock.map(SharedMutex::lock);
-        let stored = if TaskFlag::from_bits(task.ext_flags).contains(TaskFlag::SW_TASK_WAITALL) {
-            write_waitall(slot, &mut buf, data, |buf| reply(buf, flags));
-            true
-        } else if buf.pack(data) {
-            reply(&mut buf, flags);
-            // The source worker's lock, held, keeps this process alone writing its slot.
-            slot.store(buf.bytes());
-            true
-        } else {
-            false
-        };
+        let waiting = slot.awaits(task);
+        if waiting {
+            if wait_all {
+                write_waitall(slot, &mut buf, |buf| reply(buf, flags));
+            } else {
+                slot.store(buf.packed().bytes());
+            }
+        }
         _ = lock.map(SharedMutex::unlock);
-        if !stored {
-            log::warning(c"Server::finish", format_args!("large task pack failed()"));
+        if !waiting {
+            buf.discard();
             return false;
         }
         let flag = 1u64.to_ne_bytes();
@@ -368,8 +385,7 @@ pub fn finish(
 fn write_waitall(
     slot: ResultSlot<'_>,
     buf: &mut TaskBuffer,
-    data: &[u8],
-    reply: impl Fn(&mut TaskBuffer),
+    reply: impl FnOnce(&mut TaskBuffer) -> bool,
 ) {
     let path = slot.result_path();
     let Ok(file) =
@@ -378,11 +394,10 @@ fn write_waitall(
         return;
     };
     // A failed pack leaves the result empty.
-    if !buf.pack(data) {
+    if !reply(buf) {
         log::warning(c"Server::finish", format_args!("large task pack failed()"));
     }
-    reply(buf);
-    let bytes = buf.bytes();
+    let bytes = buf.packed().bytes();
     if swoole_rs_corebase::ossupport::fd_write_all(file, true, bytes) != bytes.len() {
         let (path, len) = (path.to_string_lossy(), bytes.len());
         log::sys_warning(

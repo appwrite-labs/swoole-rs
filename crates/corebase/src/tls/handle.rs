@@ -10,7 +10,7 @@
 use crate::lent::{Count, In, Out, Spare, Wrote, lend_in, lend_spare};
 use crate::reactor::{Socket, SocketFields, SocketSsl};
 use crate::sys::{ReadSlot, Text};
-use crate::tls::context::SslCtx;
+use crate::tls::context::{EvpMd, SslCtx};
 use openssl_sys::{
     BIO, OPENSSL_STACK, SSL, SSL_CIPHER, SSL_CTRL_MODE, SSL_CTRL_SET_TLSEXT_HOSTNAME, SSL_CTX,
     TLSEXT_NAMETYPE_host_name, X509, stack_st_X509,
@@ -35,6 +35,7 @@ unsafe extern "C" {
     /// Writes at most `length` bytes, NUL-terminated, into `buffer`: the length is the
     /// buffer's own, the one value [`ErrorLength`] has.
     safe fn ERR_error_string_n(error: c_ulong, buffer: &mut [u8; 512], length: ErrorLength);
+    safe fn X509_check_ip_asc(cert: NonNull<X509>, name: Text<'_>, flags: c_uint) -> c_int;
     /// Whether the certificate matches the host `name`, which OpenSSL measures up to
     /// its NUL (the length [`Measured`] gives), storing the matched name where told to.
     safe fn X509_check_host(
@@ -43,6 +44,15 @@ unsafe extern "C" {
         length: Measured,
         flags: c_uint,
         peername: Option<&mut *mut c_char>,
+    ) -> c_int;
+    /// A static digest method, or null for an unknown name.
+    safe fn EVP_get_digestbyname(name: Text<'_>) -> Option<&'static EvpMd>;
+    /// OpenSSL writes at most `EVP_MAX_MD_SIZE` bytes and returns their length.
+    safe fn X509_digest(
+        cert: CertRef<'_>,
+        method: &EvpMd,
+        out: &mut [u8; openssl_sys::EVP_MAX_MD_SIZE as usize],
+        length: &mut c_uint,
     ) -> c_int;
     safe fn BIO_s_mem() -> &'static BioMethod;
     /// A new BIO of `method`, its one reference the caller's; null on failure. The
@@ -743,7 +753,14 @@ impl CertRef<'_> {
     /// `Socket::ssl_check_host`'s test: whether the certificate matches the host
     /// `name` under `X509_check_host`.
     #[must_use]
-    pub fn matches_host(self, name: &CStr) -> bool {
+    pub fn matches_host(self, name: &CStr, strict: bool) -> bool {
+        let ip = strict
+            && name
+                .to_str()
+                .is_ok_and(|s| s.parse::<std::net::IpAddr>().is_ok());
+        if ip {
+            return X509_check_ip_asc(self.0, name.into(), 0) == 1;
+        }
         X509_check_host(self, name.into(), Measured::UpToNul, 0, None) == 1
     }
 
@@ -789,6 +806,30 @@ pub enum PemError {
 pub struct Cert(pub(crate) NonNull<X509>);
 
 impl Cert {
+    /// Compare the certificate digest with a hexadecimal fingerprint.
+    #[must_use]
+    pub fn matches_fingerprint(&self, algorithm: &CStr, expected: &[u8]) -> bool {
+        let Some(method) = EVP_get_digestbyname(algorithm.into()) else {
+            return false;
+        };
+        let mut digest = [0; openssl_sys::EVP_MAX_MD_SIZE as usize];
+        let mut length = 0;
+        if X509_digest(self.get(), method, &mut digest, &mut length) != 1
+            || expected.len() != length as usize * 2
+            || length == 0
+        {
+            return false;
+        }
+        digest
+            .iter()
+            .zip(expected.as_chunks::<2>().0)
+            .all(|(&byte, &[high, low])| {
+                let high = char::from(high).to_digit(16);
+                let low = char::from(low).to_digit(16);
+                high == Some(u32::from(byte >> 4)) && low == Some(u32::from(byte & 15))
+            })
+    }
+
     #[must_use]
     pub fn as_ptr(&self) -> *mut X509 {
         self.0.as_ptr()

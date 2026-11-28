@@ -5,7 +5,6 @@ use std::ffi::CStr;
 use swoole_rs_corebase::buffer::string::StringBuffer;
 use swoole_rs_corebase::{ProxyState, log};
 use swoole_rs_hooks::hooked::{swoole_coroutine_close, write};
-use swoole_rs_hooks::socket_extra::{CloseHook, set_close_hook};
 use swoole_rs_hooks::stdio::{
     swoole_coroutine_ftruncate, swoole_coroutine_lseek, swoole_coroutine_open,
 };
@@ -102,9 +101,8 @@ impl Co {
         .flatten()
     }
 
-    /// Connect timeout (0: the default), the close hook and the zend string
-    /// allocator.
-    pub(crate) fn configure_http(self, timeout: f64, hook: CloseHook) {
+    /// Connect timeout (0: the default) and the zend string allocator.
+    pub(crate) fn configure_http(self, timeout: f64) {
         let timeout = if timeout == 0.0 {
             swoole_rs_corebase::reactor::SOCKET_DEFAULTS.connect.get()
         } else {
@@ -112,7 +110,6 @@ impl Co {
         };
         self.set_timeout(timeout, TimeoutKind::CONNECT);
         self.use_zend_strings();
-        set_close_hook(self.handle(), hook);
     }
 
     /// `connect(host, port)` under the timeout `configure_http` set.
@@ -125,13 +122,23 @@ impl Co {
         self.handle().check_bound(event);
     }
 
-    /// The write buffer becomes `data`, then `send_all` of it: whether all went.
-    pub(crate) fn send_buffered(self, data: &[u8]) -> bool {
+    /// Retain the request head and send it with an optional borrowed body.
+    pub(crate) fn send_buffered(self, data: &[u8], body: &[u8]) -> bool {
         self.with_write_buffer(|buffer| {
             buffer.clear();
             buffer.append(data);
         });
-        self.send_all(data)
+        if body.is_empty() {
+            return self.send_all(data);
+        }
+        self.send_vectors([data, body])
+    }
+
+    pub(crate) fn send_vectors<const N: usize>(self, parts: [&[u8]; N]) -> bool {
+        let length = parts.iter().map(|part| part.len()).sum();
+        let vectors = parts.map(std::io::IoSlice::new);
+        let (sent, _, _) = co::vector(self.handle(), co::Vectors::Write(&vectors), true);
+        usize::try_from(sent) == Ok(length)
     }
 
     /// `send_all(data)`: whether all went.

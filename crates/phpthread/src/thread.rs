@@ -33,6 +33,7 @@ const INVALID_PARAMS: i64 = swoole_rs_error::ErrorCode::SW_ERROR_INVALID_PARAMS 
 struct State {
     living: AtomicBool,
     exit_status: AtomicI32,
+    result: std::sync::OnceLock<Box<[u8]>>,
 }
 
 /// Upstream's `PhpThread`.
@@ -66,6 +67,7 @@ method_table! {
         c"isAlive" => zim_swoole_thread_isAlive, &thread::arginfo_class_Swoole_Thread_isAlive, z::ZEND_ACC_PUBLIC;
         c"join" => zim_swoole_thread_join, &thread::arginfo_class_Swoole_Thread_join, z::ZEND_ACC_PUBLIC;
         c"joinable" => zim_swoole_thread_joinable, &thread::arginfo_class_Swoole_Thread_joinable, z::ZEND_ACC_PUBLIC;
+        c"getResult" => zim_swoole_thread_getResult, &thread::arginfo_class_Swoole_Thread_getResult, z::ZEND_ACC_PUBLIC;
         c"getExitStatus" => zim_swoole_thread_getExitStatus, &thread::arginfo_class_Swoole_Thread_getExitStatus, z::ZEND_ACC_PUBLIC;
         c"detach" => zim_swoole_thread_detach, &thread::arginfo_class_Swoole_Thread_detach, z::ZEND_ACC_PUBLIC;
         c"getArguments" => zim_swoole_thread_getArguments, &thread::arginfo_class_Swoole_Thread_getArguments, z::ZEND_ACC_PUBLIC | z::ZEND_ACC_STATIC;
@@ -93,7 +95,7 @@ pub(crate) fn register(minit: &Minit) -> &'static Class {
     &THREAD
 }
 
-/// `__construct(string $script_file, mixed ...$args)`.
+/// `__construct(string $entry, mixed ...$args)`.
 fn construct(call: &Call) {
     let Ok(file) = call.arity(1, u32::MAX).and_then(|()| call.string(1, b"")) else {
         return;
@@ -109,16 +111,22 @@ fn construct(call: &Call) {
     if file.is_empty() {
         call.throw(
             swoole_rs_phpswoole::exception(),
-            c"exec file name is empty",
+            c"thread entry is empty",
             INVALID_PARAMS,
         );
         return;
     }
+    let name = file
+        .strip_prefix(b"\\")
+        .unwrap_or(file)
+        .to_ascii_lowercase();
+    let internal = call
+        .php()
+        .internal_thread_entry(&swoole_rs_zend::ZString::new(&name));
     let argv = if call.num_args() > 1 {
         let argv = Arc::<Array>::default();
         for value in (2..=call.num_args()).filter_map(|n| call.value(n)) {
-            argv.push(value);
-            if bailout::pending() {
+            if !argv.push(&value.dereferenced(), internal) {
                 return;
             }
         }
@@ -126,22 +134,29 @@ fn construct(call: &Call) {
     } else {
         None
     };
-    let (file, state) = (file.to_vec(), Arc::clone(&thread.state));
-    // The OS thread's body, as `std::thread` would run upstream's lambda: straight
-    // into the thread's body, which marks the thread alive before anything allocates
-    // (a new thread's first malloc can map an arena, and `yield.phpt` gives it 10 µs).
+    let (file, state) = (
+        if internal { name } else { file.to_vec() },
+        Arc::clone(&thread.state),
+    );
+    // Publish the running state before pthread_create can return to the parent.
+    state.living.store(true, Ordering::Release);
     let started = thread.thread.start(move |fresh| {
-        let enter = || {
-            state.exit_status.store(0, Ordering::Release);
-            state.living.store(true, Ordering::Release);
-        };
         let exit = |status| {
             state.exit_status.store(status, Ordering::Release);
             state.living.store(false, Ordering::Release);
         };
-        run::run(fresh, &file, argv, enter, exit);
+        run::run_entry(
+            fresh,
+            &file,
+            internal,
+            argv,
+            Some(&state.result),
+            || {},
+            exit,
+        );
     });
     if let Err(errno) = started {
+        thread.state.living.store(false, Ordering::Release);
         // `std::system_error::what()`: the OS message.
         let text = std::ffi::CString::new(host::strerror(errno)).unwrap_or_default();
         call.throw(swoole_rs_phpswoole::exception(), &text, SYSTEM_CALL_FAIL);
@@ -191,6 +206,19 @@ fn detach(call: &Call) {
 fn get_exit_status(call: &Call) {
     with_this(call, |this| {
         call.set_long(i64::from(this.state.exit_status.load(Ordering::Acquire)));
+    });
+}
+
+fn get_result(call: &Call) {
+    if call.arity(0, 0).is_err() {
+        return;
+    }
+    with_this(call, |this| {
+        if !this.constructed.get() || this.state.living.load(Ordering::Acquire) {
+            call.throw_error(c"Thread result is not available before the thread has exited");
+        } else if let Some(bytes) = this.state.result.get() {
+            call.set_owned(host::unserialize(bytes));
+        }
     });
 }
 
@@ -324,6 +352,7 @@ handlers! {
     zim_swoole_thread_isAlive => is_alive;
     zim_swoole_thread_join => join;
     zim_swoole_thread_joinable => joinable;
+    zim_swoole_thread_getResult => get_result;
     zim_swoole_thread_getExitStatus => get_exit_status;
     zim_swoole_thread_detach => detach;
     zim_swoole_thread_getArguments => get_arguments;

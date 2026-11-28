@@ -66,16 +66,11 @@ enum Wait {
     Keep,
 }
 
-/// [`Wait`] at `now`, the stop having started at `exit_time`, with `max_wait` seconds
-/// allowed and the reactor's `timeout` in milliseconds (negative: none). Upstream's
-/// `int` arithmetic over `time_t`.
-fn exit_wait(now: i64, exit_time: i64, max_wait: u32, timeout: i32) -> Wait {
-    let remaining = (i64::from(max_wait) - (now - exit_time)).clamp(0, i64::from(i32::MAX));
-    let remaining = i32::try_from(remaining).unwrap_or(0);
-    if remaining == 0 {
+/// Bound the reactor timeout by the remaining worker shutdown budget, in milliseconds.
+fn exit_wait(limit: i32, timeout: i32) -> Wait {
+    if limit == 0 {
         return Wait::Stop;
     }
-    let limit = remaining.wrapping_mul(1000);
     if timeout < 0 || timeout > limit {
         Wait::Timeout(limit)
     } else {
@@ -131,12 +126,12 @@ mod tests {
     #[test]
     fn try_exit_bounds_the_wait_by_max_wait_time() {
         // Just stopped, 3 seconds allowed, no timeout: wait at most 3 seconds.
-        assert_eq!(exit_wait(100, 100, 3, -1), Wait::Timeout(3000));
-        assert_eq!(exit_wait(101, 100, 3, 5000), Wait::Timeout(2000));
+        assert_eq!(exit_wait(3000, -1), Wait::Timeout(3000));
+        assert_eq!(exit_wait(2000, 5000), Wait::Timeout(2000));
         // Past the limit: stop.
-        assert_eq!(exit_wait(110, 100, 3, -1), Wait::Stop);
+        assert_eq!(exit_wait(0, -1), Wait::Stop);
         // A shorter timeout stands.
-        assert_eq!(exit_wait(100, 100, 30, 500), Wait::Keep);
+        assert_eq!(exit_wait(30_000, 500), Wait::Keep);
     }
 
     #[test]

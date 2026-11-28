@@ -4,6 +4,7 @@
  * 8.4, ZEND_CHECK_STACK_LIMIT), allocator, budget and variadic (printf). */
 #include "shim.h"
 #include "shim_coroutine.h"
+#include "shim_private.h"
 
 #include "zend_builtin_functions.h"
 #include "zend_vm.h"
@@ -12,12 +13,16 @@
 #include "SAPI.h"
 #include <stdio.h>
 
+ZEND_TLS int default_error_reporting = E_ALL;
+
 #define SWR_COROUTINE_PAGE_SIZE 8192
 #define SWR_INVALID_PTR ((void *) -1)
 
 /* globals: snapshot EG, including stack-limit fields present in checked builds. */
 static void save_vm_stack(swr_zend_coroutine_vm *vm) {
     vm->bailout = EG(bailout);
+    vm->current_fiber_context = EG(current_fiber_context);
+    vm->active_fiber = EG(active_fiber);
     vm->vm_stack_top = EG(vm_stack_top);
     vm->vm_stack_end = EG(vm_stack_end);
     vm->vm_stack = EG(vm_stack);
@@ -28,18 +33,22 @@ static void save_vm_stack(swr_zend_coroutine_vm *vm) {
     vm->exception_class = EG(exception_class);
     vm->exception = EG(exception);
     vm->opline_before_exception = EG(opline_before_exception);
-    if (UNEXPECTED(vm->in_silence)) {
-        vm->tmp_error_reporting = EG(error_reporting);
-        EG(error_reporting) = vm->ori_error_reporting;
-    }
+    vm->error_reporting = EG(error_reporting);
 #ifdef ZEND_CHECK_STACK_LIMIT
     vm->stack_base = EG(stack_base);
     vm->stack_limit = EG(stack_limit);
 #endif
 }
 
+/* globals: install the coroutine’s Zend fiber state after a switch. */
+void swr_zend_coroutine_restore_fiber(swr_zend_coroutine_vm *vm) {
+    EG(current_fiber_context) = vm->current_fiber_context;
+    EG(active_fiber) = vm->active_fiber;
+}
+
 /* globals: restore the executor slots for this PHP thread. */
 static void restore_vm_stack(swr_zend_coroutine_vm *vm) {
+    swr_zend_coroutine_restore_fiber(vm);
     EG(bailout) = vm->bailout;
     EG(vm_stack_top) = vm->vm_stack_top;
     EG(vm_stack_end) = vm->vm_stack_end;
@@ -51,9 +60,7 @@ static void restore_vm_stack(swr_zend_coroutine_vm *vm) {
     EG(exception_class) = vm->exception_class;
     EG(exception) = vm->exception;
     EG(opline_before_exception) = vm->opline_before_exception;
-    if (UNEXPECTED(vm->in_silence)) {
-        EG(error_reporting) = vm->tmp_error_reporting;
-    }
+    EG(error_reporting) = vm->error_reporting;
 #ifdef ZEND_CHECK_STACK_LIMIT
     EG(stack_base) = vm->stack_base;
     EG(stack_limit) = vm->stack_limit;
@@ -110,8 +117,9 @@ static zend_function frame_function = {ZEND_INTERNAL_FUNCTION};
 
 /* globals: install a new EG stack and first frame with this build's stack bounds. */
 void swr_zend_coroutine_start(swr_zend_coroutine_vm *from, swr_zend_coroutine_vm *vm, void *stack,
-                              size_t stack_size) {
+                              size_t stack_size, zend_fiber_context *fiber) {
     swr_zend_coroutine_save(from);
+    EG(error_reporting) = default_error_reporting;
     EG(vm_stack) = zend_vm_stack_new_page(SWR_COROUTINE_PAGE_SIZE, NULL);
     EG(vm_stack_top) = EG(vm_stack)->top + ZEND_CALL_FRAME_SLOT;
     EG(vm_stack_end) = EG(vm_stack)->end;
@@ -149,6 +157,13 @@ void swr_zend_coroutine_start(swr_zend_coroutine_vm *from, swr_zend_coroutine_vm
     (void) stack_size;
 #endif
     save_vm_stack(vm);
+    if (fiber) {
+        vm->current_fiber_context = fiber;
+    }
+    if (vm->active_fiber) {
+        vm->creator_fiber = &vm->active_fiber->std;
+        GC_ADDREF(vm->creator_fiber);
+    }
 }
 
 /* bailout: output handlers run PHP under a native jump target. */
@@ -175,12 +190,27 @@ int swr_zend_coroutine_output_reset(void) {
     return OG(handlers).elements ? reset_output_handlers() : 0;
 }
 
-/* globals: destroy the active EG stack before restoring the origin. */
-void swr_zend_coroutine_finish(swr_zend_coroutine_vm *finished, swr_zend_coroutine_vm *origin) {
+static void release_fiber(void *fiber) { OBJ_RELEASE((zend_object *) fiber); }
+
+static void throw_exit(void *exception) { zend_throw_exception_internal(exception); }
+
+/* globals, bailout: transfer an exit to the restored frame inside a native trap. */
+int swr_zend_coroutine_finish(swr_zend_coroutine_vm *finished, swr_zend_coroutine_vm *origin) {
+    zend_object *exit = swr_zend_unwind_exit_pending() ? EG(exception) : NULL;
     zend_vm_stack_destroy();
     finished->vm_stack = NULL;
     finished->execute_data = NULL;
     swr_zend_coroutine_restore(origin);
+    int result = exit ? swr_zend_try(throw_exit, exit) : SWR_ZEND_RETURN;
+    if (finished->creator_fiber) {
+        zend_object *owner = finished->creator_fiber;
+        finished->creator_fiber = NULL;
+        int released = swr_zend_try(release_fiber, owner);
+        if (result == SWR_ZEND_RETURN) {
+            result = released;
+        }
+    }
+    return result;
 }
 
 /* globals: return this executor's main fiber after saving its state. */
@@ -192,7 +222,7 @@ zend_fiber_context *swr_zend_coroutine_main(swr_zend_coroutine_vm *vm) {
 
 /* globals: report the current EG exception from inside the native trap. */
 static int coroutine_catch(void) {
-    if (UNEXPECTED(EG(exception))) {
+    if (UNEXPECTED(EG(exception)) && !swr_zend_unwind_exit_pending()) {
         zend_exception_error(EG(exception), E_ERROR);
         return 1;
     }
@@ -230,9 +260,13 @@ size_t swr_zend_coroutine_stack_usage(const swr_zend_coroutine_vm *vm) {
     return usage;
 }
 
-/* globals: read EG(error_reporting) for this PHP thread. */
-int swr_zend_error_reporting(void) {
-    return EG(error_reporting);
+/* globals: a new environment uses the configured level even when activated under @. */
+void swr_zend_coroutine_snapshot_reporting(void) {
+    if (!EG(error_reporting_ini_entry)) {
+        EG(error_reporting_ini_entry) = zend_hash_find_ptr(EG(ini_directives), ZSTR_KNOWN(ZEND_STR_ERROR_REPORTING));
+    }
+    const zend_ini_entry *entry = EG(error_reporting_ini_entry);
+    default_error_reporting = entry && entry->value ? atoi(ZSTR_VAL(entry->value)) : E_ALL;
 }
 
 /* budget: replacing Zend's writable function pointer in Rust requires unsafe. */
@@ -276,16 +310,13 @@ int swr_zend_autoload_try(swr_zend_autoload_handler handler, zend_string *name, 
 }
 
 /* version: ZEND_EXIT has an opcode handler only before PHP 8.4. */
-void swr_zend_coroutine_opcodes(user_opcode_handler_t exit_handler, user_opcode_handler_t begin_silence,
-                                user_opcode_handler_t end_silence) {
+void swr_zend_coroutine_opcodes(user_opcode_handler_t exit_handler) {
 #if PHP_VERSION_ID < 80400
     _Static_assert(ZEND_EXIT == 79, "crates/phpcoroutines' Exit::OPCODE");
     zend_set_user_opcode_handler(ZEND_EXIT, exit_handler);
 #else
     (void) exit_handler;
 #endif
-    zend_set_user_opcode_handler(ZEND_BEGIN_SILENCE, begin_silence);
-    zend_set_user_opcode_handler(ZEND_END_SILENCE, end_silence);
 }
 
 /* budget: the opcode selects a raw literal or frame slot before ZVAL_DUP. */

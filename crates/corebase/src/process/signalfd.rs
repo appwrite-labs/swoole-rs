@@ -26,6 +26,25 @@ fn bit(signo: c_int) -> Option<(&'static AtomicU64, u64)> {
     Some((MASK.get(signo / 64)?, 1 << (signo % 64)))
 }
 
+/// Route a guarded signal to the descriptor or the native handler.
+pub(super) fn route(signo: c_int, member: bool) -> bool {
+    bit(signo).is_some_and(|(word, bit)| {
+        let old = if member {
+            word.fetch_or(bit, Relaxed)
+        } else {
+            word.fetch_and(!bit, Relaxed)
+        };
+        old & bit != 0
+    })
+}
+
+pub(super) fn update_mask() {
+    let fd = signalfd_fd();
+    if fd != -1 {
+        _ = signalfd(fd, &sigset());
+    }
+}
+
 /// `MASK` as a `sigset_t`.
 fn sigset() -> libc::sigset_t {
     let mut set: libc::sigset_t = sys::zeroed();
@@ -93,14 +112,10 @@ pub fn signalfd_set(signo: c_int, handler: Handler) -> Handler {
     let mut previous = 0;
     let slot = slot(signo);
     if handler == 0 && slot.is_some_and(|slot| slot.activated.load(Relaxed)) {
-        if let Some((word, bit)) = bit(signo) {
-            word.fetch_and(!bit, Relaxed);
-        }
+        route(signo, false);
         slot.into_iter().for_each(Slot::reset);
     } else {
-        if let Some((word, bit)) = bit(signo) {
-            word.fetch_or(bit, Relaxed);
-        }
+        route(signo, true);
         if let Some(slot) = slot {
             previous = slot.handler.swap(handler, Relaxed);
             slot.signo.store(u16::try_from(signo).unwrap_or(0), Relaxed);
@@ -162,6 +177,9 @@ pub fn signalfd_close() {
 #[must_use]
 pub fn signalfd_clear() -> bool {
     let mask = sigset();
+    crate::process::signal::clear_actions(|signo| {
+        sys::sigismember(&mask, signo) == 0 || crate::process::signal::has_native_handler(signo)
+    });
     let result = sigprocmask(libc::SIG_UNBLOCK, &mask);
     signal_reset();
     clear_mask();
@@ -231,7 +249,17 @@ mod tests {
             }
         );
         assert!(matches!(signalfd_receive(fd), Received::ReadFailed(_)));
+        // A native registration made before the descriptor existed also needs clearing.
+        let native = libc::SIGWINCH;
+        let slot = slot(native).unwrap();
+        slot.activated.store(true, Relaxed);
+        slot.signo.store(u16::try_from(native).unwrap(), Relaxed);
+        let previous = crate::process::signal::install(native, libc::SIG_IGN, false, false);
         assert!(signalfd_clear());
+        let cleared = crate::process::signal::install(native, libc::SIG_DFL, false, false);
+        assert_eq!(cleared.unwrap().sa_sigaction, libc::SIG_DFL);
+        crate::process::signal::sigaction(native, previous.as_ref());
+
         signalfd_close();
         assert_eq!(signalfd_fd(), -1);
     }

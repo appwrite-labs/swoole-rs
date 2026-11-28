@@ -5,7 +5,7 @@ The half-close correction is an opt-in fix selected by
 default builds keep upstream's behavior). It drains
 queued stream/file output before graceful close, protects explicit application
 pause/resume, preserves synchronous PROCESS responses across early FIN, retries
-incomplete TLS close_notify, keeps sendfile ownership across EINTR, and ignores
+incomplete TLS close_notify, and ignores
 cached read events after close is queued. See the
 [native contract](../../../native/halfclose/contract.md).
 

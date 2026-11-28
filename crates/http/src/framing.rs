@@ -94,7 +94,7 @@ fn request_line(input: &[u8], frame: &mut HttpFrame) -> bool {
             2 => {
                 if byte != b' ' {
                     frame.version = match input.get(at..at + 8) {
-                        None => return false,
+                        None => break,
                         Some(b"HTTP/1.1") => HttpVersion::Http11 as u32,
                         Some(b"HTTP/1.0") => HttpVersion::Http10 as u32,
                         Some(_) => {
@@ -111,8 +111,8 @@ fn request_line(input: &[u8], frame: &mut HttpFrame) -> bool {
         }
         at += 1;
     }
-    // The native implementation forms input.end()+8 here even when no version
-    // was found. Keep partial state but reject that out-of-allocation pointer.
+    // A zero method tells the read loop to retry with the next packet.
+    frame.method = 0;
     false
 }
 /// Offset of the first CRLFCRLF that separates HTTP headers from the body.
@@ -145,8 +145,8 @@ pub fn expect(input: &[u8]) -> bool {
         at += cr;
         if length - at > 9 {
             at += 2;
-            if starts(tail(input, at), b"Expect: ") {
-                return starts(tail(input, at + 8), b"100-continue");
+            if starts(tail(input, at), b"Expect:") {
+                return starts(super::skip_ows(tail(input, at + 7)), b"100-continue");
             }
             at += 1;
         }
@@ -195,7 +195,7 @@ pub fn header_value(input: &[u8], start: usize, end: usize, name: &[u8]) -> Opti
                 if tail(input, at).starts_with(b"\r\n") {
                     return Some(HttpSpan {
                         offset: buffer,
-                        length: at - buffer,
+                        length: super::rtrim_ows(input.get(buffer..at)?).len(),
                     });
                 }
             }
@@ -208,21 +208,6 @@ pub fn header_value(input: &[u8], start: usize, end: usize, name: &[u8]) -> Opti
 #[cfg(test)]
 mod tests {
     use super::*;
-    /// The native byte-at-a-time loop the memchr scan must match.
-    fn expect_reference(input: &[u8]) -> i32 {
-        let (length, mut at) = (input.len(), 0);
-        while at < length {
-            if input[at] == b'\r' && length - at > 9 {
-                at += 2;
-                if starts(&input[at..], b"Expect: ") {
-                    return i32::from(starts(&input[at + 8..], b"100-continue"));
-                }
-                at += 1;
-            }
-            at += 1;
-        }
-        0
-    }
     #[test]
     fn version_ids_match_the_pinned_http_enum() {
         assert_eq!(
@@ -232,41 +217,6 @@ mod tests {
         );
     }
 
-    #[test]
-    fn expect_scan_matches_the_native_loop() {
-        // Every string over the bytes the loop branches on, up to six long.
-        let alphabet = b"\r\nEx";
-        let mut inputs = vec![Vec::new()];
-        for _ in 0..6 {
-            let longer: Vec<Vec<u8>> = inputs
-                .iter()
-                .flat_map(|s| alphabet.iter().map(move |&b| [s.as_slice(), &[b]].concat()))
-                .collect();
-            inputs.extend(longer);
-        }
-        for prefix in ["", "x", "\r", "\r\n", "GET / HTTP/1.1"] {
-            for header in [
-                "\r\nExpect: 100-continue",
-                "\r\nexpect: 100-CONTINUE",
-                "\r\nExpect: nope",
-                "\r\nExpect: 100",
-                "\r\nX: 1\r\nExpect: 100-continue",
-            ] {
-                for suffix in ["", "\r\n", "\r\n\r\nbody\r"] {
-                    inputs.push([prefix, header, suffix].concat().into_bytes());
-                }
-            }
-        }
-        for input in &inputs {
-            assert_eq!(
-                i32::from(expect(input)),
-                expect_reference(input),
-                "{:?}",
-                String::from_utf8_lossy(input)
-            );
-        }
-        assert!(expect(b"GET / HTTP/1.1\r\nExpect: 100-continue\r\n\r\n"));
-    }
     /// The native loop, comparing the name at every byte of a line.
     fn header_value_reference(input: &[u8], start: usize, end: usize, name: &[u8]) -> HttpSpan {
         let input = &input[..end];
@@ -295,7 +245,10 @@ mod tests {
                 2 if input[at..].starts_with(b"\r\n") => {
                     return HttpSpan {
                         offset: buffer,
-                        length: at - buffer,
+                        length: input[buffer..at]
+                            .iter()
+                            .rposition(|b| !matches!(b, b' ' | b'\t'))
+                            .map_or(0, |last| last + 1),
                     };
                 }
                 _ => {}
@@ -344,8 +297,10 @@ mod tests {
         );
         let mut f = HttpFrame::default();
         assert!(!request_line(b"GET /long-target HTTP/1", &mut f));
-        assert_eq!(f.excepted, 0);
+        assert_eq!((f.method, f.excepted), (0, 0));
         assert_eq!(f.url_length, 12);
+        assert!(!request_line(b"GET /long-target", &mut f));
+        assert_eq!((f.method, f.excepted), (0, 0));
         let mut f = HttpFrame::default();
         assert!(request_line(b"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n", &mut f));
         assert_eq!(f.offset, 24);

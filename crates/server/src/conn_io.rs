@@ -19,7 +19,7 @@ use swoole_rs_corebase::reactor::{Event, Heap, SendStall, Socket, SocketFields, 
 use swoole_rs_corebase::timer::{del_id, delay_held};
 use swoole_rs_corebase::tls::Accept;
 use swoole_rs_corebase::tls::upstream as tls;
-use swoole_rs_corebase::{CCast, DataHead, microtime};
+use swoole_rs_corebase::{CCast, CellExt, DataHead, microtime};
 
 use crate::base_factory::SendData;
 use crate::callbacks::CallbackKind;
@@ -53,33 +53,34 @@ pub(crate) fn read(serv: view::Server<'_>, reactor: Reactor, event: &mut Event) 
 fn read_as(prequeue: bool, serv: view::Server<'_>, reactor: Reactor, event: &mut Event) -> bool {
     let state = serv.state();
     let fd = event.fd();
-    let conn = state.connection(c_long::from(fd), Lookup::ByFd);
-    // The server closed the connection (and the fd may be reused) before the event.
-    let Some(conn) = conn.filter(|conn| conn.server_fd() != 0) else {
-        return true;
-    };
-    if prequeue {
-        let Some((notified, want_read)) = event.socket().map(|s| {
-            s.read(|s| {
-                (
-                    s.close_reported(),
-                    !s.ssl().is_null() && s.tls_wants().contains(Events::READ),
-                )
-            })
-        }) else {
-            return true;
-        };
-        if notified {
-            return true;
-        }
-        // Once a close is queued, a read only drives a TLS shutdown that wants one.
-        if conn.close_queued() {
-            return !want_read || write(serv, reactor, event);
-        }
-    }
     let Some(sock) = event.socket() else {
         return true;
     };
+    let Some(conn) = state
+        .connection(c_long::from(fd), Lookup::ByFd)
+        .filter(|conn| {
+            conn.is_active()
+                && conn
+                    .socket()
+                    .is_some_and(|own| own.as_ptr() == sock.as_ptr())
+        })
+    else {
+        return true;
+    };
+    if conn.close_queued() {
+        // The optional TLS drain may still need a readable event to finish its write.
+        return !prequeue
+            || !sock.read(|s| !s.ssl().is_null() && s.tls_wants().contains(Events::READ))
+            || write(serv, reactor, event);
+    }
+    if conn.closed().load(SeqCst) != 0
+        || conn.peer_closed()
+        || conn.recv_paused()
+        || conn.timer().is_some()
+        || (prequeue && sock.read(SocketFields::close_reported))
+    {
+        return true;
+    }
     // The slot found above is `fd`'s, so its listener names the port.
     let port = serv.port_by_server_fd(conn.server_fd());
     // A plain stream goes straight to its port reader. Only a datagram handler
@@ -133,7 +134,8 @@ fn read_as(prequeue: bool, serv: view::Server<'_>, reactor: Reactor, event: &mut
     let config = state.config_ref();
     let max = config.max_queued_bytes.get();
     let process = config.mode_ == Mode::Process;
-    if process && max != 0 && conn.recv_queued_bytes().load(SeqCst) > max {
+    if process && max != 0 && conn.timer().is_none() && conn.recv_queued_bytes().load(SeqCst) > max
+    {
         conn.set_waiting_time(1);
         if resume_timer(conn) {
             reactor.interest(sock, swoole_rs_corebase::reactor::Interest::RemoveRead);
@@ -162,35 +164,35 @@ fn verify_ssl(
     let Some(conn) = state.connection(c_long::from(sock.fd()), Lookup::ByFd) else {
         return Handshake::Error;
     };
-    conn.set_ssl_ready(true);
     let config = port.map(view::Port::config);
     let (verify_peer, allow_self_signed) = config
         .and_then(|config| config.tls.settings.get())
         .map_or_default(|settings| (settings.verify_peer(), settings.allow_self_signed()));
     let peer =
         || with_thread_buffer(|buffer| tls::socket_ssl_peer_certificate_string(sock, buffer));
-    let verified = || tls::socket_ssl_verify(sock, allow_self_signed);
+    let verified = || {
+        tls::require_peer_certificate(sock, c"ReactorThread_verify_ssl_state")
+            && tls::socket_ssl_verify(sock, allow_self_signed)
+    };
     let wanted = config.is_some_and(client_cert_file);
-    match certificate(wanted, verify_peer, peer, verified) {
-        Certificate::Rejected => return Handshake::Error,
-        Certificate::Dispatched => {
-            // The peer's certificate filled this thread's buffer: a copy, which the
-            // dispatch reads while the buffer is free to lend again.
-            let cert = with_thread_buffer(|buffer| buffer.view().to_vec());
-            let info = DataHead {
-                fd: sock.fd().into(),
-                kind: ServerEvent::Connect.code(),
-                reactor_id: reactor.handle().id().cast_signed(),
-                ..DataHead::default()
-            };
-            hybrid().factory_dispatch(serv, &mut SendData::new(info, &cert));
-        }
-        Certificate::None => {
-            let on_connect = state.callbacks.slot(CallbackKind::Connect);
-            if on_connect.is_set() {
-                crate::server_methods::notify(serv, conn, ServerEvent::Connect);
-            }
-        }
+    let fate = certificate(wanted, verify_peer, peer, verified);
+    if fate == Certificate::Rejected {
+        return Handshake::Error;
+    }
+    conn.set_ssl_ready(true);
+    if fate == Certificate::Dispatched {
+        // The peer's certificate filled this thread's buffer: a copy, which the
+        // dispatch reads while the buffer is free to lend again.
+        let cert = with_thread_buffer(|buffer| buffer.view().to_vec());
+        let info = DataHead {
+            fd: sock.fd().into(),
+            kind: ServerEvent::Connect.code(),
+            reactor_id: reactor.handle().id().cast_signed(),
+            ..DataHead::default()
+        };
+        hybrid().factory_dispatch(serv, &mut SendData::new(info, &cert));
+    } else if state.callbacks.slot(CallbackKind::Connect).is_set() {
+        crate::server_methods::notify(serv, conn, ServerEvent::Connect);
     }
     if state.config_ref().enable_delay_receive.get() && !reactor.del(sock) {
         return Handshake::Error;
@@ -216,14 +218,12 @@ fn certificate(
     peer: impl FnOnce() -> bool,
     verified: impl FnOnce() -> bool,
 ) -> Certificate {
-    if !wanted {
+    if verify_peer && !verified() {
+        Certificate::Rejected
+    } else if !wanted {
         Certificate::None
     } else if peer() {
-        if !verify_peer || verified() {
-            Certificate::Dispatched
-        } else {
-            Certificate::Rejected
-        }
+        Certificate::Dispatched
     } else if verify_peer {
         Certificate::Rejected
     } else {
@@ -275,8 +275,8 @@ fn resume_data_receiving(serv: view::Server<'_>, fd: c_long) {
         }
     }
     // The firing timer's reactor: this thread's.
-    Reactor::thread().interest(socket, swoole_rs_corebase::reactor::Interest::AddRead);
     conn.set_timer(None);
+    crate::send::resume_read(Reactor::thread(), conn, socket);
 }
 
 /// Built with the `halfclose` feature.
@@ -369,16 +369,8 @@ pub(crate) fn write(serv: view::Server<'_>, reactor: Reactor, event: &mut Event)
         }
     }
     if !conn.peer_closed() && !removed && empty {
-        // A notified close no longer reads: it only drains.
-        if BUILT_PREQUEUE {
-            reactor.interest(sock, swoole_rs_corebase::reactor::Interest::RemoveWrite);
-        } else {
-            reactor.change(
-                sock,
-                swoole_rs_corebase::reactor::ChangeOp::Set,
-                Events::READ,
-            );
-        }
+        // Draining output preserves an application pause on reads.
+        reactor.interest(sock, swoole_rs_corebase::reactor::Interest::RemoveWrite);
     }
     true
 }
@@ -395,7 +387,7 @@ pub(crate) fn peer_close(serv: view::Server<'_>, reactor: Reactor, event: &Event
     if state.config_ref().disable_notify.get() {
         return close_connection(serv, reactor, Some(sock));
     }
-    if !reactor.del(*sock) {
+    if !sock.read(SocketFields::has_left_reactor) && !reactor.del(*sock) {
         return false;
     }
     if conn.close_queued() {
@@ -404,15 +396,117 @@ pub(crate) fn peer_close(serv: view::Server<'_>, reactor: Reactor, event: &Event
     if !sock.edit(SocketFields::claim_close_report) {
         return true;
     }
-    let mut head = DataHead {
-        reactor_id: i16::try_from(reactor.handle().id()).unwrap_or_default(),
-        fd: c_long::from(fd),
-        kind: ServerEvent::Close.code(),
-        ..DataHead::default()
-    };
     // The connection is no longer available.
     conn.set_peer_closed(fin_ends(BUILT_PREQUEUE, state, conn));
-    crate::hybrid::hybrid().factory_notify(serv, &mut head)
+    if conn.peer_closed() && !conn.close_reset() {
+        sock.read(|s| s.finish_stream(false));
+    }
+    let session = conn.session_id();
+    let original = sock.as_ptr();
+    // v6.3 process dispatch requires a recovery timer before writing CLOSE to the worker pipe.
+    if !track_worker_close(serv, reactor, conn) {
+        swoole_rs_corebase::log::warning(
+            c"Server::request_close",
+            format_args!(
+                "failed to monitor worker exit for session#{session}; releasing transport"
+            ),
+        );
+        return close_connection(serv, reactor, Some(sock));
+    }
+    if crate::server_methods::notify(serv, conn, ServerEvent::Close) {
+        return true;
+    }
+    // The notification can enter PHP and retire this session before returning.
+    let Some(socket) = serv
+        .verified(session)
+        .and_then(crate::Connection::socket)
+        .filter(|socket| socket.as_ptr() == original)
+    else {
+        return false;
+    };
+    swoole_rs_corebase::log::error_log(
+        swoole_rs_corebase::log::LogLevel::SW_LOG_WARNING,
+        swoole_rs_error::ErrorCode::SW_ERROR_SESSION_CLOSING as c_int,
+        c"Server::request_close",
+        format_args!("close notification failed for session#{session}; releasing transport"),
+    );
+    crate::conn_io::close_connection(serv, reactor, Some(socket))
+}
+
+/// The owning process-mode reactor checks pending closes after a manager-reaped exit.
+/// An acknowledgement removes the session before its descriptor can be reused.
+fn track_worker_close(serv: view::Server<'_>, reactor: Reactor, conn: Connection<'_>) -> bool {
+    if serv.config().mode_ != Mode::Process || reactor.handle().wait_exit() {
+        return true;
+    }
+    let id = usize::from(reactor.handle().id());
+    let Some(thread) = serv.state().tables_ref().reactor_thread(id) else {
+        return false;
+    };
+    if thread.close_timer.get().is_none() {
+        let timer = swoole_rs_corebase::timer::add_fn(1000, true, move || {
+            if let Some(serv) = reactor.server() {
+                check_worker_closes(serv, reactor, id);
+            }
+        });
+        let Some(timer) = timer else { return false };
+        thread.close_timer.set(Some(timer));
+    }
+    thread.waiting_close.with_taken(|waiting| {
+        if waiting.is_empty() {
+            thread.last_worker_exit.set(None);
+        }
+        waiting.push(conn.session_id());
+        conn.set_close_wait_index(waiting.len());
+    });
+    true
+}
+
+fn check_worker_closes(serv: view::Server<'_>, reactor: Reactor, id: usize) {
+    let Some(thread) = serv.state().tables_ref().reactor_thread(id) else {
+        return;
+    };
+    if thread
+        .waiting_close
+        .with_taken(|waiting| waiting.is_empty())
+    {
+        if let Some(timer) = thread.close_timer.take() {
+            del_id(timer);
+        }
+        return;
+    }
+    let exits = serv
+        .counters()
+        .worker_exits
+        .load(core::sync::atomic::Ordering::Acquire);
+    if thread.last_worker_exit.replace(Some(exits)) == Some(exits) {
+        return;
+    }
+    let mut claimed = thread.waiting_close.with_taken(|waiting| {
+        waiting
+            .iter()
+            .filter_map(|&session| {
+                let pid = serv
+                    .verified(session)?
+                    .close_callback_pid()
+                    .load(core::sync::atomic::Ordering::Acquire);
+                (pid > 0).then_some((pid, session))
+            })
+            .collect::<Vec<_>>()
+    });
+    claimed.sort_unstable();
+    for group in claimed.chunk_by(|a, b| a.0 == b.0) {
+        if let Some(&(pid, _)) = group.first()
+            && swoole_rs_corebase::sys::kill(pid, 0)
+                .is_err_and(|e| e.raw_os_error() == Some(libc::ESRCH))
+        {
+            for &(_, session) in group {
+                if let Some(conn) = serv.verified(session) {
+                    close_connection(serv, reactor, conn.socket());
+                }
+            }
+        }
+    }
 }
 
 /// Whether the peer's FIN ends the connection. A synchronous process worker with
@@ -481,6 +575,22 @@ pub(crate) fn close_connection(
     }
     if !removed && !reactor.del(*sock) {
         return false;
+    }
+    if let Some(index) = conn.close_wait_index().checked_sub(1)
+        && let Some(thread) = state
+            .tables_ref()
+            .reactor_thread(usize::from(reactor.handle().id()))
+    {
+        thread.waiting_close.with_taken(|waiting| {
+            waiting.swap_remove(index);
+            conn.set_close_wait_index(0);
+            if let Some(moved) = waiting
+                .get(index)
+                .and_then(|&session| serv.verified(session))
+            {
+                moved.set_close_wait_index(index + 1);
+            }
+        });
     }
     count_close(state, port, reactor);
     let ssl = sock.read(|s| !s.ssl().is_null());
@@ -582,6 +692,12 @@ pub(crate) mod tests {
     /// The live server with sessions 1 and 2 accepted, and their clients.
     pub(crate) fn accepted() -> (LiveServer, [std::net::TcpStream; 2]) {
         let live = LiveServer::new();
+        let bus = crate::reactor_ops::PoolBus::std(swoole_rs_bus::MessageBus::create(
+            swoole_rs_corebase::constants::SW_BUFFER_SIZE_STD as usize,
+        ));
+        let threads =
+            crate::reactor_ops::ThreadRecord::new_array(1, crate::objects::Bus::over(&bus));
+        live.state().tables_ref().install_reactor_threads(threads);
         let clients = [(); 2].map(|()| {
             let client = live.connect();
             let event = live.accept_event();
@@ -649,17 +765,40 @@ pub(crate) mod tests {
 
     #[test]
     fn peer_close_notifies_once() {
-        let (live, _clients) = accepted();
+        let (live, mut clients) = accepted();
         let (serv, reactor) = (live.server(), live.reactor());
         let conn = session(&live, 1);
         let fd = conn.fd();
+        clients[0].shutdown(std::net::Shutdown::Write).unwrap();
+        let mut poll = [libc::pollfd {
+            fd,
+            events: libc::POLLIN,
+            revents: 0,
+        }];
+        assert_eq!(swoole_rs_corebase::sys::poll(&mut poll, 2000).unwrap(), 1);
+        assert_eq!(
+            tls::recv(*conn.socket().unwrap(), &mut [0u8; 1], 0),
+            Some(0)
+        );
         let event = conn.event(0, 0);
         assert!(peer_close(serv, reactor, &event));
-        let close = Call::Notify(c_long::from(fd), 0, ServerEvent::Close.code(), 0);
+        let close = Call::Notify(
+            c_long::from(fd),
+            0,
+            ServerEvent::Close.code(),
+            u16::try_from(live.listener_fd).unwrap(),
+        );
         assert_eq!(calls(), [close]);
         assert!(conn.peer_closed(), "upstream: the connection is gone");
         assert!(conn.socket().unwrap().read(|s| s.close_notified));
         assert!(conn.is_active(), "the worker closes it");
+        clients[0]
+            .set_read_timeout(Some(std::time::Duration::from_secs(2)))
+            .unwrap();
+        assert_eq!(
+            std::io::Read::read(&mut clients[0], &mut [0; 1]).unwrap(),
+            0
+        );
 
         let conn = session(&live, 2);
         conn.set_close_queued(true);
@@ -667,6 +806,16 @@ pub(crate) mod tests {
         assert_eq!(calls(), [], "a queued close closes now");
         assert!(closed(conn));
         assert!(!peer_close(serv, reactor, &conn.event(0, 0)), "gone");
+    }
+
+    #[test]
+    fn peer_close_releases_a_session_when_monitoring_is_unavailable() {
+        let (mut live, _clients) = accepted();
+        drop(live.tables_mut().take_reactor_threads());
+        let conn = session(&live, 1);
+        assert!(peer_close(live.server(), live.reactor(), &conn.event(0, 0)));
+        assert!(closed(conn));
+        assert_eq!(calls(), []);
     }
 
     #[test]
@@ -822,7 +971,7 @@ pub(crate) mod tests {
         assert_eq!(live.counters().total_recv_bytes.load(SeqCst), 5);
         assert_eq!(live.port_counters().total_recv_bytes.load(SeqCst), 5);
         assert_eq!(conn.waiting_time(), 0, "no queue limit");
-        conn.set_server_fd(0);
+        conn.active().store(false, SeqCst);
         assert!(read(serv, reactor, &mut conn.event(0, 0)));
         assert_eq!(reads(), [], "a stale event");
     }
@@ -887,11 +1036,8 @@ pub(crate) mod tests {
         let (serv, reactor) = (live.server(), live.reactor());
         let conn = session(&live, 1);
         conn.set_close_queued(true);
-        assert!(
-            !read_as(false, serv, reactor, &mut conn.event(0, 0)),
-            "the port's result"
-        );
-        assert_eq!(reads(), [conn.fd()], "upstream reads");
+        assert!(read_as(false, serv, reactor, &mut conn.event(0, 0)));
+        assert_eq!(reads(), [], "v6.3 stops reading while queued output drains");
         assert!(read_as(true, serv, reactor, &mut conn.event(0, 0)));
         assert_eq!(reads(), [], "a queued plain close is not read");
         conn.set_close_queued(false);
@@ -911,8 +1057,8 @@ pub(crate) mod tests {
         };
         assert_eq!(
             fate(false, true, false, false),
-            Certificate::None,
-            "none wanted"
+            Certificate::Rejected,
+            "verification also applies without a client certificate file"
         );
         assert_eq!(
             fate(true, true, false, false),

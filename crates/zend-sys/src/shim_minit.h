@@ -19,11 +19,11 @@ bool swr_zend_minit_class_constant_string(zend_class_entry *ce, const char *name
 
 /* zend_declare_property of a default that is not refcounted (false for one that
  * is, where Zend raises a fatal error), and zend_declare_property_string. */
-bool swr_zend_minit_property(zend_class_entry *ce, const char *name, const zval *value, int access);
+bool swr_zend_minit_property(zend_class_entry *ce, const char *name, const zval *value, int access, uint32_t mask);
 void swr_zend_minit_property_string(zend_class_entry *ce, const char *name, const char *value, int access);
 
 /* zend_add_parameter_attribute(method `lcname` of `ce`, `offset`, SensitiveParameter).
- * False when `ce` has no such internal method or it takes no such parameter. */
+ * A null class selects the global function table. False for a missing function or parameter. */
 bool swr_zend_minit_sensitive_parameter(zend_class_entry *ce, const char *lcname, uint32_t offset);
 /* cfg_get_string(name): the php.ini entry's string, which the configuration
  * keeps for the process; null when it is unset or no string (an array entry). */

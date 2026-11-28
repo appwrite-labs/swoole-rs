@@ -7,25 +7,25 @@
 use super::session::{Session, SessionState, Stream};
 use libc::c_int;
 use std::ffi::{CStr, CString};
-use swoole_rs_corebase::CCast;
-use swoole_rs_http::status::REQUEST_ENTITY_TOO_LARGE;
+use swoole_rs_corebase::timer::Deadline;
+use swoole_rs_corebase::{CCast, CellExt};
+use swoole_rs_http::status::{BAD_REQUEST, REQUEST_ENTITY_TOO_LARGE};
 use swoole_rs_http2::frame_flag::{
     ACK as FLAG_ACK, END_HEADERS as FLAG_END_HEADERS, END_STREAM as FLAG_END_STREAM,
     PADDED as FLAG_PADDED, PRIORITY as FLAG_PRIORITY,
 };
 use swoole_rs_http2::{
     FileCompletion, FrameAction, FrameType, GOAWAY_SIZE, HeaderKind, HeaderRole, Http2HeaderPlan,
-    Http2RespondFacts, Http2WindowPlan, Media, PING_PAYLOAD, Respond, WindowAction, decode_packet,
+    Http2RespondFacts, Media, PING_PAYLOAD, Respond, decode_packet,
     hpack::{Encoder, Error},
-    send_frame_size, sw_rs_http2_chunk, sw_rs_http2_content_length_rejected,
-    sw_rs_http2_file_complete, sw_rs_http2_header_defaults, sw_rs_http2_header_plan,
-    sw_rs_http2_headers_flags, sw_rs_http2_inflate_step, sw_rs_http2_media_kind,
-    sw_rs_http2_pack_frame_header, sw_rs_http2_respond_next, sw_rs_http2_response_status,
-    sw_rs_http2_setting_plan, sw_rs_http2_window_action, sw_rs_http2_window_plan,
+    send_frame_size, sw_rs_http2_file_complete, sw_rs_http2_header_defaults,
+    sw_rs_http2_header_plan, sw_rs_http2_headers_flags, sw_rs_http2_inflate_step,
+    sw_rs_http2_media_kind, sw_rs_http2_pack_frame_header, sw_rs_http2_respond_next,
+    sw_rs_http2_response_status, sw_rs_http2_setting_plan, valid_content_length,
 };
 use swoole_rs_phpserver::RecvData;
-use swoole_rs_server::{Connection, view};
-use swoole_rs_zend::{Array, HeldArray, Value as Zval, ZString, bailout};
+use swoole_rs_server::{Connection, server_methods, view};
+use swoole_rs_zend::{Array, HeldArray, Owned, OwnedArray, Value as Zval, ZString, bailout};
 
 /// Frame sizes, types and flags (`swoole_http2.h`).
 const FRAME_HEADER: usize = swoole_rs_http2::FRAME_HEADER_SIZE as usize;
@@ -35,6 +35,7 @@ const MISSING_DATE: u32 = 16;
 const MISSING_CONTENT_TYPE: u32 = 32;
 use swoole_rs_http2::setting_id;
 /// `swoole::http2::Settings` field indexes.
+const MAX_CONCURRENT_STREAMS: usize = 2;
 const INIT_WINDOW_SIZE: usize = 3;
 const MAX_FRAME_SIZE: usize = 4;
 /// Swoole error codes and log levels.
@@ -42,8 +43,7 @@ const PHP_FATAL_ERROR: c_int = swoole_rs_error::ErrorCode::SW_ERROR_PHP_FATAL_ER
 const NO_PAYLOAD: c_int = swoole_rs_error::ErrorCode::SW_ERROR_NO_PAYLOAD as c_int;
 const STREAM_NOT_FOUND: c_int =
     swoole_rs_error::ErrorCode::SW_ERROR_HTTP2_STREAM_NOT_FOUND as c_int;
-const STREAM_IGNORE: c_int = swoole_rs_error::ErrorCode::SW_ERROR_HTTP2_STREAM_IGNORE as c_int;
-const CO_TIMEDOUT: c_int = swoole_rs_error::ErrorCode::SW_ERROR_CO_TIMEDOUT as c_int;
+use super::CO_TIMEDOUT;
 
 use crate::decimal;
 use crate::http2::Field;
@@ -61,7 +61,11 @@ pub(crate) fn set(ctx: Ctx, field: Field, value: u32) {
 }
 
 fn send(ctx: Ctx, data: &[u8]) -> bool {
-    ctx.send(data)
+    if get(ctx, Field::CoSocket) != 0 {
+        SessionState::of(ctx).is_some_and(|session| session.send(ctx, &[data]))
+    } else {
+        ctx.send(data)
+    }
 }
 
 fn close(ctx: Ctx) {
@@ -135,13 +139,13 @@ fn send_u32_frame(ctx: Ctx, kind: FrameType, stream_id: u32, value: u32) -> bool
     send(ctx, &frame)
 }
 
-fn window_update(ctx: Ctx, stream_id: u32, size: u32) {
-    send_u32_frame(ctx, FrameType::WindowUpdate, stream_id, size);
+fn window_update(ctx: Ctx, stream_id: u32, size: u32) -> bool {
+    send_u32_frame(ctx, FrameType::WindowUpdate, stream_id, size)
 }
 
 /// `Stream::reset`.
-pub(crate) fn reset(ctx: Ctx, stream_id: u32, code: u32) {
-    send_u32_frame(ctx, FrameType::RstStream, stream_id, code);
+pub(crate) fn reset(ctx: Ctx, stream_id: u32, code: u32) -> bool {
+    send_u32_frame(ctx, FrameType::RstStream, stream_id, code)
 }
 
 /// `swoole_http2_server_ping`.
@@ -157,20 +161,33 @@ pub(crate) fn goaway(ctx: Ctx, code: i64, data: &[u8]) -> bool {
         return false;
     };
     let last_stream_id = session.last_stream_id.get();
-    let (flags, code) = (u32::from(code.c_cast::<u8>()), code.c_cast::<u32>());
+    let max_frame = send_frame_size(session.remote[MAX_FRAME_SIZE].get()) as usize;
+    if data.len() > max_frame - GOAWAY_SIZE {
+        bailout::defer(swoole_rs_zend::report(
+            swoole_rs_zend::E_WARNING,
+            c"GOAWAY debug data exceeds the peer's maximum frame size",
+        ));
+        return false;
+    }
+    let sent = send(ctx, &goaway_frame(last_stream_id, code.c_cast(), data));
+    if sent {
+        session.shutting_down.set(true);
+    }
+    sent
+}
+
+fn goaway_frame(last_stream_id: u32, code: u32, data: &[u8]) -> Vec<u8> {
     let mut frame = Vec::with_capacity(FRAME_HEADER + GOAWAY_SIZE + data.len());
     frame.extend_from_slice(&frame_header(
         FrameType::Goaway,
         GOAWAY_SIZE + data.len(),
-        flags,
+        0,
         0,
     ));
     frame.extend_from_slice(&last_stream_id.to_be_bytes());
     frame.extend_from_slice(&code.to_be_bytes());
     frame.extend_from_slice(data);
-    let sent = send(ctx, &frame);
-    session.shutting_down.set(true);
-    sent
+    frame
 }
 
 // --- the response header block ---
@@ -247,7 +264,7 @@ impl Headers {
 
     /// HPACK-encode the set into the frame after its nine header bytes, which
     /// `seal` fills in, with the session's encoder, made on first use.
-    fn deflate(mut self, session: &Session) -> Self {
+    fn deflate(mut self, session: &Session) -> Option<Self> {
         let Buffers {
             bytes,
             slots,
@@ -265,7 +282,18 @@ impl Headers {
                 frame,
             );
         });
-        self
+        let length = frame.len() - FRAME_HEADER;
+        let limit = session.remote[MAX_FRAME_SIZE].get();
+        if length > limit as usize {
+            warn(
+                c"http2_server_deflate_header_block",
+                &format!(
+                    "encoded HTTP/2 header block size {length} exceeds peer max frame size {limit}"
+                ),
+            );
+            return None;
+        }
+        Some(self)
     }
 
     /// The frame `deflate` built, its header filled in.
@@ -294,8 +322,85 @@ impl Drop for Headers {
 /// `trailer` properties, and [`length_safe`] and [`entries`] take only a
 /// [`HeldArray`]: a value's `__toString` may replace or unset the property while
 /// the array is walked, and the hold keeps the walked table live.
-fn property(ctx: Ctx, which: ResponseArray) -> Option<HeldArray> {
+fn property(mut ctx: Ctx, which: ResponseArray) -> Option<HeldArray> {
+    if let Some(fields) = &ctx.state().response.scheduled_fields {
+        match which {
+            ResponseArray::Header => return fields.0.hold(),
+            ResponseArray::Trailer => return fields.1.hold(),
+            ResponseArray::Cookie => {}
+        }
+    }
     ctx.response_array(which)
+}
+
+fn detached_fields(ctx: Ctx, which: ResponseArray) -> Owned {
+    let mut fields = ctx
+        .response_array(which)
+        .map_or_else(Owned::empty_array, |a| a.copy());
+    if let Some(array) = fields.array_mut() {
+        array.separate();
+    }
+    fields
+}
+
+fn snapshot(source: &Owned, multiple: bool) -> Option<Owned> {
+    let mut result = OwnedArray::default();
+    for (key, value) in source.array()?.entries() {
+        let value = value.dereferenced();
+        let Some(key) = key.filter(|_| !value.is_null()) else {
+            continue;
+        };
+        let converted = if multiple && let Some(items) = value.hold() {
+            let mut values = OwnedArray::default();
+            for (_, item) in entries(Some(&items)) {
+                let item = item.dereferenced();
+                if !item.is_null() {
+                    values.push(Owned::string(item.try_string()?));
+                }
+            }
+            values.into_owned()
+        } else {
+            Owned::string(value.try_string()?)
+        };
+        result.insert(key, converted);
+    }
+    Some(result.into_owned())
+}
+
+/// Convert user values in the caller's scope before the writer can suspend.
+pub(crate) fn schedule(
+    mut ctx: Ctx,
+    method: &std::ffi::CStr,
+    args: swoole_rs_zend::Zvals<'_>,
+) -> Result<bool, bailout::Bailout> {
+    if !swoole_rs_zend::host::exception().is_null() || of(ctx).is_none() {
+        return Ok(false);
+    }
+    let headers = detached_fields(ctx, ResponseArray::Header);
+    let trailers = detached_fields(ctx, ResponseArray::Trailer);
+    let fields = snapshot(&headers, true).and_then(|h| Some((h, snapshot(&trailers, false)?)));
+    let Some(fields) = fields else {
+        return bailout::outcome(false);
+    };
+    if ctx.state().end || ctx.state().detached || !crate::context::available(ctx) {
+        return Ok(false);
+    }
+    let response = &mut ctx.state().response;
+    let object = response.zobject.value().copy();
+    response.scheduled_fields = Some(Box::new(fields));
+    let started = swoole_rs_phpcoroutines::CREATOR.call_method(
+        &object,
+        &crate::response::RESPONSE,
+        method,
+        args,
+    );
+    let accepted = matches!(started, Ok(true)) && ctx.state().response.scheduled_fields.is_some();
+    if accepted {
+        ctx.state().end = true;
+    } else {
+        ctx.state().response.scheduled_fields = None;
+    }
+    started.map(|_| accepted)
 }
 
 /// `php_swoole_array_length_safe`.
@@ -338,7 +443,7 @@ fn build_trailer(ctx: Ctx, session: &Session) -> Option<Headers> {
         let value = string_of(value)?;
         headers.add_folded(key, value.bytes());
     }
-    Some(headers.deflate(session))
+    headers.deflate(session)
 }
 
 /// The body a response header announces: its bytes (none for a file sent
@@ -350,7 +455,7 @@ struct Body<'a> {
 }
 
 /// `http2_server_build_header`.
-fn build_header(ctx: Ctx, session: &Session, body: Option<Body<'_>>) -> Option<Headers> {
+fn build_header(mut ctx: Ctx, session: &Session, body: Option<Body<'_>>) -> Option<Headers> {
     let zheader = property(ctx, ResponseArray::Header);
     let zcookie = property(ctx, ResponseArray::Cookie);
     let mut headers =
@@ -364,6 +469,7 @@ fn build_header(ctx: Ctx, session: &Session, body: Option<Body<'_>>) -> Option<H
     );
 
     let mut header_flags = 0;
+    let mut explicit_lengths = None;
     if zheader.is_some() {
         let can_capture =
             get(ctx, Field::AcceptCompression) != 0 && get(ctx, Field::CompressionTypes) != 0;
@@ -380,7 +486,17 @@ fn build_header(ctx: Ctx, session: &Session, body: Option<Body<'_>>) -> Option<H
             }
             let plan = header_plan(HeaderRole::Server, key, can_capture);
             if plan.suppress {
+                let lengths = explicit_lengths.get_or_insert_with(Vec::new);
+                if !text.is_empty() {
+                    lengths.push(text.to_vec());
+                }
                 return Some(());
+            }
+            if key.eq_ignore_ascii_case(b"content-encoding") {
+                set(ctx, Field::AcceptCompression, 0);
+                if text.is_empty() {
+                    return Some(());
+                }
             }
             header_flags |= plan.publish_flags;
             if plan.capture_content_type {
@@ -401,7 +517,7 @@ fn build_header(ctx: Ctx, session: &Session, body: Option<Body<'_>>) -> Option<H
                 add(&mut headers, key, value)?;
             }
         }
-        if can_capture {
+        if can_capture && get(ctx, Field::AcceptCompression) != 0 {
             let kind = content_type
                 .as_ref()
                 .map_or(&b"text/html"[..], ZString::bytes);
@@ -428,21 +544,35 @@ fn build_header(ctx: Ctx, session: &Session, body: Option<Body<'_>>) -> Option<H
             headers.add(b"set-cookie", cookie);
         }
     }
-    if let Some(body) = body {
-        let mut content_length = body.length;
-        if let Some((encoding, compressed)) = ctx.compress(body.data) {
-            content_length = compressed;
-            headers.add(b"content-encoding", encoding.to_bytes());
+    let compressed = body.and_then(|body| ctx.compress(body.data));
+    let length = if let Some((encoding, length)) = compressed {
+        headers.add(b"content-encoding", encoding.to_bytes());
+        if explicit_lengths.is_some() {
+            log(
+                LOG_WARNING,
+                swoole_rs_error::ErrorCode::SW_ERROR_HTTP_CONFLICT_HEADER as c_int,
+                c"http2_server_build_header",
+                "The client has set 'Accept-Encoding', 'Content-Length' will be ignored",
+            );
         }
+        Some(length)
+    } else if let Some(lengths) = explicit_lengths {
+        for value in lengths {
+            headers.add(b"content-length", &value);
+        }
+        None
+    } else {
+        body.map(|body| body.length).filter(|&length| {
+            length != 0 || ctx.state().parser.method != swoole_rs_http::llhttp::HEAD
+        })
+    };
+    if let Some(length) = length {
         headers.add(
             b"content-length",
-            decimal(
-                &mut [0; 20],
-                i64::try_from(content_length).unwrap_or(i64::MAX),
-            ),
+            decimal(&mut [0; 20], i64::try_from(length).unwrap_or(i64::MAX)),
         );
     }
-    let headers = headers.deflate(session);
+    let headers = headers.deflate(session)?;
     set(ctx, Field::SendHeader, 1);
     Some(headers)
 }
@@ -476,7 +606,15 @@ fn send_header(
     body: Option<Body<'_>>,
     end_stream: bool,
 ) -> bool {
-    send_header_then(ctx, session, stream, body, end_stream, |_| ())
+    send_header_then(
+        ctx,
+        session,
+        stream,
+        body,
+        body.is_none_or(|body| body.length == 0),
+        end_stream,
+        |_| (),
+    )
 }
 
 /// `Stream::send_header`, sending what `then` appends to the HEADERS frame in
@@ -486,29 +624,76 @@ fn send_header_then(
     session: &Session,
     stream: &Stream,
     body: Option<Body<'_>>,
+    empty: bool,
     end_stream: bool,
     then: impl FnOnce(&mut Vec<u8>),
 ) -> bool {
-    let Some(mut headers) = build_header(ctx, session, body) else {
-        // Upstream closes once the session has an encoder.
-        if session.with_deflater(|deflater| deflater.is_some()) {
-            set(ctx, Field::End, 1);
-            close(ctx);
+    session.writing(ctx, || {
+        if !current(session, stream) {
+            return false;
         }
-        return false;
+        let Some(mut headers) = build_header(ctx, session, body) else {
+            // Upstream closes once the session has an encoder.
+            if session.with_deflater(|deflater| deflater.is_some()) {
+                set(ctx, Field::End, 1);
+                close(ctx);
+            }
+            return false;
+        };
+        let flags = sw_rs_http2_headers_flags(empty, end_stream, 0);
+        if flags & FLAG_END_STREAM != 0 {
+            set(ctx, Field::End, 1);
+        }
+        let frame = headers.seal(FrameType::Headers, flags, stream.id);
+        then(frame);
+        if !send_header_frame(ctx, session, stream, frame) {
+            set(ctx, Field::SendHeader, 0);
+            return false;
+        }
+        true
+    })
+}
+
+// An encoded block must retain its queue position if its request is reset.
+fn send_header_frame(mut ctx: Ctx, session: &Session, stream: &Stream, frame: &[u8]) -> bool {
+    let previous = if stream.request_cid.get() != 0 {
+        stream
+            .header_sender
+            .replace(swoole_rs_phpcoroutines::Coroutine::current())
+    } else {
+        None
     };
-    let empty = body.is_none_or(|body| body.length == 0);
-    let flags = sw_rs_http2_headers_flags(empty, end_stream, 0);
-    if flags & FLAG_END_STREAM != 0 {
+    let sent = send(ctx, frame);
+    stream.header_sender.set(previous);
+    if !sent {
+        // The peer cannot decode subsequent blocks after missing an HPACK update.
         set(ctx, Field::End, 1);
+        if get(ctx, Field::CoSocket) != 0 {
+            close(ctx);
+        } else if !session.terminating.get()
+            && SessionState::of(ctx).is_some_and(|live| std::rc::Rc::ptr_eq(&live, session))
+        {
+            if swoole_rs_corebase::log::last_error() == CO_TIMEDOUT {
+                write_timed_out(session);
+            } else {
+                let state = ctx.state();
+                server_methods::close(crate::context::server(state), state.fd, true);
+            }
+        }
     }
-    let frame = headers.seal(FrameType::Headers, flags, stream.id);
-    then(frame);
-    if !send(ctx, frame) {
-        set(ctx, Field::SendHeader, 0);
-        return false;
+    sent
+}
+
+/// Process workers send complete frames to the reactor over IPC.
+fn send_limit(mut ctx: Ctx) -> usize {
+    let state = ctx.state();
+    if !crate::context::co_socket(state) {
+        let config = crate::context::server(state).config();
+        if config.mode_ == swoole_rs_server::Mode::Process {
+            return config.output_buffer_size.get() as usize;
+        }
     }
-    true
+    usize::MAX
 }
 
 /// `Stream::send_body`: DATA frames within the peer's flow-control window.
@@ -523,64 +708,75 @@ pub(crate) fn send_body(
         return false;
     }
     let flags = if end_stream { FLAG_END_STREAM } else { 0 };
+    let max_payload = send_limit(ctx).saturating_sub(FRAME_HEADER);
+    if max_payload == 0 {
+        swoole_rs_corebase::log::set_last_error(
+            swoole_rs_error::ErrorCode::SW_ERROR_DATA_LENGTH_TOO_LARGE as c_int,
+        );
+        return false;
+    }
+    let co_socket = get(ctx, Field::CoSocket) != 0;
     let page = swoole_rs_corebase::swr_v1_core_pagesize() as usize;
     let mut rest = data;
     // Set on the first flow-control wait, so a send that never waits reads no clock.
     let mut deadline = None;
     while !rest.is_empty() {
-        // Re-read after a flow-control wait: the peer may have changed it.
-        let max_frame_size = send_frame_size(session.remote[MAX_FRAME_SIZE].get());
-        let chunk = sw_rs_http2_chunk(rest.len(), max_frame_size, flags);
-        let (mut send_n, mut send_flags) = (chunk.length, chunk.flags);
-        let window = stream.remote_window_size.get();
-        if send_n > window as usize {
-            // The coroutine server receives frames serially and cannot be
-            // suspended, so it has no flow control.
-            let may_suspend =
-                get(ctx, Field::CoSocket) == 0 && swoole_rs_phpcoroutines::in_coroutine();
-            match sw_rs_http2_window_action(send_n, window, may_suspend) {
-                WindowAction::Warn => warn(
-                    c"Stream::send_body",
-                    "The data sent exceeded remote_window_size",
-                ),
-                WindowAction::Yield => {
-                    // In a coroutine: WINDOW_UPDATE, or the stream's removal, wakes it, by
-                    // the send's deadline (upstream 6.3's `http2_write_deadline`).
-                    if !current(session, stream) {
-                        return false;
-                    }
-                    let deadline = *deadline.get_or_insert_with(|| ctx.send_deadline());
-                    if !stream.wait(deadline) {
-                        if swoole_rs_corebase::log::last_error() == CO_TIMEDOUT {
-                            write_timed_out(session);
-                        }
-                        return false;
-                    }
-                    if !current(session, stream) {
-                        return false;
-                    }
-                    continue;
-                }
-                WindowAction::Send | WindowAction::Truncate => {
-                    send_n = window as usize;
-                    send_flags = 0;
-                }
-            }
-        }
-        let header = frame_header(FrameType::Data, send_n, send_flags, stream.id);
-        let (part, tail) = rest.split_at(send_n.min(rest.len()));
-        if send_n < page {
-            // One send of header and payload. Not a zeroed stack buffer: zeroing
-            // it costs more than the allocation (#331).
-            let frame = [header.as_slice(), part].concat();
-            if !send(ctx, &frame) {
+        let window = send_credit(session, stream);
+        if window == 0 {
+            if !current(session, stream) {
                 return false;
             }
-        } else if !send(ctx, &header) || !send(ctx, part) {
+            if !swoole_rs_phpcoroutines::in_coroutine() {
+                swoole_rs_corebase::log::set_last_error(
+                    swoole_rs_error::ErrorCode::SW_ERROR_OUTPUT_SEND_YIELD as c_int,
+                );
+                return false;
+            }
+            let deadline = *deadline.get_or_insert_with(|| ctx.send_deadline());
+            if deadline.remaining().is_some_and(|time| time.is_zero()) {
+                write_timed_out(session);
+                return false;
+            }
+            if !stream.wait(deadline) {
+                if swoole_rs_corebase::log::last_error() == CO_TIMEDOUT {
+                    write_timed_out(session);
+                }
+                return false;
+            }
+            continue;
+        }
+        if !session.writing(ctx, || {
+            if !current(session, stream) {
+                return false;
+            }
+            // Other streams can spend connection credit while this one waits for the writer.
+            let window = send_credit(session, stream);
+            if window == 0 {
+                return true;
+            }
+            let peer_limit = send_frame_size(session.remote[MAX_FRAME_SIZE].get()) as usize;
+            let send_n = rest.len().min(window).min(peer_limit).min(max_payload);
+            let send_flags = if send_n == rest.len() { flags } else { 0 };
+            let header = frame_header(FrameType::Data, send_n, send_flags, stream.id);
+            let (part, tail) = rest.split_at(send_n);
+            consume_window(session, stream, send_n);
+            let sent = if !co_socket || send_n < page {
+                // A yielding async send must enqueue the entire frame together.
+                send(ctx, &[header.as_slice(), part].concat())
+            } else {
+                session.send(ctx, &[&header, part])
+            };
+            if !sent {
+                if !co_socket {
+                    refund_window(session, stream, send_n);
+                }
+                return false;
+            }
+            rest = tail;
+            true
+        }) {
             return false;
         }
-        rest = tail;
-        consume_window(session, stream, send_n);
     }
     true
 }
@@ -588,21 +784,52 @@ pub(crate) fn send_body(
 /// `http2_server_write_timed_out` (upstream 6.3): a peer that never opened the
 /// window by the send's deadline loses its connection, after a GOAWAY that says why.
 fn write_timed_out(session: &Session) {
-    let ctx = session.default_ctx();
-    goaway(ctx, 0, b"flow control or write timeout");
-    close(ctx);
+    abort_session(session, 0, b"flow control or write timeout");
     swoole_rs_corebase::log::set_last_error(CO_TIMEDOUT);
 }
 
-/// The windows after `sent` bytes of DATA.
+fn send_credit(session: &Session, stream: &Stream) -> usize {
+    usize::try_from(
+        session
+            .remote_window_size
+            .get()
+            .min(stream.remote_window_size.get()),
+    )
+    .unwrap_or(0)
+}
+
 fn consume_window(session: &Session, stream: &Stream, sent: usize) {
-    let sent = sent.c_cast::<u32>();
+    let sent = sent.c_cast::<i64>();
     stream
         .remote_window_size
-        .set(stream.remote_window_size.get().wrapping_sub(sent));
+        .set(stream.remote_window_size.get() - sent);
     session
         .remote_window_size
-        .set(session.remote_window_size.get().wrapping_sub(sent));
+        .set(session.remote_window_size.get() - sent);
+}
+
+fn refund_window(session: &Session, stream: &Stream, length: usize) {
+    let amount = length.c_cast::<u32>();
+    if credit(&session.remote_window_size, amount).is_err()
+        || credit(&stream.remote_window_size, amount).is_err()
+    {
+        abort_session(
+            session,
+            swoole_rs_http2::error_code::FLOW_CONTROL_ERROR,
+            b"window overflow after canceled send",
+        );
+    } else {
+        wake_streams(&session.open_streams());
+    }
+}
+
+fn wake_streams(streams: &[Stream]) -> bool {
+    let mut ok = true;
+    for stream in streams {
+        // A resumed sender can bail out while other senders still need the wakeup.
+        ok &= stream.wake();
+    }
+    ok
 }
 
 /// Append `data` to `frame` as the one DATA frame `send_body` would send in
@@ -622,29 +849,43 @@ fn append_body(
     // An empty body sends nothing: the HEADERS end the stream.
     if data.is_empty()
         || data.len() > max_frame_size.min(page - 1)
-        || data.len() > stream.remote_window_size.get() as usize
+        || data.len() > send_credit(session, stream)
+        || frame.len() + FRAME_HEADER + data.len() > send_limit(stream.ctx())
     {
         return 0;
     }
     let flags = if end_stream { FLAG_END_STREAM } else { 0 };
     frame.extend_from_slice(&frame_header(FrameType::Data, data.len(), flags, stream.id));
     frame.extend_from_slice(data);
+    consume_window(session, stream, data.len());
     data.len()
 }
 
 /// `Stream::send_trailer`: HEADERS with `END_STREAM`, even an empty block.
-fn send_trailer(ctx: Ctx, session: &Session, stream_id: u32) -> bool {
-    let Some(mut headers) = build_trailer(ctx, session) else {
-        return false;
-    };
-    send(
-        ctx,
-        headers.seal(
-            FrameType::Headers,
-            FLAG_END_HEADERS | FLAG_END_STREAM,
-            stream_id,
-        ),
-    )
+fn send_trailer(ctx: Ctx, session: &Session, stream: &Stream, deadline: Deadline) -> bool {
+    session.writing(ctx, || {
+        if !current(session, stream) {
+            return false;
+        }
+        let Some(mut headers) = build_trailer(ctx, session) else {
+            return false;
+        };
+        // Converting a trailer value to a PHP string can suspend the writer.
+        if deadline.remaining().is_some_and(|time| time.is_zero()) {
+            write_timed_out(session);
+            return false;
+        }
+        send_header_frame(
+            ctx,
+            session,
+            stream,
+            headers.seal(
+                FrameType::Headers,
+                FLAG_END_HEADERS | FLAG_END_STREAM,
+                stream.id,
+            ),
+        )
+    })
 }
 
 /// Whether the response has a trailer.
@@ -655,18 +896,23 @@ fn has_trailer(ctx: Ctx) -> bool {
 /// `http2_server_respond`: the header, the body and the trailer, then the
 /// stream is done.
 pub(crate) fn respond(ctx: Ctx, data: &[u8]) -> bool {
+    respond_with_length(ctx, data, data.len())
+}
+
+/// HEAD sends an empty body but announces the selected representation's length.
+pub(crate) fn respond_with_length(ctx: Ctx, data: &[u8], length: usize) -> bool {
     let Some((session, stream)) = of(ctx) else {
         return false;
     };
-    let trailer = has_trailer(ctx);
-    let end_stream = !trailer;
+    let trailer = has_trailer(ctx).then(|| ctx.send_deadline());
+    let end_stream = trailer.is_none();
     let mut body: Vec<u8> = Vec::new();
     let mut compressed = false;
     // Whether the body went out with the header.
     let mut body_sent = false;
     let mut facts = Http2RespondFacts {
         header_sent: get(ctx, Field::SendHeader) != 0,
-        trailer_present: trailer,
+        trailer_present: trailer.is_some(),
         chunked: false,
         shutting_down: false,
         streams_empty: false,
@@ -678,16 +924,14 @@ pub(crate) fn respond(ctx: Ctx, data: &[u8]) -> bool {
     loop {
         match action {
             Respond::Header => {
-                let announced = Body {
-                    data,
-                    length: data.len(),
-                };
+                let announced = Body { data, length };
                 let mut appended = 0;
                 let sent = send_header_then(
                     ctx,
                     &session,
                     &stream,
                     Some(announced),
+                    data.is_empty(),
                     end_stream,
                     |frame| {
                         // The header decided the compression.
@@ -699,8 +943,8 @@ pub(crate) fn respond(ctx: Ctx, data: &[u8]) -> bool {
                         appended = append_body(frame, &session, &stream, payload, end_stream);
                     },
                 );
-                if sent {
-                    consume_window(&session, &stream, appended);
+                if !sent && appended > 0 && get(ctx, Field::CoSocket) == 0 {
+                    refund_window(&session, &stream, appended);
                 }
                 body_sent = appended > 0;
                 action = next(action, sent, &facts);
@@ -734,7 +978,8 @@ pub(crate) fn respond(ctx: Ctx, data: &[u8]) -> bool {
                 action = next(action, sent, &facts);
             }
             Respond::Trailer => {
-                let sent = send_trailer(ctx, &session, stream.id);
+                let sent =
+                    trailer.is_some_and(|deadline| send_trailer(ctx, &session, &stream, deadline));
                 action = next(action, sent, &facts);
             }
             Respond::ErrorClose | Respond::Remove => {
@@ -747,11 +992,11 @@ pub(crate) fn respond(ctx: Ctx, data: &[u8]) -> bool {
                     return false;
                 }
                 facts.shutting_down = session.shutting_down.get();
-                facts.streams_empty = facts.shutting_down && session.idle();
+                facts.streams_empty = facts.shutting_down && session.stream_count() == 0;
                 action = next(action, true, &facts);
             }
             Respond::ErrorShutdown | Respond::SuccessShutdown => {
-                close(ctx);
+                session.shutdown(ctx);
                 return action == Respond::SuccessShutdown;
             }
             Respond::True => return true,
@@ -778,7 +1023,7 @@ pub(crate) fn write(ctx: Ctx, chunk: &[u8]) -> bool {
 
 /// Sends a file response's headers: whether trailers follow the body, `None` when
 /// the headers could not be sent.
-pub(crate) fn begin_file(ctx: Ctx, content_type: &[u8], length: usize) -> Option<bool> {
+pub(crate) fn begin_file(mut ctx: Ctx, content_type: &[u8], length: usize) -> Option<bool> {
     let (session, stream) = of(ctx)?;
     set(ctx, Field::AcceptCompression, 0);
     let trailer = has_trailer(ctx);
@@ -789,6 +1034,11 @@ pub(crate) fn begin_file(ctx: Ctx, content_type: &[u8], length: usize) -> Option
         .is_some_and(|zheader| zheader.find(b"content-type").is_some());
     if !typed {
         ctx.set_header(b"content-type", content_type);
+        if let Some(fields) = &mut ctx.state().response.scheduled_fields
+            && let Some(headers) = fields.0.array_mut()
+        {
+            headers.insert_bytes(b"content-type", Some(content_type));
+        }
     }
     let body = Body { data: &[], length };
     if !send_header(ctx, &session, &stream, Some(body), !trailer) {
@@ -800,7 +1050,7 @@ pub(crate) fn begin_file(ctx: Ctx, content_type: &[u8], length: usize) -> Option
 }
 
 /// The trailer, then the stream is done: false after an error.
-pub(crate) fn finish_file(ctx: Ctx, trailer: bool, error: bool) -> bool {
+pub(crate) fn finish_file(ctx: Ctx, trailer: bool, error: bool, deadline: Deadline) -> bool {
     let Some(session) = SessionState::of(ctx) else {
         return false;
     };
@@ -809,7 +1059,9 @@ pub(crate) fn finish_file(ctx: Ctx, trailer: bool, error: bool) -> bool {
     loop {
         match action {
             FileCompletion::Trailer => {
-                let sent = send_trailer(ctx, &session, stream_id);
+                let sent = session
+                    .stream(stream_id, false)
+                    .is_some_and(|stream| send_trailer(ctx, &session, &stream, deadline));
                 action = sw_rs_http2_file_complete(sent, false);
             }
             FileCompletion::Close => {
@@ -836,21 +1088,20 @@ pub(crate) fn on_receive(
     request: &mut RecvData<'_>,
 ) -> bool {
     let session_id = request.info().fd;
-    let session = SessionState::find(session_id).or_else(|| {
+    let session = SessionState::find(session_id).unwrap_or_else(|| {
         let default_ctx = Ctx::server_context(view, session_id);
         let max_body_size = swoole_rs_server::server_methods::package_max_length(view, conn.fd());
-        super::session::session_own(
+        super::session::session_new(
             session_id,
             default_ctx,
             max_body_size,
             Box::new(|ctx: Ctx<'_>, _: Ctx<'_>| crate::http2_request(ctx)),
-        );
-        SessionState::find(session_id)
+        )
     });
     let zdata = swoole_rs_phpserver::php_swoole_get_recv_data(view, request);
     let data = zdata.bytes().unwrap_or_default();
     // The session stays alive until its frame is handled.
-    let parsed = session.is_some_and(|session| parse(&session, data));
+    let parsed = session_receive(&session, data);
     // Released before a deferred bailout can jump past it.
     drop(zdata);
     if bailout::pending() {
@@ -867,35 +1118,23 @@ pub fn server_on_close(session_id: i64) {
 /// `swoole_http2_server_parse` for the coroutine server's connection loop: one
 /// frame from the peer of connection `fd`, which `frame` starts with; a bailout
 /// stays pending for the caller's `finish`.
-pub(crate) fn session_receive(fd: i64, frame: &[u8]) -> bool {
-    SessionState::find(fd).is_some_and(|session| parse(&session, frame))
-}
-
-/// One frame, which `frame` starts with: false for one shorter than its header
-/// says, or one the session refuses.
-fn parse(session: &Session, frame: &[u8]) -> bool {
+pub(crate) fn session_receive(session: &Session, frame: &[u8]) -> bool {
     let last_stream_id = session.last_stream_id.get();
     let Ok((facts, payload)) = decode_packet(frame, last_stream_id, false) else {
         return false;
     };
     let stream_id = facts.stream_id;
-    let new_stream = facts.publish_last_id;
-    if facts.action == FrameAction::Headers && new_stream {
-        session.last_stream_id.set(stream_id);
-    }
+    let new_stream = facts.publish_last_id && !session.shutting_down.get();
     // A header block continues only in CONTINUATION frames of its own stream.
     let pending = session.header_stream_id.get();
-    if pending != 0 && (facts.action != FrameAction::Continuation || stream_id != pending) {
-        return false;
-    }
-    if session.shutting_down.get() {
-        log(
-            LOG_WARNING,
-            STREAM_IGNORE,
-            c"swoole_http2_server_parse",
-            &format!("ignore http2 stream#{stream_id} after sending goaway"),
+    if (facts.action == FrameAction::Continuation) != (pending != 0)
+        || (pending != 0 && stream_id != pending)
+    {
+        return abort_session(
+            session,
+            swoole_rs_http2::error_code::PROTOCOL_ERROR,
+            b"invalid header block continuation",
         );
-        return false;
     }
     let flags = facts.flags & 0xff;
     match facts.action {
@@ -903,18 +1142,25 @@ fn parse(session: &Session, frame: &[u8]) -> bool {
         FrameAction::Headers => return headers(session, stream_id, flags, payload, new_stream),
         FrameAction::Continuation => {
             let stream = session.stream(stream_id, false);
-            let Some(stream) = stream.filter(|_| pending == stream_id) else {
-                return false;
-            };
-            return header_block(session, &stream, flags & FLAG_END_HEADERS, payload);
+            return header_block(
+                session,
+                stream_id,
+                stream.as_ref(),
+                flags & FLAG_END_HEADERS,
+                payload,
+            );
         }
         FrameAction::Data => return data(session, stream_id, flags, payload),
-        FrameAction::PingReply => {
+        FrameAction::PingReply | FrameAction::PingAck => {
             // RFC 9113 6.7: the ACK echoes the PING's eight payload bytes; any
             // other length is a FRAME_SIZE_ERROR.
             let Ok(echo) = swoole_rs_http2::ping_payload(payload) else {
+                close(session.default_ctx());
                 return false;
             };
+            if facts.action == FrameAction::PingAck {
+                return true;
+            }
             let mut ack = [0; FRAME_HEADER + PING_PAYLOAD];
             ack[..FRAME_HEADER].copy_from_slice(&frame_header(
                 FrameType::Ping,
@@ -923,35 +1169,85 @@ fn parse(session: &Session, frame: &[u8]) -> bool {
                 stream_id,
             ));
             ack[FRAME_HEADER..].copy_from_slice(&echo);
-            send(session.default_ctx(), &ack);
+            return send_ack(session.default_ctx(), &ack);
         }
         FrameAction::WindowUpdate => {
             // RFC 9113 6.9: the increment's four bytes; any other length is a
             // FRAME_SIZE_ERROR.
             let Ok(value) = swoole_rs_http2::window_increment(payload) else {
-                return false;
+                return abort_session(
+                    session,
+                    swoole_rs_http2::error_code::FRAME_SIZE_ERROR,
+                    b"invalid WINDOW_UPDATE length",
+                );
             };
+            let value = value & i32::MAX.cast_unsigned();
             if stream_id == 0 {
-                session
-                    .remote_window_size
-                    .set(credit(session.remote_window_size.get(), value));
+                if let Err(code) = credit(&session.remote_window_size, value) {
+                    return abort_session(session, code, b"invalid connection WINDOW_UPDATE");
+                }
+                return wake_streams(&session.open_streams());
+            } else if stream_id & 1 == 0
+                || (stream_id > last_stream_id && !session.shutting_down.get())
+            {
+                return abort_session(
+                    session,
+                    swoole_rs_http2::error_code::PROTOCOL_ERROR,
+                    b"WINDOW_UPDATE on idle stream",
+                );
             } else if let Some(stream) = session.stream(stream_id, false) {
-                stream
-                    .remote_window_size
-                    .set(credit(stream.remote_window_size.get(), value));
-                if !session.is_coro() && !stream.wake() {
+                if let Err(code) = credit(&stream.remote_window_size, value) {
+                    return reset_stream(session, &stream, code);
+                }
+                if !stream.wake() {
                     return false;
                 }
             }
         }
-        FrameAction::Reset => return session.remove(stream_id),
+        FrameAction::Reset => {
+            let Ok(code) = payload.try_into() else {
+                close(session.default_ctx());
+                return false;
+            };
+            if let Some(stream) = session.take_stream(stream_id) {
+                set(stream.ctx(), Field::End, 1);
+                let cid = stream.request_cid.get();
+                if cid > 0 {
+                    let mut reason = swoole_rs_zend::OwnedArray::default();
+                    reason.insert_long(b"session_id", stream.ctx().state().fd);
+                    reason.insert_long(b"stream_id", i64::from(stream_id));
+                    reason.insert_long(b"code", i64::from(u32::from_be_bytes(code)));
+                    reason.insert_bytes(b"message", Some(b"HTTP2 Stream Reset"));
+                    let wake = stream.header_sender.get().is_none_or(|co| co.cid() != cid);
+                    bailout::defer(swoole_rs_zend::contain_with(|| {
+                        swoole_rs_phpcoroutines::cancel_callback(cid, &reason, wake);
+                    }));
+                }
+                return stream.wake();
+            }
+            return true;
+        }
+        FrameAction::Goaway if payload.len() >= GOAWAY_SIZE => {}
+        FrameAction::Goaway => {
+            close(session.default_ctx());
+            return false;
+        }
         _ => {}
     }
     true
 }
 
+/// HEADERS and DATA share the same optional pad length and trailing padding.
+fn unpadded(flags: u32, payload: &[u8]) -> Option<&[u8]> {
+    if flags & FLAG_PADDED == 0 {
+        return Some(payload);
+    }
+    let (&padding, rest) = payload.split_first()?;
+    rest.get(..rest.len().checked_sub(usize::from(padding))?)
+}
+
 /// A HEADERS frame: a new stream's request headers, or its trailers, which
-/// are decoded (the HPACK table is the connection's) and discarded.
+/// share the connection's HPACK table.
 fn headers(
     session: &Session,
     stream_id: u32,
@@ -959,55 +1255,70 @@ fn headers(
     payload: &[u8],
     new_stream: bool,
 ) -> bool {
-    let stream = match session.stream(stream_id, false) {
-        Some(stream) => stream,
-        // A completed stream is never recreated from a late trailer block.
-        None if new_stream => match session.stream(stream_id, true) {
-            Some(stream) => stream,
-            None => return false,
-        },
-        None => return false,
-    };
-    session.header_end_stream.set(flags & FLAG_END_STREAM != 0);
-    let mut block = payload;
-    if flags & FLAG_PADDED != 0 {
-        // The pad length, the block, then that much padding.
-        let Some((&pad, rest)) = payload.split_first() else {
-            return false;
-        };
-        let kept = rest.len().checked_sub(usize::from(pad));
-        let Some(kept) = kept.and_then(|kept| rest.get(..kept)) else {
-            return false;
-        };
-        block = kept;
+    if stream_id & 1 == 0 {
+        close(session.default_ctx());
+        return false;
     }
-    session
-        .remaining_headers
-        .set(Some(swoole_rs_http2::max_headers()));
-    header_block(session, &stream, flags, block)
+    let stream = session.stream(stream_id, new_stream);
+    if new_stream {
+        session.last_stream_id.set(stream_id);
+    }
+    session.header_end_stream.set(flags & FLAG_END_STREAM != 0);
+    let Some(block) = unpadded(flags, payload) else {
+        close(session.default_ctx());
+        return false;
+    };
+    let mut remaining = Ok(swoole_rs_http2::max_headers());
+    if new_stream && session.stream_count() > session.local(MAX_CONCURRENT_STREAMS) as usize {
+        // Decode refused streams through END_HEADERS to preserve the connection's HPACK table.
+        remaining = Err(swoole_rs_http2::error_code::REFUSED_STREAM);
+    } else if let Some(stream) = &stream
+        && stream.request_received.get()
+    {
+        remaining = Err(swoole_rs_http2::error_code::STREAM_CLOSED);
+    } else if let Some(stream) = &stream
+        && stream.headers_received.get()
+    {
+        crate::parse::init_property(
+            &mut stream.ctx().state().request,
+            crate::parse::Property::Trailer,
+        );
+        if flags & FLAG_END_STREAM == 0 {
+            remaining = Err(swoole_rs_http2::error_code::PROTOCOL_ERROR);
+        }
+    }
+    session.remaining_headers.set(remaining);
+    header_block(session, stream_id, stream.as_ref(), flags, block)
 }
 
 /// One HEADERS or CONTINUATION frame's part of a header block. At the block's
 /// end the request is configured from its headers and, with `END_STREAM`,
 /// dispatched.
-fn header_block(session: &Session, stream: &Stream, flags: u32, payload: &[u8]) -> bool {
-    if stream.request_received.get() {
-        return false;
-    }
-    let discard = stream.headers_received.get();
-    if !parse_header(session, stream, flags, payload, discard) {
+fn header_block(
+    session: &Session,
+    stream_id: u32,
+    stream: Option<&Stream>,
+    flags: u32,
+    payload: &[u8],
+) -> bool {
+    if !parse_header(session, stream_id, stream, flags, payload) {
+        // HPACK state belongs to the connection and cannot resume after a decoding error.
+        close(session.default_ctx());
         return false;
     }
     if flags & FLAG_END_HEADERS == 0 {
-        session.header_stream_id.set(stream.id);
+        session.header_stream_id.set(stream_id);
         return true;
     }
     session.header_stream_id.set(0);
-    if session.remaining_headers.get().is_none() {
-        const ENHANCE_YOUR_CALM: u32 = 11;
-        return reset_stream(session, stream, ENHANCE_YOUR_CALM);
+    let Some(stream) = stream else {
+        // Even after reset, indexing in this block affects subsequent streams.
+        return true;
+    };
+    if let Err(code) = session.remaining_headers.get() {
+        return reset_stream(session, stream, code);
     }
-    if !discard && !headers_complete(stream, session.max_body_size) {
+    if !stream.headers_received.get() && !headers_complete(stream, session.max_body_size) {
         return false;
     }
     stream.headers_received.set(true);
@@ -1017,19 +1328,12 @@ fn header_block(session: &Session, stream: &Stream, flags: u32, payload: &[u8]) 
     true
 }
 
-/// `std::strtol` consumed the whole Content-Length and it is within the body limit.
-fn content_length_valid(session: &Session, value: &[u8]) -> bool {
-    let (parsed, complete) = strtol(value);
-    !sw_rs_http2_content_length_rejected(complete, parsed, session.max_body_size)
-}
-
 /// `http2_server_on_headers_complete`: the request's Content-Length, body
 /// parser and compression, from its whole initial header block.
 fn headers_complete(stream: &Stream, limit: u32) -> bool {
     let ctx = stream.ctx();
-    if stream.bad_length.get() {
-        send_status_code(ctx, REQUEST_ENTITY_TOO_LARGE.cast_unsigned());
-        return false;
+    if let Some(cookie) = stream.cookie_header.take() {
+        add_string(ctx, Value::Header, b"cookie", &cookie);
     }
     if !stream.negotiates.get() {
         return true;
@@ -1040,6 +1344,7 @@ fn headers_complete(stream: &Stream, limit: u32) -> bool {
         if media == Media::UrlEncoded {
             set(ctx, Field::Form, 1);
         } else if media == Media::Multipart && !ctx.multipart_start(value.bytes(), limit) {
+            close(ctx);
             return false;
         }
     }
@@ -1061,11 +1366,10 @@ fn complete(session: &Session, stream: &Stream) -> bool {
     if ctx.has_body() {
         if get(ctx, Field::ParseBody) != 0 && get(ctx, Field::Form) != 0 {
             ctx.treat_post();
-        } else if get(ctx, Field::Multipart) != 0
-            // SAFETY: a live context with a multipart parser.
-            && !ctx.multipart()
-        {
-            return false;
+        } else if get(ctx, Field::Multipart) != 0 && !ctx.multipart() {
+            set(ctx, Field::Status, BAD_REQUEST.cast_unsigned());
+            let sent = send_header(ctx, session, stream, None, true);
+            return session.remove(stream.id) && sent;
         }
     }
     session.handle(stream);
@@ -1078,22 +1382,101 @@ fn header(ctx: Ctx, key: &[u8]) -> Option<ZString> {
     string_of(&entry)
 }
 
-fn window(current: u32, amount: usize, initial: u32, credit: bool) -> Http2WindowPlan {
-    sw_rs_http2_window_plan(current, amount, initial, credit)
+fn credit(window: &std::cell::Cell<i64>, amount: u32) -> Result<(), u32> {
+    if amount == 0 {
+        return Err(swoole_rs_http2::error_code::PROTOCOL_ERROR);
+    }
+    let next = window
+        .get()
+        .checked_add(i64::from(amount))
+        .filter(|n| *n <= i64::from(i32::MAX))
+        .ok_or(swoole_rs_http2::error_code::FLOW_CONTROL_ERROR)?;
+    window.set(next);
+    Ok(())
 }
 
-fn credit(current: u32, amount: u32) -> u32 {
-    window(current, amount as usize, 0, true).value
+fn abort_session(session: &Session, code: u32, message: &[u8]) -> bool {
+    if session.terminating.replace(true) {
+        return false;
+    }
+    let mut ctx = session.default_ctx();
+    if get(ctx, Field::CoSocket) != 0 {
+        session.abort_writer(
+            ctx,
+            &goaway_frame(session.last_stream_id.get(), code, message),
+        );
+    } else {
+        // A timed-out writer must not re-enter the output-buffer wait to send GOAWAY.
+        let fd = ctx.fd();
+        let server = crate::context::server(ctx.state());
+        let frame = goaway_frame(session.last_stream_id.get(), code, message);
+        if server_methods::send(server, fd, &frame)
+            && server_methods::close(server, fd, false)
+            && let Some(owner) = swoole_rs_server::SharedServer::current()
+            && owner.view().raw() == server.raw()
+            && swoole_rs_corebase::timer::add_fn(100, false, move || {
+                let server = owner.view();
+                if server.verified(fd).is_some() {
+                    server_methods::close(server, fd, true);
+                }
+            })
+            .is_some()
+        {
+            return false;
+        }
+        server_methods::close(server, fd, true);
+    }
+    false
 }
 
 /// A SETTINGS frame: apply each, then acknowledge.
 fn settings(session: &Session, payload: &[u8]) -> bool {
     // RFC 9113 6.5: six bytes a setting; any other length is a FRAME_SIZE_ERROR.
     let (entries, &[]) = payload.as_chunks::<{ swoole_rs_http2::SETTING_BYTES }>() else {
+        close(session.default_ctx());
         return false;
     };
     for entry in entries {
         let (id, value) = swoole_rs_http2::sw_rs_http2_unpack_setting(entry);
+        if id == setting_id::INIT_WINDOW_SIZE && value > i32::MAX.cast_unsigned() {
+            return abort_session(
+                session,
+                swoole_rs_http2::error_code::FLOW_CONTROL_ERROR,
+                b"invalid initial window",
+            );
+        }
+        if id == setting_id::MAX_FRAME_SIZE && send_frame_size(value) != value {
+            warn(
+                c"swoole_http2_server_parse",
+                &format!("invalid SETTINGS_MAX_FRAME_SIZE value {value}"),
+            );
+            close(session.default_ctx());
+            return false;
+        }
+        if id == setting_id::INIT_WINDOW_SIZE {
+            let delta = i64::from(value) - i64::from(session.remote[INIT_WINDOW_SIZE].get());
+            let streams = session.open_streams();
+            if streams
+                .iter()
+                .any(|s| s.remote_window_size.get() + delta > i64::from(i32::MAX))
+            {
+                return abort_session(
+                    session,
+                    swoole_rs_http2::error_code::FLOW_CONTROL_ERROR,
+                    b"stream window overflow",
+                );
+            }
+            session.remote[INIT_WINDOW_SIZE].set(value);
+            for stream in &streams {
+                stream
+                    .remote_window_size
+                    .set(stream.remote_window_size.get() + delta);
+            }
+            if delta > 0 && !wake_streams(&streams) {
+                return false;
+            }
+            continue;
+        }
         session.with_deflater(|deflater| {
             let old = if id == setting_id::HEADER_TABLE_SIZE {
                 session.remote[0].get()
@@ -1108,9 +1491,6 @@ fn settings(session: &Session, payload: &[u8]) -> bool {
             {
                 setting.set(value);
             }
-            if plan.set_window {
-                session.remote_window_size.set(value);
-            }
             if plan.change_deflater
                 && let Some(encoder) = deflater.as_mut()
             {
@@ -1119,89 +1499,129 @@ fn settings(session: &Session, payload: &[u8]) -> bool {
         });
     }
     // The client assumes the server has not applied its settings until it acknowledges them.
-    send(
+    send_ack(
         session.default_ctx(),
         &frame_header(FrameType::Settings, 0, FLAG_ACK, 0),
-    );
+    )
+}
+
+/// A full worker output buffer would silently lose the ACK. A peer already gone
+/// still has receive events queued ahead of its close notification.
+fn send_ack(ctx: Ctx, frame: &[u8]) -> bool {
+    use swoole_rs_error::ErrorCode as E;
+    if send(ctx, frame) {
+        return true;
+    }
+    if [
+        E::SW_ERROR_DATA_LENGTH_TOO_LARGE as c_int,
+        E::SW_ERROR_OUTPUT_BUFFER_OVERFLOW as c_int,
+        E::SW_ERROR_OUTPUT_SEND_YIELD as c_int,
+    ]
+    .contains(&swoole_rs_corebase::log::last_error())
+    {
+        close(ctx);
+        return false;
+    }
     true
 }
 
 fn reset_stream(session: &Session, stream: &Stream, code: u32) -> bool {
-    let mut ids = session.recently_reset.get();
-    ids.rotate_right(1);
-    ids[0] = stream.id;
-    session.recently_reset.set(ids);
-    reset(stream.ctx(), stream.id, code);
+    if !reset(stream.ctx(), stream.id, code)
+        && swoole_rs_corebase::log::last_error()
+            == swoole_rs_error::ErrorCode::SW_ERROR_OUTPUT_SEND_YIELD as c_int
+    {
+        close(stream.ctx());
+        return false;
+    }
     session.remove(stream.id)
 }
 
 /// A DATA frame: buffer the body, keep the windows open and dispatch the
 /// request at the end of the stream.
 fn data(session: &Session, stream_id: u32, flags: u32, payload: &[u8]) -> bool {
-    let Some(stream) = session.stream(stream_id, false) else {
-        if stream_id != 0 && session.recently_reset.get().contains(&stream_id) {
-            connection_flow(session, session.default_ctx(), payload.len());
-            return true;
-        }
+    use swoole_rs_http2::error_code::{FLOW_CONTROL_ERROR, PROTOCOL_ERROR, STREAM_CLOSED};
+    if stream_id & 1 == 0
+        || (stream_id > session.last_stream_id.get() && !session.shutting_down.get())
+    {
         log(
             LOG_WARNING,
             STREAM_NOT_FOUND,
             c"swoole_http2_server_parse",
             &format!("http2 stream#{stream_id} not found"),
         );
+        return abort_session(session, PROTOCOL_ERROR, b"DATA on idle stream");
+    }
+    let length = payload.len().c_cast::<u32>();
+    let initial = session.local(INIT_WINDOW_SIZE);
+    let Some(remaining) = session.local_window_size.get().checked_sub(length) else {
+        return abort_session(
+            session,
+            FLOW_CONTROL_ERROR,
+            b"connection receive window exceeded",
+        );
+    };
+    session.local_window_size.set(remaining);
+    let target = initial.max(swoole_rs_http2::INITIAL_CONNECTION_WINDOW);
+    if !replenish(session.default_ctx(), 0, &session.local_window_size, target) {
         return false;
+    }
+    let Some(stream) = session.stream(stream_id, false) else {
+        // DATA can be in flight when a previously opened stream is reset.
+        return true;
     };
     if !stream.headers_received.get() || stream.request_received.get() {
-        return false;
+        return reset_stream(session, &stream, STREAM_CLOSED);
     }
     let ctx = stream.ctx();
-    let length = payload.len();
-    if length > 0 {
-        if get(ctx, Field::End) != 0 || ctx.data_append(payload, session.max_body_size).is_err() {
-            connection_flow(session, ctx, length);
-            return reset_stream(session, &stream, 0);
+    let Some(remaining) = stream.local_window_size.get().checked_sub(length) else {
+        return reset_stream(session, &stream, FLOW_CONTROL_ERROR);
+    };
+    stream.local_window_size.set(remaining);
+    let Some(body) = unpadded(flags, payload) else {
+        return abort_session(session, PROTOCOL_ERROR, b"invalid DATA padding");
+    };
+    if !body.is_empty() && ctx.data_append(body, session.max_body_size).is_err() {
+        if !send_413(session, &stream) {
+            close(ctx);
+            return false;
         }
-        flow(session, &stream, ctx, stream_id, length);
+        return reset_stream(session, &stream, swoole_rs_http2::error_code::NO_ERROR);
     }
-    if flags & FLAG_END_STREAM != 0 {
-        return complete(session, &stream);
+    if !replenish(ctx, stream_id, &stream.local_window_size, initial) {
+        return false;
+    }
+    flags & FLAG_END_STREAM == 0 || complete(session, &stream)
+}
+
+fn send_413(session: &Session, stream: &Stream) -> bool {
+    let ctx = stream.ctx();
+    set(ctx, Field::Status, REQUEST_ENTITY_TOO_LARGE.cast_unsigned());
+    send_header(ctx, session, stream, None, true)
+}
+
+/// Restore a receive window at half capacity, once the credit is sent.
+fn replenish(ctx: Ctx, id: u32, window: &std::cell::Cell<u32>, target: u32) -> bool {
+    let remaining = window.get();
+    if target > 0 && remaining <= target / 2 {
+        if !window_update(ctx, id, target - remaining) {
+            close(ctx);
+            return false;
+        }
+        window.set(target);
     }
     true
-}
-
-/// Flow control: debit both receive windows, and reopen each once a quarter
-/// remains.
-fn flow(session: &Session, stream: &Stream, ctx: Ctx, stream_id: u32, length: usize) {
-    connection_flow(session, ctx, length);
-    let initial = session.local(INIT_WINDOW_SIZE);
-    let debited = window(stream.local_window_size.get(), length, 0, false).value;
-    stream.local_window_size.set(debited);
-    let reopen = window(debited, 0, initial, false);
-    if reopen.increment != 0 {
-        window_update(ctx, stream_id, reopen.increment);
-        stream.local_window_size.set(initial);
-    }
-}
-
-fn connection_flow(session: &Session, ctx: Ctx, length: usize) {
-    let initial = session.local(INIT_WINDOW_SIZE);
-    let connection = window(session.local_window_size.get(), length, initial, false);
-    session.local_window_size.set(connection.value);
-    if connection.increment != 0 {
-        window_update(ctx, 0, connection.increment);
-        session.local_window_size.set(initial);
-    }
 }
 
 /// `http2_server_parse_header`: a HEADERS block into the request's
 /// `$server`, `$header`, `$get` and `$cookie`.
 fn parse_header(
     session: &Session,
-    stream: &Stream,
+    stream_id: u32,
+    stream: Option<&Stream>,
     flags: u32,
     mut input: &[u8],
-    discard: bool,
 ) -> bool {
+    let trailers = stream.is_some_and(|s| s.headers_received.get());
     if flags & FLAG_PRIORITY != 0 {
         // The stream dependency and weight are ignored.
         let Some(block) = input.get(5..) else {
@@ -1209,7 +1629,9 @@ fn parse_header(
         };
         input = block;
     }
-    stream.ctx().header_arrays();
+    if let Some(stream) = stream {
+        stream.ctx().header_arrays();
+    }
     let mut field = session.field.take().unwrap_or_default();
     let parsed = loop {
         let step = match session
@@ -1229,16 +1651,50 @@ fn parse_header(
         };
         input = rest;
         let inflate_flags = step.flags();
-        // Trailers are decoded for the HPACK table but never exposed or acted on.
-        if let Some((name, value)) = step.header {
-            let remaining = session
-                .remaining_headers
-                .get()
-                .and_then(|n| n.checked_sub(1));
+        // After reset, trailers can still update HPACK. A pseudo-header starts a
+        // new request, which cannot reuse a closed stream identifier.
+        if stream.is_none()
+            && stream_id <= session.last_stream_id.get()
+            && step.header.is_some_and(|(name, _)| name.starts_with(b":"))
+        {
+            break false;
+        }
+        if let Some(stream) = stream
+            && let Some((name, value)) = step.header
+            && let Ok(count) = session.remaining_headers.get()
+        {
+            const ENHANCE_YOUR_CALM: u32 = 11;
+            let remaining = if count == 0 {
+                Err(ENHANCE_YOUR_CALM)
+            } else if name.is_empty()
+                || (name.eq_ignore_ascii_case(b"te") && !value.eq_ignore_ascii_case(b"trailers"))
+                || (trailers && !valid_trailer(name, value))
+            {
+                Err(swoole_rs_http2::error_code::PROTOCOL_ERROR)
+            } else if !trailers
+                && name.eq_ignore_ascii_case(b"content-length")
+                && !valid_content_length(value, session.max_body_size)
+            {
+                // Reply as soon as HPACK emits the length, then decode through END_HEADERS.
+                if !send_413(session, stream) {
+                    break false;
+                }
+                Err(swoole_rs_http2::error_code::NO_ERROR)
+            } else {
+                if trailers {
+                    crate::parse::edit(
+                        &mut stream.ctx().state().request,
+                        crate::parse::Property::Trailer,
+                        |array| {
+                            array.merge(name, swoole_rs_zend::Owned::string(ZString::new(value)));
+                        },
+                    );
+                } else {
+                    request_header(stream, name, value);
+                }
+                Ok(count - 1)
+            };
             session.remaining_headers.set(remaining);
-            if remaining.is_some() && !discard && !request_header(session, stream, name, value) {
-                continue;
-            }
         }
         let step = sw_rs_http2_inflate_step(inflate_flags, input.len(), false);
         if step.end_headers {
@@ -1258,40 +1714,52 @@ fn add_string(ctx: Ctx, array: Value, key: &[u8], value: &[u8]) {
     ctx.insert(array, key, ZString::new(value));
 }
 
-/// One request header; `false` skips the rest of the step (a Cookie, parsed
-/// into `$cookie` and never kept in `$header`, or a Content-Length, checked
-/// here and judged once the block is complete).
-fn request_header(session: &Session, stream: &Stream, name: &[u8], value: &[u8]) -> bool {
+/// A lowercase HTTP field name and a value without leading or trailing whitespace.
+fn valid_trailer(name: &[u8], value: &[u8]) -> bool {
+    name.iter()
+        .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || b"!#$%&'*+-.^_`|~".contains(c))
+        && !matches!(value.first(), Some(b' ' | b'\t'))
+        && !matches!(value.last(), Some(b' ' | b'\t'))
+        && value
+            .iter()
+            .all(|&c| c == b'\t' || (c >= 0x20 && c != 0x7f))
+}
+
+/// Apply one field from the initial request header block.
+fn request_header(stream: &Stream, name: &[u8], value: &[u8]) {
     let ctx = stream.ctx();
     let kind = header_plan(HeaderRole::Request, name, false).kind;
     if name.first() == Some(&b':') {
         match kind {
-            HeaderKind::Method => add_string(ctx, Value::Server, b"request_method", value),
+            HeaderKind::Method => {
+                if value.eq_ignore_ascii_case(b"HEAD") {
+                    stream.ctx().state().parser.method = swoole_rs_http::llhttp::HEAD;
+                }
+                add_string(ctx, Value::Server, b"request_method", value);
+            }
             HeaderKind::Path => path(ctx, value),
             HeaderKind::Authority => add_string(ctx, Value::Header, b"host", value),
             _ => {}
         }
-        return true;
+        return;
     }
     match kind {
         HeaderKind::Cookie => {
             ctx.cookie(value);
-            false
+            stream.cookie_header.with_taken(|cookie| match cookie {
+                Some(joined) => {
+                    joined.extend_from_slice(b"; ");
+                    joined.extend_from_slice(value);
+                }
+                None => *cookie = Some(value.to_vec()),
+            });
         }
-        HeaderKind::ContentLength => {
-            if !content_length_valid(session, value) {
-                stream.bad_length.set(true);
-            }
-            // The header keeps the last value.
-            add_string(ctx, Value::Header, b"content-length", value);
-            false
-        }
+        HeaderKind::ContentLength => add_string(ctx, Value::Header, b"content-length", value),
         _ => {
             if matches!(kind, HeaderKind::ContentType | HeaderKind::AcceptEncoding) {
                 stream.negotiates.set(true);
             }
             add_string(ctx, Value::Header, name, value);
-            true
         }
     }
 }
@@ -1313,35 +1781,26 @@ fn path(ctx: Ctx, value: &[u8]) {
     ctx.insert(Value::Server, b"path_info", ZString::url_decode(path));
 }
 
-/// `std::strtol(value, &end, 10)` and whether it consumed the whole value.
-fn strtol(value: &[u8]) -> (i64, bool) {
-    match swoole_rs_corebase::strtol(value) {
-        (_, 0) => (0, value.is_empty()),
-        (parsed, end) => (parsed, end == value.len()),
-    }
-}
-
-/// `http2_server_send_status_code`: a header-only response.
-fn send_status_code(ctx: Ctx, status: u32) {
-    if let Some((session, stream)) = of(ctx) {
-        set(ctx, Field::Status, status);
-        send_header(ctx, &session, &stream, None, true);
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn strtol_matches_libc() {
-        assert_eq!(strtol(b"123"), (123, true));
-        assert_eq!(strtol(b" 12"), (12, true));
-        assert_eq!(strtol(b"12a"), (12, false));
-        assert_eq!(strtol(b"-5"), (-5, true));
-        assert_eq!(strtol(b"abc"), (0, false));
-        assert_eq!(strtol(b""), (0, true));
-        assert_eq!(strtol(b"99999999999999999999999"), (i64::MAX, true));
+    fn content_length_is_unsigned_decimal_within_limit() {
+        for bytes in [b"123".as_slice(), b"000123", b"0"] {
+            assert!(valid_content_length(bytes, 123));
+        }
+        for bytes in [
+            b" 12".as_slice(),
+            b"+12",
+            b"-5",
+            b"12a",
+            b"",
+            b"124",
+            b"99999999999999999999999",
+        ] {
+            assert!(!valid_content_length(bytes, 123));
+        }
     }
 
     #[test]

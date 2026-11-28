@@ -584,11 +584,11 @@ mod tests {
     #[cfg_attr(miri, ignore = "calls OpenSSL, which Miri cannot execute")]
     fn check_host_and_verify() {
         unsafe {
-            let check = |cert, name: &str| {
+            let check = |cert, name: &str, strict| {
                 let cert = Cert(std::ptr::NonNull::new(cert).unwrap());
                 if cert
                     .get()
-                    .matches_host(&std::ffi::CString::new(name).unwrap())
+                    .matches_host(&std::ffi::CString::new(name).unwrap(), strict)
                 {
                     1
                 } else {
@@ -599,7 +599,7 @@ mod tests {
             // the subject CN when the flags are 0.
             let named = |host: &str| {
                 let cert = X509_new();
-                let value = std::ffi::CString::new(format!("DNS:{host}")).unwrap();
+                let value = std::ffi::CString::new(host).unwrap();
                 let ext = X509V3_EXT_nconf_nid(
                     ptr::null_mut(),
                     ptr::null_mut(),
@@ -611,13 +611,17 @@ mod tests {
                 X509_EXTENSION_free(ext);
                 cert
             };
-            assert_eq!(check(named("example.com"), "EXAMPLE.com"), 1);
+            assert_eq!(check(named("DNS:example.com"), "EXAMPLE.com", false), 1);
             assert_eq!(
-                check(named("*.example.com"), "a.example.com"),
+                check(named("DNS:*.example.com"), "a.example.com", false),
                 1,
                 "wildcard"
             );
-            assert_eq!(check(named("example.com"), "example.org"), 2);
+            assert_eq!(check(named("DNS:example.com"), "example.org", false), 2);
+
+            assert_eq!(check(named("IP:127.0.0.1"), "127.0.0.1", true), 1);
+            assert_eq!(check(named("IP:::1"), "::1", true), 1);
+            assert_eq!(check(named("DNS:127.0.0.1"), "127.0.0.1", true), 2);
 
             let (ssl, _) = client();
             assert_eq!(

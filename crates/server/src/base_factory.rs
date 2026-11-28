@@ -149,9 +149,17 @@ pub(crate) fn allocated(state: &crate::ServerState) -> bool {
 
 /// onClose's event for session `fd`: `reactor_id` is -1 when the server closed it.
 fn close_event(c: crate::Connection<'_>, fd: c_long) -> DataHead {
+    use crate::callbacks::{
+        CLOSE_CALLBACK_ACTIVELY, CLOSE_CALLBACK_HTTP2, CLOSE_CALLBACK_WEBSOCKET,
+    };
+    let active = c.close_actively();
+    let websocket = matches!(c.websocket(), crate::WebSocket::Open(_));
     DataHead {
+        ext_flags: (u16::from(active) * CLOSE_CALLBACK_ACTIVELY)
+            | (u16::from(websocket) * CLOSE_CALLBACK_WEBSOCKET)
+            | (u16::from(c.http2_stream()) * CLOSE_CALLBACK_HTTP2),
         fd,
-        reactor_id: if c.close_actively() {
+        reactor_id: if active {
             -1
         } else {
             i16::from(c.reactor_id())
@@ -395,6 +403,7 @@ fn forward(serv: view::Server<'_>, send: &SendData) -> bool {
     if hybrid().forward(serv, send) {
         return true;
     }
+    crate::send::discard_file(send.info(), send.payload());
     log::sys_warning(
         c"BaseFactory::forward_message",
         format_args!("failed to send {} bytes to pipe_master", send.info.len),
@@ -412,8 +421,7 @@ fn session(state: &crate::ServerState, id: c_long) -> Option<(u32, c_int)> {
 }
 
 /// `BaseFactory::end`: forward the close to the session's worker, or mark the
-/// connection, run `onClose`, and close the socket or queue the close behind its output
-/// (with `--fix-halfclose`, it then stops reading the socket).
+/// connection, run `onClose`, and close the socket or queue the close behind its output.
 pub(crate) fn end(serv: view::Server<'_>, id: c_long, flags: c_int) -> bool {
     let state = serv.state();
     let worker = swoole_get_worker_id();
@@ -496,11 +504,7 @@ pub(crate) fn end(serv: view::Server<'_>, id: c_long, flags: c_int) -> bool {
     if empty || now {
         return crate::conn_io::close_connection(serv, reactor, Some(socket));
     }
-    c.set_close_queued(true);
-    socket.read(SocketFields::queue_close);
-    // Only the half-close drain stops reading (`SW_HALFCLOSE_DRAIN`); upstream reads on.
-    !cfg!(feature = "halfclose")
-        || reactor.interest(socket, swoole_rs_corebase::reactor::Interest::RemoveRead)
+    crate::send::queue_close(reactor, c, socket)
 }
 
 /// `BaseFactory::finish`: send here, or forward data and files to the session's worker.

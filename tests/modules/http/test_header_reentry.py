@@ -167,3 +167,71 @@ def test_incremental_multipart_fields_reuse_buffer(engine):
     result = subprocess.run(engine.command('-r', code), capture_output=True, text=True, timeout=10)
     assert result.returncode == 0, result.stdout + result.stderr
     assert result.stdout.splitlines() == ['bool(true)'] * 2
+
+
+def test_multipart_file_is_registered_with_php(engine, tmp_path):
+    code = r'''
+    $body = "--b\r\nContent-Disposition: form-data; name=\"file\"; filename=\"a.txt\"\r\n\r\nsample\r\n--b--\r\n";
+    $head = "POST / HTTP/1.1\r\nContent-Type: multipart/form-data; boundary=b\r\nContent-Length: " . strlen($body) . "\r\n\r\n";
+    $request = Swoole\Http\Request::create(['parse_files' => true]);
+    $request->parse($head . $body);
+    $file = $request->files['file']['tmp_name'];
+    var_dump(is_uploaded_file($file), move_uploaded_file($file, $argv[1]), is_uploaded_file($file));
+    unset($request);
+    '''
+    moved = tmp_path / 'moved.txt'
+    result = subprocess.run(engine.command('-r', code, str(moved)), capture_output=True, text=True, timeout=10)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert result.stdout.splitlines() == ['bool(true)', 'bool(true)', 'bool(false)']
+    assert moved.read_bytes() == b'sample'
+
+
+def test_invalid_request_logs_receive_warning(engine, tmp_path):
+    log = tmp_path / 'server.log'
+    with server(engine, Path(__file__).with_name('header_reentry.php'),
+                {'TEST_HTTP_WARNING_LOG': str(log)}) as (port, _):
+        with socket.create_connection(('127.0.0.1', port), timeout=5) as conn:
+            conn.sendall(b'GET / HTTP/1.1\r\nHost: localhost\r\nMissingColon\r\n\r\n')
+            with conn.makefile('rb') as response:
+                assert response.readline() == b'HTTP/1.1 400 Bad Request\r\n'
+        # The same worker has finished logging before it serves the next request.
+        assert get(port, '/')[0] == 'HTTP/1.1 200 OK'
+        assert ('\tWARNING\tphp_swoole_http_server_onReceive(): Invalid HTTP request discarded: '
+                '4 bytes unprocessed. Reason: Invalid header token') in log.read_text()
+
+
+def test_standalone_request_upload_uses_php_temp_directory(engine, tmp_path):
+    code = r'''
+    $body = "--part\r\nContent-Disposition: form-data; name=\"file\"; filename=\"notes.txt\"\r\n\r\nnotes\r\n--part--\r\n";
+    $request = Swoole\Http\Request::create();
+    $request->parse("POST / HTTP/1.1\r\nHost: localhost\r\nContent-Type: multipart/form-data; boundary=part\r\n"
+        . "Content-Length: " . strlen($body) . "\r\n\r\n" . $body);
+    $path = $request->files['file']['tmp_name'];
+    echo json_encode([dirname($path), file_get_contents($path)]), "\n";
+    unset($request);
+    echo json_encode(file_exists($path));
+    '''
+    result = subprocess.run(engine.command('-d', f'sys_temp_dir={tmp_path}', '-r', code),
+                            capture_output=True, text=True, check=True, timeout=10)
+    assert [json.loads(line) for line in result.stdout.splitlines()] == [[str(tmp_path), 'notes'], False]
+
+
+def test_response_create_rejects_missing_server_and_request_context(engine):
+    code = r'''
+    use Swoole\Http\Request;
+    use Swoole\Http\Response;
+    foreach ([1, [new stdClass, new Request]] as $target) {
+        try {
+            Response::create($target);
+            echo "unexpected success\n";
+        } catch (Swoole\Exception $e) {
+            echo json_encode([$e->getCode() === SWOOLE_ERROR_INVALID_PARAMS, $e->getMessage()]), "\n";
+        }
+    }
+    '''
+    result = subprocess.run(engine.command('-r', code), capture_output=True, text=True,
+                            check=True, timeout=10)
+    assert [json.loads(line) for line in result.stdout.splitlines()] == [
+        [True, r'failed to create Http\Response from the given arguments'],
+        [True, r'parameter $1.second has no valid Http\Request context'],
+    ]

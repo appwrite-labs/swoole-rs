@@ -12,22 +12,22 @@ use swoole_rs_corebase::CCast;
 use swoole_rs_corebase::CellExt;
 use swoole_rs_corebase::buffer::BoundedBytes;
 use swoole_rs_corebase::constants::HTTP2_PREFACE;
-use swoole_rs_corebase::reactor::Events;
-use swoole_rs_hooks::{co_socket::Co, packet::recv_packet, socket_extra::set_close_hook};
+use swoole_rs_corebase::reactor::{Events, SocketFields};
+use swoole_rs_hooks::{co_socket::Co, packet::try_recv_packet, socket_extra::set_close_hook};
 use swoole_rs_http2::error_code;
 use swoole_rs_http2::frame_flag::{
-    ACK as FLAG_ACK, END_STREAM as FLAG_END_STREAM, PRIORITY as FLAG_PRIORITY,
+    ACK as FLAG_ACK, END_STREAM as FLAG_END_STREAM, PADDED as FLAG_PADDED,
+    PRIORITY as FLAG_PRIORITY,
 };
 use swoole_rs_http2::{
     FrameAction, FrameType, GOAWAY_SIZE, HeaderKind, HeaderRole, Http2FrameFacts, Http2Settings,
-    Http2WindowPlan, Media, PING_PAYLOAD, QueueAction, WINDOW_UPDATE_SIZE, decode_packet,
+    Http2WindowPlan, Media, PING_PAYLOAD, WINDOW_UPDATE_SIZE, decode_packet,
     hpack::{self, Decoder, Encoder, Error, MAX_DECODED_STRING},
     send_frame_size, sw_rs_http2_chunk, sw_rs_http2_default_settings, sw_rs_http2_header_plan,
-    sw_rs_http2_headers_flags, sw_rs_http2_inflate_step, sw_rs_http2_media_kind,
-    sw_rs_http2_pack_frame_header, sw_rs_http2_pack_settings, sw_rs_http2_queue_action,
-    sw_rs_http2_response, sw_rs_http2_send_complete, sw_rs_http2_setting_plan,
-    sw_rs_http2_stream_flags, sw_rs_http2_stream_update, sw_rs_http2_window_plan,
-    sw_rs_http2_write_allowed,
+    sw_rs_http2_headers_flags, sw_rs_http2_media_kind, sw_rs_http2_pack_frame_header,
+    sw_rs_http2_pack_settings, sw_rs_http2_response, sw_rs_http2_send_complete,
+    sw_rs_http2_setting_plan, sw_rs_http2_stream_flags, sw_rs_http2_stream_update,
+    sw_rs_http2_window_plan, sw_rs_http2_write_allowed,
 };
 use swoole_rs_inflate::{DecodeError, Inflate};
 use swoole_rs_phphttp::http2::{IdMap, entries};
@@ -138,6 +138,7 @@ impl Conn {
 
 struct Stream {
     flags: u32,
+    received_headers: bool,
     /// None while draining a response that exceeded its limit.
     buffer: Option<BoundedBytes>,
     gzip: Option<Inflate>,
@@ -168,9 +169,18 @@ impl Response {
     }
 }
 
+#[derive(Clone, Copy)]
+struct HeaderBlock {
+    stream_id: u32,
+    end_stream: u32,
+    trailing: bool,
+}
+
 enum FrameReadError {
+    InvalidMaxFrameSize(u32),
     Short,
-    Goaway,
+    InvalidLength(&'static [u8]),
+    Protocol(&'static [u8]),
 }
 
 /// What a frame's payload held, read while the read buffer was on loan.
@@ -197,6 +207,7 @@ enum Buffered {
     Nothing,
     /// The body did not decompress.
     Failed,
+    ExceededWindow,
     Limit(usize, Http2WindowPlan),
     /// Buffered: the stream's window plan.
     Window(Http2WindowPlan),
@@ -220,6 +231,7 @@ struct Client {
     ssl: bool,
     stream_id: Cell<u32>,
     last_stream_id: Cell<u32>,
+    continuation: Cell<Option<HeaderBlock>>,
     local: Http2Settings,
     decoded_body_limit: Cell<usize>,
     remote: Cell<Http2Settings>,
@@ -239,15 +251,16 @@ fn strerror(code: c_int) -> String {
 }
 
 /// `php_swoole_socket_set` when `settings` is an array.
-fn apply(socket: Co, settings: &Value, decoded_body_limit: &Cell<usize>) {
+fn apply(socket: Co, settings: &Value, decoded_body_limit: &Cell<usize>) -> bool {
     if let Some(settings) = settings.array() {
-        // Every setting.
-        if swoole_rs_phpclients::socket_set(socket, settings)
-            && settings.get(b"package_max_length").is_some()
-        {
+        if !swoole_rs_phpclients::socket_set(socket, settings) {
+            return false;
+        }
+        if settings.get(b"package_max_length").is_some() {
             decoded_body_limit.set(socket.protocol().package_max_length as usize);
         }
     }
+    true
 }
 
 fn frame_header(kind: FrameType, length: usize, flags: u32, stream: u32) -> [u8; FRAME_HEADER] {
@@ -257,6 +270,25 @@ fn frame_header(kind: FrameType, length: usize, flags: u32, stream: u32) -> [u8;
 
 fn window(current: u32, amount: usize, initial: u32, credit: bool) -> Http2WindowPlan {
     sw_rs_http2_window_plan(current, amount, initial, credit)
+}
+
+fn unpadded(payload: &[u8], flags: u32) -> Option<&[u8]> {
+    if flags & FLAG_PADDED == 0 {
+        return Some(payload);
+    }
+    let (&padding, rest) = payload.split_first()?;
+    rest.get(..rest.len().checked_sub(usize::from(padding))?)
+}
+
+fn receive_window(remaining: u32, target: u32) -> Http2WindowPlan {
+    Http2WindowPlan {
+        value: remaining,
+        increment: if remaining <= target / 2 {
+            target - remaining
+        } else {
+            0
+        },
+    }
 }
 
 /// The HPACK header list upstream's `HeaderSet` builds (names lowercased),
@@ -342,6 +374,7 @@ impl Client {
             ssl,
             stream_id: Cell::new(0),
             last_stream_id: Cell::new(0),
+            continuation: Cell::default(),
             local,
             decoded_body_limit: Cell::new(swoole_rs_inflate::DEFAULT_BODY_LIMIT),
             remote: Cell::default(),
@@ -446,8 +479,10 @@ impl Client {
         socket.set_protocol(protocol);
         if let Some(this) = self.conn.this()
             && let Some(setting) = this.property(c"setting")
+            && !apply(socket, &setting, &self.decoded_body_limit)
         {
-            apply(socket, &setting, &self.decoded_body_limit);
+            self.close();
+            return false;
         }
         if swoole_rs_zend::bailout::pending() {
             return false;
@@ -457,6 +492,7 @@ impl Client {
             return self.connect_failed(socket);
         }
         self.stream_id.set(1);
+        self.continuation.set(None);
         let remote = sw_rs_http2_default_settings();
         self.remote.set(remote);
         self.local_window
@@ -468,7 +504,6 @@ impl Client {
             Encoder::new(self.local.header_table_size),
         )));
         if !self.send(HTTP2_PREFACE) || !self.send_setting() {
-            self.close();
             return false;
         }
         let zsocket = self.hold_socket();
@@ -483,6 +518,13 @@ impl Client {
         self.io_error(socket);
         self.close();
         false
+    }
+
+    fn close_with_socket_error(&self, socket: Co) {
+        let (code, message) = swoole_rs_phpclients::Co::from(socket)
+            .with_error(|code, message| (code, message.to_owned()));
+        self.close();
+        self.update_error(code, message.to_bytes());
     }
 
     fn close(&self) -> bool {
@@ -501,44 +543,47 @@ impl Client {
         true
     }
 
-    /// `send`: directly, or queued behind a coroutine writing already.
-    fn send(&self, data: &[u8]) -> bool {
+    fn check_send_queue(&self) -> bool {
         let Some(socket) = self.socket() else {
             return false;
         };
-        let bound = socket.has_bound(Events::WRITE);
-        let (queued, limit) = if bound {
-            (
-                self.queue.with_taken(|queue| queue.len()),
-                self.remote.get().max_concurrent_streams,
-            )
-        } else {
-            (0, 0)
-        };
-        match sw_rs_http2_queue_action(bound, queued, limit) {
-            QueueAction::Send => {}
-            QueueAction::Full => {
-                socket.set_err_code(QUEUE_FULL);
-                socket.set_static_err_msg(c"the send queue is full, try again later");
-                self.io_error(socket);
-                return false;
-            }
-            QueueAction::Append => {
-                self.queue
-                    .with_taken(|queue| queue.push_back(data.to_vec()));
-                return true;
-            }
-        }
-        if !Self::send_all(socket, data) {
+        if socket.has_bound(Events::WRITE)
+            && self.queue.with_taken(|queue| queue.len())
+                > self.remote.get().max_concurrent_streams as usize
+        {
+            socket.set_err_code(QUEUE_FULL);
+            socket.set_static_err_msg(c"the send queue is full, try again later");
             self.io_error(socket);
             return false;
         }
+        true
+    }
+
+    fn send(&self, data: &[u8]) -> bool {
+        self.send_part(data, true)
+    }
+
+    /// Flush queued writes only after the last part of the current frame.
+    fn send_part(&self, data: &[u8], flush: bool) -> bool {
+        let Some(socket) = self.socket() else {
+            return false;
+        };
+        if socket.has_bound(Events::WRITE) {
+            self.queue
+                .with_taken(|queue| queue.push_back(data.to_vec()));
+            return true;
+        }
+        if !Self::send_all(socket, data) {
+            self.close_with_socket_error(socket);
+            return false;
+        }
         // Each frame is copied out: sending yields, and the queue is put back first.
-        loop {
-            let next = self.queue.with_taken(|queue| queue.front().cloned());
-            let Some(frame) = next else { break };
+        if !flush {
+            return true;
+        }
+        while let Some(frame) = self.queue.with_taken(|queue| queue.front().cloned()) {
             if !Self::send_all(socket, &frame) {
-                self.io_error(socket);
+                self.close_with_socket_error(socket);
                 EXCEPTION.throw(c"failed to send control frame", SEND_CONTROL_FRAME_FAILED);
                 return false;
             }
@@ -557,7 +602,17 @@ impl Client {
     fn send_setting(&self) -> bool {
         let mut frame = [0_u8; swoole_rs_http2::SETTINGS_FRAME_SIZE];
         let length = sw_rs_http2_pack_settings(&mut frame, &self.local, false);
-        self.send(frame.get(..length).unwrap_or(&frame))
+        if !self.send(frame.get(..length).unwrap_or(&frame)) {
+            return false;
+        }
+        let initial = self.local.init_window_size;
+        if initial > swoole_rs_http2::INITIAL_CONNECTION_WINDOW {
+            if !self.send_window_update(0, initial - swoole_rs_http2::INITIAL_CONNECTION_WINDOW) {
+                return false;
+            }
+            self.local_window.set(initial);
+        }
+        true
     }
 
     fn send_window_update(&self, stream: u32, size: u32) -> bool {
@@ -582,12 +637,10 @@ impl Client {
             let max_frame_size = send_frame_size(self.remote.get().max_frame_size);
             let chunk = sw_rs_http2_chunk(data.len(), max_frame_size, flag);
             let (part, rest) = data.split_at(chunk.length.min(data.len()));
-            if !self.send(&frame_header(
-                FrameType::Data,
-                part.len(),
-                chunk.flags,
-                stream,
-            )) || !self.send(part)
+            if !self.send_part(
+                &frame_header(FrameType::Data, part.len(), chunk.flags, stream),
+                false,
+            ) || !self.send(part)
             {
                 return false;
             }
@@ -597,9 +650,13 @@ impl Client {
     }
 
     fn send_goaway(&self, error_code: i64, debug: &[u8]) -> bool {
+        let max_frame = send_frame_size(self.remote.get().max_frame_size) as usize;
+        if debug.len() > max_frame - GOAWAY_SIZE {
+            warn(c"GOAWAY debug data exceeds the peer's maximum frame size");
+            return false;
+        }
         let code = error_code.c_cast::<u32>();
-        let mut frame =
-            frame_header(FrameType::Goaway, GOAWAY_SIZE + debug.len(), code & 0xff, 0).to_vec();
+        let mut frame = frame_header(FrameType::Goaway, GOAWAY_SIZE + debug.len(), 0, 0).to_vec();
         frame.extend_from_slice(&self.last_stream_id.get().to_be_bytes());
         frame.extend_from_slice(&code.to_be_bytes());
         frame.extend_from_slice(debug);
@@ -608,7 +665,7 @@ impl Client {
 
     /// `build_header`: a HEADERS frame whose first nine bytes are left for
     /// its header, then the request's HPACK block.
-    fn build_header(&self, request: Request<'_>) -> Vec<u8> {
+    fn build_header(&self, request: Request<'_>) -> Option<Vec<u8>> {
         let method_value = request.property(Field::Method);
         let path_value = request.property(Field::Path);
         let method = method_value
@@ -658,7 +715,8 @@ impl Client {
                     continue;
                 };
                 let value = value.string();
-                let encoded = ZString::url_encode(value.bytes());
+                let encoded =
+                    swoole_rs_phpclients::encode_request_cookie(key, value.bytes(), &EXCEPTION)?;
                 set.add(b"cookie", &[key, b"=", encoded.bytes()]);
             }
             let mut frame = vec![0_u8; FRAME_HEADER];
@@ -667,7 +725,7 @@ impl Client {
                     encoder.encode(set.list(), &mut frame);
                 }
             });
-            frame
+            Some(frame)
         })
     }
 
@@ -694,7 +752,18 @@ impl Client {
             Some(text) => text.is_empty(),
             None => !data.truthy(),
         };
-        let mut frame = self.build_header(request);
+        if !self.check_send_queue() {
+            return 0;
+        }
+        let Some(mut frame) = self.build_header(request) else {
+            return 0;
+        };
+        let header_length = frame.len() - FRAME_HEADER;
+        if header_length > self.remote.get().max_frame_size as usize {
+            self.close();
+            EXCEPTION.throw(c"HTTP/2 header block is too large", INVALID_PARAMS);
+            return 0;
+        }
         let flags = sw_rs_http2_stream_flags(pipeline, use_pipeline_read);
         // The id is taken before a send yields or the body's conversion runs PHP
         // code, so an overlapping send gets the next one. A failed send gives it
@@ -703,12 +772,7 @@ impl Client {
         self.stream_id.set(id + 2);
         self.create_stream(id, flags);
         let header_flags = sw_rs_http2_headers_flags(empty, true, flags);
-        let header = frame_header(
-            FrameType::Headers,
-            frame.len() - FRAME_HEADER,
-            header_flags,
-            id,
-        );
+        let header = frame_header(FrameType::Headers, header_length, header_flags, id);
         if let Some(head) = frame.first_chunk_mut::<FRAME_HEADER>() {
             *head = header;
         }
@@ -732,6 +796,7 @@ impl Client {
     fn create_stream(&self, id: u32, flags: u32) {
         let stream = Stream {
             flags,
+            received_headers: false,
             buffer: Some(BoundedBytes::new(self.decoded_body_limit.get(), 0)),
             gzip: None,
             response: Response::new(id),
@@ -752,6 +817,9 @@ impl Client {
         if !sw_rs_http2_write_allowed(flags.is_some(), flags.unwrap_or(0)) {
             let message = format!("unable to found active pipeline stream#{id}");
             self.update_error(libc::EINVAL, message.as_bytes());
+            return false;
+        }
+        if !self.check_send_queue() {
             return false;
         }
         let flag = if end { FLAG_END_STREAM } else { 0 };
@@ -776,8 +844,15 @@ impl Client {
             let Some(socket) = self.socket().filter(|_| self.is_available()) else {
                 return call.set_bool(false);
             };
-            let Some(received @ 1..) = recv_packet(socket, timeout) else {
+            let packet = try_recv_packet(socket, timeout);
+            let Ok(received @ 1..) = packet else {
                 self.io_error(socket);
+                if (packet == Ok(0) && socket.err_code() == 0)
+                    || socket.with_network(|net| net.read(SocketFields::close_deferred))
+                        == Some(true)
+                {
+                    self.close();
+                }
                 return call.set_bool(false);
             };
             match self.parse_frame(call, socket, received, pipeline_read) {
@@ -795,9 +870,18 @@ impl Client {
     /// payload is needed for done: the read buffer is on loan to the caller, so
     /// nothing here yields or runs PHP code.
     fn read_frame(&self, packet: &[u8]) -> Result<(Http2FrameFacts, Payload), FrameReadError> {
-        let (facts, payload) = decode_packet(packet, self.last_stream_id.get(), true)
+        let (mut facts, payload) = decode_packet(packet, self.last_stream_id.get(), true)
             .map_err(|_| FrameReadError::Short)?;
         let id = facts.stream_id;
+        let continuation = self.continuation.get();
+        let continued = facts.action == FrameAction::Continuation;
+        if continued != continuation.is_some()
+            || continuation.is_some_and(|block| block.stream_id != id)
+        {
+            return Err(FrameReadError::Protocol(
+                b"invalid CONTINUATION frame sequence",
+            ));
+        }
         let known = || self.streams.with_taken(|streams| streams.contains_key(&id));
         let read = match facts.action {
             FrameAction::Settings => {
@@ -807,6 +891,9 @@ impl Client {
                 };
                 for entry in entries {
                     let (key, number) = swoole_rs_http2::sw_rs_http2_unpack_setting(entry);
+                    if key == setting_id::MAX_FRAME_SIZE && send_frame_size(number) != number {
+                        return Err(FrameReadError::InvalidMaxFrameSize(number));
+                    }
                     self.apply_remote_setting(key, number);
                 }
                 Payload::Unread
@@ -829,29 +916,53 @@ impl Client {
             }
             // RFC 9113 6.7: the ACK echoes the PING's eight payload bytes; any
             // other length is a FRAME_SIZE_ERROR.
-            FrameAction::PingReply => Payload::Ping(
-                swoole_rs_http2::ping_payload(payload).map_err(|_| FrameReadError::Short)?,
+            FrameAction::PingReply | FrameAction::PingAck => Payload::Ping(
+                swoole_rs_http2::ping_payload(payload)
+                    .map_err(|_| FrameReadError::InvalidLength(b"invalid PING frame length"))?,
             ),
             FrameAction::Goaway => {
-                let (last, rest) = payload.split_first_chunk().ok_or(FrameReadError::Goaway)?;
-                let (code, debug) = rest.split_first_chunk().ok_or(FrameReadError::Goaway)?;
+                const SHORT_GOAWAY: FrameReadError =
+                    FrameReadError::InvalidLength(b"invalid GOAWAY frame length");
+                let (last, rest) = payload.split_first_chunk().ok_or(SHORT_GOAWAY)?;
+                let (code, debug) = rest.split_first_chunk().ok_or(SHORT_GOAWAY)?;
                 Payload::Goaway {
                     server_last: u32::from_be_bytes(*last),
                     code: u32::from_be_bytes(*code),
                     debug: debug.to_vec(),
                 }
             }
-            FrameAction::Headers if known() => {
-                let block = if facts.flags & FLAG_PRIORITY != 0 {
-                    payload.get(5..).ok_or(FrameReadError::Short)?
-                } else {
-                    payload
-                };
-                Payload::Headers(self.parse_header(id, block))
+            FrameAction::Headers | FrameAction::Continuation if known() => {
+                let mut block = continuation.unwrap_or_else(|| HeaderBlock {
+                    stream_id: id,
+                    end_stream: facts.flags & FLAG_END_STREAM,
+                    trailing: self.streams.with_taken(|streams| {
+                        streams
+                            .get(&id)
+                            .is_some_and(|stream| stream.received_headers)
+                    }),
+                });
+                let mut fragment = payload;
+                if !continued {
+                    fragment = unpadded(fragment, facts.flags)
+                        .ok_or(FrameReadError::Protocol(b"invalid HEADERS frame padding"))?;
+                    if facts.flags & FLAG_PRIORITY != 0 {
+                        fragment = fragment.get(5..).ok_or(FrameReadError::InvalidLength(
+                            b"invalid HEADERS frame length",
+                        ))?;
+                    }
+                }
+                let last = facts.flags & swoole_rs_http2::frame_flag::END_HEADERS != 0;
+                let error = self.parse_header(&mut block, fragment, last);
+                self.continuation.set((!last).then_some(block));
+                facts.action = FrameAction::Headers;
+                facts.flags = block.end_stream;
+                Payload::Headers(error)
             }
-            FrameAction::Data if known() => {
-                Payload::Data(payload.len(), self.buffer_data(id, facts.flags, payload))
-            }
+            FrameAction::Data if known() => Payload::Data(
+                payload.len(),
+                self.streams
+                    .with_taken(|streams| self.buffer_stream(streams, id, facts.flags, payload))?,
+            ),
             _ => Payload::Unread,
         };
         if facts.publish_last_id {
@@ -871,12 +982,23 @@ impl Client {
         let (facts, read) = match read {
             Ok(frame) => frame,
             Err(error) => {
-                if matches!(error, FrameReadError::Goaway) {
-                    self.close();
-                    self.update_error(
-                        error_code::FRAME_SIZE_ERROR.cast_signed(),
-                        b"invalid GOAWAY frame length",
-                    );
+                match error {
+                    FrameReadError::Short => return Frame::Fail,
+                    FrameReadError::Protocol(message) => {
+                        self.close();
+                        self.update_error(error_code::PROTOCOL_ERROR.cast_signed(), message);
+                    }
+                    FrameReadError::InvalidLength(message) => {
+                        self.close();
+                        self.update_error(error_code::FRAME_SIZE_ERROR.cast_signed(), message);
+                    }
+                    FrameReadError::InvalidMaxFrameSize(value) => {
+                        self.close();
+                        self.update_error(
+                            error_code::PROTOCOL_ERROR.cast_signed(),
+                            format!("invalid SETTINGS_MAX_FRAME_SIZE value {value}").as_bytes(),
+                        );
+                    }
                 }
                 return Frame::Fail;
             }
@@ -908,6 +1030,7 @@ impl Client {
                 };
             }
             FrameAction::Goaway => {
+                self.close();
                 if let Payload::Goaway {
                     server_last,
                     code,
@@ -920,7 +1043,6 @@ impl Client {
                         props.long(c"serverLastStreamId", i64::from(server_last));
                     });
                 }
-                self.close();
                 return Frame::Fail;
             }
             FrameAction::Reset => {
@@ -940,9 +1062,12 @@ impl Client {
         }
         match read {
             Payload::Headers(Some(error)) => {
+                self.close();
                 let text = format!("nghttp2_hd_inflate_hd failed with error: {error}");
                 self.update_error(Error::CODE, text.as_bytes());
+                return Frame::Fail;
             }
+            Payload::Headers(None) if self.continuation.get().is_some() => return Frame::Continue,
             Payload::Data(length, buffered) => {
                 if let Err(frame) = self.open_windows(id, length, buffered) {
                     return frame;
@@ -1039,31 +1164,34 @@ impl Client {
         }
     }
 
-    /// A DATA frame: buffer (inflating gzip) and replenish the windows.
-    /// A DATA frame's payload onto its stream's body, and the stream's window
-    /// after it.
-    fn buffer_data(&self, id: u32, flags: u32, payload: &[u8]) -> Buffered {
-        self.streams
-            .with_taken(|streams| self.buffer_stream(streams, id, flags, payload))
-    }
-
-    /// `buffer_data` over the streams taken out.
+    /// Charge the full DATA payload to the receive window and append its unpadded body.
     fn buffer_stream(
         &self,
         streams: &mut Streams,
         id: u32,
         flags: u32,
         payload: &[u8],
-    ) -> Buffered {
+    ) -> Result<Buffered, FrameReadError> {
         let Some(stream) = streams.get_mut(&id) else {
-            return Buffered::Nothing;
+            return Ok(Buffered::Nothing);
         };
         stream.flags = sw_rs_http2_stream_update(stream.flags, flags & FLAG_END_STREAM != 0, true);
-        if payload.is_empty() {
-            return Buffered::Nothing;
+        let Ok(length) = u32::try_from(payload.len()) else {
+            return Ok(Buffered::ExceededWindow);
+        };
+        if length > stream.local_window.min(self.local_window.get()) {
+            return Ok(Buffered::ExceededWindow);
         }
-        stream.local_window = window(stream.local_window, payload.len(), 0, false).value;
-        let credit = window(stream.local_window, 0, self.local.init_window_size, false);
+        let payload = unpadded(payload, flags)
+            .ok_or(FrameReadError::Protocol(b"invalid DATA frame padding"))?;
+        if length == 0 {
+            return Ok(Buffered::Nothing);
+        }
+        stream.local_window -= length;
+        let credit = receive_window(stream.local_window, self.local.init_window_size);
+        if payload.is_empty() {
+            return Ok(Buffered::Window(credit));
+        }
         if let Some(buffer) = &mut stream.buffer {
             let bytes = match &mut stream.gzip {
                 Some(gzip) => gzip.decode(payload),
@@ -1074,12 +1202,12 @@ impl Client {
                 Err(DecodeError::Limit(limit)) => {
                     stream.buffer = None;
                     stream.gzip = None;
-                    return Buffered::Limit(limit, credit);
+                    return Ok(Buffered::Limit(limit, credit));
                 }
-                Err(DecodeError::Codec(_)) => return Buffered::Failed,
+                Err(DecodeError::Codec(_)) => return Ok(Buffered::Failed),
             }
         }
-        Buffered::Window(credit)
+        Ok(Buffered::Window(credit))
     }
 
     /// The window updates a buffered DATA frame of `length` bytes calls for.
@@ -1087,6 +1215,14 @@ impl Client {
         let initial = self.local.init_window_size;
         let stream_window = match buffered {
             Buffered::Nothing => return Ok(()),
+            Buffered::ExceededWindow => {
+                self.close();
+                self.update_error(
+                    error_code::FLOW_CONTROL_ERROR.cast_signed(),
+                    b"response DATA exceeded receive window",
+                );
+                return Err(Frame::Fail);
+            }
             Buffered::Failed => {
                 swoole_rs_corebase::log::warning(
                     c"Client::parse_frame",
@@ -1096,13 +1232,17 @@ impl Client {
             }
             Buffered::Window(window) | Buffered::Limit(_, window) => window,
         };
-        let connection = window(self.local_window.get(), length, initial, false);
+        let target = initial.max(swoole_rs_http2::INITIAL_CONNECTION_WINDOW);
+        let connection = receive_window(
+            self.local_window.get() - u32::try_from(length).map_err(|_| Frame::Fail)?,
+            target,
+        );
         self.local_window.set(connection.value);
         if connection.increment != 0 {
             if !self.send_window_update(0, connection.increment) {
                 return Err(Frame::Fail);
             }
-            self.local_window.set(initial);
+            self.local_window.set(target);
         }
         if stream_window.increment != 0 {
             if !self.send_window_update(id, stream_window.increment) {
@@ -1119,18 +1259,27 @@ impl Client {
 
     /// `parse_header`: HPACK-decode a HEADERS block onto the stream's response.
     /// Its failure is the caller's to report.
-    fn parse_header(&self, id: u32, input: &[u8]) -> Option<Error> {
-        // The response, held apart from the streams.
-        let response = self
-            .streams
-            .with_taken(|streams| streams.get(&id).map(|stream| stream.response.zval.copy()));
-        let props = response.as_ref()?.props(Some(&RESPONSE))?;
-        // The three arrays the block fills, out of their properties meanwhile.
+    fn parse_header(&self, block: &mut HeaderBlock, input: &[u8], last: bool) -> Option<Error> {
+        let response = self.streams.with_taken(|streams| {
+            streams
+                .get(&block.stream_id)
+                .map(|stream| stream.response.zval.copy())
+        })?;
+        let props = response.props(Some(&RESPONSE))?;
         props
             .edit_array(c"headers", |headers| {
                 props.edit_array(c"cookies", |cookies| {
                     props.edit_array(c"set_cookie_headers", |set_cookie_headers| {
-                        self.decode_headers(id, input, headers, cookies, set_cookie_headers)
+                        self.hpack.with_taken(|hpack| {
+                            let (decoder, field, _) = hpack.as_mut()?;
+                            self.decode_block(
+                                (decoder, field),
+                                block,
+                                (input, last),
+                                props,
+                                (headers, cookies, set_cookie_headers),
+                            )
+                        })
                     })
                 })
             })
@@ -1139,43 +1288,16 @@ impl Client {
             .flatten()
     }
 
-    /// A header block onto the response's `headers`, `cookies` and
-    /// `set_cookie_headers`; its failure.
-    fn decode_headers(
-        &self,
-        id: u32,
-        input: &[u8],
-        headers: &mut ArrayMut,
-        cookies: &mut ArrayMut,
-        set_cookie_headers: &mut ArrayMut,
-    ) -> Option<Error> {
-        // Nothing in the loop yields or runs user code: the response is this
-        // client's alone until a receive returns it.
-        self.hpack.with_taken(|hpack| {
-            let (decoder, field, _) = hpack.as_mut()?;
-            self.decode_block(
-                (decoder, field),
-                id,
-                input,
-                headers,
-                cookies,
-                set_cookie_headers,
-            )
-        })
-    }
-
-    /// `decode_headers` with the HPACK decoder taken out.
     fn decode_block(
         &self,
         (decoder, field): (&Decoder, &mut hpack::Field),
-        id: u32,
-        mut input: &[u8],
-        headers: &mut ArrayMut,
-        cookies: &mut ArrayMut,
-        set_cookie_headers: &mut ArrayMut,
+        block: &mut HeaderBlock,
+        (mut input, last): (&[u8], bool),
+        props: Props<'_>,
+        (headers, cookies, set_cookie_headers): (&mut ArrayMut, &mut ArrayMut, &mut ArrayMut),
     ) -> Option<Error> {
         loop {
-            let step = match decoder.decode(input, true, field) {
+            let step = match decoder.decode(input, last, field) {
                 Ok(step) => step,
                 Err(error) => break Some(error),
             };
@@ -1183,23 +1305,25 @@ impl Client {
                 break Some(Error);
             };
             input = rest;
-            let flags = step.flags();
             if let Some((name, text)) = step.header {
                 let kind = header_kind(HeaderRole::Response, name);
                 if name.first() == Some(&b':') {
                     if kind == HeaderKind::Status {
+                        let Some(status) = swoole_rs_http2::parse_status_code(text) else {
+                            return Some(Error);
+                        };
+                        props.own().long(c"statusCode", i64::from(status));
+                        block.trailing = false;
                         self.streams.with_taken(|streams| {
-                            if let Some(stream) = streams.get(&id)
-                                && let Some(props) = stream.response.props()
-                            {
-                                props.own().long(c"statusCode", atol(text));
+                            if let Some(stream) = streams.get_mut(&block.stream_id) {
+                                stream.received_headers = true;
                             }
                         });
                     }
                 } else {
                     if kind == HeaderKind::ContentEncoding && media_kind(text) == Media::Gzip {
                         self.streams.with_taken(|streams| {
-                            if let Some(stream) = streams.get_mut(&id)
+                            if let Some(stream) = streams.get_mut(&block.stream_id)
                                 && let Some(buffer) = &stream.buffer
                             {
                                 stream
@@ -1211,14 +1335,18 @@ impl Client {
                         swoole_rs_phpclients::parse_set_cookies(text, cookies, set_cookie_headers);
                     }
                     headers.insert_bytes(name, Some(text));
+                    if block.trailing {
+                        props.edit_array(c"trailers", |trailers| {
+                            trailers.insert_bytes(name, Some(text));
+                        });
+                    }
                 }
             }
-            let step = sw_rs_http2_inflate_step(flags, input.len(), true);
-            // The input is always the whole block, so a finished step ends it, even
-            // on a field before a final step (where upstream leaves nghttp2 in the
-            // block and refuses the next block's table size update).
-            if step.end_headers || step.finish {
+            if step.done {
                 decoder.end_headers();
+                break None;
+            }
+            if !last && input.is_empty() {
                 break None;
             }
         }
@@ -1242,15 +1370,6 @@ impl Drop for Client {
 fn warn(message: &CStr) {
     use swoole_rs_phpruntime::{Report, report};
     swoole_rs_zend::bailout::defer(report(Report::Swoole, swoole_rs_zend::E_WARNING, message));
-}
-
-/// `sw_atol`.
-fn atol(text: &[u8]) -> i64 {
-    let digits = text.split(|b| !b.is_ascii_digit()).next();
-    std::str::from_utf8(digits.unwrap_or_default())
-        .ok()
-        .and_then(|text| text.parse().ok())
-        .unwrap_or(0)
 }
 
 /// `rust_fold_header`: at most 33 bytes, lowercased.
@@ -1303,12 +1422,18 @@ const CONSTANTS: [(&CStr, i64); 24] = [
     (c"SWOOLE_HTTP2_TYPE_WINDOW_UPDATE", 8),
     (c"SWOOLE_HTTP2_TYPE_CONTINUATION", 9),
     (c"SWOOLE_HTTP2_ERROR_NO_ERROR", error_code::NO_ERROR as i64),
-    (c"SWOOLE_HTTP2_ERROR_PROTOCOL_ERROR", 1),
+    (
+        c"SWOOLE_HTTP2_ERROR_PROTOCOL_ERROR",
+        error_code::PROTOCOL_ERROR as i64,
+    ),
     (
         c"SWOOLE_HTTP2_ERROR_INTERNAL_ERROR",
         error_code::INTERNAL_ERROR as i64,
     ),
-    (c"SWOOLE_HTTP2_ERROR_FLOW_CONTROL_ERROR", 3),
+    (
+        c"SWOOLE_HTTP2_ERROR_FLOW_CONTROL_ERROR",
+        error_code::FLOW_CONTROL_ERROR as i64,
+    ),
     (c"SWOOLE_HTTP2_ERROR_SETTINGS_TIMEOUT", 4),
     (c"SWOOLE_HTTP2_ERROR_STREAM_CLOSED", 5),
     (
@@ -1391,7 +1516,13 @@ fn register(minit: &Minit, shortname: bool) -> Result<(), swoole_rs_zend::bailou
         minit.property_long(&RESPONSE, name, 0, public);
     }
     minit.property_bool(&RESPONSE, c"pipeline", false, public);
-    for name in [c"headers", c"set_cookie_headers", c"cookies", c"data"] {
+    for name in [
+        c"headers",
+        c"trailers",
+        c"set_cookie_headers",
+        c"cookies",
+        c"data",
+    ] {
         minit.property_null(&RESPONSE, name, public);
     }
     for (name, number) in CONSTANTS {
@@ -1438,6 +1569,15 @@ fn construct(call: &Call) {
         call.throw(&EXCEPTION, c"host is empty", INVALID_PARAMS);
         return call.set_bool(false);
     }
+    if port != 0
+        && !(1..=65535).contains(&port.c_cast::<i32>())
+        && !swoole_rs_corebase::reactor::host_type(host)
+            .socket_type
+            .is_local()
+    {
+        call.throw(&EXCEPTION, c"The port is invalid", INVALID_PARAMS);
+        return call.set_bool(false);
+    }
     let Some(object) = call.this_value().and_then(Weak::of) else {
         return call.set_bool(false);
     };
@@ -1462,11 +1602,14 @@ fn set(call: &Call) {
     let Ok(settings) = call.arity(1, 1).and_then(|()| call.array(1)) else {
         return call.set_bool(false);
     };
+    if let Some(socket) = client.socket()
+        && !apply(socket, settings, &client.decoded_body_limit)
+    {
+        swoole_rs_phpswoole::invalid_setting(c"failed to apply HTTP/2 client settings");
+        return;
+    }
     if let Some(props) = call.props(Some(&CLIENT)) {
         props.merge(c"setting", settings);
-    }
-    if let Some(socket) = client.socket() {
-        apply(socket, settings, &client.decoded_body_limit);
     }
     call.set_bool(true);
 }
@@ -1585,8 +1728,8 @@ fn receive(call: &Call, pipeline_read: bool) {
     let Ok(timeout) = call.arity(0, 1).and_then(|()| call.double(1, 0.0)) else {
         return call.set_bool(false);
     };
-    // Upstream preserves `$this` here, not the socket.
-    let _hold = call.this_owned();
+    // Closing can resume a writer that releases the connection’s socket reference.
+    let _guard_socket = client.hold_socket();
     client.recv(call, timeout, pipeline_read);
 }
 
@@ -1610,6 +1753,9 @@ fn write(call: &Call) {
     let Ok((id, end)) = parsed else {
         return call.set_bool(false);
     };
+    if id < 0 {
+        return call.set_bool(false);
+    }
     let _hold = client.hold_socket();
     let result = client.write_data(id.c_cast::<u32>(), call.value(2), end);
     call.set_bool(result);

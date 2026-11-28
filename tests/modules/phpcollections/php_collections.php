@@ -1,4 +1,5 @@
 <?php
+require dirname(__DIR__, 3) . '/tests/support/duplicate_column.php';
 // Benign collection facade behavior only. No sockets, filesystem fixtures or hooks.
 $checks = 0;
 function check_collection($actual, $expected, string $label): void {
@@ -72,14 +73,14 @@ check_collection(collection_warning(
 check_collection(collection_warning(
     fn() => $table->incr('string-error', 's'),
     "Swoole\\Table::incr(): can't execute 'incr' on a string type column"), false, 'string increment rejected');
-check_collection($table->get('string-error'), ['n'=>0,'f'=>0.0,'s'=>''], 'failed string increment preserves initialized new row');
+check_collection($table->get('string-error'), false, 'invalid string increment leaves the key absent');
 check_collection(collection_warning(
     fn() => $table->decr('string-error', 's'),
     "Swoole\\Table::decr(): can't execute 'decr' on a string type column"), false, 'string decrement rejected');
 check_collection(collection_warning(
     fn() => $table->incr('missing-field', 'unknown'),
     'Swoole\\Table::incr(): column[unknown] does not exist'), false, 'unknown column rejected');
-check_collection($table->exists('missing-field'), true, 'failed unknown column preserves row allocation prefix');
+check_collection($table->exists('missing-field'), false, 'unknown column leaves the key absent');
 check_collection(collection_warning(
     fn() => $table->column('late', Swoole\Table::TYPE_INT, 8),
     'Swoole\\Table::column(): unable to add column after table has been created'), false, 'late column rejected');
@@ -142,19 +143,18 @@ foreach ([1, 3, 17, 65] as $columnCount) {
     check_collection($columns->count(1), $columnCount, 'recursive count after delete');
     check_collection($columns->destroy(), true, 'ordered schema destroy');
 }
-// Duplicate declarations remain separate ordered storage entries; lookup keeps
-// the first declaration while full-row materialization overwrites the same key.
+// A rejected duplicate leaves the schema and existing column offsets intact.
 $duplicates = new Swoole\Table(16);
 check_collection($duplicates->column('duplicate', Swoole\Table::TYPE_INT, 8), true, 'duplicate first declaration');
 check_collection($duplicates->column('middle', Swoole\Table::TYPE_INT, 8), true, 'duplicate middle declaration');
-check_collection($duplicates->column('duplicate', Swoole\Table::TYPE_INT, 8), true, 'duplicate later declaration');
+check_collection(add_duplicate_column($duplicates, 'duplicate', Swoole\Table::TYPE_INT, 8), false, 'duplicate column rejected');
 check_collection($duplicates->create(), true, 'duplicate schema create');
 check_collection($duplicates->set('row', ['duplicate'=>7, 'middle'=>11]), true, 'duplicate new row initializes both entries');
 check_collection($duplicates->get('row'), ['duplicate'=>7, 'middle'=>11], 'duplicate initial materialization');
-check_collection($duplicates->count(1), 3, 'duplicate recursive count includes every declaration');
+check_collection($duplicates->count(1), 2, 'recursive count includes accepted declarations');
 check_collection($duplicates->set('row', ['duplicate'=>9]), true, 'duplicate existing-row lookup updates first declaration');
 check_collection($duplicates->get('row', 'duplicate'), 9, 'duplicate field lookup selects first');
-check_collection($duplicates->get('row'), ['duplicate'=>7, 'middle'=>11], 'duplicate full row reads later declaration');
+check_collection($duplicates->get('row'), ['duplicate'=>9, 'middle'=>11], 'whole row reflects the field update');
 check_collection($duplicates->set('empty', []), true, 'duplicate empty new row initializes all entries');
 check_collection($duplicates->get('empty'), ['duplicate'=>0, 'middle'=>0], 'duplicate ordered clear defaults');
 check_collection($duplicates->destroy(), true, 'duplicate schema destroy');
@@ -173,12 +173,12 @@ Swoole\Coroutine\run(function (): void {
     check_collection($channel->push('full', 0.001), false, 'bounded full push timeout');
     check_collection($channel->errCode, SWOOLE_CHANNEL_TIMEOUT, 'push timeout publication');
     check_collection($channel->pop(0.01), "x\0y", 'binary pop');
-    check_collection($channel->errCode, SWOOLE_CHANNEL_OK, 'pop OK publication');
+    check_collection($channel->errCode, SWOOLE_CHANNEL_TIMEOUT, 'successful pop retains the last error');
     check_collection($channel->pop(0.001), false, 'bounded empty pop timeout');
     check_collection($channel->errCode, SWOOLE_CHANNEL_TIMEOUT, 'pop timeout publication');
     check_collection($channel->push(false, 0.01), true, 'false payload accepted');
     check_collection($channel->pop(0.01), false, 'false payload transferred');
-    check_collection($channel->errCode, SWOOLE_CHANNEL_OK, 'false payload distinguished by errCode');
+    check_collection($channel->errCode, SWOOLE_CHANNEL_TIMEOUT, 'successful false payload retains the last error');
     $payload = new CollectionPayload;
     $weak = WeakReference::create($payload);
     check_collection($channel->push($payload,0.01), true, 'object push');
@@ -340,9 +340,7 @@ Swoole\Coroutine\run(function (): void {
     check_collection($original, ['nested'=>['n'=>23]], 'resumed consumer mutation preserves sender array');
     check_collection($channel->stats(), ['consumer_num'=>0,'producer_num'=>0,'queue_num'=>0], 'custody waits drained');
 });
-// Last, as a bailout ends the request: a conversion that bails out mid-set()
-// writes neither its column nor any later one. The shutdown function reads the
-// row (upstream leaves its bucket locked, so the forced unlock's log is muted).
+// A conversion that ends the request leaves the previously stored row intact.
 $bailing = new Swoole\Table(8);
 $bailing->column('a', Swoole\Table::TYPE_STRING, 8);
 $bailing->column('b', Swoole\Table::TYPE_INT);
@@ -353,11 +351,10 @@ final class CollectionBailout {
     public function __toString(): string { trigger_error('collection bailout', E_USER_ERROR); }
 }
 ini_set('display_errors', '0');
-swoole_async_set(['log_level' => SWOOLE_LOG_NONE]);
 register_shutdown_function(static function () use ($bailing): void {
     global $checks;
     check_collection(error_get_last()['message'] ?? null, 'collection bailout', 'conversion bailed out');
-    check_collection($bailing->get('k'), ['a'=>'old', 'b'=>3, 'c'=>2], 'bailing and later columns unwritten');
+    check_collection($bailing->get('k'), ['a'=>'old', 'b'=>1, 'c'=>2], 'failed conversion leaves the row unchanged');
     echo json_encode(['checks' => $checks, 'scope' => 'bounded table/channel behavior, expected warnings, ordinary custody and one bailing conversion; no complete reentry/GC/configuration claim']), "\n";
     exit(0);
 });

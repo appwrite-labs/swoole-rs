@@ -49,6 +49,8 @@ unsafe extern "C" {
     /// `zend_lookup_class(name)` inside `zend_try` (nonzero for a bailout): it
     /// reads the name, may run an autoloader, and writes the class or null.
     safe fn swr_zend_try_lookup_class(name: &ZStr, class: &mut *mut zend_class_entry) -> c_int;
+    /// Clone into an initially undefined result inside `zend_try`.
+    safe fn swr_zend_try_facade_clone(source: &Value, result: &crate::Owned) -> c_int;
     /// `object_init_ex(target, class)` inside `zend_try` (nonzero for a
     /// bailout): `target` holds a new object of the live class (none, with an
     /// `Error` thrown, for one Zend cannot instantiate, which is a fatal error
@@ -308,6 +310,15 @@ impl<'a> crate::Php<'a> {
 }
 
 impl crate::Value {
+    /// Invoke this object's clone handler and retain its result.
+    /// # Errors
+    /// The clone handler bailed out.
+    pub fn clone_object(&self) -> Result<Option<crate::Owned>, crate::bailout::Bailout> {
+        let result = crate::Owned::default();
+        crate::bailout::trapped(swr_zend_try_facade_clone(self, &result))?;
+        Ok((result.object().is_some() && crate::host::exception().is_null()).then_some(result))
+    }
+
     /// Whether this holds an instance of the class named `name`, which is
     /// looked up first ([`lookup_class`]): None for no such class.
     /// # Errors

@@ -3,7 +3,7 @@
 Gates for the Rust `swoole::Buffer` queue (`crates/corebase/src/buffer`) and `swoole::String`
 (`crates/corebase/src/buffer/string.rs`, gates in [string/](string/)).
 The native reference gates compile pinned upstream
-`13d2f33664d60b72aaa9f102ff0ef4085c028513`, extracted into a disposable tree.
+`e0d606594e13cecd7790baafc5f1e1ead816b77c`, extracted into a disposable tree.
 The String gate runs only that oracle; the runtime's original assertions are
 Rust tests in `string/originals.rs`. The `test_*.py` gates run under pytest with
 the shared options in `tests/conftest.py` and read `target/upstream/src`.
@@ -34,9 +34,9 @@ The project-written fixtures are ported there too, with the same inputs and chec
 
 | Command (dev.py phase) | Checks |
 | --- | --- |
-| `string/test_gate.py --sanitize` (`string-originals`) | `core-tests/src/core/string.cpp` compiled unchanged under GoogleTest: all 23 TESTs, on the pin only. Seven (`ltrim`, `rtrim`, `strnpos`, `strnstr`, `substr_len`, `starts_with`, `ends_with`) test inline helpers that left the hybrid's headers (#2089); `format_1` and `format_2` test the `format` templates, which left `swoole_string.h` once no compiled C++ instantiated them (#4310) |
+| `string/test_gate.py --sanitize` (`string-originals`) | `core-tests/src/core/string.cpp` compiled unchanged under GoogleTest: all 42 TESTs, on the pin only. Seven (`ltrim`, `rtrim`, `strnpos`, `strnstr`, `substr_len`, `starts_with`, `ends_with`) test inline helpers that left the hybrid's headers (#2089); `format_1` and `format_2` test the `format` templates, which left `swoole_string.h` once no compiled C++ instantiated them (#4310) |
 
-`swoole::String`'s methods are Rust. The other fourteen TESTs are ported to
+`swoole::String`'s methods are Rust. Fourteen of the original TESTs are ported to
 `string/originals.rs` (`cargo test -p swoole-rs-corebase`), one Rust test per `TEST`, each C++
 call replaced by the Rust method that is its body:
 
@@ -94,7 +94,7 @@ checkout (`target/upstream/src`).
 - `lifecycle.py --engine NAME=SO ... [--php-extension EXT]`: slow readers,
   stream/sendfile cancellation, half-close, churn and pending-write shutdown
   (corpus project `11-buffer-lifecycle`).
-- Original PHPTs (`originals.json`, seven Swoole v6.2.6 tests plus
+- Original PHPTs (`originals.json`, seven Swoole v6.3.0 tests plus
   `examples/test.jpg`):
   `python3 corpus/upstream/run.py --manifest tests/modules/buffer/originals.json --source S --engine upstream=SO --engine hybrid=SO --require-all --isolate-cases`.
   On Linux PHP 8.2 add `--php-extension curl --php-extension sockets` for both engines.

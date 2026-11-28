@@ -250,11 +250,85 @@ impl Drop for QueueRecord {
 }
 
 impl QueueRecord {
-    /// `new MsgQueue(key)`, or `None` (after msgget's warning) when it isn't ready.
+    /// Open a general process pool queue with the default access mode.
     #[must_use]
     pub fn open(key: libc::key_t) -> Option<Box<Self>> {
-        let queue = Self::new(key, true, 0);
-        queue.ready().then(|| Box::new(queue))
+        Self::open_pool(key, None)
+    }
+
+    /// Open the pool queue. A task queue is private to the configured worker.
+    #[must_use]
+    pub(crate) fn open_pool(
+        key: libc::key_t,
+        owner: Option<(libc::uid_t, libc::gid_t)>,
+    ) -> Option<Box<Self>> {
+        let mut queue = Self::new(key, true, if owner.is_some() { 0o600 } else { 0 });
+        if !queue.ready() || owner.is_some_and(|(uid, gid)| !queue.set_task_access(uid, gid)) {
+            return None;
+        }
+        Some(Box::new(queue))
+    }
+
+    fn set_task_access(&mut self, uid: libc::uid_t, gid: libc::gid_t) -> bool {
+        let Some(mut stat) = queue_stat(self.id) else {
+            sys_warning(
+                c"MsgQueue::set_access",
+                format_args!("msgctl({}, IPC_STAT) failed", self.id),
+            );
+            return false;
+        };
+        let root = super::swr_v1_os_is_root_user();
+        let trusted = |id| id == uid || (root && id == 0);
+        let replace = !trusted(stat.msg_perm.uid)
+            || !trusted(stat.msg_perm.cuid)
+            || stat.msg_perm.mode & 0o022 != 0;
+        let pending = stat.msg_qnum;
+        if replace {
+            if self.key == libc::IPC_PRIVATE || !self.destroy() {
+                return false;
+            }
+            self.id = msgget(self.key, IPC_CREAT | libc::IPC_EXCL | 0o600);
+            if !self.ready() {
+                sys_warning(
+                    c"MsgQueue::set_access",
+                    format_args!("msgget(key={}) failed", self.key),
+                );
+                return false;
+            }
+            let Some(fresh) = queue_stat(self.id) else {
+                sys_warning(
+                    c"MsgQueue::set_access",
+                    format_args!("msgctl({}, IPC_STAT) failed", self.id),
+                );
+                self.destroy();
+                return false;
+            };
+            stat = fresh;
+        }
+        stat.msg_perm.uid = uid;
+        stat.msg_perm.gid = gid;
+        stat.msg_perm.mode = (stat.msg_perm.mode & !0o777) | 0o600;
+        if msgctl(self.id, libc::IPC_SET, Some(&mut stat)) < 0 {
+            sys_warning(
+                c"MsgQueue::set_access",
+                format_args!("msgctl({}, IPC_SET) failed", self.id),
+            );
+            if replace {
+                self.destroy();
+            }
+            return false;
+        }
+        if replace {
+            let plural = if pending == 1 { "" } else { "s" };
+            log::warning(
+                c"MsgQueue::set_access",
+                format_args!(
+                    "message queue[key={}] was replaced; discarded {pending} pending message{plural}",
+                    self.key
+                ),
+            );
+        }
+        true
     }
 }
 

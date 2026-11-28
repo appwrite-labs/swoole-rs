@@ -116,9 +116,7 @@ pub(super) struct Protocol {
 unsafe extern "C" {
     fn kill(pid: c_int, signal: c_int) -> c_int;
     fn getpid() -> c_int;
-    fn time(out: *mut i64) -> i64;
-    fn gmtime(time: *const i64) -> *const c_void;
-    fn strftime(out: *mut c_char, size: usize, format: *const c_char, tm: *const c_void) -> usize;
+
 }
 
 unsafe extern "C" {
@@ -839,7 +837,8 @@ fn static_files() {
         // try again
         serv.insert(INDEX_FILES, "README.md");
         let resp = cli.get("/").unwrap();
-        assert!(find(&resp.body, b"<h2 align=center>"));
+        assert_eq!(resp.status, 200);
+        assert_eq!(resp.body, std::fs::read("README.md").unwrap());
 
         kill_self();
     });
@@ -849,32 +848,30 @@ fn find(haystack: &[u8], needle: &[u8]) -> bool {
     haystack.windows(needle.len()).any(|w| w == needle)
 }
 
-/// `strftime(date_format, gmtime(&raw_time))`.
+/// Format the file's UTC modification time for a conditional request.
 fn format_time(date_format: &CStr, raw_time: i64) -> String {
     let mut temp = [0u8; 128];
-    // SAFETY: libc's calendar, into a 128-byte buffer.
+    let mut tm = std::mem::MaybeUninit::uninit();
+    // SAFETY: gmtime_r fills tm on success; strftime writes at most temp.len() bytes.
     let written = unsafe {
-        strftime(
+        assert!(!libc::gmtime_r(&raw_time, tm.as_mut_ptr()).is_null());
+        libc::strftime(
             temp.as_mut_ptr().cast(),
             temp.len(),
             date_format.as_ptr(),
-            gmtime(&raw_time),
+            tm.as_ptr(),
         )
     };
+    assert!(written > 0);
     String::from_utf8(temp[..written].to_vec()).unwrap()
 }
 
-/// `request_with_header`: `If-Modified-Since` a week ahead in `date_format`; no response.
-fn request_with_header(date_format: &CStr, cli: &mut Client) {
-    // SAFETY: the clock.
-    let raw_time = unsafe { time(std::ptr::null_mut()) } + 7 * 24 * 60 * 60;
-    let temp = format_time(date_format, raw_time);
-    let resp = cli.get_with("/", &[("If-Modified-Since", &temp)]);
-    assert!(resp.is_none());
-}
-
 fn not_modify() {
+    use std::os::unix::fs::MetadataExt;
     test_base_server(|serv| {
+        let path = root_path() + "/README.md";
+        let modified_time = std::fs::metadata(&path).unwrap().mtime();
+        let expected = std::fs::read(path).unwrap();
         serv.config().http_autoindex.set(true);
         serv.insert(LOCATIONS, "");
 
@@ -882,16 +879,21 @@ fn not_modify() {
         let port = serv.get_primary_port();
         let mut cli = Client::new(TEST_HOST, port.port());
 
-        serv.insert(INDEX_FILES, "swoole-logo.svg");
+        serv.insert(INDEX_FILES, "README.md");
         let resp = cli.get("/").unwrap();
         assert_eq!(resp.status, 200);
-
-        // 304 not modified
-        cli.set_read_timeout(0, 100);
-        request_with_header(SW_HTTP_RFC1123_DATE_GMT, &mut cli);
-        request_with_header(SW_HTTP_RFC1123_DATE_UTC, &mut cli);
-        request_with_header(SW_HTTP_RFC850_DATE, &mut cli);
-        request_with_header(SW_HTTP_ASCTIME_DATE, &mut cli);
+        assert_eq!(resp.body, expected);
+        for format in [
+            SW_HTTP_RFC1123_DATE_GMT,
+            SW_HTTP_RFC1123_DATE_UTC,
+            SW_HTTP_RFC850_DATE,
+            SW_HTTP_ASCTIME_DATE,
+        ] {
+            let date = format_time(format, modified_time);
+            let resp = cli.get_with("/", &[("If-Modified-Since", &date)]).unwrap();
+            assert_eq!(resp.status, 304, "{date}");
+            assert!(resp.body.is_empty(), "{date}");
+        }
         kill_self();
     });
 }

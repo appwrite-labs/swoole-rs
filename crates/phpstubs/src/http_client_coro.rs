@@ -45,9 +45,10 @@ pub static arginfo_class_Swoole_Coroutine_Http_Client_setCookies: a::ArgInfo<2> 
         a::begin_type(1, 0, z::_IS_BOOL, false),
         a::arg_type(c"cookies", 0, false, z::IS_ARRAY, false, None),
     ]);
-pub static arginfo_class_Swoole_Coroutine_Http_Client_setData: a::ArgInfo<2> = a::ArgInfo::new([
+pub static arginfo_class_Swoole_Coroutine_Http_Client_setData: a::ArgInfo<3> = a::ArgInfo::new([
     a::begin_type(1, 0, z::_IS_BOOL, false),
-    a::arg_mask(c"data", 0, false, z::MAY_BE_ARRAY | z::MAY_BE_STRING, None),
+    a::arg(c"data", 0, false, None),
+    a::arg_type(c"length", 0, false, z::IS_LONG, true, Some(c"null")),
 ]);
 pub static arginfo_class_Swoole_Coroutine_Http_Client_addFile: a::ArgInfo<7> = a::ArgInfo::new([
     a::begin_type(2, 0, z::_IS_BOOL, false),

@@ -9,13 +9,12 @@ use swoole_rs_corebase::reactor::Events;
 
 use swoole_rs_corebase::process::methods::{
     ExitStatus, set_worker_type, start_check, swoole_set_worker_id, swoole_set_worker_pid,
-    worker_type,
 };
 use swoole_rs_corebase::process::worker_record::{WorkerStatus, WorkerType};
 use swoole_rs_corebase::{CCast, log};
 use swoole_rs_error::ErrorCode as E;
 
-use super::{ThreadManager, Wake, worker_thread_start};
+use super::{Reload, ThreadManager, Wake, worker_thread_start};
 use crate::callbacks::ServerSlot;
 use crate::objects::{Bus, Reactor};
 use crate::reactor_ops::PoolBus;
@@ -95,21 +94,8 @@ pub(crate) fn factory_start(serv: view::Server<'_>) -> bool {
         && (serv.user_worker_num() == 0 || create_user_workers(serv))
 }
 
-/// `Server::start_worker_threads`: the task, event and user worker threads, the
-/// manager thread, then the master thread's listeners and loop.
+/// Start the manager, then enter the master's listener loop.
 pub(crate) fn start_worker_threads(serv: view::Server<'_>) -> bool {
-    let config = serv.config();
-    let (workers, tasks) = (config.worker_num.get(), config.task_worker_num.get());
-    for id in 0..tasks {
-        spawn(serv, workers + id, WorkerType::Task);
-    }
-    for id in 0..workers {
-        spawn(serv, id, WorkerType::Event);
-    }
-    let users = u32::try_from(serv.workers().user_count()).unwrap_or(u32::MAX);
-    for id in 0..users {
-        spawn(serv, tasks + workers + id, WorkerType::User);
-    }
     spawn(serv, manager_thread_id(serv), WorkerType::Manager);
     if swoole_rs_corebase::reactor::swoole_event_init(0).is_err() {
         return false;
@@ -137,16 +123,26 @@ pub(crate) fn start_worker_threads(serv: view::Server<'_>) -> bool {
     server_methods::start_master_thread(serv, reactor)
 }
 
-/// `Server::stop_worker_threads`: the manager thread, then each worker.
-pub(crate) fn stop_worker_threads(serv: view::Server<'_>) {
-    // `ThreadFactory::terminate_manager_thread()`.
-    let manager = &manager(serv);
-    manager.push(Wake::Exit);
-    // The manager thread may still be joining workers when the server stops:
-    // reclaim it first, so it has surely exited.
-    join(manager, manager_thread_id(serv));
+/// After the master reactor drains, ask the manager to stop and join its workers.
+pub(crate) fn stop_worker_threads(serv: view::Server<'_>, manager: &ThreadManager) {
+    let id = manager_thread_id(serv);
+    if manager.thread(id as usize).joinable() {
+        manager.push(Wake::Exit);
+        join(manager, id);
+    }
+}
+
+/// Notify all core workers before joining any. User workers finish cooperatively.
+fn shutdown_workers(serv: view::Server<'_>, manager: &ThreadManager) {
     for id in 0..all_core_worker_num(serv) {
-        _ = crate::event_worker::native::kill_worker(serv, id.into());
+        if manager.thread(usize::from(id)).joinable() {
+            _ = crate::event_worker::native::kill_worker(serv, id.into());
+        }
+    }
+    for id in 0..all_worker_num(serv) {
+        if manager.thread(id as usize).joinable() {
+            join(manager, id);
+        }
     }
 }
 
@@ -217,15 +213,24 @@ fn body(share: &SharedServer, id: u32, kind: WorkerType, fresh: swoole_rs_coreba
         }
         None => run_main(serv, slot, kind),
     }
-    if own {
+    if kind == WorkerType::Event
+        && !serv.state().running()
+        && let Some(record) = serv.state().tables_ref().reactor_thread(usize::from(slot))
+    {
+        crate::reactor_io::finish_worker_output(serv, record.message_bus());
+    }
+    if own || kind == WorkerType::Event {
         crate::objects::set_thread_bus(None);
     }
     if worker.is_some() {
         factory.push(Wake::Exited(slot));
     } else {
-        if serv.state().running() {
+        if factory.begin_shutdown() {
             let m = format_args!("Fatal Error: manager thread exits abnormally");
             log::warning(c"ThreadFactory::spawn_manager_thread", m);
+            let master = serv.counters().master_pid.load(Ordering::Relaxed);
+            _ = swoole_rs_corebase::process::os::kill(master, libc::SIGTERM);
+            shutdown_workers(serv, &factory);
         }
         if swoole_rs_corebase::timer::swoole_timer_is_available() {
             swoole_rs_corebase::timer::swoole_timer_free();
@@ -258,15 +263,30 @@ fn init_bus(serv: view::Server<'_>, bus: &PoolBus) {
 fn run_main(serv: view::Server<'_>, slot: u16, kind: WorkerType) {
     let worker = (kind != WorkerType::Manager).then(|| serv.worker_record(slot));
     let Some(worker) = worker.flatten() else {
+        let config = serv.config();
+        let (workers, tasks) = (config.worker_num.get(), config.task_worker_num.get());
+        for id in 0..tasks {
+            spawn(serv, workers + id, WorkerType::Task);
+        }
+        for id in 0..workers {
+            spawn(serv, id, WorkerType::Event);
+        }
+        let users = u32::try_from(serv.workers().user_count()).unwrap_or(u32::MAX);
+        for id in 0..users {
+            spawn(serv, tasks + workers + id, WorkerType::User);
+        }
         let callbacks = &serv.state().callbacks;
         callbacks.call_server(ServerSlot::ManagerStart, serv);
         if swoole_rs_corebase::process::pool::bailout_pending() {
             return;
         }
-        wait(serv, &manager(serv));
+        let manager = manager(serv);
+        wait(serv, &manager);
         if swoole_rs_corebase::process::pool::bailout_pending() {
             return;
         }
+        manager.begin_shutdown();
+        shutdown_workers(serv, &manager);
         callbacks.call_server(ServerSlot::ManagerStop, serv);
         return;
     };
@@ -293,14 +313,32 @@ fn run_main(serv: view::Server<'_>, slot: u16, kind: WorkerType) {
 
 /// `ThreadFactory::wait`: the manager thread's loop.
 fn wait(serv: view::Server<'_>, manager: &ThreadManager) {
+    let mut reload: Option<Reload> = None;
     loop {
         match manager.next(swoole_rs_corebase::timer::swoole_timer_get_next_msec()) {
-            Some(Wake::Reload) => {
-                reload_next(serv, manager);
+            Some(Wake::Reload(all)) => {
+                let first = if all {
+                    0
+                } else {
+                    u16::try_from(serv.config().worker_num.get()).unwrap_or(u16::MAX)
+                };
+                serv.state()
+                    .callbacks
+                    .call_server(ServerSlot::BeforeReload, serv);
+                if swoole_rs_corebase::process::pool::bailout_pending() {
+                    return;
+                }
+                reload = Some(Reload::new(first..all_core_worker_num(serv)));
+                advance_reload(serv, manager, &mut reload);
                 continue;
             }
             Some(Wake::Exit) => break,
-            Some(Wake::Exited(slot)) => restart(serv, manager, slot),
+            Some(Wake::Exited(slot)) => {
+                restart(serv, manager, slot);
+                if let Some(task) = &mut reload {
+                    task.complete(slot);
+                }
+            }
             None => {}
         }
         if swoole_rs_corebase::timer::swoole_timer_is_available() {
@@ -309,8 +347,8 @@ fn wait(serv: view::Server<'_>, manager: &ThreadManager) {
         if swoole_rs_corebase::process::pool::bailout_pending() {
             return;
         }
-        if serv.state().running() && manager.reloading() {
-            reload_next(serv, manager);
+        if serv.state().running() {
+            advance_reload(serv, manager, &mut reload);
         }
     }
 }
@@ -327,12 +365,6 @@ fn restart(serv: view::Server<'_>, manager: &ThreadManager, slot: u16) {
         crate::event_worker::native::call_worker_error_callback(serv, worker, &status);
     }
     join(manager, id);
-    // A worker that exits once the server is stopping stays down: the master is
-    // joining every thread, and a new one could block it forever (a user process
-    // re-run waits on input its first run consumed).
-    if serv.state().stopping.load(Ordering::Acquire) {
-        return;
-    }
     let Some(kind @ (WorkerType::Event | WorkerType::Task | WorkerType::User)) = worker.kind()
     else {
         swoole_rs_corebase::fatal("an exited thread of an unknown worker type");
@@ -341,19 +373,18 @@ fn restart(serv: view::Server<'_>, manager: &ThreadManager, slot: u16) {
 }
 
 /// `ThreadFactory::do_reload`: ask the next worker to stop.
-fn reload_next(serv: view::Server<'_>, manager: &ThreadManager) {
-    let callbacks = &serv.state().callbacks;
-    let events = u16::try_from(serv.config().worker_num.get()).unwrap_or(u16::MAX);
-    manager.reload_next(
-        (all_core_worker_num(serv), events),
-        || callbacks.call_server(ServerSlot::BeforeReload, serv),
-        |id| _ = crate::event_worker::native::kill_worker(serv, id.into()),
-        || callbacks.call_server(ServerSlot::AfterReload, serv),
-    );
+fn advance_reload(serv: view::Server<'_>, manager: &ThreadManager, reload: &mut Option<Reload>) {
+    let Some(task) = reload else { return };
+    task.advance(|id| crate::event_worker::native::kill_worker(serv, id.into()));
+    if task.remaining == 0 {
+        *reload = None;
+        manager.finish_reload();
+        serv.state()
+            .callbacks
+            .call_server(ServerSlot::AfterReload, serv);
+    }
 }
 
-/// `Server::reload_worker_threads(reload_all_workers)`: start a reload, in the
-/// manager thread or by asking it.
 pub(crate) fn reload_worker_threads(serv: view::Server<'_>, reload_all_workers: bool) -> bool {
     let which = if reload_all_workers { "all" } else { "task" };
     if serv.config().task_worker_num.get() == 0 && !reload_all_workers {
@@ -371,15 +402,8 @@ pub(crate) fn reload_worker_threads(serv: view::Server<'_>, reload_all_workers: 
         log::set_last_error(E::SW_ERROR_OPERATION_NOT_SUPPORT as c_int);
         return false;
     }
-    if worker_type() == Some(WorkerType::Manager) {
-        log::info(format_args!("Server is reloading {which} workers now"));
-        reload_next(serv, manager);
-    } else {
-        log::info(format_args!(
-            "Send a notification to the manager process to prepare for restarting {which} \
-             worker processes."
-        ));
-        manager.push(Wake::Reload);
-    }
+    log::info(format_args!(
+        "Notify the manager thread to restart {which} worker threads."
+    ));
     true
 }

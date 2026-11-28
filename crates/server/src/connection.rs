@@ -192,8 +192,6 @@ pub fn add<'a>(
             format_args!("setsockopt(TCP_NODELAY) failed"),
         );
     }
-    // Upstream sets the buffer sizes on the listening socket.
-    let listen_fd = listener.map_or(-1, |listener| listener.fd());
     for (name, label, size) in [
         (
             libc::SO_RCVBUF,
@@ -207,8 +205,7 @@ pub fn add<'a>(
         ),
     ] {
         if size > 0
-            && swoole_rs_corebase::sys::setsockopt(listen_fd, libc::SOL_SOCKET, name, &size)
-                .is_err()
+            && swoole_rs_corebase::sys::setsockopt(fd, libc::SOL_SOCKET, name, &size).is_err()
         {
             let m = format_args!("setsockopt({label}, {size}) failed");
             log::sys_warning(c"Server::add_connection", m);
@@ -366,16 +363,15 @@ pub(crate) fn idle_timer(
 ) -> Option<swoole_rs_corebase::timer::Held> {
     // sec2msec's (long) cast.
     let msec = (idle * 1000.0).c_cast::<c_long>();
-    let fd = c_long::from(conn.fd());
+    let session = conn.session_id();
     swoole_rs_corebase::timer::add_fn(msec, true, move || {
         // The server of the reactor that armed the timer: this thread's.
         let Some(reactor) = Reactor::current() else {
             return;
         };
-        // A session socket's connection is its fd's slot, which deletes this timer
-        // before it goes.
+        // Only the session that armed the timer can expire.
         if let Some(serv) = reactor.server()
-            && let Some(conn) = serv.state().connection(fd, Lookup::ByFd)
+            && let Some(conn) = serv.state().connection(session, Lookup::Verified)
         {
             idle_timeout(serv, reactor, conn);
         }
@@ -393,18 +389,47 @@ pub(crate) fn idle_timeout(serv: view::Server<'_>, reactor: Reactor, conn: Conne
     let now = swoole_rs_corebase::reactor::steady_ms();
     let active = conn
         .socket()
-        .map_or_default(|s| s.read(|s| s.active_within(now, idle)));
-    if active {
-        return;
+        .map_or_default(|s| s.read(|s| s.active_within(now, idle * 1000.0)));
+    if !active && begin_idle_close(serv, reactor, conn) {
+        reactor.trigger_close(&mut conn.event(0, 0));
     }
-    if serv.config().disable_notify.get() || conn.closed().load(Relaxed) != 0 || conn.close_force()
+}
+
+/// Detach an expired stream and signal EOF before dispatching its close notification.
+pub(crate) fn begin_idle_close(
+    serv: view::Server<'_>,
+    reactor: Reactor,
+    conn: Connection<'_>,
+) -> bool {
+    let Some(socket) = conn.socket() else {
+        return false;
+    };
+    // An elapsed heartbeat cannot retire a session while its live worker still owes onClose.
+    if conn.close_force()
+        && conn.closed().load(Relaxed) == 0
+        && let Some((worker, pid)) = conn.close_worker()
+        && serv.worker_record(worker).is_some_and(|w| w.pid() == pid)
     {
-        crate::conn_io::close_connection(serv, reactor, conn.socket());
-        return;
+        return false;
+    }
+    if serv.config().disable_notify.get()
+        || conn.closed().load(Relaxed) != 0
+        || conn.close_force()
+        || (conn.ssl() && !conn.ssl_ready())
+        || socket.read(SocketFields::tls_handshaking)
+    {
+        crate::conn_io::close_connection(serv, reactor, Some(socket));
+        return false;
+    }
+    if !socket.read(SocketFields::has_left_reactor) && !reactor.del(*socket) {
+        return false;
+    }
+    swoole_rs_corebase::timer::del_disarmed(socket.edit(SocketFields::disarm_recv_timer));
+    if !conn.close_reset() {
+        socket.read(|s| s.finish_stream(true));
     }
     conn.set_close_force(true);
-    let mut event = conn.event(0, 0);
-    reactor.trigger_close(&mut event);
+    true
 }
 
 /// `Server::disable_accept`: stop accepting on stream ports until the retry timer.
@@ -640,8 +665,7 @@ mod tests {
     #[test]
     fn idle_timeout_closes_only_idle_connections() {
         let live = LiveServer::new();
-        // `idle_timeout` compares it with milliseconds; a second outlasts Miri's slowdown.
-        live.port().max_idle_time.set(1000.0);
+        live.port().max_idle_time.set(1.0);
         let _client = live.connect();
         live.server().config().single_thread.set(true);
         accept_on(&live);
@@ -666,6 +690,12 @@ mod tests {
         assert!(!conn.close_force(), "protected");
 
         conn.set_protect(false);
+        idle_timeout(live.server(), live.reactor(), conn);
+        assert!(
+            !conn.close_force(),
+            "recent output keeps the connection active"
+        );
+        sock.edit(|s| s.last_sent_time = 0.0);
         idle_timeout(live.server(), live.reactor(), conn);
         assert!(conn.close_force(), "idle receive closes with notify");
     }

@@ -48,9 +48,9 @@ excepted (a Transfer-Encoding not ending in chunked) flags, errno and the multip
 runs `StaticHandler::parse_range` from the pinned static_handler.cc and
 `swoole_rs_http::HttpStaticContext::parse_range`, which the server calls, over a file size up to `i64::MAX` (an `off_t`), MIME type length,
 If-Range verdict and any Range header: status, content length, every task and its
-part header, and the closing boundary must match within the 256-task limit. Above it the
-candidate must return 416 with zero content length, no tasks and no closing boundary,
-including when If-Range would replace the reference list with a full-file response.
+part header, and the closing boundary must match. The harness also checks that the
+candidate retains at most 16 tasks. The v6.3 oracle selects a full-file response
+for excessive valid ranges and rejects malformed range syntax.
 
 For MQTT and RESP, `mqtt_length` compares `mqtt::get_package_length` over any
 received bytes and `resp_parse` compares `redis::parse` (every string and, on

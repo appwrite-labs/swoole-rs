@@ -34,6 +34,8 @@ mod module;
 mod optional;
 mod options;
 pub mod reactor;
+mod sendfile;
+pub use sendfile::{SendFile, valid_sendfile_range};
 mod serialize;
 mod table;
 mod vm;
@@ -48,10 +50,14 @@ pub use memory::{received_string, zend_string_allocator};
 pub use module::{
     EventSteps, Families, Globals, Hook, Http, HttpMinit, Minit, MinitArgs, ProcessSteps,
     ReqStatus, RuntimeSteps, SocketSettings, codecs, display_errors, enable_library, globals,
-    load_library, php_swoole_register_shutdown_function, zif_swoole_set_process_name,
+    load_library, php_swoole_register_shutdown_function, temporary_directory,
+    zif_swoole_set_process_name,
 };
 pub use optional::{set_blocking, socket_cast, socket_create};
-pub use options::{php_swoole_parse_to_size, set_global, sw_zval_is_serializable};
+pub use options::{
+    invalid_setting, nonnegative_setting, php_swoole_parse_to_size, set_global, setting_callable,
+    setting_ok, sw_zval_is_serializable,
+};
 pub use serialize::{serialize, unserialize, unserialize_from};
 pub use swoole_rs_corebase::{Switch, built_with};
 
@@ -146,6 +152,7 @@ fn minit_body(minit: &swoole_rs_zend::Minit, kind: c_int) {
     }
     FLAGS.store(flags, Ordering::Relaxed);
     constants::register(minit, flags);
+    sendfile::register(minit);
     minit.register_child(
         &EXCEPTION,
         c"Swoole\\Exception",

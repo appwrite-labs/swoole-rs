@@ -27,7 +27,7 @@ pub static arginfo_class_Swoole_Coroutine_exists: a::ArgInfo<2> = a::ArgInfo::ne
 ]);
 pub static arginfo_class_Swoole_Coroutine_yield: a::ArgInfo<1> =
     a::ArgInfo::new([a::begin_type(0, 0, z::_IS_BOOL, false)]);
-pub static arginfo_class_Swoole_Coroutine_cancel: a::ArgInfo<3> = a::ArgInfo::new([
+pub static arginfo_class_Swoole_Coroutine_cancel: a::ArgInfo<4> = a::ArgInfo::new([
     a::begin_type(1, 0, z::_IS_BOOL, false),
     a::arg_type(c"cid", 0, false, z::IS_LONG, false, None),
     a::arg_type(
@@ -38,6 +38,7 @@ pub static arginfo_class_Swoole_Coroutine_cancel: a::ArgInfo<3> = a::ArgInfo::ne
         false,
         Some(c"false"),
     ),
+    a::arg_type(c"reason", 0, false, z::IS_MIXED, false, Some(c"null")),
 ]);
 pub static arginfo_class_Swoole_Coroutine_join: a::ArgInfo<3> = a::ArgInfo::new([
     a::begin_type(1, 0, z::_IS_BOOL, false),
@@ -97,4 +98,5 @@ pub static arginfo_class_Swoole_Coroutine_setTimeLimit: a::ArgInfo<2> = a::ArgIn
 pub use self::arginfo_class_Swoole_Coroutine_getCid as arginfo_class_Swoole_ExitException_getFlags;
 pub static arginfo_class_Swoole_ExitException_getStatus: a::ArgInfo<1> =
     a::ArgInfo::new([a::begin_type(0, 0, z::IS_MIXED, false)]);
+pub use self::arginfo_class_Swoole_ExitException_getStatus as arginfo_class_Swoole_Coroutine_CanceledException_getReason;
 pub use crate::required_array as parse_class_swoole_coroutine_set;

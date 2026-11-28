@@ -18,6 +18,7 @@ pub(crate) struct Stats {
     pub(crate) signal_listener_num: i64,
     pub(crate) aio_task_num: i64,
     pub(crate) aio_worker_num: i64,
+    pub(crate) aio_idle_worker_num: i64,
     pub(crate) aio_queue_size: i64,
     pub(crate) c_stack_size: i64,
     pub(crate) coroutine_num: i64,
@@ -232,6 +233,7 @@ pub(crate) fn stats(stats: &mut Stats) {
         let count = |n| i64::try_from(n).unwrap_or(i64::MAX);
         stats.aio_task_num = count(tasks);
         stats.aio_worker_num = count(workers);
+        stats.aio_idle_worker_num = count(swoole_rs_corebase::offload::threads::idle_worker_num());
         stats.aio_queue_size = count(queued);
     }
     // `corebase::reactor` counts this thread's listeners.
@@ -532,6 +534,10 @@ pub(crate) fn run_defers(ctx: Ctx) {
                 return;
             }
         }
+        if swoole_rs_zend::host::unwind_exit_pending() {
+            bailout::defer(task.release());
+            return;
+        }
         if !swoole_rs_zend::host::exception().is_null() {
             bailout::Bailout.defer();
             return;
@@ -591,7 +597,7 @@ pub(crate) fn deactivate() {
 
 /// The runtime hooks (when `flags`) and the unsafe functions disabled.
 pub(crate) fn hook(flags: u32) {
-    if flags != 0 {
+    if flags != 0 && swoole_rs_phpruntime::can_update_hooks() {
         // PHPCoroutine::activate proceeds to disable unsafe functions regardless of enable_hook’s result.
         let _hooked = swoole_rs_phpruntime::php_coroutine_enable_hook(flags);
     }
@@ -680,10 +686,8 @@ pub(crate) fn set_stack_size(size: &swoole_rs_zend::Value) {
     swoole_rs_corebase::coroutine::set_stack_size(size);
 }
 
-pub(crate) fn add_name_resolver(resolver: &swoole_rs_zend::Value) {
-    if let Some(families) = swoole_rs_phpswoole::families() {
-        (families.name_resolver_add)(resolver);
-    }
+pub(crate) fn add_name_resolver(resolver: &swoole_rs_zend::Value) -> bool {
+    swoole_rs_phpswoole::families().is_some_and(|families| (families.name_resolver_add)(resolver))
 }
 
 pub(crate) fn set_dns_cache_expire(expire: c_long) {

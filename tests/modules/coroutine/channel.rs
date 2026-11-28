@@ -493,6 +493,22 @@ fn cancel_wins_over_timeout() {
 }
 
 #[test]
+fn waking_without_room_or_data_does_not_complete_a_transfer() {
+    let mut ch = UnsafeCell::new(Channel::<u8, *mut c_void>::new(1));
+    let mut fx = Log {
+        flags: 0,
+        resumed: vec![],
+    };
+    assert_eq!(push(&ch, &mut fx, 1, Deadline::never()), Ok(()));
+    assert_eq!(push(&ch, &mut fx, 2, Deadline::never()), Err(2));
+    assert_eq!(ch.get_mut().error(), ERROR_TIMEOUT);
+    assert_eq!(ch.get_mut().pop_data(), Some(1));
+    assert_eq!(pop(&ch, &mut fx, Deadline::never()), None);
+    assert_eq!(fx.resumed, []);
+    assert_eq!(ch.get_mut().length(), 0);
+}
+
+#[test]
 fn close_wakes_producers_then_consumers() {
     let mut ch = std::cell::UnsafeCell::new(Channel::<*mut c_void>::new(0));
     ch.get_mut()

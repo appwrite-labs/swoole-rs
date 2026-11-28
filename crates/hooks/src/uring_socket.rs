@@ -255,10 +255,7 @@ pub(crate) fn recvfrom_into(
 ) -> Option<usize> {
     let (host, tls) = (ops.host(), ops.tls);
     ops.transfer(Events::READ, false, || {
-        let peeked = uring::recv(host, tls.fd, buf, libc::MSG_PEEK, tls.read_timeout).ok();
-        if peeked <= Some(0) {
-            return peeked;
-        }
+        uring::recv(host, tls.fd, buf, libc::MSG_PEEK, tls.read_timeout).ok()?;
         peer.recvfrom(tls.fd, buf, libc::MSG_DONTWAIT)
     })
 }
@@ -270,10 +267,7 @@ pub(crate) fn recvfrom_peer(ops: &UringSocketOps<'_>, out: &mut Spare<'_>) -> Op
     let (host, tls) = (ops.host(), ops.tls);
     ops.transfer(Events::READ, false, || {
         let peek = |room: &mut _| uring::recv(host, tls.fd, room, libc::MSG_PEEK, tls.read_timeout);
-        let peeked = out.uncounted(peek).ok();
-        if peeked <= Some(0) {
-            return peeked;
-        }
+        out.uncounted(peek).ok()?;
         let receive =
             |record: &mut SocketFields| record.receive_from(out, tls.fd, libc::MSG_DONTWAIT);
         ops.socket.net(receive).flatten()
@@ -391,7 +385,8 @@ pub(crate) fn swr_v1_hook_uring_connect(ops: &UringSocketOps<'_>, peer: &SocketA
     let result = ops.bound(Events::RDWR, || {
         uring::connect(host, fd, peer, ops.connect_timeout)
     });
-    if result.is_err() {
+    if let Err(error) = result {
+        (ops.set_err)(ops.socket, error.raw_os_error().unwrap_or(libc::EIO));
         return false;
     }
     ops.socket
@@ -810,17 +805,22 @@ mod tests {
 
             // The reply comes back with its sender's address and length.
             let replier = receiver.local_addr().unwrap();
-            receiver
-                .send_to(b"pong", sender.local_addr().unwrap())
-                .unwrap();
-            let (mut peer, mut reply) = (SocketAddress::default(), [0u8; 8]);
-            assert_eq!(recvfrom_into(&to, &mut reply, &mut peer), Some(4));
-            assert_eq!(&reply[..4], b"pong");
-            assert_eq!(
-                peer.len,
-                libc::socklen_t::try_from(size_of::<libc::sockaddr_in>()).unwrap()
-            );
-            assert_eq!(peer.addr.v4().sin_port, replier.port().to_be());
+            for payload in [b"".as_slice(), b"pong"] {
+                receiver
+                    .send_to(payload, sender.local_addr().unwrap())
+                    .unwrap();
+                let (mut peer, mut reply) = (SocketAddress::default(), [0u8; 8]);
+                assert_eq!(
+                    recvfrom_into(&to, &mut reply, &mut peer),
+                    Some(payload.len())
+                );
+                assert_eq!(&reply[..payload.len()], payload);
+                assert_eq!(
+                    peer.len,
+                    libc::socklen_t::try_from(size_of::<libc::sockaddr_in>()).unwrap()
+                );
+                assert_eq!(peer.addr.v4().sin_port, replier.port().to_be());
+            }
         });
     }
 }

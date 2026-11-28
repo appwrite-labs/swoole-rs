@@ -20,7 +20,7 @@ unsafe extern "C" {
     safe fn swr_zend_stream_vm_active() -> bool;
     safe fn swr_zend_stream_default_timeout() -> sys::zend_long;
     safe fn swr_zend_http_max_input_vars() -> sys::zend_long;
-    safe fn swr_zend_error_reporting() -> c_int;
+    safe fn swr_zend_coroutine_snapshot_reporting();
     safe fn swr_zend_vm_interrupt() -> *mut sys::zend_atomic_bool;
     /// `CG(function_table)`'s function `name`, or null.
     safe fn swr_zend_compiled_function_find(
@@ -103,10 +103,9 @@ impl<'a> Php<'a> {
         swr_zend_http_max_input_vars()
     }
 
-    /// `EG(error_reporting)`: the level `@` saves and restores.
-    #[must_use]
-    pub fn error_reporting(self) -> c_int {
-        swr_zend_error_reporting()
+    /// Snapshot the configured reporting level for new coroutines on this PHP thread.
+    pub fn snapshot_coroutine_reporting(self) {
+        swr_zend_coroutine_snapshot_reporting();
     }
 
     /// `&EG(vm_interrupt)`: this thread's executor's interrupt flag, which lives

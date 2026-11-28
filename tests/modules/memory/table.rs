@@ -49,14 +49,14 @@ unsafe fn data<'a>(row: *const Row, column: &Column) -> &'a mut [u8] {
 /// # Safety
 /// As `data`.
 unsafe fn get_number(row: *const Row, column: &Column) -> u64 {
-    number(unsafe { data(row, column) }, column)
+    field_number(column.field(unsafe { data(row, column) }))
 }
 
 /// A string column's bytes, valid while the row is locked.
 /// # Safety
 /// As `data`.
 unsafe fn get_string<'a>(row: *const Row, column: &Column) -> &'a [u8] {
-    bytes(unsafe { data(row, column) }, column)
+    field_bytes(column.field(unsafe { data(row, column) }))
 }
 
 /// A string column's text up to its NUL, as `ASSERT_STREQ` reads it: within the
@@ -65,7 +65,7 @@ unsafe fn get_string<'a>(row: *const Row, column: &Column) -> &'a [u8] {
 /// As `data`.
 unsafe fn get_c_string<'a>(row: *const Row, column: &Column) -> &'a std::ffi::CStr {
     let field: &'a [u8] = unsafe { data(row, column) };
-    let start = bytes(field, column).as_ptr().addr() - field.as_ptr().addr();
+    let start = field_bytes(column.field(field)).as_ptr().addr() - field.as_ptr().addr();
     std::ffi::CStr::from_bytes_until_nul(&field[start..]).unwrap()
 }
 
@@ -229,16 +229,22 @@ fn make_clamps_rows_and_conflict_as_upstream() {
 }
 
 #[test]
-fn columns_keep_every_declaration_and_find_the_first() {
+fn columns_reject_duplicates_and_keep_their_offsets() {
     let mut table = Owned::new(64, 0.2);
     let t = table.get_mut();
     assert!(t.add_column(b"integer", TYPE_INT, 0));
     assert!(t.add_column(b"binary", TYPE_STRING, 12));
-    assert!(t.add_column(b"integer", TYPE_FLOAT, 0));
+    assert!(!t.add_column(b"integer", TYPE_FLOAT, 0));
     assert!(t.add_column(b"field\0name", TYPE_STRING, 4));
     assert!(!t.add_column(b"bad", 8, 0));
-    assert_eq!(warnings(), ["Table::add_column(): unknown column type"]);
-    assert_eq!((t.columns().len(), t.column_size()), (4, 3));
+    assert_eq!(
+        warnings(),
+        [
+            "Table::add_column(): column[integer] already exists",
+            "Table::add_column(): unknown column type"
+        ]
+    );
+    assert_eq!((t.columns().len(), t.column_size()), (3, 3));
     let integer = t.column(b"integer").unwrap();
     assert_eq!(
         (integer.kind, integer.width, integer.index),
@@ -246,7 +252,7 @@ fn columns_keep_every_declaration_and_find_the_first() {
     );
     let binary = t.column(b"binary").unwrap();
     assert_eq!((binary.width, binary.index), (16, 8));
-    assert_eq!(t.column(b"field\0name").unwrap().index, 32);
+    assert_eq!(t.column(b"field\0name").unwrap().index, 24);
     assert!(t.column(b"field").is_none());
     assert!(table.create());
     assert!(!table.get_mut().add_column(b"late", TYPE_INT, 0));
@@ -266,11 +272,11 @@ fn sizes_match_upstream_accounting() {
             reason = "upstream's float row count"
         )]
         let all = (size as f32 * (1.0 + conflict)) as usize;
-        let row = 88 + width + 4;
+        let row = (88 + width + 4).next_multiple_of(8);
         let total = all * row + 48 + (all - size) * 24 + size * 8;
         assert_eq!(table.get().memory_total(), total);
         assert!(table.create());
-        assert_eq!(table.get().memory_size(), total - size * 8 - row * size);
+        assert_eq!(table.get().memory_size(), total);
         assert_eq!(table.get().total_slices() as usize, all - size);
         assert_eq!(table.get().available_slices(), table.get().total_slices());
         assert!(table.arena_len >= total);
@@ -304,33 +310,21 @@ fn set_get_del_and_counters() {
 }
 
 #[test]
-fn long_keys_are_cut_to_63_bytes() {
+fn only_nonempty_keys_that_fit_the_row_are_accepted() {
     let table = three_columns(64, 0.2);
     let t = table.get();
-    let long = [b'q'; 100];
-    put(t, &long, 7);
-    let mut lock = ptr::null_mut();
-    let row = t.get(&long[..63], &mut lock);
-    assert_eq!(unsafe { row_key(row) }, &long[..63]);
-    unsafe { unlock(lock) };
-    assert!(t.exists(&long[..80]) && t.del(&long));
-}
-
-/// `Swoole\Table`'s hook hashes the whole PHP string, not the 63 bytes a row
-/// compares: keys sharing those bytes find each other only in one bucket.
-#[test]
-fn the_hash_sees_the_whole_key() {
-    fn length(key: &[u8], compared: usize) -> u64 {
-        assert_eq!(compared, key.len().min(63));
-        key.len() as u64
+    let key = [b'q'; KEY_SIZE];
+    let valid = &key[..KEY_SIZE - 1];
+    put(t, valid, 7);
+    for invalid in [&key[..0], &key[..]] {
+        let mut lock = ptr::null_mut();
+        assert!(t.set(invalid, &mut lock, None).is_null());
+        assert!(lock.is_null());
+        assert!(t.get(invalid, &mut lock).is_null());
+        assert!(lock.is_null());
+        assert!(!t.exists(invalid) && !t.del(invalid));
     }
-    let mut table = three_columns(64, 0.2);
-    table.get_mut().set_hash(length);
-    let t = table.get();
-    let long = [b'q'; 100];
-    put(t, &long, 7);
-    assert!(t.exists(&long) && t.exists(&[b'q'; 164]));
-    assert!(!t.exists(&long[..80]) && !t.del(&long[..80]));
+    assert!(t.exists(valid) && t.del(valid));
 }
 
 #[test]
@@ -345,10 +339,13 @@ fn collisions_chain_and_deleting_the_root_promotes_the_next() {
     let stats = t.stats();
     assert_eq!((stats.conflict_count, stats.conflict_max_level), (2, 2));
     assert_eq!(t.available_slices() + 2, t.total_slices());
-    assert!(t.del(b"k0"));
+    let id = t.column(b"id").unwrap();
+    let root = t.getdel(b"k0", None).unwrap();
+    assert_eq!(field_number(id.field(&root)), 0);
     assert_eq!(unsafe { row_key(t.by_index(0)) }, b"k1");
     assert_eq!((read(t, b"k1"), read(t, b"k2")), (Some(1), Some(5)));
-    assert!(t.del(b"k2") && t.del(b"k1"));
+    assert_eq!(t.getdel(b"k2", Some(id)).unwrap(), 5_i64.to_ne_bytes());
+    assert!(t.del(b"k1"));
     assert_eq!((t.count(), t.available_slices()), (0, t.total_slices()));
     assert!(t.by_index(0).is_null());
 }

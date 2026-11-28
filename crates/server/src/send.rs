@@ -1,10 +1,6 @@
 //! `Server::send` and `Server::send_to_connection`: the master's (or a base-mode
 //! worker's) delivery of a send, a close or a receive pause/resume to a connection it
 //! owns, over the connection, its socket and its output buffer.
-//!
-//! `--fix-halfclose` (M15) builds have the `halfclose` feature (upstream's
-//! `SW_HALFCLOSE_DRAIN`): pause and resume then go through the reactor's read-event
-//! helpers, a resume skips closing connections, and a queued close stops reading.
 use crate::base_factory::{SendData, allocated};
 use crate::callbacks::CallbackKind::{BufferEmpty, BufferFull};
 use crate::reactor_handle::Reactor;
@@ -18,7 +14,7 @@ use swoole_rs_corebase::constants::SW_SEND_BUFFER_SIZE;
 use swoole_rs_corebase::log::LogLevel::{
     SW_LOG_NOTICE as LOG_NOTICE, SW_LOG_TRACE as LOG_TRACE, SW_LOG_WARNING as LOG_WARNING,
 };
-use swoole_rs_corebase::reactor::{ChangeOp, Drain, Interest, Socket, count_write, steady_ms};
+use swoole_rs_corebase::reactor::{Drain, Interest, Socket, count_write, steady_ms};
 use swoole_rs_corebase::reactor::{Events, SocketFields, SocketIo};
 use swoole_rs_corebase::{CCast, DataHead, log, microtime};
 use swoole_rs_error::ErrorCode as E;
@@ -31,10 +27,6 @@ fn error(level: swoole_rs_corebase::log::LogLevel, code: E, message: core::fmt::
 /// port's and worker's counts. A base or thread mode worker that owns the session
 /// sends it here, as `BaseFactory::finish` would. The length narrows to `uint32_t`,
 /// as the C++ callers' `ZSTR_LEN` did.
-#[expect(
-    clippy::must_use_candidate,
-    reason = "callers ignore the result where upstream's do"
-)]
 pub fn send(serv: Server<'_>, session_id: core::ffi::c_long, data: &[u8]) -> bool {
     let len = data.len().c_cast::<u32>();
     let info = || DataHead {
@@ -56,7 +48,7 @@ pub fn send(serv: Server<'_>, session_id: core::ffi::c_long, data: &[u8]) -> boo
             crate::shared::count_sent(state, port.and_then(|port| port.config().counters()), len);
             return true;
         }
-        to_connection(serv, &info(), data, first.map(|(sent, _)| sent))
+        to_connection(serv, &info(), data, first.map(|(sent, _)| sent), send_file)
     } else {
         let mut send = SendData::new(info(), data);
         crate::hybrid::hybrid().factory_finish(serv, &mut send)
@@ -114,7 +106,7 @@ pub fn send_parts(
                     len: left.len().c_cast::<u32>(),
                     ..DataHead::default()
                 };
-                to_connection(serv, &info, left, Some(0))
+                to_connection(serv, &info, left, Some(0), send_file)
             })
     };
     if done {
@@ -132,7 +124,7 @@ fn write_now(
     write: impl Fn(SocketIo) -> Option<usize>,
 ) -> Option<(Connection<'_>, Option<usize>)> {
     let conn = state.connection(session_id, Lookup::VerifiedTls)?;
-    if conn.overflow() {
+    if conn.overflow() || conn.peer_closed() {
         return None;
     }
     let socket = conn.socket()?;
@@ -165,33 +157,116 @@ fn send_now<'a>(
     ))
 }
 
-/// `Server::send_to_connection(send)`: false for `SW_ERR`. Where a send fails after
-/// the connection was found upstream returns `false`, which its `int` makes 0, the
-/// same as `SW_OK`: true here too.
+/// `Server::send_to_connection(send)`: false for `SW_ERR`.
 ///
 /// A file's payload is its `SendfileTask` and name.
-#[expect(
-    clippy::must_use_candidate,
-    reason = "callers ignore the result where upstream's do"
-)]
 pub fn send_to_connection(serv: Server<'_>, send: &SendData) -> bool {
-    to_connection(serv, send.info(), send.payload(), None)
+    to_connection(serv, send.info(), send.payload(), None, send_file)
+}
+
+/// Resume an EOF parser that already holds bytes after its last delivered packet.
+struct ResumeBuffered(core::ffi::c_long);
+
+impl swoole_rs_corebase::reactor::event_api::Deferred for ResumeBuffered {
+    fn run(self) {
+        let reactor = Reactor::thread();
+        if let Some(serv) = reactor.server()
+            && let Some(conn) = serv.verified(self.0)
+            && conn.socket().is_some_and(|sock| {
+                sock.read(|s| s.skip_recv && s.registered_for(Events::READ) && !s.close_reported())
+            })
+        {
+            let kind = swoole_rs_corebase::constants::FdType::SW_FD_SESSION as c_int;
+            let running = reactor.handle();
+            if let Some(read) = swoole_rs_corebase::reactor::reactor_upstream::reactor_get_handler(
+                running,
+                kind,
+                Events::READ,
+            ) {
+                read(running, &mut conn.event(i16::from(conn.reactor_id()), kind));
+            }
+        }
+    }
+
+    fn dispose(self) {}
+}
+
+/// Restore read interest when neither an application pause nor queue throttling holds it.
+pub(crate) fn resume_read(
+    reactor: Reactor,
+    conn: Connection<'_>,
+    sock: swoole_rs_corebase::reactor::Heap<'_>,
+) -> bool {
+    if conn.recv_paused()
+        || conn.timer().is_some()
+        || conn.closed().load(core::sync::atomic::Ordering::Relaxed) != 0
+        || conn.peer_closed()
+        || conn.close_queued()
+        || sock.read(|s| s.registered_for(Events::READ) || s.close_reported())
+    {
+        return true;
+    }
+    reactor.interest(sock, Interest::AddRead)
+        && (!sock.read(|s| s.skip_recv)
+            || swoole_rs_corebase::reactor::event_api::swoole_event_defer_value(ResumeBuffered(
+                conn.session_id(),
+            ))
+            .is_ok())
 }
 
 /// [`send_to_connection`] of the event `info` with the bytes `data` it carries.
-#[expect(
-    clippy::must_use_candidate,
-    reason = "callers ignore the result where upstream's do"
-)]
 pub fn send_event_to_connection(serv: Server<'_>, info: &DataHead, data: &[u8]) -> bool {
-    to_connection(serv, info, data, None)
+    to_connection(serv, info, data, None, send_file)
+}
+
+fn missing_session(info: &DataHead) {
+    let session = info.fd;
+    let code = E::SW_ERROR_SESSION_NOT_EXIST;
+    if info.event() == Some(ServerEvent::SendData) {
+        let length = info.len;
+        let m = format_args!("send {length} byte failed, session#{session} does not exist");
+        error(LOG_TRACE, code, m);
+    } else {
+        let kind = info.kind;
+        let m = format_args!("send event[{kind}] failed, session#{session} does not exist");
+        error(LOG_TRACE, code, m);
+    }
+}
+
+/// Static ranges already have an open file on this reactor.
+pub(crate) fn send_static_range(
+    serv: Server<'_>,
+    session: core::ffi::c_long,
+    file: &std::sync::Arc<swoole_rs_corebase::ossupport::FileRecord>,
+    part: &swoole_rs_http::HttpStaticTask,
+) -> bool {
+    let info = DataHead {
+        fd: session,
+        kind: ServerEvent::SendFile.code(),
+        ..Default::default()
+    };
+    to_connection(serv, &info, &[], None, |sock, _, _| {
+        swoole_rs_corebase::tls::upstream::socket_sendfile_opened(
+            sock,
+            file,
+            part.offset,
+            part.length,
+        )
+    })
 }
 
 /// [`send_to_connection`] of the event `info` with its `data`, where `first` is what
 /// [`send_now`] already sent, short of all of it.
-fn to_connection(serv: Server<'_>, info: &DataHead, data: &[u8], first: Option<i64>) -> bool {
+fn to_connection(
+    serv: Server<'_>,
+    info: &DataHead,
+    data: &[u8],
+    first: Option<i64>,
+    queue_file: impl FnOnce(Socket<'_>, &[u8], bool) -> bool,
+) -> bool {
     let state = serv.state();
     let (kind, session) = (info.event(), info.fd);
+    let cleanup = file_cleanup(info, data);
     let close = kind == Some(ServerEvent::Close);
     let lookup = if close {
         Lookup::Verified
@@ -200,16 +275,7 @@ fn to_connection(serv: Server<'_>, info: &DataHead, data: &[u8], first: Option<i
     };
     let found = state.connection(session, lookup);
     let Some((conn, sock)) = found.and_then(|conn| Some((conn, conn.socket()?))) else {
-        let code = E::SW_ERROR_SESSION_NOT_EXIST;
-        if kind == Some(ServerEvent::SendData) {
-            let length = info.len;
-            let m = format_args!("send {length} byte failed, session#{session} does not exist");
-            error(LOG_TRACE, code, m);
-        } else {
-            let kind = info.kind;
-            let m = format_args!("send event[{kind}] failed, session#{session} does not exist");
-            error(LOG_TRACE, code, m);
-        }
+        missing_session(info);
         return false;
     };
     let reactor = Reactor::thread();
@@ -222,8 +288,12 @@ fn to_connection(serv: Server<'_>, info: &DataHead, data: &[u8], first: Option<i
     );
     let send_yield = config.send_yield.get();
     let yield_error = || log::set_last_error(E::SW_ERROR_OUTPUT_SEND_YIELD as c_int);
-    if conn.overflow() && config.mode_ != Mode::Process {
-        if send_yield {
+    let output = matches!(kind, Some(ServerEvent::SendFile | ServerEvent::SendData));
+    if output && conn.overflow() && config.mode_ != Mode::Process {
+        if conn.peer_closed() || conn.close_reset() || conn.close_force() {
+            let m = format_args!("socket#{} is closed by client", conn.fd());
+            error(LOG_NOTICE, E::SW_ERROR_SESSION_CLOSED_BY_CLIENT, m);
+        } else if send_yield {
             yield_error();
         } else {
             let m = format_args!("socket#{} output buffer overflow", conn.fd());
@@ -231,44 +301,29 @@ fn to_connection(serv: Server<'_>, info: &DataHead, data: &[u8], first: Option<i
         }
         return false;
     }
+    if output && conn.peer_closed() {
+        log::set_last_error(E::SW_ERROR_SESSION_CLOSING as c_int);
+        return false;
+    }
+    if close && i32::from(info.ext_flags) & crate::factory::CLOSE_RESET != 0 {
+        conn.set_close_reset(true);
+    }
     if close && (conn.close_reset() || conn.close_force() || conn.peer_closed()) {
         crate::conn_io::close_connection(serv, reactor, Some(sock));
         return true;
     }
-    let halfclose = cfg!(feature = "halfclose");
     if matches!(kind, Some(ServerEvent::PauseRecv | ServerEvent::ResumeRecv)) {
-        let (removed, notified) = sock.read(|s| (s.has_left_reactor(), s.close_reported()));
-        let on = |events| sock.read(|s| s.registered_for(events));
-        let (reading, writing) = (on(Events::READ), on(Events::WRITE));
         if kind == Some(ServerEvent::PauseRecv) {
-            if removed || !reading {
-                return true;
+            if sock.read(|s| s.registered_for(Events::READ))
+                && !reactor.interest(sock, Interest::RemoveRead)
+            {
+                return false;
             }
-            return if halfclose {
-                reactor.interest(sock, Interest::RemoveRead)
-            } else if writing {
-                reactor.change(sock, ChangeOp::Set, Events::WRITE)
-            } else {
-                reactor.del(*sock)
-            };
-        }
-
-        let skip = if halfclose {
-            let closing = conn.closed().load(core::sync::atomic::Ordering::Relaxed) != 0;
-            closing || conn.peer_closed() || conn.close_queued() || notified || reading
-        } else {
-            !removed || reading
-        };
-        if skip {
+            conn.set_recv_paused(true);
             return true;
         }
-        return if halfclose {
-            reactor.interest(sock, Interest::AddRead)
-        } else if writing {
-            reactor.change(sock, ChangeOp::Set, Events::READ | Events::WRITE)
-        } else {
-            reactor.change(sock, ChangeOp::Add, Events::READ)
-        };
+        conn.set_recv_paused(false);
+        return resume_read(reactor, conn, sock);
     }
     let (mut data, file) = (data, kind == Some(ServerEvent::SendFile));
     let (out_empty, unbuffered, direct) = sock.read(|s| {
@@ -292,21 +347,14 @@ fn to_connection(serv: Server<'_>, info: &DataHead, data: &[u8], first: Option<i
     }
     let port = serv.port_by_server_fd(conn.server_fd());
     if close {
-        sock.read(SocketFields::queue_close);
-        conn.set_close_queued(true);
-        if halfclose {
-            reactor.interest(sock, Interest::RemoveRead);
+        if !queue_close(reactor, conn, sock) {
+            return false;
         }
     } else if file {
-        if !send_file(*sock, data) {
-            return true;
+        if !queue_file(*sock, data, core::mem::DropGuard::dismiss(cleanup)) {
+            return false;
         }
     } else {
-        if conn.peer_closed() {
-            let m = format_args!("socket#{} is closed by client", conn.fd());
-            error(LOG_NOTICE, E::SW_ERROR_SESSION_CLOSED_BY_CLIENT, m);
-            return true;
-        }
         let callback = |index| state.callbacks.slot(index).is_set();
         let (on_full, on_empty) = (callback(BufferFull), callback(BufferEmpty));
         if sock.read(SocketFields::output_full) {
@@ -339,6 +387,21 @@ fn to_connection(serv: Server<'_>, info: &DataHead, data: &[u8], first: Option<i
         reactor.interest(sock, Interest::AddWrite);
     }
     true
+}
+
+/// A graceful close stops receiving while its remaining output drains.
+pub(crate) fn queue_close(
+    reactor: Reactor,
+    conn: Connection<'_>,
+    sock: swoole_rs_corebase::reactor::Heap<'_>,
+) -> bool {
+    // The close callback may already have run. Keep the close behind queued data
+    // even if the kernel refuses to update the socket's read interest.
+    if !conn.close_queued() {
+        sock.read(SocketFields::queue_close);
+        conn.set_close_queued(true);
+    }
+    !sock.read(|s| s.registered_for(Events::READ)) || reactor.interest(sock, Interest::RemoveRead)
 }
 
 /// Queues `data` in the socket's output buffer, if it has one: the bytes queued after.
@@ -385,18 +448,64 @@ fn advance(data: &mut &[u8], sent: i64) {
 /// `SendfileTask`'s head: its `off_t offset` and `size_t length`; the name follows.
 const TASK_HEAD: usize = 16;
 
+/// `SW_SERVER_SENDFILE_DELETE` on a `SEND_FILE` event.
+pub(crate) const SENDFILE_DELETE: u16 = 1;
+
+/// Unlink a rejected event's file unless its socket request takes ownership first.
+fn file_cleanup<'a>(
+    info: &DataHead,
+    data: &'a [u8],
+) -> core::mem::DropGuard<bool, impl FnOnce(bool) + 'a> {
+    let owned = owns_file(info);
+    core::mem::DropGuard::new(owned, move |owned| {
+        if owned {
+            unlink_task(data);
+        }
+    })
+}
+
+fn owns_file(info: &DataHead) -> bool {
+    info.event() == Some(ServerEvent::SendFile) && info.ext_flags & SENDFILE_DELETE != 0
+}
+
+/// A rejected handoff still owns its file. Only a chunk's first packet carries the name.
+pub(crate) fn discard_file(info: &DataHead, data: &[u8]) {
+    use swoole_rs_corebase::constants::EventDataFlag as Flag;
+    let chunk = Flag::SW_EVENT_DATA_CHUNK.bits();
+    let begin = Flag::SW_EVENT_DATA_BEGIN.bits();
+    if owns_file(info) && info.flags & (chunk | begin) != chunk {
+        unlink_task(data);
+    }
+}
+
+fn unlink_task(data: &[u8]) {
+    if let Some(name) = task_name(data) {
+        _ = swoole_rs_corebase::sys::unlink(name);
+    }
+}
+
+fn task_name(task: &[u8]) -> Option<&CStr> {
+    CStr::from_bytes_until_nul(task.get(TASK_HEAD..)?).ok()
+}
+
 /// `sock->sendfile_async(task->filename, task->offset, task->length)`: false when it
 /// failed or the task lacks its head or name.
-fn send_file(sock: Socket<'_>, task: &[u8]) -> bool {
+fn send_file(sock: Socket<'_>, task: &[u8], delete_file: bool) -> bool {
     let word = |at: usize| <[u8; 8]>::try_from(task.get(at..at + 8)?).ok();
     let (Some(offset), Some(length)) = (word(0), word(8)) else {
         return false;
     };
-    let Some(Ok(name)) = task.get(TASK_HEAD..).map(CStr::from_bytes_until_nul) else {
+    let Some(name) = task_name(task) else {
         return false;
     };
     let (offset, length) = (i64::from_ne_bytes(offset), usize::from_ne_bytes(length));
-    swoole_rs_corebase::tls::upstream::socket_sendfile_async(sock, name, offset, length)
+    swoole_rs_corebase::tls::upstream::socket_sendfile_async(
+        sock,
+        name,
+        offset,
+        length,
+        delete_file,
+    )
 }
 
 /// `swoole_timer_add(sec2msec(port->max_idle_time), true, ...)` for the socket's
@@ -531,6 +640,15 @@ mod tests {
         assert_eq!(a.read(5), b"hello");
         assert_eq!(a.queued(), 0, "nothing buffered");
         assert!(a.conn().last_send_time() > 0.0, "touched");
+        a.live.config_mut().mode_ = Mode::Base;
+        a.conn().set_peer_closed(true);
+        assert!(!send(a.serv(), 1, b"after close"));
+        assert!(a.client.set_nonblocking(true).is_ok());
+        assert_eq!(
+            (&a.client).read(&mut [0; 1]).unwrap_err().kind(),
+            std::io::ErrorKind::WouldBlock
+        );
+        assert_eq!(a.queued(), 0);
     }
 
     #[test]
@@ -589,9 +707,10 @@ mod tests {
         a.conn().set_peer_closed(true);
         assert_eq!(
             a.send(ServerEvent::SendData, 1, b"more"),
-            0,
+            SW_ERR,
             "closed by the client"
         );
+        assert_eq!(log::last_error(), E::SW_ERROR_SESSION_CLOSING as c_int);
         assert_eq!(a.queued(), 5);
     }
 
@@ -607,10 +726,10 @@ mod tests {
         );
         assert_eq!(a.read(10), data);
         // As if only four had gone.
-        assert!(to_connection(a.serv(), &info, data, Some(4)));
+        assert!(to_connection(a.serv(), &info, data, Some(4), send_file));
         assert_eq!(a.queued(), 6, "the rest is buffered");
         let a = Accepted::new();
-        assert!(to_connection(a.serv(), &info, data, Some(-1)));
+        assert!(to_connection(a.serv(), &info, data, Some(-1), send_file));
         assert_eq!(a.queued(), 10, "would block: all of it is buffered");
         assert!(a.client.set_nonblocking(true).is_ok());
         assert!((&a.client).read(&mut [0; 1]).is_err(), "nothing sent");
@@ -661,12 +780,41 @@ mod tests {
         assert_eq!(a.send(ServerEvent::SendData, 1, b"hello"), SW_OK);
         assert_eq!(a.send(ServerEvent::Close, 1, b""), SW_OK);
         assert!(a.conn().close_queued(), "behind the output");
+        assert!(!a.sock().read(|s| s.registered_for(Events::READ)));
+        assert!(a.sock().read(|s| s.registered_for(Events::WRITE)));
         assert!(!a.closed(fd), "not yet");
 
         let a = Accepted::new();
         let fd = a.conn().fd();
         assert_eq!(a.send(ServerEvent::Close, 1, b""), SW_OK);
         assert!(a.closed(fd), "closed now");
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn queued_close_survives_a_stale_epoll_registration() {
+        let a = Accepted::new();
+        a.sock().edit(|s| s.direct_send = false);
+        assert_eq!(a.send(ServerEvent::SendData, 1, b"hello"), SW_OK);
+        let reactor = a.live.reactor();
+        let conn = a.conn();
+        let sock = conn.socket().unwrap();
+        assert!(reactor.del(*sock));
+        // Simulate an epoll registration lost while the socket still records it.
+        sock.edit(|s| {
+            s.events = Events::READ | Events::WRITE;
+            s.removed = false;
+        });
+        assert!(!queue_close(reactor, conn, sock));
+        assert!(conn.close_queued());
+        assert!(reactor.add(sock, Events::WRITE));
+        let fd = conn.fd();
+        assert!(crate::conn_io::write(
+            a.serv(),
+            reactor,
+            &mut conn.event(0, 0)
+        ));
+        assert!(a.closed(fd));
     }
 
     #[test]
@@ -696,7 +844,47 @@ mod tests {
             a.sock().read(|s| s.events.intersects(Events::WRITE)),
             "waits to write"
         );
-        assert_eq!(a.send(ServerEvent::SendFile, 1, &task(b"no-such-file")), 0);
+        assert_eq!(
+            a.send(ServerEvent::SendFile, 1, &task(b"no-such-file")),
+            SW_ERR
+        );
+    }
+
+    #[test]
+    fn owned_file_event_cleans_up_on_drain_close_and_refusal() {
+        let path =
+            std::env::temp_dir().join(format!("swoole-event-sendfile-{}", std::process::id()));
+        let mut task = 0i64.to_ne_bytes().to_vec();
+        task.extend(3usize.to_ne_bytes());
+        task.extend(path.as_os_str().as_encoded_bytes());
+        task.push(0);
+        for (session, disconnect) in [(1, false), (1, true), (9, false)] {
+            std::fs::write(&path, b"abc").unwrap();
+            let mut a = Accepted::new();
+            let info = DataHead {
+                fd: session,
+                kind: ServerEvent::SendFile.code(),
+                ext_flags: SENDFILE_DELETE,
+                ..DataHead::default()
+            };
+            assert_eq!(
+                send_event_to_connection(a.serv(), &info, &task),
+                session == 1
+            );
+            if session == 1 {
+                assert!(path.is_file(), "cleanup waits for the queued file");
+                if disconnect {
+                    a.conn().set_close_force(true);
+                    assert_eq!(a.send(ServerEvent::Close, 1, b""), SW_OK);
+                } else {
+                    assert!(swoole_rs_corebase::tls::upstream::socket_handle_sendfile(
+                        a.sock()
+                    ));
+                    assert_eq!(a.read(3), b"abc");
+                }
+            }
+            assert!(!path.exists());
+        }
     }
 
     #[test]

@@ -13,6 +13,7 @@ pub enum RequestHeader {
     Upgrade,
     Form,
     Multipart,
+    OtherContentType,
     Compression,
 }
 
@@ -36,7 +37,7 @@ pub fn request_header(
             } else if case_prefix(value, b"multipart/form-data") {
                 RequestHeader::Multipart
             } else {
-                RequestHeader::Append
+                RequestHeader::OtherContentType
             }
         }
         Some(7) if compression => RequestHeader::Compression,

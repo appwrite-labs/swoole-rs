@@ -1,7 +1,6 @@
 // The pinned HTTP cookie parser and URL codec behind C entry points. build.rs
 // copies their bodies from upstream/src/protocol/http.cc unchanged into http.inc.
-// Adapted here: the thread-global buffer parse_cookie copies into, and sw_malloc
-// and sw_free over libc.
+// Adapted here: the thread-global buffer parse_cookie copies into, and sw_malloc over libc.
 #include <cctype>
 #include <cerrno>
 #include <cstdint>
@@ -24,7 +23,7 @@ static Buffer *sw_tg_buffer() {
     return &buffer;
 }
 #define sw_malloc malloc
-#define sw_free(pointer) free(pointer)
+#define sw_unlikely(condition) (condition)
 #include "http.inc"
 }  // namespace oracle_http
 

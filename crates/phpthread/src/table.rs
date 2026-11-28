@@ -158,24 +158,19 @@ impl<V> Table<V> {
 
     /// `ArrayList`'s `offsetUnset`: upstream shifts the packed values down one
     /// position from `index`, leaving every key where it was, then drops the
-    /// last position and decrements `nNextFreeElement`. An `index` outside the
-    /// list only drops the last position. An empty table is left alone.
+    /// last position and decrements `nNextFreeElement`. An index outside the list leaves it unchanged.
     pub(crate) fn unset_shift(&mut self, index: i64) {
-        self.compact();
-        let count = self.slots.len();
-        if count == 0 {
+        let Ok(start) = usize::try_from(index) else {
+            return;
+        };
+        if start >= self.len() {
             return;
         }
-        if let Ok(start) = usize::try_from(index)
-            && let Some(mut rest) = self.slots.get_mut(start..)
-        {
-            // Rotate the values (not the keys) of positions start.. down by one,
-            // so the removed value ends up last.
-            while let Some((current, tail)) = rest.split_first_mut() {
-                if let (Some((_, a)), Some(Some((_, b)))) = (current.as_mut(), tail.first_mut()) {
-                    std::mem::swap(a, b);
-                }
-                rest = tail;
+        self.compact();
+        for position in start + 1..self.slots.len() {
+            let (head, tail) = self.slots.split_at_mut(position);
+            if let (Some(Some((_, a))), Some(Some((_, b)))) = (head.last_mut(), tail.first_mut()) {
+                std::mem::swap(a, b);
             }
         }
         if let Some((key, _)) = self.slots.pop().flatten() {
@@ -432,7 +427,12 @@ mod tests {
         table.push('e');
         assert_eq!(table.get_int(3), Some(&'e'), "next index decremented");
         table.unset_shift(9);
-        assert_eq!(table.len(), 3, "out of range drops the last position");
+        table.unset_shift(-1);
+        assert_eq!(
+            table.get_int(3),
+            Some(&'e'),
+            "out-of-range unsets preserve the tail"
+        );
     }
 
     #[test]

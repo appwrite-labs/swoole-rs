@@ -2,8 +2,8 @@
   "schema_version": 1,
   "upstream": {
     "repository": "https://github.com/swoole/swoole-src",
-    "tag": "v6.2.6",
-    "commit": "13d2f33664d60b72aaa9f102ff0ef4085c028513"
+    "tag": "v6.3.0",
+    "commit": "e0d606594e13cecd7790baafc5f1e1ead816b77c"
   },
   "modules": [
     {
@@ -438,6 +438,7 @@
         "tests/modules/ossupport/"
       ],
       "phpt_families": [
+        "swoole_windows",
         "swoole_coroutine_system"
       ],
       "abi_contract": "native/ossupport/contract.md",
@@ -487,6 +488,7 @@
         "tests/modules/clients/"
       ],
       "phpt_families": [
+        "swoole_client",
         "swoole_client_coro",
         "swoole_client_sync",
         "swoole_client_async",
@@ -590,7 +592,7 @@
     },
     {
       "id": "M26",
-      "title": "Common PHP helpers and optional stdext policy",
+      "title": "Common PHP helpers",
       "wave": 5,
       "depends_on": [
         "M00",
@@ -604,8 +606,7 @@
         "tests/modules/phphelpers/"
       ],
       "phpt_families": [
-        "swoole_library",
-        "swoole_stdext"
+        "swoole_library"
       ],
       "abi_contract": "native/phphelpers/swoole_rs_phphelpers.h",
       "feature_bit_reserved": 16777216

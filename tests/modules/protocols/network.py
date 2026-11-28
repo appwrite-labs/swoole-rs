@@ -4,6 +4,7 @@ import argparse
 from datetime import datetime, timezone
 import hashlib
 import json
+import select
 import socket
 import struct
 import sys
@@ -44,12 +45,12 @@ def framing(engine, protocol, mode):
             rejected = [('overlong-length', b'\x30\x80\x80\x80\x80')]
         else:
             wires = [('get', b'*1\r\n$3\r\nGET\r\n'), ('empty', b'*1\r\n$0\r\n\r\n'),
-                     ('binary', b'*2\r\n$3\r\nSET\r\n$5\r\na\x00b\r\n\r\n'),
-                     ('signed-count', b'*+1\r\n$3\r\nGET\r\n')]
+                     ('binary', b'*2\r\n$3\r\nSET\r\n$5\r\na\x00b\r\n\r\n')]
             for size in [1048576, 2097152]:
                 payload = b'x' * size
                 wires += [('payload-' + str(size), b'*1\r\n$' + str(size).encode() + b'\r\n' + payload + b'\r\n')]
-            rejected = [('malformed-number', b'*oops\r\n'), ('over-limit', b'*1\r\n$5000000\r\n')]
+            rejected = [('malformed-number', b'*oops\r\n'), ('signed-count', b'*+1\r\n$3\r\nGET\r\n'),
+                        ('over-limit', b'*1\r\n$5000000\r\n')]
         for name, wire in wires:
             with socket.create_connection(('127.0.0.1', port), timeout=3) as client:
                 client.settimeout(3)
@@ -96,6 +97,15 @@ def proxy(engine, mode, username, password, failure):
         listener.listen(1)
         listener.settimeout(5)
         port = listener.getsockname()[1]
+        command = engine.command(Path(__file__).with_name('socks.php'), mode, port, username, password)
+        if mode == 'coroutine' and password and not username:
+            process = run_isolated(command, timeout=8)
+            assert process.returncode == 0, process.stderr + process.stdout
+            outcome = json.loads(process.stdout.strip().splitlines()[-1])
+            assert outcome == {'invalid_params': True, 'message': 'proxy password should not be null'}, outcome
+            assert not select.select([listener], [], [], 0)[0], 'Invalid settings reached the proxy'
+            return {'case': 'coroutine-invalid-partial-password', 'passed': True, 'captured': {}, 'outcome': outcome}
+
         def serve():
             try:
                 with listener.accept()[0] as peer:
@@ -128,7 +138,7 @@ def proxy(engine, mode, username, password, failure):
                 errors.append(f'{type(error).__name__}: {error}')
         worker = threading.Thread(target=serve, daemon=True)
         worker.start()
-        process = run_isolated(engine.command(Path(__file__).with_name('socks.php'), mode, port, username, password), timeout=8)
+        process = run_isolated(command, timeout=8)
         worker.join(5)
         assert not worker.is_alive(), 'Proxy fixture did not finish'
         assert not errors, errors

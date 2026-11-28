@@ -172,8 +172,8 @@ def plan(args, reports):
         return commands
     integrate = args.lane == 'integrate'
     repair = ['--fix-halfclose'] if getattr(args, 'fix_halfclose', False) else []
-    stdext, sockets = getattr(args, 'stdext', False), getattr(args, 'php_sockets', False)
-    reference = tree(stdext, sockets) / 'modules/swoole.so'
+    sockets = getattr(args, 'php_sockets', False)
+    reference = tree(sockets) / 'modules/swoole.so'
     # The Cargo-built swoole.so is the engine under test (#2199); `built` is the manifest
     # tools/build_ext.py writes beside it, which gates check their engine against.
     cargo = ROOT / 'target/ext/swoole.so'
@@ -185,10 +185,10 @@ def plan(args, reports):
         add('format', 'cargo', 'fmt', '--all', '--check')
         add('clippy', 'cargo', 'clippy', '--locked', '--workspace', '--all-targets', '--all-features', '--', '-D', 'warnings')
     script('ownership', 'tools/check_migration.py')
-    if integrate or stdext or sockets:
-        script('stdext-reference-build' if stdext else 'reference-build', 'tools/build_upstream.py',
-               *(['--stdext'] if stdext else []), *(['--php-sockets'] if sockets else []), '--jobs', args.jobs)
-    script('cargo-build', 'tools/build_ext.py', '--native', *repair, *(['--stdext'] if getattr(args, 'stdext', False) else []),
+    if integrate or sockets:
+        script('reference-build', 'tools/build_upstream.py',
+               *(['--php-sockets'] if sockets else []), '--jobs', args.jobs)
+    script('cargo-build', 'tools/build_ext.py', '--native', *repair,
            *(['--php-sockets'] if getattr(args, 'php_sockets', False) else []))
     # The native gates link fixtures against its Zend-free Rust archive and compile against its tree.
     archive = cargo.parent / 'sdk/lib/libswoole_rs_ffi.a'
@@ -274,10 +274,6 @@ def plan(args, reports):
         if integrate:
             script('phphelpers-module', 'tests/modules/phphelpers/module.py', *php_for('curl'), *engines,
                    '--build-manifest', built, *report('phphelpers-module'))
-            # The fixtures call stdext helpers (swoole_typed_array), so they need --stdext builds.
-            if getattr(args, 'stdext', False):
-                script('phphelpers-runtime', 'tests/modules/phphelpers/runtime.py', *php, *engines,
-                       '--build-manifest', built, *report('phphelpers-runtime'))
     if 'ports' in modules:
         # SNI resolves its port inside the callback; exercise the production wrapper,
         # not only the protocol-plan and scalar-setting mini gates.
@@ -461,7 +457,7 @@ def plan(args, reports):
 
 # Phases that build artifacts later phases consume, or that later phases need to have
 # passed. Each runs alone, after everything before it and before everything after it.
-BARRIER_PHASES = {'ownership', 'cargo-build', 'reference-build', 'stdext-reference-build'}
+BARRIER_PHASES = {'ownership', 'cargo-build', 'reference-build'}
 
 
 def serial_phase(name):
@@ -711,7 +707,8 @@ def with_prerequisites(planned, phases):
                 reference = '/target/upstream/' in argument or '/target/upstream-builds/' in argument
                 if 'cargo-build' in names and '/target/ext/' in argument:
                     grown.add('cargo-build')
-                grown |= {owner for owner in ('reference-build', 'stdext-reference-build') if owner in names and reference}
+                if reference and 'reference-build' in names:
+                    grown.add('reference-build')
         if grown == selected:
             return [name for name in names if name in selected]
         selected = grown
@@ -765,7 +762,6 @@ def main():
     selection.add_argument('--module', choices=sorted(MODULES), action='append', help="Run this module's gates (graduated modules' always run)")
     selection.add_argument('--all-modules', action='store_true', help="Run every module's gates")
     selection.add_argument('--changed-since', metavar='REF', help='Run the gates of the modules a diff from REF touches (all for shared build inputs)')
-    parser.add_argument('--stdext', action='store_true', help='Build and compare genuine enabled experimental stdext profiles')
     parser.add_argument('--php-sockets', action='store_true', help='Build matching Native/Rust PHP sockets-integration profiles')
     parser.add_argument('--core-test-services', action='store_true',
                         help="Run proxy, TCP6, Redis and Node.js cases with [::1]:80, Redis on 127.0.0.1:6379 and the pin's core-tests/js dependencies installed")
