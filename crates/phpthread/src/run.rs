@@ -27,7 +27,8 @@ thread_local! {
 }
 
 /// What the script's `zend_first_try` starts with.
-struct Start {
+struct Start<'a> {
+    result: Option<&'a std::sync::OnceLock<Box<[u8]>>>,
     argv_serialized: Option<Box<[u8]>>,
     argc: c_int,
     /// The thread's arguments, taken by the prologue.
@@ -52,7 +53,7 @@ pub fn run(
     entered: impl FnOnce(),
     left: impl FnOnce(c_int),
 ) {
-    run_entry(fresh, file, false, argv, entered, left);
+    run_entry(fresh, file, false, argv, None, entered, left);
 }
 
 pub(crate) fn run_entry(
@@ -60,6 +61,7 @@ pub(crate) fn run_entry(
     file: &[u8],
     internal: bool,
     argv: Option<Arguments>,
+    result: Option<&std::sync::OnceLock<Box<[u8]>>>,
     entered: impl FnOnce(),
     left: impl FnOnce(c_int),
 ) {
@@ -72,6 +74,7 @@ pub(crate) fn run_entry(
     let (path, argc, argv_serialized) = request::main_request();
     swoole_rs_corebase::swoole_thread_init(false);
     let mut start = Start {
+        result,
         argv_serialized,
         argc,
         argv,
@@ -85,7 +88,19 @@ pub(crate) fn run_entry(
     THREADS.fetch_sub(1, Ordering::SeqCst);
 }
 
-impl Steps for Start {
+impl Steps for Start<'_> {
+    fn wants_result(&self) -> bool {
+        self.result.is_some()
+    }
+
+    fn capture(&mut self, value: &Value) {
+        if let Some(slot) = self.result
+            && let Some(bytes) = crate::host::serialize(value)
+        {
+            _ = slot.set(bytes);
+        }
+    }
+
     /// Inside the script's `zend_first_try`: `$argv` and `$argc` from the main
     /// request, the thread's arguments, and its stdio constants. A bailout is
     /// raised from here, which owns nothing.

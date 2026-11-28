@@ -91,9 +91,32 @@ void swr_zend_thread_enter(void) {
 #endif
 }
 
+/* The parent and child resolve the same lowercase name in their own request tables. */
+static zend_function *thread_entry(const char *name, size_t length, zend_class_entry **scope) {
+    const char *sep = zend_memnstr(name, "::", 2, name + length);
+    zend_function *fn;
+    *scope = NULL;
+    if (sep) {
+        zend_class_entry *ce = zend_hash_str_find_ptr(EG(class_table), name, sep - name);
+        if (!ce || ce->type != ZEND_INTERNAL_CLASS) return NULL;
+        fn = zend_hash_str_find_ptr(&ce->function_table, sep + 2, (name + length) - (sep + 2));
+        uint32_t required = ZEND_ACC_PUBLIC | ZEND_ACC_STATIC;
+        if (!fn || (fn->common.fn_flags & (required | ZEND_ACC_ABSTRACT)) != required) return NULL;
+        *scope = ce;
+    } else {
+        fn = zend_hash_str_find_ptr(EG(function_table), name, length);
+    }
+    return fn && fn->type == ZEND_INTERNAL_FUNCTION ? fn : NULL;
+}
+
+bool swr_zend_thread_is_internal(const zend_string *name) {
+    zend_class_entry *scope;
+    return thread_entry(ZSTR_VAL(name), ZSTR_LEN(name), &scope) != NULL;
+}
+
 int swr_zend_thread_request(const char *file, bool internal, const char *path_translated, int argc,
                             void (*prologue)(void *, zval *),
-                            void (*epilogue)(void *), void *context) {
+                            void (*capture)(void *, const zval *), void (*epilogue)(void *), void *context) {
 #ifdef ZTS
     if (php_request_startup() != SUCCESS) {
         EG(exit_status) = 1;
@@ -114,26 +137,37 @@ int swr_zend_thread_request(const char *file, bool internal, const char *path_tr
         zend_fcall_info fci;
         zval args;
         zval result;
-    } *call = internal ? ecalloc(1, sizeof(*call)) : NULL;
+    } *call = internal || capture ? ecalloc(1, sizeof(*call)) : NULL;
     if (!internal) {
         zend_stream_init_filename(&file_handle, file);
         file_handle.primary_script = true;
     }
     zend_first_try {
         script_bailout = EG(bailout);
-        prologue(context, call ? &call->args : NULL);
-        if (call) {
-            zend_function *fn = zend_hash_str_find_ptr(EG(function_table), file, strlen(file));
-            if (!fn || fn->type != ZEND_INTERNAL_FUNCTION) {
+        prologue(context, internal ? &call->args : NULL);
+        bool succeeded = true;
+        if (internal) {
+            zend_class_entry *scope;
+            zend_function *fn = thread_entry(file, strlen(file), &scope);
+            if (!fn) {
                 zend_throw_error(NULL, "Internal thread entry %s is not available in this request", file);
             } else if (Z_TYPE(call->args) != IS_ARRAY || zend_fcall_info_args_ex(&call->fci, fn, &call->args) == SUCCESS) {
-                zend_call_known_function(fn, NULL, NULL, &call->result, call->fci.param_count, call->fci.params, NULL);
+                zend_call_known_function(fn, NULL, scope, &call->result, call->fci.param_count, call->fci.params, NULL);
             }
-            if (EG(exception)) {
-                zend_exception_error(EG(exception), E_ERROR);
-            }
-        } else {
-            php_execute_script(&file_handle);
+        }
+#if PHP_VERSION_ID >= 80400
+        else if (capture) {
+            succeeded = php_execute_script_ex(&file_handle, &call->result);
+        }
+#endif
+        else {
+            succeeded = php_execute_script(&file_handle);
+        }
+        if (capture && succeeded && !EG(exception) && !Z_ISUNDEF(call->result)) {
+            capture(context, &call->result);
+        }
+        if (EG(exception)) {
+            zend_exception_error(EG(exception), E_ERROR);
         }
     }
     zend_end_try();
@@ -147,7 +181,8 @@ int swr_zend_thread_request(const char *file, bool internal, const char *path_tr
         }
         zend_end_try();
         efree(call);
-    } else {
+    }
+    if (!internal) {
         zend_destroy_file_handle(&file_handle);
     }
     php_request_shutdown(NULL);
@@ -158,6 +193,7 @@ int swr_zend_thread_request(const char *file, bool internal, const char *path_tr
     (void) path_translated;
     (void) argc;
     (void) prologue;
+    (void) capture;
     (void) epilogue;
     (void) context;
     return 1;
