@@ -93,7 +93,7 @@ pub(crate) fn register(minit: &Minit) -> &'static Class {
     &THREAD
 }
 
-/// `__construct(string $script_file, mixed ...$args)`.
+/// `__construct(string $entry, mixed ...$args)`.
 fn construct(call: &Call) {
     let Ok(file) = call.arity(1, u32::MAX).and_then(|()| call.string(1, b"")) else {
         return;
@@ -114,10 +114,15 @@ fn construct(call: &Call) {
         );
         return;
     }
+    let name = file
+        .strip_prefix(b"\\")
+        .unwrap_or(file)
+        .to_ascii_lowercase();
+    let internal = call.php().internal_handler(&name).is_some();
     let argv = if call.num_args() > 1 {
         let argv = Arc::<Array>::default();
         for value in (2..=call.num_args()).filter_map(|n| call.value(n)) {
-            if !argv.push(value) {
+            if !argv.push(&value.dereferenced(), internal) {
                 return;
             }
         }
@@ -125,7 +130,10 @@ fn construct(call: &Call) {
     } else {
         None
     };
-    let (file, state) = (file.to_vec(), Arc::clone(&thread.state));
+    let (file, state) = (
+        if internal { name } else { file.to_vec() },
+        Arc::clone(&thread.state),
+    );
     // The OS thread's body, as `std::thread` would run upstream's lambda: straight
     // into the thread's body, which marks the thread alive before anything allocates
     // (a new thread's first malloc can map an arena, and `yield.phpt` gives it 10 µs).
@@ -138,7 +146,7 @@ fn construct(call: &Call) {
             state.exit_status.store(status, Ordering::Release);
             state.living.store(false, Ordering::Release);
         };
-        run::run(fresh, &file, argv, enter, exit);
+        run::run_entry(fresh, &file, internal, argv, enter, exit);
     });
     if let Err(errno) = started {
         // `std::system_error::what()`: the OS message.

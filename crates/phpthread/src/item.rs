@@ -184,7 +184,7 @@ impl Item {
     }
 
     /// The default branch: `php_swoole_serialize`, or undef if it failed.
-    fn serialize(value: &ZValue) -> Self {
+    pub(crate) fn serialize(value: &ZValue) -> Self {
         // A bailout of `__serialize` is deferred.
         let Some(data) = host::serialize(value) else {
             return bare(Kind::Undef);

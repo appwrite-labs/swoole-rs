@@ -52,6 +52,17 @@ pub fn run(
     entered: impl FnOnce(),
     left: impl FnOnce(c_int),
 ) {
+    run_entry(fresh, file, false, argv, entered, left);
+}
+
+pub(crate) fn run_entry(
+    fresh: swoole_rs_corebase::Fresh,
+    file: &[u8],
+    internal: bool,
+    argv: Option<Arguments>,
+    entered: impl FnOnce(),
+    left: impl FnOnce(c_int),
+) {
     THREADS.fetch_add(1, Ordering::SeqCst);
     entered();
     // A C string, as Zend opens it.
@@ -65,7 +76,7 @@ pub fn run(
         argc,
         argv,
     };
-    let status = thread.request(&file, path.as_deref(), start.argc, &mut start);
+    let status = thread.request(&file, internal, path.as_deref(), start.argc, &mut start);
     request::stdio_close();
     drop(file);
     left(status.0);
@@ -78,7 +89,7 @@ impl Steps for Start {
     /// Inside the script's `zend_first_try`: `$argv` and `$argc` from the main
     /// request, the thread's arguments, and its stdio constants. A bailout is
     /// raised from here, which owns nothing.
-    fn prologue(&mut self, mut prologue: Prologue<'_>) {
+    fn prologue(&mut self, mut prologue: Prologue<'_>, params: Option<&mut Owned>) {
         if let Some(data) = self.argv_serialized.take() {
             // A bailout is deferred.
             let global_argv = crate::host::unserialize(&data);
@@ -91,6 +102,9 @@ impl Steps for Start {
         }
         if let Some(argv) = self.argv.take() {
             let array = argv.0.to_array();
+            if let Some(params) = params {
+                *params = array.copy();
+            }
             ARGV.set(Some(array));
             drop(argv);
             if bailout::pending() {

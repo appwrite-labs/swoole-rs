@@ -43,9 +43,10 @@ void swr_zend_register_stream_constant(const char *name, php_stream *stream);
 void swr_zend_thread_enter(void);
 /* php_request_startup with the main request's script path and argc and no
  * headers; then, inside zend_first_try (the thread's script scope),
- * prologue(context) and `file` as the primary script; then epilogue(context)
+ * the prologue and the script or internal function entry; then epilogue(context)
  * and request shutdown. EG(exit_status), 1 if startup failed. */
-int swr_zend_thread_request(const char *file, const char *path_translated, int argc, void (*prologue)(void *),
+int swr_zend_thread_request(const char *file, bool internal, const char *path_translated, int argc,
+                            void (*prologue)(void *, zval *),
                             void (*epilogue)(void *), void *context);
 /* ts_free_thread(). */
 void swr_zend_thread_leave(void);

@@ -5,6 +5,7 @@
 #include "shim_thread.h"
 #include "SAPI.h"
 #include "php_main.h"
+#include "zend_exceptions.h"
 
 bool swr_zend_array_is_list(const zend_array *array) {
     return zend_array_is_list((zend_array *) array);
@@ -90,7 +91,8 @@ void swr_zend_thread_enter(void) {
 #endif
 }
 
-int swr_zend_thread_request(const char *file, const char *path_translated, int argc, void (*prologue)(void *),
+int swr_zend_thread_request(const char *file, bool internal, const char *path_translated, int argc,
+                            void (*prologue)(void *, zval *),
                             void (*epilogue)(void *), void *context) {
 #ifdef ZTS
     if (php_request_startup() != SUCCESS) {
@@ -107,20 +109,51 @@ int swr_zend_thread_request(const char *file, const char *path_translated, int a
     refresh_memory_manager();
 #endif
     zend_file_handle file_handle;
-    zend_stream_init_filename(&file_handle, file);
-    file_handle.primary_script = true;
+    /* Argument copies stay addressable if the internal call bails out. */
+    struct invocation {
+        zend_fcall_info fci;
+        zval args;
+        zval result;
+    } *call = internal ? ecalloc(1, sizeof(*call)) : NULL;
+    if (!internal) {
+        zend_stream_init_filename(&file_handle, file);
+        file_handle.primary_script = true;
+    }
     zend_first_try {
         script_bailout = EG(bailout);
-        prologue(context);
-        php_execute_script(&file_handle);
+        prologue(context, call ? &call->args : NULL);
+        if (call) {
+            zend_function *fn = zend_hash_str_find_ptr(EG(function_table), file, strlen(file));
+            if (!fn || fn->type != ZEND_INTERNAL_FUNCTION) {
+                zend_throw_error(NULL, "Internal thread entry %s is not available in this request", file);
+            } else if (Z_TYPE(call->args) != IS_ARRAY || zend_fcall_info_args_ex(&call->fci, fn, &call->args) == SUCCESS) {
+                zend_call_known_function(fn, NULL, NULL, &call->result, call->fci.param_count, call->fci.params, NULL);
+            }
+            if (EG(exception)) {
+                zend_exception_error(EG(exception), E_ERROR);
+            }
+        } else {
+            php_execute_script(&file_handle);
+        }
     }
     zend_end_try();
     script_bailout = NULL;
     epilogue(context);
-    zend_destroy_file_handle(&file_handle);
+    if (call) {
+        zend_first_try {
+            zend_fcall_info_args_clear(&call->fci, true);
+            zval_ptr_dtor(&call->args);
+            zval_ptr_dtor(&call->result);
+        }
+        zend_end_try();
+        efree(call);
+    } else {
+        zend_destroy_file_handle(&file_handle);
+    }
     php_request_shutdown(NULL);
     return EG(exit_status);
 #else
+    (void) internal;
     (void) file;
     (void) path_translated;
     (void) argc;
