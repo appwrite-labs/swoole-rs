@@ -263,6 +263,11 @@ impl TaskBuffer {
         self.pack_event(data, ServerEvent::Task, id)
     }
 
+    /// Release a locally packed spill when its waiter has already left.
+    pub fn discard(&self) {
+        self.packed().discard();
+    }
+
     /// Finish a task, retaining the originating worker's PID on asynchronous replies.
     pub fn pack_result(&mut self, data: &[u8], task: &DataHead) -> bool {
         let packed = self.pack_event(data, ServerEvent::Finish, task.fd);

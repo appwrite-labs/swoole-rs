@@ -317,24 +317,34 @@ pub fn finish(
             return false;
         };
         let lock = worker.lock();
-        _ = lock.map(SharedMutex::lock);
-        if !slot.awaits(task) {
-            _ = lock.map(SharedMutex::unlock);
-            return false;
+        let wait_all = TaskFlag::from_bits(task.ext_flags).contains(TaskFlag::SW_TASK_WAITALL);
+        if !wait_all {
+            if data.len() >= swoole_rs_corebase::constants::SW_IPC_BUFFER_SIZE {
+                _ = lock.map(SharedMutex::lock);
+                let waiting = slot.awaits(task);
+                _ = lock.map(SharedMutex::unlock);
+                if !waiting {
+                    return false;
+                }
+            }
+            // File I/O must not keep the waiter from timing out and reusing its slot.
+            if !reply(&mut buf, flags) {
+                log::warning(c"Server::finish", format_args!("large task pack failed()"));
+                return false;
+            }
         }
-        let stored = if TaskFlag::from_bits(task.ext_flags).contains(TaskFlag::SW_TASK_WAITALL) {
-            write_waitall(slot, &mut buf, |buf| reply(buf, flags));
-            true
-        } else if reply(&mut buf, flags) {
-            // The source worker's lock, held, keeps this process alone writing its slot.
-            slot.store(buf.packed().bytes());
-            true
-        } else {
-            false
-        };
+        _ = lock.map(SharedMutex::lock);
+        let waiting = slot.awaits(task);
+        if waiting {
+            if wait_all {
+                write_waitall(slot, &mut buf, |buf| reply(buf, flags));
+            } else {
+                slot.store(buf.packed().bytes());
+            }
+        }
         _ = lock.map(SharedMutex::unlock);
-        if !stored {
-            log::warning(c"Server::finish", format_args!("large task pack failed()"));
+        if !waiting {
+            buf.discard();
             return false;
         }
         let flag = 1u64.to_ne_bytes();
