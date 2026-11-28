@@ -315,6 +315,14 @@ fn set(call: &Call) {
     let Some(serv) = server(call) else { return };
     let s = Settings { serv, vht: None };
     if s.fact(field::WORKER_THREAD) != 0 {
+        let Ok(settings) = call.arity(1, 1).and_then(|()| call.array(1)) else {
+            return;
+        };
+        if let Some(port) = serv.port_at(0)
+            && crate::port_settings::worker_length(port, settings).is_err()
+        {
+            return;
+        }
         set_last_error(SW_ERROR_SERVER_UNRELATED_THREAD);
         return call.set_bool(false);
     }

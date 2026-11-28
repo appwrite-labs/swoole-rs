@@ -15,6 +15,19 @@ use swoole_rs_server::port_config::{LengthOwner, PortConfig};
 use swoole_rs_server::view;
 use swoole_rs_zend::Message;
 
+/// In a worker, `set()` installs only its VM's packet length callback.
+pub(crate) fn worker_length(port: view::Port<'_>, settings: &swoole_rs_zend::Value) -> Step {
+    if let Some(value) = settings
+        .array()
+        .and_then(|array| array.get(b"package_length_func"))
+    {
+        let owner = swoole_rs_phpswoole::setting_callable(value).ok_or(Stop)?;
+        drop(port.config().replace_local_length_owner(Some(owner)));
+        checked()?;
+    }
+    Ok(())
+}
+
 /// `SW_SSL_DTLS`.
 const SSL_DTLS: i64 = tls::SslVersion::SW_SSL_DTLS.bits() as i64;
 
@@ -414,7 +427,10 @@ impl Source for Zend<'_> {
     }
 
     fn single_thread(&self) {
-        self.settings.server().config().single_thread.set(true);
+        let config = self.settings.server().config();
+        if config.mode_ == swoole_rs_server::Mode::Process {
+            config.single_thread.set(true);
+        }
     }
 
     fn length_func(&self) -> GetPackageLength {

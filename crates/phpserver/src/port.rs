@@ -440,6 +440,12 @@ fn set(call: &Call) {
     let Some(serv) = bound_server(call) else {
         return;
     };
+    if serv.is_worker_thread() {
+        if port_settings::worker_length(port, settings).is_ok() {
+            call.set_bool(false);
+        }
+        return;
+    }
     if apply_settings(port, serv, settings).is_err() {
         return call.set_bool(false);
     }

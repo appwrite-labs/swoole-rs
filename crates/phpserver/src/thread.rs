@@ -96,10 +96,10 @@ pub(crate) fn worker(
     if !serv.is_worker_thread() {
         return None;
     }
-    Some(run_worker(object))
+    Some(run_worker(object, serv))
 }
 
-fn run_worker(object: ServerObject<'_>) -> Result<(), Bailout> {
+fn run_worker(object: ServerObject<'_>, serv: view::Server<'_>) -> Result<(), Bailout> {
     let text = SETTING
         .lock()
         .unwrap_or_else(PoisonError::into_inner)
@@ -120,6 +120,22 @@ fn run_worker(object: ServerObject<'_>) -> Result<(), Bailout> {
     // A conversion's bailout ends the start here, as upstream's did.
     if bailout::pending() {
         return Err(Bailout);
+    }
+    let php_length: swoole_rs_clients::protocol::GetPackageLength =
+        swoole_rs_phpswoole::length::length::<crate::dispatch::Length>;
+    if serv.ports().iter().any(|port| {
+        let config = port.config();
+        config
+            .protocol
+            .get()
+            .get_package_length
+            .is_some_and(|get| std::ptr::fn_addr_eq(get, php_length))
+            && config.length_owner().is_none()
+    }) {
+        swoole_rs_phpswoole::invalid_setting(
+            c"package_length_func must be registered in each worker thread",
+        );
+        return bailout::outcome(());
     }
     let main = MAIN.with(|slot| slot.with_taken(|main| main.clone()));
     let Some(main) = main else {

@@ -1281,6 +1281,12 @@ fn before_start(object: ServerObject<'_>, serv: view::Server<'_>) -> Result<(), 
                 );
                 return Err(invalid_setting(text.as_cstr()));
             }
+            if let Some(primary) = serv.port_at(0) {
+                crate::port::bound_port(zport)
+                    .ok_or(Stop)?
+                    .config()
+                    .inherit_length_owner(primary.config());
+            }
         }
     }
     for zport in &ports {

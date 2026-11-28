@@ -184,9 +184,8 @@ pub struct PortConfig {
     /// The key of this port's `package_length_func` owners, one per thread that
     /// `set()` it ([`Self::length_owner`]).
     length_key: u64,
-    /// Whether any thread holds an owner under [`Self::length_key`], so a receive asks
-    /// its thread's registry only then.
-    has_length_owner: core::sync::atomic::AtomicBool,
+    /// Registry key selected by the shared framing protocol, zero without a PHP callback.
+    length_source: core::sync::atomic::AtomicU64,
 }
 
 /// What `ListenPort` kept in C++ containers, each entry with a reference to its
@@ -234,11 +233,17 @@ impl PortConfig {
     /// caller drops the previous one, whose destructor may reach the port.
     #[must_use]
     pub fn replace_length_owner(&self, owner: Option<LengthOwner>) -> Option<LengthOwner> {
-        let key = self.length_key;
         if owner.is_some() {
-            self.has_length_owner
-                .store(true, core::sync::atomic::Ordering::Release);
+            self.length_source
+                .store(self.length_key, core::sync::atomic::Ordering::Release);
         }
+        self.replace_local_length_owner(owner)
+    }
+
+    /// Replace only the calling VM's callback without changing the shared protocol.
+    #[must_use]
+    pub fn replace_local_length_owner(&self, owner: Option<LengthOwner>) -> Option<LengthOwner> {
+        let key = self.length_key;
         with_length_owners(|owners| {
             let at = owners.iter().position(|(k, _)| *k == key);
             let previous =
@@ -250,13 +255,14 @@ impl PortConfig {
         })
     }
 
-    /// Whether any thread gave the port a `package_length_func` owner, which a receive
-    /// asks before it looks for this thread's.
-    #[inline]
-    #[must_use]
-    pub fn has_length_owner(&self) -> bool {
-        self.has_length_owner
-            .load(core::sync::atomic::Ordering::Acquire)
+    /// An unconfigured port uses the primary port's callback in each PHP VM.
+    pub fn inherit_length_owner(&self, primary: &Self) {
+        self.length_source.store(
+            primary
+                .length_source
+                .load(core::sync::atomic::Ordering::Acquire),
+            core::sync::atomic::Ordering::Release,
+        );
     }
 
     /// A reference to this thread's `package_length_func` owner for the port, for a
@@ -264,10 +270,12 @@ impl PortConfig {
     #[inline]
     #[must_use]
     pub fn length_owner(&self) -> Option<LengthOwner> {
-        if !self.has_length_owner() {
+        let key = self
+            .length_source
+            .load(core::sync::atomic::Ordering::Acquire);
+        if key == 0 {
             return None;
         }
-        let key = self.length_key;
         with_length_owners(|owners| {
             owners
                 .iter()
@@ -432,7 +440,7 @@ impl PortConfig {
             ssl_context: Published::default(),
             tls: Box::default(),
             length_key: NEXT_LENGTH_KEY.fetch_add(1, core::sync::atomic::Ordering::Relaxed),
-            has_length_owner: core::sync::atomic::AtomicBool::new(false),
+            length_source: core::sync::atomic::AtomicU64::new(0),
         })
     }
 
