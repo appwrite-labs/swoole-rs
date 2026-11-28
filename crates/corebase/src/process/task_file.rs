@@ -265,7 +265,9 @@ impl TaskBuffer {
 
     /// Release a locally packed spill when its waiter has already left.
     pub fn discard(&self) {
-        self.packed().discard();
+        if let Some(path) = self.packed().spill_path() {
+            _ = crate::sys::unlink(path);
+        }
     }
 
     /// Finish a task, retaining the originating worker's PID on asynchronous replies.
@@ -314,13 +316,12 @@ pub struct Packed<'a> {
 }
 
 impl<'a> Packed<'a> {
-    /// Remove a spilled result that its waiter abandoned.
-    pub(super) fn discard(self) {
-        if TaskFlag::from_bits(self.head().ext_flags).contains(TaskFlag::SW_TASK_TMPFILE)
-            && let Ok((_, path)) = PacketTask::read(self.payload())
-        {
-            _ = crate::sys::unlink(path);
+    /// The file named by a complete spilled payload descriptor.
+    pub(super) fn spill_path(self) -> Option<&'a CStr> {
+        if !TaskFlag::from_bits(self.head().ext_flags).contains(TaskFlag::SW_TASK_TMPFILE) {
+            return None;
         }
+        PacketTask::read(self.payload()).ok().map(|(_, path)| path)
     }
 
     /// `Server::task_dump`: the header, and the temporary file's name if it has one.

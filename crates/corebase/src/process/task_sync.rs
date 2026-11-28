@@ -146,6 +146,23 @@ impl<'a> ResultSlot<'a> {
         DataHead::from_bytes(&bytes)
     }
 
+    /// Clear this single wait's slot under its lock and return any file to unlink after unlocking.
+    fn abandon(self, task_id: std::ffi::c_long) -> Option<std::ffi::CString> {
+        let head = self.head();
+        if head.fd != task_id || head.ext_flags & TASK_WAITALL != 0 {
+            return None;
+        }
+        let path = match head.event()? {
+            ServerEvent::Finish => {
+                self.read(|bytes| Packed::from_bytes(bytes)?.spill_path().map(CStr::to_owned))
+            }
+            ServerEvent::Task => None,
+            _ => return None,
+        };
+        self.clear();
+        path
+    }
+
     /// Whether this slot still belongs to the task completing under the worker lock.
     #[must_use]
     pub fn awaits(self, task: &DataHead) -> bool {
@@ -353,18 +370,11 @@ impl<'a, H: TaskHost> Waiting<'a, H> {
         });
         if !matches!(waited, Ok(true)) {
             tasks.host.lock(true);
-            let head = result.head();
-            if head.fd == task_id && head.ext_flags & TASK_WAITALL == 0 {
-                if head.event() == Some(ServerEvent::Finish) {
-                    result.read(|bytes| {
-                        if let Some(packed) = Packed::from_bytes(bytes) {
-                            packed.discard();
-                        }
-                    });
-                }
-                result.clear();
-            }
+            let abandoned = result.abandon(task_id);
             tasks.host.lock(false);
+            if let Some(path) = abandoned {
+                _ = crate::sys::unlink(&path);
+            }
         }
         waited
     }
@@ -654,6 +664,31 @@ mod tests {
         let done = tasks.task_sync(task.packed(), None, 1.0);
         assert_eq!(done.ok(), Some(false));
         assert_eq!(tasks.tasks.host.notify, []);
+    }
+
+    #[test]
+    fn abandoning_a_single_wait_detaches_only_its_own_spill() {
+        let slot_words = [const { AtomicU32::new(0) }; EVENT_SIZE / 4];
+        let slot = ResultSlot::of(&slot_words);
+        let path = c"/tmp/abandoned-result";
+        let mut payload = vec![0; size_of::<usize>() + TASK_TMP_PATH_SIZE];
+        payload[size_of::<usize>()..][..path.to_bytes_with_nul().len()]
+            .copy_from_slice(path.to_bytes_with_nul());
+        let mut head = DataHead {
+            fd: 7,
+            kind: ServerEvent::Finish.code(),
+            len: u32::try_from(payload.len()).unwrap(),
+            ext_flags: crate::constants::TaskFlag::SW_TASK_TMPFILE.bits(),
+            ..DataHead::default()
+        };
+        slot.store(&[head.to_bytes().as_slice(), &payload].concat());
+        assert!(slot.abandon(8).is_none());
+        assert_eq!(slot.abandon(7).as_deref(), Some(path));
+        assert!(slot.abandon(7).is_none());
+        head.ext_flags |= TASK_WAITALL;
+        slot.store(&head.to_bytes());
+        assert!(slot.abandon(7).is_none());
+        assert_eq!(slot.head().ext_flags, head.ext_flags);
     }
 
     #[test]
