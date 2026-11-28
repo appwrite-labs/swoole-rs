@@ -289,13 +289,8 @@ fn to_connection(
     let send_yield = config.send_yield.get();
     let yield_error = || log::set_last_error(E::SW_ERROR_OUTPUT_SEND_YIELD as c_int);
     let output = matches!(kind, Some(ServerEvent::SendFile | ServerEvent::SendData));
-    if output && conn.peer_closed() {
-        let m = format_args!("socket#{} is closed by client", conn.fd());
-        error(LOG_NOTICE, E::SW_ERROR_SESSION_CLOSED_BY_CLIENT, m);
-        return false;
-    }
     if output && conn.overflow() && config.mode_ != Mode::Process {
-        if conn.close_reset() || conn.close_force() {
+        if conn.peer_closed() || conn.close_reset() || conn.close_force() {
             let m = format_args!("socket#{} is closed by client", conn.fd());
             error(LOG_NOTICE, E::SW_ERROR_SESSION_CLOSED_BY_CLIENT, m);
         } else if send_yield {
@@ -304,6 +299,10 @@ fn to_connection(
             let m = format_args!("socket#{} output buffer overflow", conn.fd());
             error(LOG_WARNING, E::SW_ERROR_OUTPUT_BUFFER_OVERFLOW, m);
         }
+        return false;
+    }
+    if output && conn.peer_closed() {
+        log::set_last_error(E::SW_ERROR_SESSION_CLOSING as c_int);
         return false;
     }
     if close && i32::from(info.ext_flags) & crate::factory::CLOSE_RESET != 0 {
@@ -711,6 +710,7 @@ mod tests {
             SW_ERR,
             "closed by the client"
         );
+        assert_eq!(log::last_error(), E::SW_ERROR_SESSION_CLOSING as c_int);
         assert_eq!(a.queued(), 5);
     }
 
