@@ -1,0 +1,40 @@
+[package]
+name = "swoole-rs-ports"
+version = "0.1.0"
+edition = "2024"
+publish = false
+license = "Apache-2.0"
+
+[lib]
+name = "swoole_rs_ports"
+crate-type = ["rlib"]
+
+[features]
+# Define the upstream C++ symbols of the ListenPort methods `crates/ports/src/methods.rs`
+# holds; only the hybrid's archive, whose port.cc no longer defines them, turns it on.
+upstream-symbols = []
+
+[dependencies]
+libc = "=0.2.191"
+swoole-rs-reactor = { path = "../reactor" }
+swoole-rs-server = { path = "../server", features = ["upstream-symbols"] }
+swoole-rs-http = { path = "../http" }
+swoole-rs-http-ffi = { path = "../http-ffi" }
+swoole-rs-corebase = { path = "../corebase" }
+swoole-rs-error = { path = "../error" }
+swoole-rs-clients = { path = "../clients" }
+swoole-rs-tls = { path = "../tls" }
+swoole-rs-protocols-ffi = { path = "../protocols-ffi" }
+swoole-rs-websocket = { path = "../websocket" }
+swoole-rs-websocket-ffi = { path = "../websocket-ffi" }
+swoole-rs-buffer = { path = "../buffer" }
+swoole-rs-utilities = { path = "../utilities" }
+swoole-rs-framing = { path = "../framing" }
+swoole-rs-http2 = { path = "../http2" }
+openssl-sys = "=0.9.117"
+
+[dev-dependencies]
+swoole-rs-oracle = { path = "../oracle" }
+
+[lints]
+workspace = true

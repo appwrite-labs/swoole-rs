@@ -1,0 +1,3 @@
+#!/bin/sh
+# Drop build output this worktree hasn't touched in a day (#395); never blocks the push.
+python3 tools/dev.py prune >&2 || true

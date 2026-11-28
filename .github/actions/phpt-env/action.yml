@@ -1,0 +1,102 @@
+name: PHPT environment
+description: >-
+  What upstream's PHPTs expect, for the phpt shards and the gate's re-runs alike:
+  the services they reach, client packages, service host names, the ODBC DSN,
+  upstream's test tables and its composer test libraries, plus both engines.
+inputs:
+  php:
+    description: The PHP package version the engines were built against
+    required: true
+  services:
+    description: >-
+      The services (corpus/upstream/services.yml) to start, space separated, as
+      corpus/upstream/services.py prints them; `job` when the job declares them itself
+    default: job
+runs:
+  using: composite
+  steps:
+    # Started first and in the background, so the images pull and the databases open while
+    # the packages install. The `up --wait` below waits for this one to exit first.
+    - if: inputs.services != 'job' && inputs.services != ''
+      shell: bash
+      run: |
+        nohup docker compose -f corpus/upstream/services.yml up -d ${{ inputs.services }} > "$RUNNER_TEMP/services.log" 2>&1 &
+        echo $! > "$RUNNER_TEMP/services.pid"
+    - uses: ./.github/actions/install
+      with:
+        # nghttp2-client and -server: the HTTP/2 tests' skip_if_no_nghttp and nghttpd checks.
+        packages: php-gmp php-bcmath php-mysql php-pgsql unixodbc odbc-mariadb libfbclient2 libaio1t64 openssh-server nghttp2-client nghttp2-server
+        php: ${{ inputs.php }}
+    # The engines link the Instant Client (--with-swoole-oracle).
+    - uses: ./.github/actions/instantclient
+    - shell: bash
+      run: echo '127.0.0.1 httpbin pgsql mysql redis firebirdsql oracle golang-h2demo tinyproxy socks5 ftp' | sudo tee -a /etc/hosts
+    # curl_multi_segfault.phpt's server, the ftp service above.
+    - shell: bash
+      run: printf 'PHP_CURL_FTP_REMOTE_SERVER=ftp\nPHP_CURL_FTP_REMOTE_USER=admin\nPHP_CURL_FTP_REMOTE_PASSWD=admin\n' >> "$GITHUB_ENV"
+    # pdo_oci_attr_call_timeout.phpt's SKIPIF reads the user from PDOTEST_USER; the
+    # pdo_oracle tests log in as config.php's ORACLE_USER, system.
+    - shell: bash
+      run: echo PDOTEST_USER=system >> "$GITHUB_ENV"
+    # msgq_capacity sets a 64 MiB queue, which upstream's root test container may; we aren't root.
+    - shell: bash
+      run: sudo sysctl -w kernel.msgmnb=67108864
+    # The ODBC driver and the mysql-test DSN, as upstream's tests/init writes them, with the
+    # driver's full path (Ubuntu installs it outside the loader's default directories).
+    - shell: bash
+      run: |
+        printf '[mysql]\nDriver=%s\nDescription=MariaDB Connector/ODBC(Unicode)\nUsageCount=1\n' \
+          "$(dpkg -L odbc-mariadb | grep '/libmaodbc.so$' | head -1)" | sudo tee /etc/odbcinst.ini
+        printf '[mysql-test]\nDescription = MySQL test database\nDriver = mysql\nSERVER = mysql\nUSER = root\nPASSWORD = root\nPORT = 3306\nDATABASE = test\n' \
+          | sudo tee /etc/odbc.ini
+    - uses: actions/cache/restore@v6
+      with:
+        path: target/upstream
+        key: upstream-${{ runner.os }}-${{ hashFiles('tools/build_upstream.py') }}-${{ github.workspace }}
+        # Only the pinned tests are read here, and those don't change with the build script.
+        restore-keys: upstream-${{ runner.os }}-
+        fail-on-cache-miss: true
+    # The ssh2 tests' account on localhost (ssh2_test.inc's defaults), password and key
+    # logins, as upstream's tests/init creates it.
+    - shell: bash
+      run: |
+        user=swoole_ssh2_test_user
+        id -u $user >/dev/null 2>&1 || sudo useradd -m $user
+        echo "$user:swoole_ssh2_test_pass" | sudo chpasswd
+        sudo install -d -m 700 -o $user -g $user /home/$user/.ssh
+        sudo install -m 600 -o $user -g $user target/upstream/src/tests/swoole_ssh2/testkey_ed25519.pub /home/$user/.ssh/authorized_keys
+        echo 'PasswordAuthentication yes' | sudo tee /etc/ssh/sshd_config.d/00-swoole-ssh2-test.conf
+        sudo systemctl restart ssh
+    - if: inputs.services != 'job' && inputs.services != ''
+      shell: bash
+      run: |
+        tail --pid="$(cat "$RUNNER_TEMP/services.pid")" -f /dev/null
+        cat "$RUNNER_TEMP/services.log"
+        docker compose -f corpus/upstream/services.yml up -d --wait ${{ inputs.services }}
+    # Upstream's test tables, which its tests/init --mysql loads from tests/test.sql.
+    - if: inputs.services == 'job' || contains(format(' {0} ', inputs.services), ' mysql ')
+      shell: bash
+      run: >
+        php -r '$m = new mysqli("mysql", "root", "root", "test");
+        $m->multi_query(file_get_contents("target/upstream/src/tests/test.sql")) or exit($m->error . "\n");
+        do { if ($m->errno) exit($m->error . "\n"); } while ($m->more_results() && $m->next_result());'
+    - uses: actions/download-artifact@v8
+      with:
+        name: phpt-engines
+        path: target/phpt
+    # The httpbin/guzzle/symfony cases require composer libraries the pin ships a
+    # composer.json for but no lock; install them from the committed lock into the
+    # upstream tree, where corpus/upstream/run.py copies the vendor dir into each
+    # sandbox. Reproducible (exact lock) and cached on the lock hash.
+    - uses: actions/cache@v6
+      with:
+        path: ~/.cache/composer
+        key: composer-${{ runner.os }}-${{ hashFiles('corpus/upstream/lib-composer.lock') }}
+    # A resolve/platform failure drops any partial vendor, so run.py falls back to its
+    # stub and the lib-free cases still run, exactly as before this install existed.
+    - shell: bash
+      run: |
+        cp corpus/upstream/lib-composer.lock target/upstream/src/tests/include/lib/composer.lock
+        composer install --no-interaction --no-progress \
+          --working-dir=target/upstream/src/tests/include/lib \
+          || rm -rf target/upstream/src/tests/include/lib/vendor

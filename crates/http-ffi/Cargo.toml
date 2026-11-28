@@ -1,0 +1,29 @@
+[package]
+name = "swoole-rs-http-ffi"
+version = "0.1.0"
+edition = "2024"
+publish = false
+license = "Apache-2.0"
+
+[lib]
+name = "swoole_rs_http_ffi"
+crate-type = ["rlib"]
+
+[lints]
+workspace = true
+
+[features]
+# Define http.cc's helpers under their C++ symbols (src/http_server.rs). Only
+# crates/ffi, whose builds no longer compile them from http.cc, turns it on.
+upstream-symbols = []
+
+[dependencies]
+libc = "=0.2.191"
+swoole-rs-buffer = { path = "../buffer" }
+swoole-rs-corebase = { path = "../corebase" }
+swoole-rs-http = { path = "../http" }
+swoole-rs-ossupport = { path = "../ossupport" }
+
+[dev-dependencies]
+swoole-rs-base64 = { path = "../base64" }
+swoole-rs-oracle = { path = "../oracle" }

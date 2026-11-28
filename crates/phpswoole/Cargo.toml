@@ -1,0 +1,53 @@
+[package]
+name = "swoole-rs-phpswoole"
+version = "0.1.0"
+edition = "2024"
+publish = false
+license = "Apache-2.0"
+description = "The swoole module host: global constants, Swoole\\Exception/Error and the global functions"
+
+[features]
+# Needs PHP headers (swoole-rs-zend-sys); without it the crate is empty.
+php = ["dep:swoole-rs-corebase", "dep:swoole-rs-zend", "swoole-rs-zend/php", "dep:swoole-rs-error", "dep:swoole-rs-error-ffi", "dep:libc", "dep:swoole-rs-phpstubs", "swoole-rs-phpstubs/php", "dep:swoole-rs-framing", "dep:swoole-rs-http2", "dep:swoole-rs-memory", "dep:swoole-rs-reactor", "dep:swoole-rs-hooks", "dep:swoole-rs-clients", "dep:swoole-rs-timer", "dep:swoole-rs-utilities", "dep:swoole-rs-coroutine", "dep:swoole-rs-brotli"]
+# The coroutine PDO drivers configure built (crates/ffi's features of the same names):
+# their MINIT, MSHUTDOWN, RINIT and blocking switches.
+pgsql = ["dep:swoole-rs-pgsql", "swoole-rs-pgsql/php"]
+odbc = ["dep:swoole-rs-odbc", "swoole-rs-odbc/php"]
+firebird = ["dep:swoole-rs-firebird", "swoole-rs-firebird/php"]
+sqlite = ["dep:swoole-rs-sqlite", "swoole-rs-sqlite/php"]
+oci = ["dep:swoole-rs-oci", "swoole-rs-oci/php"]
+# stdext's MINIT (crates/ffi's stdext, with --enable-swoole-stdext).
+stdext = ["dep:swoole-rs-phpstdext", "swoole-rs-phpstdext/php", "swoole-rs-phpstdext/active"]
+# The bundled C clients configure builds in (--with-swoole-ssh2, --enable-swoole-ftp):
+# their handlers, MINIT, MSHUTDOWN and MINFO.
+ssh2 = []
+ftp = []
+# ext/sockets' Socket (--enable-sockets), which Thread containers and ports import.
+sockets = []
+
+[dependencies]
+swoole-rs-corebase = { path = "../corebase", optional = true }
+swoole-rs-zend = { path = "../zend", optional = true }
+swoole-rs-error = { path = "../error", optional = true }
+swoole-rs-error-ffi = { path = "../error-ffi", optional = true }
+swoole-rs-phpstubs = { path = "../phpstubs", optional = true }
+swoole-rs-framing = { path = "../framing", optional = true }
+swoole-rs-http2 = { path = "../http2", optional = true }
+swoole-rs-memory = { path = "../memory", optional = true }
+swoole-rs-reactor = { path = "../reactor", optional = true }
+swoole-rs-hooks = { path = "../hooks", optional = true }
+swoole-rs-clients = { path = "../clients", optional = true }
+swoole-rs-timer = { path = "../timer", optional = true }
+swoole-rs-utilities = { path = "../utilities", optional = true }
+swoole-rs-coroutine = { path = "../coroutine", optional = true }
+swoole-rs-brotli = { path = "../brotli", optional = true }
+libc = { version = "=0.2.191", optional = true }
+swoole-rs-pgsql = { path = "../pgsql", optional = true }
+swoole-rs-odbc = { path = "../odbc", optional = true }
+swoole-rs-firebird = { path = "../firebird", optional = true }
+swoole-rs-sqlite = { path = "../sqlite", optional = true }
+swoole-rs-oci = { path = "../oci", optional = true }
+swoole-rs-phpstdext = { path = "../phpstdext", optional = true }
+
+[lints]
+workspace = true

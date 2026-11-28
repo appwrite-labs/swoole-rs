@@ -1,0 +1,33 @@
+# Upstream's core-tests/src/coroutine/{system,hook,socket}.cpp GoogleTests (and the others main.rs lists) as Rust, linked with
+# the crates (swoole-rs-ffi) and the C and C++ tests/modules/hooks/system.py builds, which builds
+# and runs it (Linux); `cargo test` leaves it out.
+[package]
+name = "swoole-rs-hooks-system-tests"
+version = "0.0.0"
+edition = "2024"
+publish = false
+build = "build.rs"
+
+# tests/modules/coroutine/base.rs and tests/modules/clients/client.rs (#[path] modules of
+# main.rs) use swoole-rs-coroutine and swoole-rs-clients; cargo-machete reads only this
+# package's own directory.
+[package.metadata.cargo-machete]
+ignored = ["swoole-rs-clients", "swoole-rs-coroutine"]
+
+[[bin]]
+name = "swoole-rs-hooks-system-tests"
+path = "src/main.rs"
+test = false
+
+[dependencies]
+swoole-rs-buffer = { path = "../../../../crates/buffer" }
+swoole-rs-clients = { path = "../../../../crates/clients" }
+swoole-rs-corebase = { path = "../../../../crates/corebase" }
+swoole-rs-coroutine = { path = "../../../../crates/coroutine", features = ["upstream-symbols"] }
+swoole-rs-ffi = { path = "../../../../crates/ffi" }
+swoole-rs-hooks = { path = "../../../../crates/hooks" }
+swoole-rs-memory = { path = "../../../../crates/memory" }
+swoole-rs-ossupport = { path = "../../../../crates/ossupport" }
+swoole-rs-process = { path = "../../../../crates/process" }
+swoole-rs-reactor = { path = "../../../../crates/reactor" }
+swoole-rs-timer = { path = "../../../../crates/timer", features = ["upstream-symbols"] }

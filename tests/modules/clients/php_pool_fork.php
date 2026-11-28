@@ -1,0 +1,16 @@
+<?php
+function check(bool $ok,string $message):void {if(!$ok)throw new RuntimeException($message);}
+check(function_exists('pcntl_fork'),'unsupported: pcntl_fork unavailable');
+$warnings=[];set_error_handler(static function(int $severity,string $message)use(&$warnings):bool{$warnings[]=[$severity,$message];return true;});
+$process=proc_open([PHP_BINARY,'-n',__DIR__.'/php_pool_fork_peer.php'],[0=>['pipe','r'],1=>['pipe','w'],2=>['pipe','w']],$pipes);check(is_resource($process),'spawn');fclose($pipes[0]);
+try {
+ stream_set_timeout($pipes[1],15);$address=trim((string)fgets($pipes[1]));check(preg_match('/^127\.0\.0\.1:([0-9]+)$/D',$address,$matches)===1,'peer ready');$port=(int)$matches[1];$id="fork\0persistent";
+ $owner=new Swoole\Client(SWOOLE_SOCK_TCP|SWOOLE_KEEP,false,$id);check($owner->connect('127.0.0.1',$port,3),'initial connect');check($owner->send("one\n")===4&&$owner->recv(4,Swoole\Client::MSG_WAITALL)==="ONE\n",'initial IO');check($owner->close(),'initial pool push');$owner=null;gc_collect_cycles();
+ $ipc=stream_socket_pair(STREAM_PF_UNIX,STREAM_SOCK_STREAM,STREAM_IPPROTO_IP);check(is_array($ipc),'ipc');$child=pcntl_fork();check($child>=0,'fork');
+ if($child===0){
+  fclose($ipc[0]);$client=new Swoole\Client(SWOOLE_SOCK_TCP|SWOOLE_KEEP,false,$id);check($client->connect('127.0.0.1',$port,3),'child connect');check($client->reuse===true&&$client->reuseCount===1,'child inherited pool');check($client->send("child\n")===6&&$client->recv(6,Swoole\Client::MSG_WAITALL)==="CHILD\n",'child IO');check($client->close(true),'child force free');$client=null;gc_collect_cycles();check($warnings===[],'child warnings');check(fwrite($ipc[1],"child-done\n")===11,'child acknowledgment');fclose($ipc[1]);exit(0);
+ }
+ fclose($ipc[1]);stream_set_timeout($ipc[0],15);check(fgets($ipc[0])==="child-done\n",'child finished');fclose($ipc[0]);check(pcntl_waitpid($child,$status)===$child&&pcntl_wifexited($status)&&pcntl_wexitstatus($status)===0,'child clean exit');
+ $parent=new Swoole\Client(SWOOLE_SOCK_TCP|SWOOLE_KEEP,false,$id);$weak=WeakReference::create($parent);check($parent->connect('127.0.0.1',$port,3),'parent reconnect');check($parent->reuse===true&&$parent->reuseCount===1,'parent pool unchanged by child removal');check($parent->send("parent\n")===7&&$parent->recv(7,Swoole\Client::MSG_WAITALL)==="PARENT\n",'parent IO');check($parent->close(true),'parent force free');$parent=null;gc_collect_cycles();check($weak->get()===null,'parent owner collected');
+ $output=stream_get_contents($pipes[1]);$stderr=stream_get_contents($pipes[2]);fclose($pipes[1]);fclose($pipes[2]);$exit=proc_close($process);$process=null;check($exit===0&&$stderr==='','peer clean:'.$stderr);$peer=json_decode(trim($output),true,512,JSON_THROW_ON_ERROR);check($peer===['accepts'=>1,'requests'=>3,'eof'=>true],'single shared descriptor stream');check($warnings===[],'parent warnings');echo json_encode(['fork_child_reused'=>true,'parent_pool_unchanged'=>true,'child_force_close_preserved_parent_fd'=>true,'owner_collected'=>true,'peer'=>$peer,'warnings'=>$warnings],JSON_THROW_ON_ERROR),"\n";
+}finally{if(is_resource($process)){proc_terminate($process);foreach($pipes as $pipe)if(is_resource($pipe))fclose($pipe);proc_close($process);}}

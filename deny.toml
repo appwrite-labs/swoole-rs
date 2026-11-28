@@ -1,0 +1,38 @@
+# cargo-deny (PR tier): advisories, licences, bans and sources.
+
+[graph]
+all-features = true
+
+[advisories]
+version = 2
+yanked = "deny"
+
+[licenses]
+version = 2
+# Compatible with the project's Apache-2.0.
+# BSD-3-Clause, ISC and Unicode-3.0 come with bindgen (zend-sys, build time only).
+allow = ["Apache-2.0", "MIT", "BSD-3-Clause", "ISC", "Unicode-3.0"]
+confidence-threshold = 0.9
+
+[licenses.private]
+# First-party crates are unpublished (publish = false) and covered by the repository licence.
+ignore = true
+
+[bans]
+multiple-versions = "deny"
+wildcards = "deny"
+allow-wildcard-paths = true
+deny = [
+    # docs/migration.md: no async runtime drives Swoole's descriptors; Swoole's reactor does.
+    { name = "tokio", reason = "no async runtime drives Swoole descriptors (docs/migration.md)" },
+    { name = "async-std", reason = "no async runtime drives Swoole descriptors (docs/migration.md)" },
+    { name = "smol", reason = "no async runtime drives Swoole descriptors (docs/migration.md)" },
+    { name = "async-executor", reason = "no async runtime drives Swoole descriptors (docs/migration.md)" },
+    { name = "mio", reason = "no async runtime drives Swoole descriptors (docs/migration.md)" },
+    { name = "glommio", reason = "no async runtime drives Swoole descriptors (docs/migration.md)" },
+    { name = "tokio-uring", reason = "no async runtime drives Swoole descriptors (docs/migration.md)" },
+]
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"

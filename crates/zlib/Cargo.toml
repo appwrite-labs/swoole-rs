@@ -1,0 +1,18 @@
+[package]
+name = "swoole-rs-zlib"
+version = "0.1.0"
+edition = "2024"
+publish = false
+license = "Apache-2.0"
+description = "Safe streams over the system zlib: the one place the HTTP and WebSocket codecs call into C"
+
+[lib]
+name = "swoole_rs_zlib"
+crate-type = ["rlib"]
+
+[dependencies]
+# System zlib (the same libz the PHP build links), per #439's -sys decision.
+libz-sys = { version = "1.1.20", default-features = false, features = ["libc"] }
+
+[lints]
+workspace = true

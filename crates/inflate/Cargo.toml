@@ -1,0 +1,19 @@
+[package]
+name = "swoole-rs-inflate"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+# HTTP body codecs: zlib, Brotli and zstd.
+[lib]
+name = "swoole_rs_inflate"
+crate-type = ["rlib"]
+
+[dependencies]
+swoole-rs-brotli = { path = "../brotli" }
+swoole-rs-zlib = { path = "../zlib" }
+# A safe zstd API over the system libzstd that config.m4's --enable-zstd links.
+zstd = { version = "=0.14.3", default-features = false, features = ["pkg-config"] }
+
+[lints]
+workspace = true

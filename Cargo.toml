@@ -1,0 +1,63 @@
+[workspace]
+# The case packages are upstream's server and coroutine core-tests as Rust: they link the
+# crates and the C++ tests/modules/hooks/system.py builds, so only that script builds them.
+members = ["crates/*", "tests/modules/hooks/system", "tests/modules/reactor/base", "tests/modules/http/server"]
+resolver = "3"
+
+# A Rust panic must never unwind into PHP; tests still unwind.
+[profile.dev]
+panic = "abort"
+
+[profile.release]
+panic = "abort"
+
+# The PHP extension (crates/ext, tools/build_ext.py): calls
+# between module crates inline across crates (#889). Fat LTO in one codegen unit
+# is 8% less code than thin (resident in every server process) and 0.5-2% fewer
+# instructions per request (#2242). The native gates link the Zend-free release
+# archive instead, whose objects they can pull one at a time.
+[profile.release-lto]
+inherits = "release"
+lto = "fat"
+codegen-units = 1
+
+# Lint levels live here only; see AGENTS.md "Rust lints".
+[workspace.lints.rust]
+# `pub` only where another crate uses it, so dead_code sees the rest (#159).
+unreachable_pub = "deny"
+# `cargo fuzz` builds with --cfg fuzzing.
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(fuzzing)"] }
+
+[workspace.lints.clippy]
+# Pedantic is denied whole (#156), including the cast lints that guard the FFI
+# boundary against silent truncation, sign flips and misalignment (#157).
+pedantic = { level = "deny", priority = -1 }
+# Allowed: state-transition tables keep one arm per state, and merging arms
+# would reorder guarded ones.
+match_same_arms = "allow"
+# Allowed: naming lints that flag FFI and protocol names (owner/owned,
+# stage/state, SHA-1's a..e) and C-shaped option structs.
+similar_names = "allow"
+many_single_char_names = "allow"
+struct_excessive_bools = "allow"
+struct_field_names = "allow"
+# Allowed: hot buffer paths inline on purpose.
+inline_always = "allow"
+# Allowed: protocol lengths and native type codes are decimal by nature.
+decimal_bitwise_operands = "allow"
+wildcard_imports = "deny"
+# Function size, at clippy.toml's thresholds (#159).
+cognitive_complexity = "deny"
+allow_attributes = "deny"
+allow_attributes_without_reason = "deny"
+dbg_macro = "deny"
+todo = "deny"
+unimplemented = "deny"
+print_stdout = "deny"
+print_stderr = "deny"
+let_underscore_must_use = "deny"
+missing_assert_message = "deny"
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+indexing_slicing = "deny"

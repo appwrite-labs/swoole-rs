@@ -1,0 +1,61 @@
+name: PHPT engines
+description: >-
+  Build the engines upstream's PHPTs run on, with the database, cURL and ssh2 hooks as
+  upstream's own CI builds them (scripts/docker-compile.sh), into the phpt-engines artifact:
+  upstream.so and cargo.so (crates/ext).
+inputs:
+  engines:
+    description: The engines to build, space separated (upstream cargo)
+    required: true
+outputs:
+  php:
+    description: The PHP package version the engines were built against
+    value: ${{ steps.install.outputs.php }}
+runs:
+  using: composite
+  steps:
+    - id: install
+      uses: ./.github/actions/install
+      with:
+        # php-mysql: build_ext.py loads mysqlnd to check the cargo engine loads.
+        packages: firebird-dev libaio1t64 php-mysql
+        php: latest
+    # Main's release build: the dependencies. Build trees must start clean.
+    - uses: Swatinem/rust-cache@v2
+      with:
+        shared-key: release
+        save-if: false
+    - shell: bash
+      run: rm -rf target/ext target/upstream target/thirdparty target/native-core
+    - uses: ./.github/actions/instantclient
+    # The service hooks, as upstream's CI configures them; the cargo build turns on the same features.
+    - id: services
+      shell: bash
+      run: |
+        services="--php-sockets --configure=--enable-swoole-pgsql --configure=--enable-mysqlnd --configure=--with-swoole-odbc=unixODBC,/usr --configure=--with-swoole-firebird"
+        services="$services --configure=--enable-swoole-sqlite --configure=--with-swoole-oracle=instantclient,/usr/local/instantclient"
+        echo "args=$services --configure=--enable-swoole-curl --configure=--with-swoole-ssh2" >> "$GITHUB_OUTPUT"
+    # Only for the upstream engine.
+    - id: upstream
+      if: contains(inputs.engines, 'upstream')
+      uses: ./.github/actions/upstream
+      with:
+        args: ${{ steps.services.outputs.args }}
+        php: ${{ steps.install.outputs.php }}
+    - shell: bash
+      env:
+        ENGINES: ${{ inputs.engines }}
+        UPSTREAM: ${{ steps.upstream.outputs.library }}
+      run: |
+        mkdir -p target/phpt
+        if [ -n "$UPSTREAM" ]; then cp -L "$UPSTREAM" target/phpt/upstream.so; fi
+        if [[ " $ENGINES " == *" cargo "* ]]; then
+          cargo fetch --locked
+          python3 tools/build_ext.py ${{ steps.services.outputs.args }}
+          cp target/ext/swoole.so target/phpt/cargo.so
+        fi
+    - uses: actions/upload-artifact@v7
+      with:
+        retention-days: ${{ github.ref != 'refs/heads/main' && 1 || 0 }}
+        name: phpt-engines
+        path: target/phpt/

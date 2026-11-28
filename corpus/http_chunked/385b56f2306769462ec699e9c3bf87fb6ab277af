@@ -1,0 +1,12 @@
+z
+0
+
+PUT ffffM:// HTTP/1.1
+
+PUT i:// HTTP/1.1
+
+PUT E:// HTTP/1.1
+
+PUT i:// HTTP/1.1
+
+PUT i/0.1TN  H

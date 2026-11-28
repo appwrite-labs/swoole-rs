@@ -1,0 +1,33 @@
+z0
+T:5
+
+PUT * HTTP/1.1
+
+PUT  M:// HTTP/1.1
+
+PUT i:// HTTP/1.1
+
+PUT M:// HTTP/1.1
+
+PUT i:// HTTP/1.1
+
+PUT ii:// HTTP/1.1
+
+PUT M:// HTTP/1.1
+
+
+PUT M:// HTTP/1.1
+
+PUT  M:// HTTP/1.1
+
+PUT i:// HTTP/1.1
+
+PUT M:// HTTP/1.1
+
+PUT i:// HTTP/1.1
+
+PUT ii://// HTTP/1.1
+
+PUT  M://P/PUT
+
+PUT i:// HTT.

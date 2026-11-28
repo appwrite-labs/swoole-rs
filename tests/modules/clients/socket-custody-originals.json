@@ -1,0 +1,63 @@
+{
+  "repository": "https://github.com/swoole/swoole-src",
+  "commit": "76c657d88be39b7af6bf85e46bcbac0da7387760",
+  "tests": [
+    {
+      "path": "tests/swoole_socket_coro/construct_parse_args_failed.phpt",
+      "sha256": "7ffc78d7e94ebcd3c722465d61a0463e8f93261678bfd035b56be537b4837a75",
+      "module": "socket-custody",
+      "requires": [
+        "coroutines"
+      ]
+    },
+    {
+      "path": "tests/swoole_socket_coro/fd.phpt",
+      "sha256": "9467386cc389d0e93e882408e8a9bf4fc6ea081fd624b93d2e2e0a797a506822",
+      "module": "socket-custody",
+      "requires": [
+        "coroutines"
+      ]
+    },
+    {
+      "path": "tests/swoole_socket_coro/getsockname.phpt",
+      "sha256": "cc96935d50cefa6fd7d417959ac78e0950cfecb27da7d084beec8e439509d55c",
+      "module": "socket-custody",
+      "requires": [
+        "coroutines"
+      ]
+    },
+    {
+      "path": "tests/swoole_socket_coro/import_1.phpt",
+      "sha256": "91204b9c53fac6a7bc901ddff4dde2f7617bc335249690cc925e4d82c58c727d",
+      "module": "socket-custody",
+      "requires": [
+        "coroutines"
+      ]
+    },
+    {
+      "path": "tests/swoole_socket_coro/import_2.phpt",
+      "sha256": "e06931316bc9e54265483ebd79bad9a9b664d3afc4479af7e0893b25c6dc64a3",
+      "module": "socket-custody",
+      "requires": [
+        "coroutines"
+      ]
+    },
+    {
+      "path": "tests/swoole_socket_coro/import_4.phpt",
+      "sha256": "d278e932ef0ef394b33407200f8a5810a8cac49b9f7e4af75098574c42da82f6",
+      "module": "socket-custody",
+      "requires": [
+        "coroutines"
+      ]
+    },
+    {
+      "path": "tests/swoole_runtime/stream_socket_pair.phpt",
+      "sha256": "95c659dea8f61ec3ccb715ad51ab0f4c84266b608a447b74ac5be9e2bee648c1",
+      "module": "socket-custody",
+      "requires": [
+        "coroutines"
+      ]
+    }
+  ],
+  "support_files": []
+}

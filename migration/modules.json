@@ -1,0 +1,921 @@
+{
+  "schema_version": 1,
+  "upstream": {
+    "repository": "https://github.com/swoole/swoole-src",
+    "tag": "v6.2.5",
+    "commit": "76c657d88be39b7af6bf85e46bcbac0da7387760"
+  },
+  "modules": [
+    {
+      "id": "M00",
+      "title": "Integration and ABI",
+      "wave": 0,
+      "depends_on": [],
+      "owned_paths": [
+        "crates/ffi/",
+        "crates/zend-sys/",
+        "crates/zend/",
+        "crates/phpstubs/",
+        "crates/phpswoole/",
+        "crates/oracle/",
+        "tools/arginfo.py",
+        "native/include/",
+        "native/swoole-src/",
+        "tests/modules/integration/",
+        "tests/modules/zend/",
+        "Cargo.toml",
+        "Cargo.lock",
+        ".github/workflows/"
+      ],
+      "upstream_patch_targets": [
+        "config.m4",
+        "CMakeLists.txt",
+        "ext-src/php_swoole.cc",
+        "include/swoole_server.h",
+        "src/server/master.cc",
+        "ext-src/stubs/php_swoole_stdext_arginfo.h",
+        "ext-src/stubs/php_swoole_ftp_arginfo.h",
+        "ext-src/stubs/php_swoole_ssh2_arginfo.h"
+      ]
+    },
+    {
+      "id": "M01",
+      "title": "Buffers and owned byte strings",
+      "wave": 1,
+      "depends_on": [
+        "M00"
+      ],
+      "owned_paths": [
+        "crates/buffer/",
+        "native/buffer/",
+        "tests/modules/buffer/"
+      ],
+      "phpt_families": [
+        "swoole_socket_coro",
+        "swoole_server_port"
+      ],
+      "upstream_patch_targets": [
+        "src/core/buffer.cc",
+        "include/swoole_buffer.h",
+        "src/core/string.cc",
+        "include/swoole_string.h"
+      ],
+      "abi_contract": "docs/buffer-abi-v1.md"
+    },
+    {
+      "id": "M02",
+      "title": "WebSocket frame codec",
+      "wave": 1,
+      "depends_on": [
+        "M00"
+      ],
+      "owned_paths": [
+        "crates/websocket/",
+        "crates/websocket-ffi/",
+        "native/websocket/",
+        "tests/modules/websocket/"
+      ],
+      "phpt_families": [
+        "swoole_websocket_server"
+      ],
+      "upstream_patch_targets": [
+        "src/protocol/websocket.cc",
+        "include/swoole_websocket.h"
+      ]
+    },
+    {
+      "id": "M03",
+      "title": "Timers",
+      "wave": 1,
+      "depends_on": [
+        "M00"
+      ],
+      "owned_paths": [
+        "crates/timer/",
+        "crates/phptimer/",
+        "native/timer/",
+        "tests/modules/timer/"
+      ],
+      "phpt_families": [
+        "swoole_timer"
+      ],
+      "upstream_patch_targets": [
+        "src/core/timer.cc",
+        "include/swoole_timer.h",
+        "ext-src/swoole_timer.cc",
+        "src/wrapper/timer.cc",
+        "src/os/timer.cc"
+      ],
+      "abi_contract": "docs/timer-abi-v1.md"
+    },
+    {
+      "id": "M04",
+      "title": "HTTP protocol boundary",
+      "wave": 2,
+      "depends_on": [
+        "M00",
+        "M01",
+        "M02"
+      ],
+      "owned_paths": [
+        "crates/http/",
+        "crates/http-ffi/",
+        "crates/locale/",
+        "crates/brotli/",
+        "crates/deflate/",
+        "crates/inflate/",
+        "crates/zlib/",
+        "native/http/",
+        "tests/modules/http/"
+      ],
+      "phpt_families": [
+        "swoole_http_server"
+      ],
+      "upstream_patch_targets": [
+        "src/protocol/http.cc",
+        "src/server/static_handler.cc",
+        "include/swoole_static_handler.h"
+      ]
+    },
+    {
+      "id": "M05",
+      "title": "Reactor and socket readiness",
+      "wave": 3,
+      "depends_on": [
+        "M00",
+        "M01",
+        "M03",
+        "M04"
+      ],
+      "owned_paths": [
+        "crates/reactor/",
+        "native/reactor/",
+        "tests/modules/reactor/"
+      ],
+      "phpt_families": [
+        "swoole_event",
+        "swoole_socket_coro"
+      ],
+      "upstream_patch_targets": [
+        "src/reactor/",
+        "ext-src/swoole_admin_server.cc",
+        "include/swoole_reactor.h",
+        "src/network/socket.cc",
+        "include/swoole_socket.h",
+        "src/server/base.cc",
+        "src/server/reactor_process.cc",
+        "src/server/reactor_thread.cc"
+      ],
+      "abi_contract": "native/reactor/README.md",
+      "feature_bit_reserved": 16384
+    },
+    {
+      "id": "M06",
+      "title": "Coroutine scheduler and channels",
+      "wave": 4,
+      "depends_on": [
+        "M00",
+        "M03",
+        "M05"
+      ],
+      "owned_paths": [
+        "crates/coroutine/",
+        "native/coroutine/",
+        "tests/modules/coroutine/"
+      ],
+      "phpt_families": [
+        "swoole_coroutine",
+        "swoole_channel_coro"
+      ],
+      "upstream_patch_targets": [
+        "src/coroutine/base.cc",
+        "src/coroutine/context.cc",
+        "src/coroutine/thread_context.cc",
+        "src/coroutine/channel.cc",
+        "include/swoole_coroutine_channel.h",
+        "include/swoole_coroutine.h",
+        "include/swoole_coroutine_context.h"
+      ],
+      "abi_contract": "native/coroutine/contract.md",
+      "feature_bit_reserved": 32768
+    },
+    {
+      "id": "M07",
+      "title": "Coroutine I/O and runtime hooks",
+      "wave": 5,
+      "depends_on": [
+        "M00",
+        "M05",
+        "M06"
+      ],
+      "owned_paths": [
+        "crates/hooks/",
+        "crates/phpruntime/",
+        "crates/pgsql/",
+        "crates/odbc/",
+        "crates/odbc-sys/",
+        "crates/firebird/",
+        "crates/firebird-sys/",
+        "crates/sqlite/",
+        "crates/oci/",
+        "crates/curl/",
+        "crates/curl-sys/",
+        "crates/ssh2/",
+        "crates/ssh2-sys/",
+        "native/hooks/",
+        "tests/modules/hooks/"
+      ],
+      "phpt_families": [
+        "swoole_runtime",
+        "swoole_curl",
+        "swoole_ftp",
+        "swoole_ssh2",
+        "swoole_iouring",
+        "swoole_feature",
+        "swoole_pdo_firebird",
+        "swoole_pdo_odbc",
+        "swoole_pdo_oracle",
+        "swoole_pdo_pgsql",
+        "swoole_pdo_sqlite"
+      ],
+      "upstream_patch_targets": [
+        "src/coroutine/hook.cc",
+        "src/coroutine/socket.cc",
+        "src/coroutine/system.cc",
+        "src/coroutine/file_lock.cc",
+        "src/coroutine/iouring.cc",
+        "src/coroutine/uring_socket.cc",
+        "ext-src/swoole_runtime.cc",
+        "include/swoole_coroutine_socket.h",
+        "include/swoole_iouring.h",
+        "include/swoole_uring_socket.h",
+        "ext-src/swoole_pgsql.cc",
+        "ext-src/swoole_odbc.cc",
+        "ext-src/swoole_firebird.cc",
+        "ext-src/swoole_curl.cc",
+        "ext-src/php_swoole_curl.h",
+        "thirdparty/php/curl/multi.cc",
+        "thirdparty/php84/curl/multi.cc",
+        "ext-src/php_swoole_ssh2.h",
+        "ext-src/php_swoole_ssh2_hook.h"
+      ],
+      "abi_contract": "native/hooks/contract.md",
+      "feature_bit_reserved": 65536
+    },
+    {
+      "id": "M08",
+      "title": "Workers, process and IPC",
+      "wave": 7,
+      "depends_on": [
+        "M00",
+        "M05",
+        "M06",
+        "M07",
+        "M16",
+        "M19",
+        "M20",
+        "M29"
+      ],
+      "owned_paths": [
+        "crates/process/",
+        "crates/phpprocess/",
+        "crates/phpthread/",
+        "tests/modules/process/",
+        "native/process/"
+      ],
+      "phpt_families": [
+        "swoole_process",
+        "swoole_process_pool",
+        "swoole_server"
+      ],
+      "upstream_patch_targets": [
+        "src/server/worker.cc",
+        "src/server/task_worker.cc",
+        "src/server/process.cc",
+        "src/server/manager.cc",
+        "src/server/reactor_process.cc",
+        "src/os/process_pool.cc",
+        "src/os/pipe.cc",
+        "src/os/signal.cc",
+        "src/os/wait.cc",
+        "include/swoole_process_pool.h",
+        "src/server/thread.cc",
+        "ext-src/swoole_server.cc",
+        "src/server/master.cc",
+        "ext-src/swoole_process_pool.cc",
+        "include/swoole_server.h",
+        "ext-src/swoole_process.cc",
+        "ext-src/swoole_admin_server.cc",
+        "ext-src/php_swoole_thread.h",
+        "ext-src/swoole_thread.cc",
+        "ext-src/swoole_thread_arraylist.cc",
+        "ext-src/swoole_thread_barrier.cc",
+        "ext-src/swoole_thread_map.cc",
+        "ext-src/swoole_thread_queue.cc",
+        "include/swoole_pipe.h",
+        "src/os/unix_socket.cc"
+      ],
+      "abi_contract": "native/process/contract.md",
+      "feature_bit_reserved": 524288
+    },
+    {
+      "id": "M09",
+      "title": "Base64 codec",
+      "wave": 1,
+      "depends_on": [
+        "M00"
+      ],
+      "owned_paths": [
+        "crates/base64/",
+        "tests/modules/base64/"
+      ],
+      "phpt_families": [
+        "swoole_websocket_server"
+      ],
+      "upstream_patch_targets": [
+        "src/core/base64.cc"
+      ],
+      "abi_contract": "docs/core-abi-v1.md"
+    },
+    {
+      "id": "M10",
+      "title": "CRC32 primitive",
+      "wave": 1,
+      "depends_on": [
+        "M00"
+      ],
+      "owned_paths": [
+        "crates/crc32/",
+        "tests/modules/crc32/"
+      ],
+      "phpt_families": [
+        "swoole_thread"
+      ],
+      "upstream_patch_targets": [
+        "src/core/crc32.cc"
+      ],
+      "abi_contract": "docs/core-abi-v1.md"
+    },
+    {
+      "id": "M11",
+      "title": "Known error messages",
+      "wave": 1,
+      "depends_on": [
+        "M00"
+      ],
+      "owned_paths": [
+        "crates/error/",
+        "crates/error-ffi/",
+        "native/error/",
+        "tests/modules/error/"
+      ],
+      "phpt_families": [
+        "swoole_http2_server"
+      ],
+      "upstream_patch_targets": [
+        "src/core/error.cc",
+        "include/swoole_error.h"
+      ],
+      "abi_contract": "docs/core-abi-v1.md"
+    },
+    {
+      "id": "M12",
+      "title": "Memory, shared storage and core collections",
+      "wave": 1,
+      "depends_on": [
+        "M00"
+      ],
+      "owned_paths": [
+        "crates/memory/",
+        "native/memory/",
+        "tests/modules/memory/"
+      ],
+      "phpt_families": [
+        "swoole_table"
+      ],
+      "upstream_patch_targets": [
+        "src/memory/",
+        "src/core/heap.cc",
+        "src/core/channel.cc",
+        "include/swoole_memory.h",
+        "include/swoole_table.h",
+        "include/swoole_heap.h",
+        "include/swoole_channel.h"
+      ],
+      "abi_contract": "native/memory/contract.md"
+    },
+    {
+      "id": "M13",
+      "title": "Packet protocols and proxy codecs",
+      "wave": 1,
+      "depends_on": [
+        "M00"
+      ],
+      "owned_paths": [
+        "crates/protocols/",
+        "crates/protocols-ffi/",
+        "crates/bus/",
+        "crates/phpredis/",
+        "native/protocols/",
+        "tests/modules/protocols/"
+      ],
+      "phpt_families": [
+        "swoole_redis_server",
+        "swoole_client_sync"
+      ],
+      "upstream_patch_targets": [
+        "src/protocol/mqtt.cc",
+        "src/protocol/redis.cc",
+        "src/protocol/socks5.cc",
+        "src/protocol/message_bus.cc",
+        "include/swoole_mqtt.h",
+        "include/swoole_redis.h",
+        "include/swoole_proxy.h",
+        "include/swoole_message_bus.h",
+        "ext-src/swoole_redis_server.cc",
+        "ext-src/stubs/php_swoole_redis_server_arginfo.h"
+      ],
+      "abi_contract": "native/protocols/swoole_rs_protocols.h"
+    },
+    {
+      "id": "M14",
+      "title": "Core utilities and logging",
+      "wave": 1,
+      "depends_on": [
+        "M00",
+        "M16"
+      ],
+      "owned_paths": [
+        "crates/utilities/",
+        "native/utilities/",
+        "tests/modules/utilities/"
+      ],
+      "phpt_families": [
+        "swoole_global",
+        "swoole_function"
+      ],
+      "upstream_patch_targets": [
+        "src/core/misc.cc",
+        "src/core/log.cc",
+        "include/swoole_log.h",
+        "include/swoole_util.h",
+        "include/swoole.h"
+      ],
+      "abi_contract": "native/utilities/contract.md"
+    },
+    {
+      "id": "M15",
+      "title": "Half-close output-drain correctness",
+      "wave": 1,
+      "depends_on": [
+        "M00"
+      ],
+      "owned_paths": [
+        "native/halfclose/",
+        "tests/modules/halfclose/"
+      ],
+      "phpt_families": [
+        "swoole_server_port"
+      ],
+      "upstream_patch_targets": []
+    },
+    {
+      "id": "M16",
+      "title": "Native locks and PHP lock/atomic operations",
+      "wave": 1,
+      "depends_on": [
+        "M00"
+      ],
+      "owned_paths": [
+        "crates/locks/",
+        "crates/phplocks/",
+        "native/locks/",
+        "tests/modules/locks/"
+      ],
+      "phpt_families": [
+        "swoole_lock",
+        "swoole_atomic",
+        "swoole_coroutine_lock"
+      ],
+      "upstream_patch_targets": [
+        "src/lock/mutex.cc",
+        "src/lock/rw_lock.cc",
+        "src/lock/spin_lock.cc",
+        "src/lock/barrier.cc",
+        "include/swoole_lock.h",
+        "include/swoole_atomic.h",
+        "ext-src/swoole_lock.cc",
+        "ext-src/swoole_atomic.cc",
+        "ext-src/swoole_thread_lock.cc",
+        "ext-src/swoole_thread_atomic.cc",
+        "src/lock/coroutine_lock.cc",
+        "ext-src/swoole_coroutine_lock.cc",
+        "ext-src/stubs/php_swoole_coroutine_lock_arginfo.h"
+      ],
+      "abi_contract": "native/locks/contract.md"
+    },
+    {
+      "id": "M17",
+      "title": "Event, timer and HTTP wrapper policies",
+      "wave": 2,
+      "depends_on": [
+        "M00",
+        "M03",
+        "M04"
+      ],
+      "owned_paths": [
+        "native/wrappers/"
+      ],
+      "phpt_families": [
+        "swoole_event",
+        "swoole_timer"
+      ],
+      "upstream_patch_targets": [
+        "src/wrapper/event.cc",
+        "src/wrapper/http.cc"
+      ],
+      "feature_bit_reserved": 2048,
+      "abi_contract": "native/wrappers/contract.md"
+    },
+    {
+      "id": "M18",
+      "title": "Packet framing and MIME policy",
+      "wave": 3,
+      "depends_on": [
+        "M00",
+        "M01",
+        "M04",
+        "M13"
+      ],
+      "owned_paths": [
+        "crates/framing/",
+        "native/framing/",
+        "tests/modules/framing/"
+      ],
+      "phpt_families": [
+        "swoole_client_coro"
+      ],
+      "upstream_patch_targets": [
+        "src/protocol/base.cc",
+        "src/protocol/mime_type.cc"
+      ],
+      "abi_contract": "native/framing/contract.md",
+      "feature_bit_reserved": 4096
+    },
+    {
+      "id": "M19",
+      "title": "Core base utilities and lifecycle policy",
+      "wave": 3,
+      "depends_on": [
+        "M00",
+        "M01",
+        "M11",
+        "M14"
+      ],
+      "owned_paths": [
+        "crates/corebase/",
+        "native/corebase/",
+        "tests/modules/corebase/"
+      ],
+      "phpt_families": [
+        "swoole_global",
+        "swoole_function"
+      ],
+      "upstream_patch_targets": [
+        "include/swoole.h",
+        "include/swoole_config.h",
+        "include/swoole_thread.h",
+        "src/core/base.cc",
+        "include/swoole_async.h",
+        "src/os/base.cc",
+        "src/network/dns.cc"
+      ],
+      "abi_contract": "native/corebase/contract.md",
+      "feature_bit_reserved": 8192
+    },
+    {
+      "id": "M20",
+      "title": "OS support and asynchronous worker policy",
+      "wave": 6,
+      "depends_on": [
+        "M00",
+        "M03",
+        "M05",
+        "M06",
+        "M07",
+        "M16"
+      ],
+      "owned_paths": [
+        "crates/ossupport/",
+        "native/ossupport/",
+        "tests/modules/ossupport/"
+      ],
+      "phpt_families": [
+        "swoole_coroutine_system"
+      ],
+      "upstream_patch_targets": [
+        "include/swoole_file.h",
+        "src/os/async_thread.cc",
+        "src/os/base.cc",
+        "src/os/file.cc",
+        "src/os/msg_queue.cc",
+        "src/os/sendfile.cc",
+        "src/os/unix_socket.cc",
+        "src/coroutine/file.cc"
+      ],
+      "abi_contract": "native/ossupport/contract.md",
+      "feature_bit_reserved": 131072
+    },
+    {
+      "id": "M21",
+      "title": "First-party TLS and DTLS policy",
+      "wave": 6,
+      "depends_on": [
+        "M00",
+        "M05",
+        "M07"
+      ],
+      "owned_paths": [
+        "crates/tls/",
+        "native/tls/"
+      ],
+      "phpt_families": [
+        "swoole_socket_coro"
+      ],
+      "upstream_patch_targets": [
+        "src/protocol/ssl.cc",
+        "src/protocol/dtls.cc",
+        "include/swoole_dtls.h"
+      ],
+      "abi_contract": "native/tls/README.md",
+      "feature_bit_reserved": 262144
+    },
+    {
+      "id": "M22",
+      "title": "First-party clients and resolver policy",
+      "wave": 7,
+      "depends_on": [
+        "M00",
+        "M01",
+        "M03",
+        "M04",
+        "M05",
+        "M06",
+        "M07",
+        "M13",
+        "M18",
+        "M20",
+        "M21"
+      ],
+      "owned_paths": [
+        "crates/clients/",
+        "crates/cares-sys/",
+        "crates/phpclients/",
+        "native/clients/",
+        "tests/modules/clients/"
+      ],
+      "phpt_families": [
+        "swoole_client_coro",
+        "swoole_client_sync",
+        "swoole_client_async",
+        "swoole_http_client_coro",
+        "swoole_socket_coro",
+        "swoole_server_coro"
+      ],
+      "upstream_patch_targets": [
+        "src/network/address.cc",
+        "src/network/client.cc",
+        "src/network/dns.cc",
+        "src/network/stream.cc",
+        "ext-src/swoole_client.cc",
+        "ext-src/swoole_client_async.cc",
+        "ext-src/swoole_client_coro.cc",
+        "ext-src/swoole_name_resolver.cc",
+        "ext-src/stubs/php_swoole_name_resolver_arginfo.h",
+        "ext-src/swoole_http_client_coro.cc",
+        "ext-src/swoole_socket_coro.cc",
+        "include/swoole_client.h"
+      ],
+      "abi_contract": "native/clients/contract.md",
+      "feature_bit_reserved": 1048576
+    },
+    {
+      "id": "M23",
+      "title": "PHP HTTP server request response and cookie bindings",
+      "wave": 5,
+      "depends_on": [
+        "M00",
+        "M02",
+        "M04",
+        "M05",
+        "M06"
+      ],
+      "owned_paths": [
+        "crates/httpbindings/",
+        "crates/phphttp/",
+        "native/httpbindings/",
+        "tests/modules/httpbindings/"
+      ],
+      "phpt_families": [
+        "swoole_http_server",
+        "swoole_http_server_coro",
+        "swoole_websocket_server"
+      ],
+      "upstream_patch_targets": [
+        "ext-src/swoole_http_cookie.cc",
+        "ext-src/swoole_http_request.cc",
+        "ext-src/swoole_http_response.cc",
+        "ext-src/swoole_http_server_coro.cc",
+        "ext-src/swoole_http_server.cc",
+        "ext-src/swoole_websocket_server.cc"
+      ],
+      "abi_contract": "native/httpbindings/contract.md",
+      "feature_bit_reserved": 2097152
+    },
+    {
+      "id": "M24",
+      "title": "First-party HTTP2 protocol server and coroutine client policy",
+      "wave": 8,
+      "depends_on": [
+        "M00",
+        "M01",
+        "M04",
+        "M05",
+        "M06",
+        "M07",
+        "M18",
+        "M20",
+        "M21",
+        "M22"
+      ],
+      "owned_paths": [
+        "crates/http2/",
+        "crates/phphttp2/",
+        "tests/modules/http2/"
+      ],
+      "phpt_families": [
+        "swoole_http2_server",
+        "swoole_http2_client_coro",
+        "swoole_http2_server_coro"
+      ],
+      "upstream_patch_targets": [
+        "src/protocol/http2.cc",
+        "ext-src/swoole_http2_server.cc",
+        "ext-src/swoole_http2_client_coro.cc"
+      ],
+      "abi_contract": "crates/http2/src/lib.rs",
+      "feature_bit_reserved": 4194304
+    },
+    {
+      "id": "M25",
+      "title": "ListenPort configuration and PHP Port bindings",
+      "wave": 9,
+      "depends_on": [
+        "M00",
+        "M01",
+        "M04",
+        "M05",
+        "M06",
+        "M07",
+        "M08",
+        "M13",
+        "M15",
+        "M16",
+        "M18",
+        "M19",
+        "M20",
+        "M21",
+        "M23",
+        "M24"
+      ],
+      "owned_paths": [
+        "crates/ports/",
+        "crates/phpserver/",
+        "crates/server/",
+        "native/ports/",
+        "tests/modules/ports/"
+      ],
+      "phpt_families": [
+        "swoole_server_port",
+        "swoole_server"
+      ],
+      "upstream_patch_targets": [
+        "src/server/port.cc",
+        "ext-src/swoole_server_port.cc"
+      ],
+      "abi_contract": "native/ports/contract.md",
+      "feature_bit_reserved": 8388608
+    },
+    {
+      "id": "M26",
+      "title": "Common PHP helpers and optional stdext policy",
+      "wave": 5,
+      "depends_on": [
+        "M00",
+        "M01",
+        "M06"
+      ],
+      "owned_paths": [
+        "crates/phpstdext/",
+        "crates/zend/src/host/",
+        "native/phphelpers/",
+        "tests/modules/phphelpers/"
+      ],
+      "phpt_families": [
+        "swoole_library",
+        "swoole_stdext"
+      ],
+      "upstream_patch_targets": [
+        "ext-src/php_swoole_cxx.cc",
+        "ext-src/swoole_stdext.cc",
+        "ext-src/php_swoole_cxx.h",
+        "ext-src/php_swoole_private.h"
+      ],
+      "abi_contract": "native/phphelpers/swoole_rs_phphelpers.h",
+      "feature_bit_reserved": 16777216
+    },
+    {
+      "id": "M27",
+      "title": "PHP Table and coroutine Channel facades",
+      "wave": 5,
+      "depends_on": [
+        "M00",
+        "M06",
+        "M12",
+        "M16"
+      ],
+      "owned_paths": [
+        "crates/phpcollections/",
+        "tests/modules/phpcollections/"
+      ],
+      "phpt_families": [
+        "swoole_table",
+        "swoole_channel_coro"
+      ],
+      "upstream_patch_targets": [
+        "ext-src/swoole_table.cc",
+        "ext-src/swoole_channel_coro.cc"
+      ],
+      "abi_contract": "crates/phpcollections/src/lib.rs"
+    },
+    {
+      "id": "M28",
+      "title": "PHP Event frontend Rust policy",
+      "wave": 6,
+      "depends_on": [
+        "M00",
+        "M03",
+        "M05",
+        "M06",
+        "M17",
+        "M26"
+      ],
+      "owned_paths": [
+        "crates/phpevents/",
+        "tests/modules/phpevents/"
+      ],
+      "phpt_families": [
+        "swoole_event"
+      ],
+      "upstream_patch_targets": [
+        "ext-src/swoole_event.cc",
+        "ext-src/php_swoole_private.h"
+      ]
+    },
+    {
+      "id": "M29",
+      "title": "PHP Coroutine System and Scheduler frontend",
+      "wave": 7,
+      "depends_on": [
+        "M00",
+        "M03",
+        "M05",
+        "M06",
+        "M07",
+        "M12",
+        "M17",
+        "M26",
+        "M28"
+      ],
+      "owned_paths": [
+        "crates/phpcoroutines/",
+        "tests/modules/phpcoroutines/"
+      ],
+      "phpt_families": [
+        "swoole_coroutine",
+        "swoole_coroutine_system",
+        "swoole_coroutine_scheduler",
+        "swoole_coroutine_util",
+        "swoole_coroutine_wait_group"
+      ],
+      "upstream_patch_targets": [
+        "ext-src/swoole_coroutine.cc",
+        "ext-src/swoole_coroutine_system.cc",
+        "ext-src/swoole_coroutine_scheduler.cc",
+        "ext-src/php_swoole_coroutine.h",
+        "ext-src/swoole_tracer.cc"
+      ],
+      "abi_contract": "docs/phpcoroutines-boundary.md"
+    }
+  ]
+}

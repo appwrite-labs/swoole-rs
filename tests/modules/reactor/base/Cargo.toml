@@ -1,0 +1,17 @@
+# Upstream's core-tests/src/reactor/base.cpp TESTs as Rust, with fixture.cc, linked with
+# the crates (swoole-rs-ffi) and the C and C++ tests/modules/hooks/system.py builds, which builds
+# and runs it (Linux); `cargo test` leaves it out.
+[package]
+name = "swoole-rs-reactor-base-tests"
+version = "0.0.0"
+edition = "2024"
+publish = false
+build = "../../hooks/system/build.rs"
+
+[[bin]]
+name = "swoole-rs-reactor-base-tests"
+path = "src/main.rs"
+test = false
+
+[dependencies]
+swoole-rs-ffi = { path = "../../../../crates/ffi" }

@@ -1,0 +1,52 @@
+name: Upstream build
+description: >-
+  The pinned upstream swoole.so (tools/build_upstream.py) for a build profile, from caches main
+  saves: the pin itself, and the profile's build keyed on its arguments and the PHP it is built
+  against. build_upstream.py prints `Cached upstream:` while the restored build's configuration
+  matches and compiles only when it doesn't, so a PR compiles upstream only when it changes how.
+inputs:
+  args:
+    description: tools/build_upstream.py's arguments (a profile other than the pin's own build)
+    required: true
+  php:
+    description: What else the build depends on, such as the PHP package version it is built against
+    required: true
+outputs:
+  library:
+    description: The upstream swoole.so
+    value: ${{ steps.build.outputs.library }}
+runs:
+  using: composite
+  steps:
+    - uses: actions/cache/restore@v6
+      with:
+        path: target/upstream
+        key: upstream-${{ runner.os }}-${{ hashFiles('tools/build_upstream.py') }}-${{ github.workspace }}
+    # Cache keys can't hold commas, which the arguments can.
+    - id: key
+      shell: bash
+      env:
+        ARGS: ${{ inputs.args }} ${{ inputs.php }}
+      run: echo "key=upstream-build-${{ runner.os }}-${{ hashFiles('tools/build_upstream.py') }}-$(sha256sum <<< "$ARGS" | cut -c1-16)" >> "$GITHUB_OUTPUT"
+    - id: cache
+      uses: actions/cache/restore@v6
+      with:
+        path: |
+          target/upstream-builds/*/build.json
+          target/upstream-builds/*/src/modules/swoole.so
+          target/upstream-builds/*/src/run-tests.php
+        key: ${{ steps.key.outputs.key }}
+    # No ccache: no job restores a ccache directory any more, so a cold one only adds overhead.
+    - id: build
+      shell: bash
+      run: |
+        python3 tools/build_upstream.py --no-ccache ${{ inputs.args }} | tee upstream.log
+        echo "library=$(sed -n 's/^\(Built\|Cached\) upstream: //p' upstream.log)" >> "$GITHUB_OUTPUT"
+    - if: github.ref == 'refs/heads/main' && steps.cache.outputs.cache-hit != 'true'
+      uses: actions/cache/save@v6
+      with:
+        path: |
+          target/upstream-builds/*/build.json
+          target/upstream-builds/*/src/modules/swoole.so
+          target/upstream-builds/*/src/run-tests.php
+        key: ${{ steps.key.outputs.key }}

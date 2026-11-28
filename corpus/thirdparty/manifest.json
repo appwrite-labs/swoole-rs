@@ -1,0 +1,17 @@
+{
+  "name": "hyperf/hyperf-skeleton",
+  "repository": "https://github.com/hyperf/hyperf-skeleton.git",
+  "commit": "855dd7ef145d9e1e3d0500d958ac55d51cbf6ef0",
+  "archive_sha256": "7c998b504f7c3ace46fdd9e44da2493952cd2d53331ec5d015d485e3dc462f1c",
+  "composer_lock_sha256": "23290295524bf3e306d7aca2f92e142e42e1aaba31a8ac4248d5c83513e86fd6",
+  "dependency_install": "composer install --no-dev --no-scripts --no-plugins --prefer-dist --no-interaction",
+  "coverage": "unchanged HTTP application plus external framework coroutine HTTP/SQLite-cache probe; not app-owned persistence endpoints",
+  "lock_resolution_constraints": {
+    "symfony/string": "^7.0",
+    "symfony/translation": "^7.0",
+    "symfony/clock": "^7.0",
+    "symfony/event-dispatcher": "^7.0",
+    "symfony/options-resolver": "^7.0"
+  },
+  "runtime_packages": 82
+}

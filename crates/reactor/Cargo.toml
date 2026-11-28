@@ -1,0 +1,27 @@
+[package]
+name = "swoole-rs-reactor"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[features]
+default = []
+# Publish original C++ method symbols only for the activated reactor overlay.
+upstream-symbols = ["swoole-rs-coroutine/upstream-symbols"]
+
+[dependencies]
+swoole-rs-buffer = { path = "../buffer" }
+swoole-rs-corebase = { path = "../corebase" }
+swoole-rs-coroutine = { path = "../coroutine" }
+swoole-rs-ossupport = { path = "../ossupport" }
+swoole-rs-process = { path = "../process" }
+swoole-rs-memory = { path = "../memory" }
+
+[target.'cfg(unix)'.dependencies]
+libc = "=0.2.191"
+
+[lib]
+crate-type = ["rlib", "staticlib"]
+
+[lints]
+workspace = true

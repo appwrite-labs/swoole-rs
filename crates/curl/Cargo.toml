@@ -1,0 +1,26 @@
+[package]
+name = "swoole-rs-curl"
+version = "0.1.0"
+edition = "2024"
+publish = false
+license = "Apache-2.0"
+description = "Swoole's coroutine cURL multi engine (--enable-swoole-curl)"
+
+[features]
+# swoole_curl_get_handle, which reads the bundled ext/curl's objects and the
+# module globals; needs PHP headers (swoole-rs-zend-sys).
+php = ["dep:swoole-rs-zend", "swoole-rs-zend/php", "dep:swoole-rs-phpswoole", "swoole-rs-phpswoole/php"]
+
+[dependencies]
+libc = "=0.2.191"
+swoole-rs-corebase = { path = "../corebase" }
+swoole-rs-coroutine = { path = "../coroutine", features = ["upstream-symbols"] }
+swoole-rs-curl-sys = { path = "../curl-sys" }
+swoole-rs-reactor = { path = "../reactor" }
+swoole-rs-tls = { path = "../tls" }
+swoole-rs-timer = { path = "../timer", features = ["upstream-symbols"] }
+swoole-rs-phpswoole = { path = "../phpswoole", optional = true }
+swoole-rs-zend = { path = "../zend", optional = true }
+
+[lints]
+workspace = true

@@ -1,0 +1,17 @@
+{
+  "repository": "https://github.com/swoole/swoole-src",
+  "commit": "76c657d88be39b7af6bf85e46bcbac0da7387760",
+  "tests": [
+    {
+      "path": "tests/swoole_coroutine_system/gethostbyname_timeout.phpt",
+      "sha256": "12d95786a27cbaf172f7f72515a129ef545b81af06aeec4a9e613b1125a5c33f",
+      "module": "corebase-dns",
+      "requires": [
+        "coroutines",
+        "event_loop",
+        "upstream_test_bootstrap"
+      ],
+      "network": true
+    }
+  ]
+}

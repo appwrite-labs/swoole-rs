@@ -1,0 +1,48 @@
+name: h2spec
+# HTTP/2 conformance (tests/modules/http2/h2spec.py): the pinned h2spec, strict cases
+# included, against an open_http2_protocol server over h2c and TLS on upstream and the
+# Cargo-built swoole.so. A case that passes on upstream must pass on the Cargo build;
+# upstream's own failures are listed in the summary and report.
+# Called by the merge tier, and by the PR tier when a PR touches HTTP/2 code.
+on:
+  workflow_call:
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  h2spec:
+    runs-on: gcrunner=${{ github.run_id }}/runner=standard
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v7
+      - uses: ./.github/actions/install
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: release
+          save-if: false
+      - name: Clear cached builds
+        run: rm -rf target/ext target/thirdparty
+      - uses: actions/cache/restore@v6
+        with:
+          path: target/upstream
+          key: upstream-${{ runner.os }}-${{ hashFiles('tools/build_upstream.py') }}-${{ github.workspace }}
+      - name: Build upstream
+        if: hashFiles('target/upstream/src/modules/swoole.so') == ''
+        run: python3 tools/build_upstream.py
+      - name: Fetch crates
+        run: cargo fetch --locked
+      - name: Build cargo engine
+        run: python3 tools/build_ext.py
+      - name: Run h2spec
+        run: >
+          python3 tests/modules/http2/h2spec.py --engine upstream=target/upstream/src/modules/swoole.so
+          --engine cargo=target/ext/swoole.so --output target/reports/h2spec.json | tee -a "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          retention-days: ${{ github.ref != 'refs/heads/main' && 1 || 0 }}
+          name: h2spec
+          path: |
+            target/reports/h2spec.json
+            target/reports/h2spec-logs/

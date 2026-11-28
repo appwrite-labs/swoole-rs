@@ -1,0 +1,73 @@
+name: Soak
+# Hours-long load on the Cargo build (tests/soak/soak.py): fails on a crash, a
+# worker error, a failed request, or RSS, fd or Zend memory growth after warm-up beyond
+# the thresholds plus what the pinned upstream grew under the same load just before.
+# The leak self-test first proves the growth check catches a per-request leak. Nightly
+# for an hour per engine; a PR that changes the soak runs five minutes each.
+on:
+  schedule:
+    - cron: '0 1 * * *'
+  workflow_dispatch:
+    inputs:
+      minutes:
+        description: Soak length
+        default: '60'
+  pull_request:
+    paths: [tests/soak/**, .github/workflows/soak.yml]
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  soak:
+    runs-on: gcrunner=${{ github.run_id }}/runner=steady
+    timeout-minutes: 180
+    services:
+      mysql:
+        image: mysql:8.4
+        env:
+          MYSQL_ROOT_PASSWORD: root
+          MYSQL_DATABASE: test
+        ports: ['3306:3306']
+        options: --health-cmd "mysqladmin ping -proot" --health-interval 2s --health-retries 60
+      redis:
+        image: redis:7.4
+        ports: ['6379:6379']
+        options: --health-cmd "redis-cli ping" --health-interval 2s --health-retries 30
+    steps:
+      - uses: actions/checkout@v7
+      - uses: ./.github/actions/install
+        with:
+          packages: php-mysql
+      - uses: actions/cache/restore@v6
+        with:
+          path: target/upstream
+          key: upstream-${{ runner.os }}-${{ hashFiles('tools/build_upstream.py') }}-${{ github.workspace }}
+      - name: Build upstream
+        if: hashFiles('target/upstream/src/modules/swoole.so') == ''
+        run: python3 tools/build_upstream.py
+      - name: Fetch crates
+        run: cargo fetch --locked
+      - name: Build cargo engine
+        run: python3 tools/build_ext.py --profile release-lto
+      - name: Set soak options
+        run: |
+          echo "args=--php-extension mysqlnd --php-extension pdo --php-extension pdo_mysql --redis 127.0.0.1 --mysql 127.0.0.1" >> "$GITHUB_ENV"
+          echo "minutes=${{ github.event_name == 'pull_request' && '5' || inputs.minutes || '60' }}" >> "$GITHUB_ENV"
+      - name: Leak check
+        run: python3 tests/soak/soak.py $args --engine cargo=target/ext/swoole.so --leak --duration 120 --output target/soak/leak.json
+      # The control's own verdict doesn't matter; only its growth does.
+      - name: Soak upstream
+        run: >
+          python3 tests/soak/soak.py $args --engine upstream=target/upstream/src/modules/swoole.so
+          --duration $((minutes * 60)) --output target/soak/upstream.json || test -f target/soak/upstream.json
+      - name: Soak cargo against upstream
+        run: >
+          python3 tests/soak/soak.py $args --engine cargo=target/ext/swoole.so --control target/soak/upstream.json
+          --duration $((minutes * 60)) --output target/soak/cargo.json
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          retention-days: ${{ github.ref != 'refs/heads/main' && 1 || 0 }}
+          name: soak
+          path: target/soak/
