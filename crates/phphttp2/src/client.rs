@@ -13,7 +13,7 @@ use swoole_rs_corebase::CellExt;
 use swoole_rs_corebase::buffer::BoundedBytes;
 use swoole_rs_corebase::constants::HTTP2_PREFACE;
 use swoole_rs_corebase::reactor::{Events, SocketFields};
-use swoole_rs_hooks::{co_socket::Co, packet::recv_packet, socket_extra::set_close_hook};
+use swoole_rs_hooks::{co_socket::Co, packet::try_recv_packet, socket_extra::set_close_hook};
 use swoole_rs_http2::error_code;
 use swoole_rs_http2::frame_flag::{
     ACK as FLAG_ACK, END_STREAM as FLAG_END_STREAM, PADDED as FLAG_PADDED,
@@ -844,10 +844,10 @@ impl Client {
             let Some(socket) = self.socket().filter(|_| self.is_available()) else {
                 return call.set_bool(false);
             };
-            let packet = recv_packet(socket, timeout);
-            let Some(received @ 1..) = packet else {
+            let packet = try_recv_packet(socket, timeout);
+            let Ok(received @ 1..) = packet else {
                 self.io_error(socket);
-                if (packet == Some(0) && socket.err_code() == 0)
+                if (packet == Ok(0) && socket.err_code() == 0)
                     || socket.with_network(|net| net.read(SocketFields::close_deferred))
                         == Some(true)
                 {

@@ -242,9 +242,28 @@ fn find(socket: crate::co_socket::Co, buffer: &ReadBuffer, needle: &[u8]) -> Opt
 /// `Socket::recv_packet`, including availability, timer and buffer allocation.
 #[must_use]
 pub fn recv_packet(socket: crate::co_socket::Co, timeout: f64) -> Option<usize> {
+    match try_recv_packet(socket, timeout) {
+        Ok(length) => Some(length),
+        Err(PacketError::TimerUnavailable) => Some(0),
+        Err(PacketError::Socket) => None,
+    }
+}
+
+/// Failures before or during a packet read.
+#[derive(Debug, PartialEq, Eq)]
+pub enum PacketError {
+    TimerUnavailable,
+    Socket,
+}
+
+/// Receive a packet, distinguishing timer setup failure from a zero-length read.
+///
+/// # Errors
+/// Returns the timer failure before attempting I/O, or the socket failure from the read.
+pub fn try_recv_packet(socket: crate::co_socket::Co, timeout: f64) -> Result<usize, PacketError> {
     use crate::co_io::{Timer, available};
     if !available(socket, Events::READ) {
-        return None;
+        return Err(PacketError::Socket);
     }
     let timeout = if timeout == 0.0 {
         socket.timeout(crate::transfer::timeout_kind(Events::READ))
@@ -253,7 +272,7 @@ pub fn recv_packet(socket: crate::co_socket::Co, timeout: f64) -> Option<usize> 
     };
     let mut timer = Timer::new(socket, Events::READ, timeout);
     if !timer.start() {
-        return Some(0);
+        return Err(PacketError::TimerUnavailable);
     }
     // The settings, read before any native effect may yield.
     let mut packet = Packet {
@@ -289,7 +308,7 @@ pub fn recv_packet(socket: crate::co_socket::Co, timeout: f64) -> Option<usize> 
     }
     packet.sync(BufferSync::Store);
     timer.stop();
-    received
+    received.ok_or(PacketError::Socket)
 }
 
 #[cfg(test)]
@@ -607,6 +626,10 @@ pub(crate) mod tests {
         let mut fake = Box::new(buffered_fake());
         let mut socket = socket_for(&mut fake, false, b"", 1024);
         crate::co_io::test_host::TIMER_OK.set(false);
+        assert_eq!(
+            try_recv_packet(socket.co(), 1.0),
+            Err(PacketError::TimerUnavailable)
+        );
         assert_eq!(recv_packet(socket.co(), 1.0), Some(0));
         assert_eq!((fake.gets, fake.receives), (0, 0));
         crate::co_io::test_host::TIMER_OK.set(true);
