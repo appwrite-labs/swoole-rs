@@ -844,9 +844,13 @@ impl Client {
             let Some(socket) = self.socket().filter(|_| self.is_available()) else {
                 return call.set_bool(false);
             };
-            let Some(received @ 1..) = recv_packet(socket, timeout) else {
+            let packet = recv_packet(socket, timeout);
+            let Some(received @ 1..) = packet else {
                 self.io_error(socket);
-                if socket.with_network(|net| net.read(SocketFields::close_deferred)) == Some(true) {
+                if (packet == Some(0) && socket.err_code() == 0)
+                    || socket.with_network(|net| net.read(SocketFields::close_deferred))
+                        == Some(true)
+                {
                     self.close();
                 }
                 return call.set_bool(false);
