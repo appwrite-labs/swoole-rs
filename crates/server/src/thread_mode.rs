@@ -127,6 +127,15 @@ impl ThreadManager {
         self.push(Wake::Reload(all));
         true
     }
+
+    fn finish_reload(&self) {
+        self.reloading.store(false, Ordering::Release);
+    }
+
+    /// Only the manager performs worker shutdown, once even if PHP bails out.
+    fn begin_shutdown(&self) -> bool {
+        !self.shutting_down.swap(true, Ordering::AcqRel)
+    }
 }
 
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -230,6 +239,12 @@ mod tests {
         assert_eq!(reload.remaining, 1);
         reload.complete(4);
         assert_eq!(reload.remaining, 0);
+        manager.finish_reload();
+        assert!(manager.begin_reload(true));
+        assert!(manager.begin_shutdown());
+        assert!(!manager.begin_shutdown());
+        manager.finish_reload();
+        assert!(!manager.begin_reload(false));
     }
 
     #[test]

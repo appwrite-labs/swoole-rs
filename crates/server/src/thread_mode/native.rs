@@ -134,7 +134,6 @@ pub(crate) fn stop_worker_threads(serv: view::Server<'_>, manager: &ThreadManage
 
 /// Notify all core workers before joining any. User workers finish cooperatively.
 fn shutdown_workers(serv: view::Server<'_>, manager: &ThreadManager) {
-    manager.shutting_down.store(true, Ordering::Release);
     for id in 0..all_core_worker_num(serv) {
         if manager.thread(usize::from(id)).joinable() {
             _ = crate::event_worker::native::kill_worker(serv, id.into());
@@ -220,10 +219,11 @@ fn body(share: &SharedServer, id: u32, kind: WorkerType, fresh: swoole_rs_coreba
     if worker.is_some() {
         factory.push(Wake::Exited(slot));
     } else {
-        if !factory.shutting_down.load(Ordering::Acquire) {
+        if factory.begin_shutdown() {
             let m = format_args!("Fatal Error: manager thread exits abnormally");
             log::warning(c"ThreadFactory::spawn_manager_thread", m);
-            _ = crate::control::shutdown(serv);
+            let master = serv.counters().master_pid.load(Ordering::Relaxed);
+            _ = swoole_rs_corebase::process::os::kill(master, libc::SIGTERM);
             shutdown_workers(serv, &factory);
         }
         if swoole_rs_corebase::timer::swoole_timer_is_available() {
@@ -279,6 +279,7 @@ fn run_main(serv: view::Server<'_>, slot: u16, kind: WorkerType) {
         if swoole_rs_corebase::process::pool::bailout_pending() {
             return;
         }
+        manager.begin_shutdown();
         shutdown_workers(serv, &manager);
         callbacks.call_server(ServerSlot::ManagerStop, serv);
         return;
@@ -371,7 +372,7 @@ fn advance_reload(serv: view::Server<'_>, manager: &ThreadManager, reload: &mut 
     task.advance(|id| crate::event_worker::native::kill_worker(serv, id.into()));
     if task.remaining == 0 {
         *reload = None;
-        manager.reloading.store(false, Ordering::Release);
+        manager.finish_reload();
         serv.state()
             .callbacks
             .call_server(ServerSlot::AfterReload, serv);

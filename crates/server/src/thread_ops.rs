@@ -264,20 +264,23 @@ pub(crate) fn main_loop(serv: view::Server<'_>, id: u16) {
     }
     ctx.reactor = Some(Reactor::thread());
     let mode = state.config_ref().mode_;
+    if mode != Mode::Thread {
+        swoole_rs_corebase::set_thread(crate::THREAD_REACTOR, id);
+    }
+    if init_thread(&mut ctx, state, id).unwrap_or(-1) < 0 {
+        swoole_rs_corebase::reactor::swoole_event_free();
+        return;
+    }
     let worker = || worker(serv, id);
     if mode == Mode::Thread {
         let Some(worker) = worker() else {
             return;
         };
+        // WorkerStart can immediately send through another worker's reactor pipe.
         call_worker_start_callback(serv, worker);
         if swoole_rs_corebase::process::pool::bailout_pending() {
             return;
         }
-    } else {
-        swoole_rs_corebase::set_thread(crate::THREAD_REACTOR, id);
-    }
-    if init_thread(&mut ctx, state, id).unwrap_or(-1) < 0 {
-        return;
     }
     // Every reactor thread is ready before the master runs.
     if mode == Mode::Process {
