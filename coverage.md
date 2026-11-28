@@ -1,75 +1,103 @@
 # Coverage of crates/
 
-Lines of `crates/` the Cargo swoole.so ran under the PHPT corpus, the corpus apps and swoole/library's suite, measured on `5550ddd` (`tools/coverage.py`, nightly `.github/workflows/coverage.yml`). A process that exits by a signal or `_exit` records nothing.
+Lines of `crates/` the Cargo swoole.so ran under the PHPT corpus, the corpus apps and swoole/library's suite, measured on `341aeae` (`tools/coverage.py`, nightly `.github/workflows/coverage.yml`). A process that exits by a signal or `_exit` records nothing.
 
 | crate | lines | covered | entry points not reached |
 | --- | ---: | ---: | ---: |
+| crc32 | 41 | 0.0% | 0 |
+| curl-sys | 10 | 0.0% | 0 |
+| deflate | 61 | 0.0% | 0 |
+| firebird-sys | 12 | 0.0% | 0 |
 | phpthread | 1,647 | 0.0% | 52 |
+| protocols | 390 | 0.0% | 0 |
+| ssh2 | 1,672 | 0.0% | 35 |
+| firebird | 1,619 | 1.2% | 0 |
+| odbc | 1,025 | 3.1% | 0 |
+| curl | 2,444 | 4.4% | 28 |
+| phpredis | 195 | 9.2% | 3 |
+| bus | 559 | 11.3% | 0 |
+| phpevents | 741 | 13.4% | 9 |
+| clients | 2,747 | 14.8% | 1 |
+| http | 4,212 | 21.7% | 0 |
+| inflate | 133 | 23.3% | 0 |
 | base64 | 84 | 35.7% | 0 |
-| ssh2 | 1,672 | 36.2% | 21 |
-| odbc | 1,025 | 39.2% | 0 |
-| pgsql | 2,156 | 42.8% | 9 |
-| crc32 | 41 | 46.3% | 0 |
-| firebird | 1,619 | 48.6% | 0 |
-| error-ffi | 114 | 54.4% | 6 |
-| phplocks | 442 | 58.8% | 17 |
-| error | 120 | 62.5% | 0 |
-| phpredis | 195 | 66.7% | 0 |
-| ports | 1,544 | 67.6% | 0 |
-| phpevents | 741 | 67.9% | 0 |
-| protocols | 390 | 68.7% | 0 |
-| sqlite | 471 | 71.1% | 0 |
-| curl | 2,444 | 72.0% | 6 |
-| phpruntime | 2,618 | 72.1% | 1 |
-| phpprocess | 2,006 | 72.8% | 2 |
-| server | 10,823 | 73.6% | 0 |
-| clients | 2,747 | 73.8% | 0 |
-| http | 4,212 | 73.9% | 0 |
-| phpcoroutines | 2,852 | 74.3% | 2 |
-| firebird-sys | 12 | 75.0% | 0 |
-| corebase | 22,027 | 75.9% | 3 |
-| zend | 3,768 | 77.1% | 6 |
-| phpswoole | 1,621 | 78.9% | 0 |
-| hooks | 4,374 | 79.2% | 1 |
-| inflate | 133 | 79.7% | 0 |
-| phpserver | 4,599 | 82.3% | 1 |
-| phpclients | 7,172 | 82.4% | 0 |
-| oci | 1,452 | 84.0% | 0 |
-| phphttp2 | 1,163 | 84.6% | 0 |
-| bus | 559 | 84.6% | 0 |
-| phpcollections | 557 | 85.3% | 0 |
-| phptimer | 165 | 85.5% | 0 |
-| websocket | 404 | 85.6% | 0 |
-| phphttp | 5,889 | 86.9% | 0 |
+| server | 10,823 | 36.1% | 0 |
+| pgsql | 2,156 | 36.3% | 9 |
+| error | 120 | 38.3% | 0 |
+| phpclients | 7,172 | 40.1% | 61 |
+| ports | 1,544 | 40.1% | 0 |
+| phpprocess | 2,006 | 40.9% | 26 |
+| error-ffi | 114 | 42.1% | 6 |
+| phpruntime | 2,618 | 44.2% | 8 |
+| phpcoroutines | 2,852 | 48.1% | 21 |
+| corebase | 22,027 | 48.6% | 5 |
+| hooks | 4,374 | 49.3% | 5 |
+| phpserver | 4,599 | 49.4% | 29 |
+| phplocks | 442 | 49.5% | 20 |
+| sqlite | 471 | 53.3% | 0 |
+| oci | 1,452 | 53.8% | 0 |
+| phpswoole | 1,621 | 57.1% | 13 |
+| phphttp | 5,889 | 57.5% | 8 |
+| zlib | 114 | 57.9% | 0 |
+| framing | 361 | 58.7% | 0 |
+| locale | 116 | 62.1% | 0 |
+| zend | 3,768 | 64.6% | 8 |
+| websocket | 404 | 69.1% | 0 |
+| phphttp2 | 1,163 | 71.4% | 3 |
+| httpbindings | 239 | 75.3% | 0 |
+| phptimer | 165 | 75.8% | 1 |
+| http2 | 776 | 77.7% | 0 |
+| phpcollections | 557 | 83.1% | 0 |
 | brotli | 85 | 87.1% | 0 |
-| framing | 361 | 88.9% | 0 |
-| deflate | 61 | 90.2% | 0 |
-| httpbindings | 239 | 90.4% | 0 |
-| http2 | 776 | 90.5% | 0 |
-| zlib | 114 | 94.7% | 0 |
-| locale | 116 | 99.1% | 0 |
-| curl-sys | 10 | 100.0% | 0 |
 | ext | 3 | 100.0% | 0 |
 | ffi | 20 | 100.0% | 0 |
 | phpstubs | 12 | 100.0% | 0 |
-| **crates/** | 95,655 | 73.5% | 127 |
+| **crates/** | 95,655 | 41.2% | 351 |
 
 # Entry points no run reached
 
 `zif_`/`zim_` handlers and `swr_v1_` exports whose counter stayed zero, per crate: candidates for targeted differential tests ([#2249](https://github.com/appwrite-labs/swoole-rs/issues/2249)).
 
+## clients
+
+- `swr_v1_clients_address_verify`
+
 ## corebase
 
+- `swr_v1_core_fatal_error`
 - `swr_v1_core_format_result`
 - `swr_v1_coroutine_scheduler_get`
+- `swr_v1_ffi_exit`
 - `swr_v1_logger_put`
 
 ## curl
 
+- `swr_v1_curl_create_handle`
 - `swr_v1_curl_get_handle`
 - `swr_v1_curl_handle_leave_multi`
 - `swr_v1_curl_multi_free`
+- `zif_swoole_native_curl_close`
+- `zif_swoole_native_curl_copy_handle`
+- `zif_swoole_native_curl_errno`
+- `zif_swoole_native_curl_error`
 - `zif_swoole_native_curl_escape`
+- `zif_swoole_native_curl_exec`
+- `zif_swoole_native_curl_getinfo`
+- `zif_swoole_native_curl_init`
+- `zif_swoole_native_curl_multi_add_handle`
+- `zif_swoole_native_curl_multi_close`
+- `zif_swoole_native_curl_multi_errno`
+- `zif_swoole_native_curl_multi_exec`
+- `zif_swoole_native_curl_multi_getcontent`
+- `zif_swoole_native_curl_multi_info_read`
+- `zif_swoole_native_curl_multi_init`
+- `zif_swoole_native_curl_multi_remove_handle`
+- `zif_swoole_native_curl_multi_select`
+- `zif_swoole_native_curl_multi_setopt`
+- `zif_swoole_native_curl_pause`
+- `zif_swoole_native_curl_reset`
+- `zif_swoole_native_curl_setopt`
+- `zif_swoole_native_curl_setopt_array`
 - `zif_swoole_native_curl_unescape`
 - `zif_swoole_native_curl_upkeep`
 
@@ -84,7 +112,11 @@ Lines of `crates/` the Cargo swoole.so ran under the PHPT corpus, the corpus app
 
 ## hooks
 
+- `swr_v1_hook_co_socket_connect_host`
+- `swr_v1_hook_co_socket_new`
 - `swr_v1_hook_co_socket_uring`
+- `swr_v1_ssh2_bound`
+- `swr_v1_ssh2_set_socket_timeout`
 
 ## pgsql
 
@@ -98,13 +130,128 @@ Lines of `crates/` the Cargo swoole.so ran under the PHPT corpus, the corpus app
 - `zim_PDO_PGSql_Ext_pgsqlLOBOpen`
 - `zim_PDO_PGSql_Ext_pgsqlLOBUnlink`
 
+## phpclients
+
+- `zif_swoole_client_select`
+- `zif_swoole_coroutine_socketpair`
+- `zim_swoole_client_async_close`
+- `zim_swoole_client_async_connect`
+- `zim_swoole_client_async_enableSSL`
+- `zim_swoole_client_async_isConnected`
+- `zim_swoole_client_async_sleep`
+- `zim_swoole_client_async_wakeup`
+- `zim_swoole_client_close`
+- `zim_swoole_client_connect`
+- `zim_swoole_client_coro_close`
+- `zim_swoole_client_coro_enableSSL`
+- `zim_swoole_client_coro_exportSocket`
+- `zim_swoole_client_coro_getpeername`
+- `zim_swoole_client_coro_getsockname`
+- `zim_swoole_client_coro_isConnected`
+- `zim_swoole_client_coro_recv`
+- `zim_swoole_client_coro_recvfrom`
+- `zim_swoole_client_coro_sendfile`
+- `zim_swoole_client_coro_sendto`
+- `zim_swoole_client_coro_set`
+- `zim_swoole_client_enableSSL`
+- `zim_swoole_client_getSocket`
+- `zim_swoole_client_getpeername`
+- `zim_swoole_client_getsockname`
+- `zim_swoole_client_recv`
+- `zim_swoole_client_send`
+- `zim_swoole_client_sendfile`
+- `zim_swoole_client_sendto`
+- `zim_swoole_client_set`
+- `zim_swoole_client_shutdown`
+- `zim_swoole_http_client_coro_disconnect`
+- `zim_swoole_http_client_coro_download`
+- `zim_swoole_http_client_coro_getHeaderOut`
+- `zim_swoole_http_client_coro_getPeerCert`
+- `zim_swoole_http_client_coro_ping`
+- `zim_swoole_http_client_coro_recv`
+- `zim_swoole_http_client_coro_setBasicAuth`
+- `zim_swoole_socket_coro_checkLiveness`
+- `zim_swoole_socket_coro_getBoundCid`
+- `zim_swoole_socket_coro_getOption`
+- `zim_swoole_socket_coro_getpeername`
+- `zim_swoole_socket_coro_import`
+- `zim_swoole_socket_coro_isClosed`
+- `zim_swoole_socket_coro_peek`
+- `zim_swoole_socket_coro_readVector`
+- `zim_swoole_socket_coro_readVectorAll`
+- `zim_swoole_socket_coro_recvAll`
+- `zim_swoole_socket_coro_recvLine`
+- `zim_swoole_socket_coro_recvWithBuffer`
+- `zim_swoole_socket_coro_recvfrom`
+- `zim_swoole_socket_coro_send`
+- `zim_swoole_socket_coro_sendFile`
+- `zim_swoole_socket_coro_sendto`
+- `zim_swoole_socket_coro_setOption`
+- `zim_swoole_socket_coro_shutdown`
+- `zim_swoole_socket_coro_sslHandshake`
+- `zim_swoole_socket_coro_writeVector`
+- `zim_swoole_socket_coro_writeVectorAll`
+- `zim_swoole_websocket_frame___toString`
+- `zim_swoole_websocket_server_pack`
+
 ## phpcoroutines
 
+- `zif_swoole_clear_dns_cache`
+- `zif_swoole_coroutine_defer`
 - `zif_swoole_exit`
+- `zif_swoole_test_kernel_coroutine`
+- `zim_swoole_coroutine_cancel`
+- `zim_swoole_coroutine_disableScheduler`
+- `zim_swoole_coroutine_enableScheduler`
+- `zim_swoole_coroutine_exists`
+- `zim_swoole_coroutine_getBackTrace`
+- `zim_swoole_coroutine_getElapsed`
 - `zim_swoole_coroutine_getExecuteTime`
+- `zim_swoole_coroutine_isCanceled`
+- `zim_swoole_coroutine_printBackTrace`
+- `zim_swoole_coroutine_scheduler_parallel`
+- `zim_swoole_coroutine_setTimeLimit`
+- `zim_swoole_coroutine_system_getaddrinfo`
+- `zim_swoole_coroutine_system_statvfs`
+- `zim_swoole_coroutine_system_waitEvent`
+- `zim_swoole_coroutine_system_waitSignal`
+- `zim_swoole_exit_exception_getFlags`
+- `zim_swoole_exit_exception_getStatus`
+
+## phpevents
+
+- `zif_swoole_event_add`
+- `zif_swoole_event_cycle`
+- `zif_swoole_event_defer`
+- `zif_swoole_event_del`
+- `zif_swoole_event_dispatch`
+- `zif_swoole_event_exit`
+- `zif_swoole_event_isset`
+- `zif_swoole_event_set`
+- `zif_swoole_event_write`
+
+## phphttp
+
+- `zim_swoole_http_response_create`
+- `zim_swoole_http_response_goaway`
+- `zim_swoole_http_response_ping`
+- `zim_swoole_http_response_push`
+- `zim_swoole_http_response_sendfile`
+- `zim_swoole_websocket_server_disconnect`
+- `zim_swoole_websocket_server_isEstablished`
+- `zim_swoole_websocket_server_ping`
+
+## phphttp2
+
+- `zim_swoole_http2_client_coro_goaway`
+- `zim_swoole_http2_client_coro_read`
+- `zim_swoole_http2_client_coro_write`
 
 ## phplocks
 
+- `zim_swoole_coroutine_lock___construct`
+- `zim_swoole_coroutine_lock_lock`
+- `zim_swoole_coroutine_lock_unlock`
 - `zim_swoole_thread_atomic___construct`
 - `zim_swoole_thread_atomic_add`
 - `zim_swoole_thread_atomic_cmpset`
@@ -125,16 +272,97 @@ Lines of `crates/` the Cargo swoole.so ran under the PHPT corpus, the corpus app
 
 ## phpprocess
 
+- `zim_swoole_process_alarm`
+- `zim_swoole_process_close`
+- `zim_swoole_process_daemon`
 - `zim_swoole_process_exec`
+- `zim_swoole_process_exit`
+- `zim_swoole_process_exportSocket`
+- `zim_swoole_process_freeQueue`
+- `zim_swoole_process_getAffinity`
+- `zim_swoole_process_getPriority`
+- `zim_swoole_process_pool_detach`
+- `zim_swoole_process_pool_getProcess`
+- `zim_swoole_process_pool_listen`
+- `zim_swoole_process_pool_shutdown`
 - `zim_swoole_process_pool_stop`
+- `zim_swoole_process_pool_write`
+- `zim_swoole_process_pop`
+- `zim_swoole_process_push`
+- `zim_swoole_process_read`
+- `zim_swoole_process_set`
+- `zim_swoole_process_setAffinity`
+- `zim_swoole_process_setBlocking`
+- `zim_swoole_process_setPriority`
+- `zim_swoole_process_setTimeout`
+- `zim_swoole_process_statQueue`
+- `zim_swoole_process_useQueue`
+- `zim_swoole_process_write`
+
+## phpredis
+
+- `zim_swoole_redis_server_format`
+- `zim_swoole_redis_server_getHandler`
+- `zim_swoole_redis_server_setHandler`
 
 ## phpruntime
 
+- `swr_v1_phpruntime_socket_cast`
+- `swr_v1_phpruntime_socket_stat`
+- `zif_swoole_proc_terminate`
 - `zif_swoole_putenv`
+- `zif_swoole_stream_select`
+- `zif_swoole_stream_socket_pair`
+- `zif_swoole_time_nanosleep`
+- `zif_swoole_time_sleep_until`
 
 ## phpserver
 
+- `zim_swoole_connection_iterator_current`
+- `zim_swoole_connection_iterator_key`
+- `zim_swoole_connection_iterator_next`
+- `zim_swoole_server_addCommand`
+- `zim_swoole_server_close`
+- `zim_swoole_server_command`
+- `zim_swoole_server_finish`
+- `zim_swoole_server_getManagerPid`
+- `zim_swoole_server_getMasterPid`
+- `zim_swoole_server_getSocket`
+- `zim_swoole_server_getWorkerId`
+- `zim_swoole_server_getWorkerPid`
+- `zim_swoole_server_getWorkerStatus`
+- `zim_swoole_server_pause`
 - `zim_swoole_server_port___construct`
+- `zim_swoole_server_reload`
+- `zim_swoole_server_resume`
+- `zim_swoole_server_sendMessage`
+- `zim_swoole_server_sendfile`
+- `zim_swoole_server_sendto`
+- `zim_swoole_server_sendwait`
+- `zim_swoole_server_stats`
+- `zim_swoole_server_stop`
+- `zim_swoole_server_task`
+- `zim_swoole_server_taskCo`
+- `zim_swoole_server_taskWaitMulti`
+- `zim_swoole_server_task_finish`
+- `zim_swoole_server_task_pack`
+- `zim_swoole_server_task_unpack`
+
+## phpswoole
+
+- `zif_swoole_async_dns_lookup_coro`
+- `zif_swoole_async_set`
+- `zif_swoole_clear_error`
+- `zif_swoole_errno`
+- `zif_swoole_error_log_ex`
+- `zif_swoole_get_local_ip`
+- `zif_swoole_get_local_mac`
+- `zif_swoole_ignore_error`
+- `zif_swoole_set_process_name`
+- `zif_swoole_strerror`
+- `zif_swoole_substr_json_decode`
+- `zif_swoole_substr_unserialize`
+- `zif_swoole_version`
 
 ## phpthread
 
@@ -191,18 +419,34 @@ Lines of `crates/` the Cargo swoole.so ran under the PHPT corpus, the corpus app
 - `zim_swoole_thread_setPriority`
 - `zim_swoole_thread_yield`
 
+## phptimer
+
+- `zif_swoole_timer_info`
+
 ## ssh2
 
 - `zif_ssh2_auth_agent`
 - `zif_ssh2_auth_hostbased_file`
 - `zif_ssh2_auth_none`
+- `zif_ssh2_auth_password`
+- `zif_ssh2_auth_pubkey`
+- `zif_ssh2_auth_pubkey_file`
+- `zif_ssh2_connect`
+- `zif_ssh2_disconnect`
+- `zif_ssh2_exec`
 - `zif_ssh2_fetch_stream`
+- `zif_ssh2_fingerprint`
 - `zif_ssh2_forward_accept`
 - `zif_ssh2_forward_listen`
+- `zif_ssh2_methods_negotiated`
 - `zif_ssh2_publickey_add`
 - `zif_ssh2_publickey_init`
 - `zif_ssh2_publickey_list`
 - `zif_ssh2_publickey_remove`
+- `zif_ssh2_scp_recv`
+- `zif_ssh2_scp_send`
+- `zif_ssh2_send_eof`
+- `zif_ssh2_sftp`
 - `zif_ssh2_sftp_chmod`
 - `zif_ssh2_sftp_lstat`
 - `zif_ssh2_sftp_mkdir`
@@ -212,6 +456,8 @@ Lines of `crates/` the Cargo swoole.so ran under the PHPT corpus, the corpus app
 - `zif_ssh2_sftp_rmdir`
 - `zif_ssh2_sftp_stat`
 - `zif_ssh2_sftp_symlink`
+- `zif_ssh2_sftp_unlink`
+- `zif_ssh2_shell`
 - `zif_ssh2_shell_resize`
 - `zif_ssh2_tunnel`
 
@@ -222,4 +468,6 @@ Lines of `crates/` the Cargo swoole.so ran under the PHPT corpus, the corpus app
 - `swr_v1_phpruntime_plain_fdopen_mode`
 - `swr_v1_phpruntime_plain_metadata`
 - `swr_v1_phpruntime_plain_rename`
+- `swr_v1_phpruntime_plain_rmdir`
 - `swr_v1_phpruntime_stream_from_socket`
+- `swr_v1_phpswoole_fatal_exit`
