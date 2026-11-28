@@ -94,21 +94,8 @@ pub(crate) fn factory_start(serv: view::Server<'_>) -> bool {
         && (serv.user_worker_num() == 0 || create_user_workers(serv))
 }
 
-/// `Server::start_worker_threads`: the task, event and user worker threads, the
-/// manager thread, then the master thread's listeners and loop.
+/// Start the manager, then enter the master's listener loop.
 pub(crate) fn start_worker_threads(serv: view::Server<'_>) -> bool {
-    let config = serv.config();
-    let (workers, tasks) = (config.worker_num.get(), config.task_worker_num.get());
-    for id in 0..tasks {
-        spawn(serv, workers + id, WorkerType::Task);
-    }
-    for id in 0..workers {
-        spawn(serv, id, WorkerType::Event);
-    }
-    let users = u32::try_from(serv.workers().user_count()).unwrap_or(u32::MAX);
-    for id in 0..users {
-        spawn(serv, tasks + workers + id, WorkerType::User);
-    }
     spawn(serv, manager_thread_id(serv), WorkerType::Manager);
     if swoole_rs_corebase::reactor::swoole_event_init(0).is_err() {
         return false;
@@ -136,16 +123,27 @@ pub(crate) fn start_worker_threads(serv: view::Server<'_>) -> bool {
     server_methods::start_master_thread(serv, reactor)
 }
 
-/// `Server::stop_worker_threads`: the manager thread, then each worker.
-pub(crate) fn stop_worker_threads(serv: view::Server<'_>) {
-    // `ThreadFactory::terminate_manager_thread()`.
-    let manager = &manager(serv);
-    manager.push(Wake::Exit);
-    // The manager thread may still be joining workers when the server stops:
-    // reclaim it first, so it has surely exited.
-    join(manager, manager_thread_id(serv));
+/// After the master reactor drains, ask the manager to stop and join its workers.
+pub(crate) fn stop_worker_threads(serv: view::Server<'_>, manager: &ThreadManager) {
+    let id = manager_thread_id(serv);
+    if manager.thread(id as usize).joinable() {
+        manager.push(Wake::Exit);
+        join(manager, id);
+    }
+}
+
+/// Notify all core workers before joining any. User workers finish cooperatively.
+fn shutdown_workers(serv: view::Server<'_>, manager: &ThreadManager) {
+    manager.shutting_down.store(true, Ordering::Release);
     for id in 0..all_core_worker_num(serv) {
-        _ = crate::event_worker::native::kill_worker(serv, id.into());
+        if manager.thread(usize::from(id)).joinable() {
+            _ = crate::event_worker::native::kill_worker(serv, id.into());
+        }
+    }
+    for id in 0..all_worker_num(serv) {
+        if manager.thread(id as usize).joinable() {
+            join(manager, id);
+        }
     }
 }
 
@@ -222,9 +220,11 @@ fn body(share: &SharedServer, id: u32, kind: WorkerType, fresh: swoole_rs_coreba
     if worker.is_some() {
         factory.push(Wake::Exited(slot));
     } else {
-        if serv.state().running() {
+        if !factory.shutting_down.load(Ordering::Acquire) {
             let m = format_args!("Fatal Error: manager thread exits abnormally");
             log::warning(c"ThreadFactory::spawn_manager_thread", m);
+            _ = crate::control::shutdown(serv);
+            shutdown_workers(serv, &factory);
         }
         if swoole_rs_corebase::timer::swoole_timer_is_available() {
             swoole_rs_corebase::timer::swoole_timer_free();
@@ -257,15 +257,29 @@ fn init_bus(serv: view::Server<'_>, bus: &PoolBus) {
 fn run_main(serv: view::Server<'_>, slot: u16, kind: WorkerType) {
     let worker = (kind != WorkerType::Manager).then(|| serv.worker_record(slot));
     let Some(worker) = worker.flatten() else {
+        let config = serv.config();
+        let (workers, tasks) = (config.worker_num.get(), config.task_worker_num.get());
+        for id in 0..tasks {
+            spawn(serv, workers + id, WorkerType::Task);
+        }
+        for id in 0..workers {
+            spawn(serv, id, WorkerType::Event);
+        }
+        let users = u32::try_from(serv.workers().user_count()).unwrap_or(u32::MAX);
+        for id in 0..users {
+            spawn(serv, tasks + workers + id, WorkerType::User);
+        }
         let callbacks = &serv.state().callbacks;
         callbacks.call_server(ServerSlot::ManagerStart, serv);
         if swoole_rs_corebase::process::pool::bailout_pending() {
             return;
         }
-        wait(serv, &manager(serv));
+        let manager = manager(serv);
+        wait(serv, &manager);
         if swoole_rs_corebase::process::pool::bailout_pending() {
             return;
         }
+        shutdown_workers(serv, &manager);
         callbacks.call_server(ServerSlot::ManagerStop, serv);
         return;
     };

@@ -224,9 +224,6 @@ pub(crate) fn stop_master_thread(serv: Server<'_>) {
     if serv.config().max_wait_time.get() > 0 {
         exit_after_max_wait_time(serv);
     }
-    if mode == Mode::Thread {
-        hybrid().stop_worker_threads(serv);
-    }
     if mode == Mode::Process && serv.config().single_thread.get() {
         hybrid().thread0_shutdown(serv);
     }
@@ -524,8 +521,11 @@ mod tests {
 
         set_mode(&live, Mode::Thread);
         stop_master_thread(serv);
-        let stop = Call::StopWorkerThreads;
-        assert_eq!(calls(), [stop], "the worker threads stop");
+        assert_eq!(
+            calls(),
+            [],
+            "workers stay available while the master drains"
+        );
     }
 
     #[test]

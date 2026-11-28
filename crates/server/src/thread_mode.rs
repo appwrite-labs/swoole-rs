@@ -66,6 +66,7 @@ pub struct ThreadManager {
     wake: Sender<Wake>,
     woken: Mutex<Receiver<Wake>>,
     reloading: AtomicBool,
+    shutting_down: AtomicBool,
     threads: Box<[Arc<Thread>]>,
 }
 
@@ -78,6 +79,7 @@ impl ThreadManager {
             wake,
             woken: Mutex::new(woken),
             reloading: AtomicBool::default(),
+            shutting_down: AtomicBool::default(),
             threads: (0..count).map(|_| Arc::default()).collect(),
         }
     }
@@ -118,7 +120,8 @@ impl ThreadManager {
 
     /// `ThreadFactory::reload`'s request: false while another runs.
     fn begin_reload(&self, all: bool) -> bool {
-        if self.reloading.swap(true, Ordering::AcqRel) {
+        if self.shutting_down.load(Ordering::Acquire) || self.reloading.swap(true, Ordering::AcqRel)
+        {
             return false;
         }
         self.push(Wake::Reload(all));

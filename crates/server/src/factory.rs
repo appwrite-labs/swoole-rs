@@ -288,7 +288,7 @@ pub(crate) fn shutdown(serv: crate::view::Server<'_>) -> bool {
         (_, Mode::Process) => crate::process_factory::native::shutdown(serv),
         (_, Mode::Thread) => {
             if let Some(manager) = manager(serv.state()) {
-                manager.join_all();
+                crate::thread_mode::native::stop_worker_threads(serv, &manager);
             }
             true
         }
@@ -480,10 +480,6 @@ impl crate::hybrid::Hybrid for Linked {
 
     fn start_worker_threads(&self, serv: crate::view::Server<'_>) -> bool {
         crate::thread_mode::native::start_worker_threads(serv)
-    }
-
-    fn stop_worker_threads(&self, serv: crate::view::Server<'_>) {
-        crate::thread_mode::native::stop_worker_threads(serv);
     }
 
     fn stop_single_worker(&self, serv: crate::view::Server<'_>) {

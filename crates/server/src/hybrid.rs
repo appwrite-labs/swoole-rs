@@ -102,9 +102,6 @@ pub(crate) trait Hybrid: Sync {
     /// `Server::start_worker_threads`: whether the master thread's loop ran.
     fn start_worker_threads(&self, serv: Server<'_>) -> bool;
 
-    /// `Server::stop_worker_threads`.
-    fn stop_worker_threads(&self, serv: Server<'_>);
-
     /// `serv->stop_async_worker(sw_worker())` over base mode's single worker.
     fn stop_single_worker(&self, serv: Server<'_>);
 
@@ -218,7 +215,6 @@ pub(crate) mod tests {
         /// The worker, the message's kind and the bytes sent: the head and its payload.
         Pipe(u32, u8, usize),
         StartWorkerThreads,
-        StopWorkerThreads,
         StopSingleWorker,
         SendShutdown,
         Thread0Shutdown,
@@ -324,10 +320,6 @@ pub(crate) mod tests {
 
         fn start_worker_threads(&self, _: Server<'_>) -> bool {
             hear(Call::StartWorkerThreads)
-        }
-
-        fn stop_worker_threads(&self, _: Server<'_>) {
-            hear(Call::StopWorkerThreads);
         }
 
         fn stop_single_worker(&self, _: Server<'_>) {
