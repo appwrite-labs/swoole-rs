@@ -5,7 +5,7 @@ use crate::reactor_handle::Reactor;
 use crate::view::Server;
 use core::ffi::{CStr, c_int};
 use core::sync::atomic::AtomicI64;
-use core::sync::atomic::Ordering::{Relaxed, Release};
+use core::sync::atomic::Ordering::Relaxed;
 use swoole_rs_corebase::log;
 use swoole_rs_corebase::reactor::SocketFields;
 use swoole_rs_error::ErrorCode as E;
@@ -98,17 +98,11 @@ pub fn shutdown(serv: Server<'_>) -> bool {
     let mode = mode(serv);
     // A worker thread masks signals; the master thread stops itself.
     if mode == Mode::Thread && swoole_rs_corebase::thread_kind() == crate::THREAD_MASTER {
-        stop_master_thread(serv);
+        signal_shutdown(serv);
         return true;
     }
     if mode == Mode::Process {
         return hybrid().send_shutdown(serv);
-    }
-    // A worker thread that asks may exit before the master sees the signal; marked
-    // stopping now, the manager does not respawn it. `running` stays set until the
-    // master handles the SIGTERM, which it ignores once the server is not running.
-    if mode == Mode::Thread {
-        serv.state().stopping.store(true, Release);
     }
     let gs = serv.counters();
     let manager = gs.manager_pid.load(Relaxed);
@@ -439,17 +433,13 @@ mod tests {
         gs.manager_pid.store(NO_PROCESS, Relaxed);
         assert!(!shutdown(serv), "kill failed");
 
-        // A worker thread marks the server stopping, then signals the master.
+        // A worker thread signals the master and leaves shutdown to its signal handler.
         set_mode(&live, Mode::Thread);
         live.state().set_running(true);
         let mut master = sleeper();
         gs.master_pid.store(pid(&master), Relaxed);
         assert!(shutdown(serv), "a worker thread signals the master");
         assert_eq!(terminated_by(&mut master), Some(libc::SIGTERM));
-        assert!(
-            live.state().stopping.load(Relaxed),
-            "stopping before the signal"
-        );
         assert!(
             live.state().running(),
             "running until the master handles it"

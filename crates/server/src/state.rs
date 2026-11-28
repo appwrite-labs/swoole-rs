@@ -56,8 +56,6 @@ pub struct ServerState {
     /// the state's drop closes, as `~Server` did.
     #[expect(clippy::vec_box, reason = "a worker holds its pair's address")]
     worker_pipes: std::sync::Mutex<Vec<Box<SocketPair>>>,
-    /// A worker thread asked to shut down: the thread manager respawns no worker.
-    pub(crate) stopping: AtomicBool,
     /// Thread mode's factory's manager, from its factory's creation to its deletion.
     pub(crate) thread_manager:
         std::sync::Mutex<Option<std::sync::Arc<crate::thread_mode::ThreadManager>>>,
@@ -272,7 +270,6 @@ impl ServerState {
             msg_ids: std::sync::OnceLock::new(),
             task_pipes: OnceLock::new(),
             worker_pipes: std::sync::Mutex::new(Vec::new()),
-            stopping: AtomicBool::new(false),
             thread_manager: std::sync::Mutex::new(None),
             reactor_thread_barrier: swoole_rs_corebase::locks::Barrier::new(),
         }

@@ -344,12 +344,6 @@ fn restart(serv: view::Server<'_>, manager: &ThreadManager, slot: u16) {
         crate::event_worker::native::call_worker_error_callback(serv, worker, &status);
     }
     join(manager, id);
-    // A worker that exits once the server is stopping stays down: the master is
-    // joining every thread, and a new one could block it forever (a user process
-    // re-run waits on input its first run consumed).
-    if serv.state().stopping.load(Ordering::Acquire) {
-        return;
-    }
     let Some(kind @ (WorkerType::Event | WorkerType::Task | WorkerType::User)) = worker.kind()
     else {
         swoole_rs_corebase::fatal("an exited thread of an unknown worker type");
